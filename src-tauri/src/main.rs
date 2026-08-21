@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use echo::audio::AudioCapture;
 use echo::inject::{Pasteboard, SysClipboard};
 use echo_core::{DictEntry, Dictionary, History};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -32,6 +32,43 @@ struct AppStatus {
     cleanup_name: String,
     hud_enabled: bool,
     max_record_seconds: u64,
+    settings_path: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum SettingSource {
+    Env,
+    File,
+    Default,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct SettingField<T> {
+    value: Option<T>,
+    effective: T,
+    source: SettingSource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Settings {
+    engine: SettingField<String>,
+    whisper_model: SettingField<String>,
+    cleanup: SettingField<String>,
+    hud: SettingField<bool>,
+    hold_key: SettingField<String>,
+    record_seconds: SettingField<u32>,
+}
+
+#[derive(Debug, Default, Clone)]
+struct SettingsEnv {
+    engine: Option<String>,
+    whisper_model: Option<String>,
+    cleanup: Option<String>,
+    hud: Option<String>,
+    hold_key: Option<String>,
+    record_seconds: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -43,12 +80,13 @@ struct Health {
     injection_ready: bool,
 }
 
+static HEALTH: Mutex<Option<(Instant, Health)>> = Mutex::new(None);
+
 /// Microphone, engine, and injection probes open devices and scan PATH, too
 /// costly for the frontend's 400 ms status poll. Cache them briefly.
 fn health_snapshot() -> Health {
-    static CACHE: Mutex<Option<(Instant, Health)>> = Mutex::new(None);
     const TTL: Duration = Duration::from_secs(10);
-    let mut cache = CACHE.lock().expect("health cache lock");
+    let mut cache = HEALTH.lock().expect("health cache lock");
     if let Some((at, health)) = cache.as_ref() {
         if at.elapsed() < TTL {
             return health.clone();
@@ -65,6 +103,10 @@ fn health_snapshot() -> Health {
     };
     *cache = Some((Instant::now(), health.clone()));
     health
+}
+
+fn health_invalidate() {
+    *HEALTH.lock().expect("health cache lock") = None;
 }
 
 #[derive(Debug, Serialize)]
@@ -114,6 +156,7 @@ fn get_app_status() -> AppStatus {
         cleanup_name: echo::cleanup::mode_name(),
         hud_enabled: echo::ui::hud::enabled(),
         max_record_seconds: echo::rec::MAX_RECORD_SECONDS,
+        settings_path: echo_core::config_path().to_string_lossy().into_owned(),
     }
 }
 
@@ -173,6 +216,179 @@ fn toggle_recording() -> Result<(), String> {
 #[tauri::command]
 fn copy_text(text: String) -> Result<(), String> {
     SysClipboard.set(&text)
+}
+
+#[tauri::command]
+fn get_settings() -> Result<Settings, String> {
+    read_settings()
+}
+
+#[tauri::command]
+fn set_settings(settings: Settings) -> Result<Settings, String> {
+    write_settings(settings)
+}
+
+fn read_settings() -> Result<Settings, String> {
+    Ok(settings_from(
+        &process_settings_env(),
+        &echo::settings::file_config(),
+    ))
+}
+
+fn write_settings(settings: Settings) -> Result<Settings, String> {
+    config_from_values(&settings)?.save()?;
+    echo::settings::reload();
+    health_invalidate();
+    read_settings()
+}
+
+fn process_settings_env() -> SettingsEnv {
+    SettingsEnv {
+        engine: env::var("ECHO_ENGINE").ok(),
+        whisper_model: env::var("ECHO_WHISPER_MODEL").ok(),
+        cleanup: env::var("ECHO_CLEANUP").ok(),
+        hud: env::var("ECHO_HUD").ok(),
+        hold_key: env::var("ECHO_HOLD_KEY").ok(),
+        record_seconds: env::var("ECHO_RECORD_SECONDS").ok(),
+    }
+}
+
+fn settings_from(env: &SettingsEnv, file: &echo_core::Config) -> Settings {
+    let env_cleanup = env
+        .cleanup
+        .as_deref()
+        .and_then(|raw| echo_core::CleanupMode::parse(raw).ok())
+        .map(|mode| cleanup_name(&mode));
+    Settings {
+        engine: setting_field(
+            env.engine
+                .as_deref()
+                .and_then(echo_core::EngineChoice::from_env_var)
+                .map(engine_name),
+            file.engine.map(engine_name),
+            "auto".to_string(),
+        ),
+        whisper_model: setting_field(
+            env.whisper_model.clone().filter(|name| !name.is_empty()),
+            file.whisper_model.clone(),
+            "base.en".to_string(),
+        ),
+        cleanup: setting_field(
+            env_cleanup,
+            file.cleanup.as_ref().map(cleanup_name),
+            "rules".to_string(),
+        ),
+        hud: hud_field(env.hud.as_deref(), file.hud),
+        hold_key: setting_field(
+            env.hold_key.clone(),
+            file.hold_key.clone(),
+            "RightCtrl".to_string(),
+        ),
+        record_seconds: record_seconds_field(
+            env.record_seconds
+                .as_deref()
+                .and_then(|raw| raw.parse::<u64>().ok()),
+            file.record_seconds,
+        ),
+    }
+}
+
+fn config_from_values(settings: &Settings) -> Result<echo_core::Config, String> {
+    Ok(echo_core::Config {
+        engine: match settings.engine.value.as_deref() {
+            None => None,
+            Some(raw) => Some(
+                echo_core::EngineChoice::from_env_var(raw)
+                    .ok_or_else(|| format!("unknown engine {raw}"))?,
+            ),
+        },
+        whisper_model: nonempty(settings.whisper_model.value.clone()),
+        cleanup: match settings.cleanup.value.as_deref() {
+            None => None,
+            Some(raw) => Some(echo_core::CleanupMode::parse(raw).map_err(|err| err.to_string())?),
+        },
+        hud: settings.hud.value,
+        hold_key: nonempty(settings.hold_key.value.clone()),
+        record_seconds: settings
+            .record_seconds
+            .value
+            .map(|secs| secs.clamp(1, echo::rec::MAX_RECORD_SECONDS as u32)),
+    })
+}
+
+fn setting_field<T: Clone>(env: Option<T>, file: Option<T>, default: T) -> SettingField<T> {
+    let source = if env.is_some() {
+        SettingSource::Env
+    } else if file.is_some() {
+        SettingSource::File
+    } else {
+        SettingSource::Default
+    };
+    SettingField {
+        value: file.clone(),
+        effective: echo_core::resolve(env, file, default),
+        source,
+    }
+}
+
+fn hud_field(env: Option<&str>, file: Option<bool>) -> SettingField<bool> {
+    match env {
+        Some("0" | "false" | "off") => SettingField {
+            value: file,
+            effective: false,
+            source: SettingSource::Env,
+        },
+        Some("1" | "true" | "on") => SettingField {
+            value: file,
+            effective: true,
+            source: SettingSource::Env,
+        },
+        _ => SettingField {
+            value: file,
+            effective: file != Some(false),
+            source: if file.is_some() {
+                SettingSource::File
+            } else {
+                SettingSource::Default
+            },
+        },
+    }
+}
+
+fn record_seconds_field(env: Option<u64>, file: Option<u32>) -> SettingField<u32> {
+    let field = setting_field(
+        env.map(|secs| secs.clamp(1, echo::rec::MAX_RECORD_SECONDS) as u32),
+        file,
+        3,
+    );
+    SettingField {
+        effective: field
+            .effective
+            .clamp(1, echo::rec::MAX_RECORD_SECONDS as u32),
+        ..field
+    }
+}
+
+fn engine_name(choice: echo_core::EngineChoice) -> String {
+    match choice {
+        echo_core::EngineChoice::Whisper => "whisper",
+        echo_core::EngineChoice::Parakeet => "parakeet",
+        echo_core::EngineChoice::Fake => "fake",
+        echo_core::EngineChoice::Auto => "auto",
+    }
+    .to_string()
+}
+
+fn cleanup_name(mode: &echo_core::CleanupMode) -> String {
+    match mode {
+        echo_core::CleanupMode::Off => "off".to_string(),
+        echo_core::CleanupMode::Rules => "rules".to_string(),
+        echo_core::CleanupMode::LocalModel { model } => format!("local:{model}"),
+    }
+}
+
+fn nonempty(value: Option<String>) -> Option<String> {
+    value.filter(|raw| !raw.is_empty())
 }
 
 fn start_recording_thread() -> Result<(), String> {
@@ -299,7 +515,168 @@ fn run_desktop() {
             remove_dictionary_entry,
             toggle_recording,
             copy_text,
+            get_settings,
+            set_settings,
         ])
         .run(context)
         .expect("error while running Echo");
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+    use echo_core::{Config, EngineChoice};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn scratch_path(label: &str) -> std::path::PathBuf {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "echo-settings-ipc-{label}-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("config.json")
+    }
+
+    #[test]
+    fn env_beats_file_for_engine_source() {
+        let env = SettingsEnv {
+            engine: Some("whisper".into()),
+            ..SettingsEnv::default()
+        };
+        let file = Config {
+            engine: Some(EngineChoice::Fake),
+            ..Config::default()
+        };
+        let settings = settings_from(&env, &file);
+        assert_eq!(settings.engine.value.as_deref(), Some("fake"));
+        assert_eq!(settings.engine.effective, "whisper");
+        assert_eq!(settings.engine.source, SettingSource::Env);
+    }
+
+    #[test]
+    fn write_then_read_round_trips_file_values() {
+        let path = scratch_path("roundtrip");
+        let incoming = Settings {
+            engine: SettingField {
+                value: Some("parakeet".into()),
+                effective: "auto".into(),
+                source: SettingSource::Default,
+            },
+            whisper_model: SettingField {
+                value: Some("tiny.en".into()),
+                effective: "base.en".into(),
+                source: SettingSource::Default,
+            },
+            cleanup: SettingField {
+                value: Some("off".into()),
+                effective: "rules".into(),
+                source: SettingSource::Default,
+            },
+            hud: SettingField {
+                value: Some(false),
+                effective: true,
+                source: SettingSource::Default,
+            },
+            hold_key: SettingField {
+                value: Some("RightShift".into()),
+                effective: "RightCtrl".into(),
+                source: SettingSource::Default,
+            },
+            record_seconds: SettingField {
+                value: Some(8),
+                effective: 3,
+                source: SettingSource::Default,
+            },
+        };
+        config_from_values(&incoming)
+            .unwrap()
+            .save_to(&path)
+            .unwrap();
+        let loaded = Config::load_from(&path).unwrap();
+        let got = settings_from(&SettingsEnv::default(), &loaded);
+        assert_eq!(got.engine.value.as_deref(), Some("parakeet"));
+        assert_eq!(got.engine.effective, "parakeet");
+        assert_eq!(got.engine.source, SettingSource::File);
+        assert_eq!(got.whisper_model.value.as_deref(), Some("tiny.en"));
+        assert_eq!(got.whisper_model.effective, "tiny.en");
+        assert_eq!(got.cleanup.value.as_deref(), Some("off"));
+        assert_eq!(got.cleanup.effective, "off");
+        assert_eq!(got.hud.value, Some(false));
+        assert!(!got.hud.effective);
+        assert_eq!(got.hold_key.value.as_deref(), Some("RightShift"));
+        assert_eq!(got.record_seconds.value, Some(8));
+        assert_eq!(got.record_seconds.effective, 8);
+        assert_eq!(got.record_seconds.source, SettingSource::File);
+    }
+
+    #[test]
+    fn record_seconds_env_above_u32_max_clamps_like_recorder() {
+        let env = SettingsEnv {
+            record_seconds: Some(((u32::MAX as u64) + 1).to_string()),
+            ..SettingsEnv::default()
+        };
+        let file = Config {
+            record_seconds: Some(12),
+            ..Config::default()
+        };
+        let settings = settings_from(&env, &file);
+        assert_eq!(settings.record_seconds.value, Some(12));
+        assert_eq!(
+            settings.record_seconds.effective,
+            echo::rec::MAX_RECORD_SECONDS as u32
+        );
+        assert_eq!(settings.record_seconds.source, SettingSource::Env);
+    }
+
+    #[test]
+    fn hud_enable_tokens_override_file_false() {
+        for token in ["1", "true", "on"] {
+            let env = SettingsEnv {
+                hud: Some(token.into()),
+                ..SettingsEnv::default()
+            };
+            let file = Config {
+                hud: Some(false),
+                ..Config::default()
+            };
+            let settings = settings_from(&env, &file);
+            assert_eq!(settings.hud.value, Some(false), "token {token}");
+            assert!(settings.hud.effective, "token {token}");
+            assert_eq!(settings.hud.source, SettingSource::Env, "token {token}");
+        }
+    }
+
+    #[test]
+    fn hud_off_tokens_disable_and_unknown_consults_file() {
+        let disabled = Config {
+            hud: Some(false),
+            ..Config::default()
+        };
+        let enabled = Config {
+            hud: Some(true),
+            ..Config::default()
+        };
+        for token in ["0", "false", "off"] {
+            let env = SettingsEnv {
+                hud: Some(token.into()),
+                ..SettingsEnv::default()
+            };
+            let settings = settings_from(&env, &enabled);
+            assert!(!settings.hud.effective, "token {token}");
+            assert_eq!(settings.hud.source, SettingSource::Env, "token {token}");
+        }
+        let unknown = SettingsEnv {
+            hud: Some("maybe".into()),
+            ..SettingsEnv::default()
+        };
+        assert!(!settings_from(&unknown, &disabled).hud.effective);
+        assert_eq!(
+            settings_from(&unknown, &disabled).hud.source,
+            SettingSource::File
+        );
+        assert!(settings_from(&unknown, &enabled).hud.effective);
+    }
 }
