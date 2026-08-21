@@ -31,6 +31,13 @@ impl ParakeetEngine {
         Self { cache }
     }
 
+    /// True when both the runner binary and the model directory are installed.
+    /// A metadata check only; no inference runs.
+    #[must_use]
+    pub fn available(&self) -> bool {
+        self.model_root().is_some() && Self::binary().is_some()
+    }
+
     fn model_root(&self) -> Option<PathBuf> {
         let nested = self.cache.path("parakeet-tdt-0.6b-v3");
         if tokens_present(&nested) {

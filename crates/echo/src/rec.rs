@@ -4,14 +4,12 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use echo_core::{
-    Dictionary, Engine, FailReason, History, HistoryRow, InjectReport, Injector, Session,
-    SessionState,
+    Dictionary, FailReason, History, HistoryRow, InjectReport, Injector, Session, SessionState,
 };
 
 use crate::audio::{self, AudioCapture};
 use crate::hotkey::{self, HotkeyEvent, HotkeySource};
 use crate::inject::LinuxInjector;
-use crate::stt::{FakeEngine, ParakeetEngine, WhisperEngine};
 use crate::ui::tray;
 
 pub fn run_rec_once() -> i32 {
@@ -52,7 +50,20 @@ fn run_record(toggle: Option<&ToggleSession>) -> i32 {
     apply_edge(&mut session, HotkeyEvent::Up);
     let _ = tray::write_status(session.state(), None);
 
-    let engine = selected_engine();
+    let engine = match crate::stt::resolve_engine() {
+        Some(engine) => engine,
+        None => {
+            let _ = session.fail(FailReason::EngineMissing);
+            log_state(&session);
+            let _ = tray::write_status(session.state(), None);
+            eprintln!(
+                "no speech engine installed. install whisper-cli plus a ggml model or \
+                 sherpa-onnx plus the parakeet model (see README), or set ECHO_ENGINE=fake \
+                 for smoke tests"
+            );
+            return 1;
+        }
+    };
     let transcript = match engine.transcribe(&capture.pcm) {
         Ok(t) => t,
         Err(err) => {
@@ -115,31 +126,6 @@ fn run_record(toggle: Option<&ToggleSession>) -> i32 {
     }
     let _ = tray::write_status(session.state(), Some(&rewrite.text));
     0
-}
-
-fn selected_engine() -> Box<dyn Engine> {
-    match std::env::var("ECHO_ENGINE").ok().as_deref() {
-        Some("whisper") => Box::new(WhisperEngine::new()),
-        Some("parakeet") => Box::new(ParakeetEngine::new()),
-        Some("fake") => Box::new(FakeEngine::default()),
-        _ => {
-            let parakeet = ParakeetEngine::new();
-            if parakeet
-                .transcribe(&echo_core::Pcm16kMono::from_samples(vec![0; 8]))
-                .is_ok()
-            {
-                return Box::new(parakeet);
-            }
-            let whisper = WhisperEngine::new();
-            if whisper
-                .transcribe(&echo_core::Pcm16kMono::from_samples(vec![0; 8]))
-                .is_ok()
-            {
-                return Box::new(whisper);
-            }
-            Box::new(FakeEngine::default())
-        }
-    }
 }
 
 fn skip_inject() -> bool {

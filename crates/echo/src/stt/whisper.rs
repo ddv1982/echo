@@ -38,6 +38,13 @@ impl WhisperEngine {
         }
     }
 
+    /// True when both the runner binary and a model file are installed.
+    /// A metadata check only; no inference runs.
+    #[must_use]
+    pub fn available(&self) -> bool {
+        self.model_file().is_some() && Self::binary().is_some()
+    }
+
     fn model_file(&self) -> Option<PathBuf> {
         let candidates = [
             format!("ggml-{}.bin", self.model),

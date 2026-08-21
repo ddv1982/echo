@@ -11,7 +11,30 @@ pub use whisper::WhisperEngine;
 use std::fs;
 use std::path::PathBuf;
 
-use echo_core::{Pcm16kMono, SAMPLE_RATE_HZ};
+use echo_core::{Engine, Pcm16kMono, SAMPLE_RATE_HZ};
+
+/// The engine `ECHO_ENGINE` names, or the first installed real engine.
+/// `None` when nothing is installed and no engine was requested; the fake
+/// engine never runs unless asked for by name.
+#[must_use]
+pub fn resolve_engine() -> Option<Box<dyn Engine>> {
+    match std::env::var("ECHO_ENGINE").ok().as_deref() {
+        Some("whisper") => Some(Box::new(WhisperEngine::new())),
+        Some("parakeet") => Some(Box::new(ParakeetEngine::new())),
+        Some("fake") => Some(Box::new(FakeEngine::default())),
+        _ => {
+            let parakeet = ParakeetEngine::new();
+            if parakeet.available() {
+                return Some(Box::new(parakeet));
+            }
+            let whisper = WhisperEngine::new();
+            if whisper.available() {
+                return Some(Box::new(whisper));
+            }
+            None
+        }
+    }
+}
 
 fn write_temp_wav(pcm: &Pcm16kMono) -> Result<PathBuf, String> {
     let path =
