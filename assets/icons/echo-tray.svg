@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" aria-label="Echo">
+  <g fill="#f3efe6">
+    <rect x="2.5" y="8" width="5" height="8" rx="2.5"/>
+    <rect x="9.5" y="3" width="5" height="18" rx="2.5"/>
+    <rect x="16.5" y="8" width="5" height="8" rx="2.5"/>
+  </g>
+</svg>
