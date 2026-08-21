@@ -9,7 +9,7 @@ fn fixture() -> PathBuf {
 fn rec_once_drives_recording_then_transcribing() {
     let data = std::env::temp_dir().join(format!("echo-rec-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&data);
-    let bin = env!("CARGO_BIN_EXE_echo");
+    let bin = env!("CARGO_BIN_EXE_echo-app");
     let out = Command::new(bin)
         .args(["rec", "--once"])
         .env("ECHO_AUDIO_FIXTURE", fixture())
@@ -29,10 +29,11 @@ fn rec_once_drives_recording_then_transcribing() {
 
 #[test]
 fn rec_once_without_mic_names_permission() {
-    let bin = env!("CARGO_BIN_EXE_echo");
+    let bin = env!("CARGO_BIN_EXE_echo-app");
     let mut cmd = Command::new(bin);
     cmd.args(["rec", "--once"]);
     cmd.env_remove("ECHO_AUDIO_FIXTURE");
+    cmd.env("ECHO_RECORD_SECONDS", "1");
     let out = cmd.output().expect("run echo rec --once");
     let text = format!(
         "{}{}",

@@ -1,0 +1,97 @@
+:root {
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+  --radius-sm: 0.4rem;
+  --radius-md: 0.6rem;
+  --radius-lg: 0.85rem;
+  --radius-xl: 1.15rem;
+  --radius-pill: 999px;
+  --text-xs: 0.75rem;
+  --text-sm: 0.8125rem;
+  --text-base: 0.875rem;
+  --text-md: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.45rem;
+  --text-2xl: 2rem;
+  --weight-normal: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+  --duration-fast: 120ms;
+  --duration-base: 180ms;
+  --duration-slow: 320ms;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", ui-monospace, monospace;
+
+  --background: 240 7% 5%;
+  --foreground: 220 18% 96%;
+  --surface-app: 240 7% 5%;
+  --surface-topbar: 240 6% 7%;
+  --surface-sidebar: 240 6% 7%;
+  --surface-card: 240 6% 8.5%;
+  --surface-raised: 240 5% 11%;
+  --surface-panel: 240 5% 13%;
+  --surface-hover: 240 5% 16%;
+  --border-subtle: 240 5% 17%;
+  --border-strong: 240 5% 24%;
+  --text-secondary: 220 8% 72%;
+  --text-tertiary: 220 6% 53%;
+  --brand: 194 72% 58%;
+  --brand-strong: 194 78% 48%;
+  --brand-soft: 194 56% 16%;
+  --recording: 354 100% 67%;
+  --recording-soft: 354 55% 15%;
+  --success: 153 52% 48%;
+  --warning: 37 88% 59%;
+  --danger: 4 76% 58%;
+  --focus: 194 82% 61%;
+  --shadow-card: 0 1px 2px hsl(0 0% 0% / 0.36), 0 18px 48px hsl(0 0% 0% / 0.2);
+  --shadow-raised: 0 12px 34px hsl(0 0% 0% / 0.34);
+  --texture: radial-gradient(62rem 28rem at 42% -8rem, hsl(var(--brand) / 0.08), transparent 72%);
+  color-scheme: dark;
+}
+
+:root[data-theme='light'] {
+  --background: 212 40% 97%;
+  --foreground: 218 30% 14%;
+  --surface-app: 212 40% 97%;
+  --surface-topbar: 210 45% 99%;
+  --surface-sidebar: 213 32% 94.5%;
+  --surface-card: 210 48% 99.5%;
+  --surface-raised: 212 34% 97%;
+  --surface-panel: 213 28% 93%;
+  --surface-hover: 212 30% 89%;
+  --border-subtle: 213 22% 86%;
+  --border-strong: 213 18% 76%;
+  --text-secondary: 216 19% 34%;
+  --text-tertiary: 215 13% 47%;
+  --brand: 202 80% 39%;
+  --brand-strong: 204 86% 32%;
+  --brand-soft: 198 65% 91%;
+  --recording: 354 72% 49%;
+  --recording-soft: 354 72% 94%;
+  --success: 153 55% 31%;
+  --warning: 32 86% 37%;
+  --danger: 356 66% 43%;
+  --focus: 202 82% 42%;
+  --shadow-card: 0 1px 2px hsl(214 44% 24% / 0.08), 0 16px 42px hsl(214 44% 24% / 0.08);
+  --shadow-raised: 0 12px 34px hsl(214 44% 24% / 0.13);
+  --texture: radial-gradient(58rem 26rem at 42% -8rem, hsl(var(--brand) / 0.09), transparent 72%);
+  color-scheme: light;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0ms;
+    --duration-base: 0ms;
+    --duration-slow: 0ms;
+  }
+}

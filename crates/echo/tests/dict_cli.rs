@@ -5,7 +5,7 @@ fn dict_add_round_trip() {
     let dir = std::env::temp_dir().join(format!("echo-dict-cli-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let bin = env!("CARGO_BIN_EXE_echo");
+    let bin = env!("CARGO_BIN_EXE_echo-app");
     let out = Command::new(bin)
         .args(["dict", "add", "clawed code", "Claude Code"])
         .env("ECHO_DATA_DIR", &dir)

@@ -55,7 +55,9 @@ pub fn refresh_list(list: &gtk::ListBox) {
     }
     match Dictionary::load() {
         Ok(store) if store.entries().is_empty() => {
-            list.add(&gtk::Label::new(Some("(empty)")));
+            list.add(&gtk::Label::new(Some(
+                "No dictionary entries yet. Add a preferred spelling above.",
+            )));
         }
         Ok(store) => {
             for entry in store.entries() {

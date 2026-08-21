@@ -2,10 +2,10 @@
 Type=Application
 Name=Echo
 Comment=Local hold-to-talk dictation
-Exec=echo-app
+Exec=echo-desktop
 Icon=echo
 Terminal=false
 Categories=Utility;Audio;
 StartupNotify=true
-StartupWMClass=echo-app
+StartupWMClass=echo-desktop
 Keywords=dictation;voice;speech;

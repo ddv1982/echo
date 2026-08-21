@@ -168,7 +168,7 @@ where
 #[must_use]
 pub fn resample_to_16k_mono(interleaved: &[f32], src_hz: u32, channels: u16) -> Pcm16kMono {
     let ch = usize::from(channels.max(1));
-    let frames = if ch == 0 { 0 } else { interleaved.len() / ch };
+    let frames = interleaved.len() / ch;
     let mut mono = Vec::with_capacity(frames);
     for frame in 0..frames {
         let mut sum = 0.0f32;

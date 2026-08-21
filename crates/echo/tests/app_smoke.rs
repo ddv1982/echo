@@ -15,7 +15,7 @@ fn app_smoke_inits_and_exits() {
     if !display_ok() {
         return;
     }
-    let bin = env!("CARGO_BIN_EXE_echo");
+    let bin = env!("CARGO_BIN_EXE_echo-app");
     let out = Command::new(bin)
         .env("ECHO_APP_SMOKE", "1")
         .output()
@@ -33,7 +33,7 @@ fn quit_after_flag_inits_and_exits() {
     if !display_ok() {
         return;
     }
-    let bin = env!("CARGO_BIN_EXE_echo");
+    let bin = env!("CARGO_BIN_EXE_echo-app");
     let out = Command::new(bin)
         .arg("--quit-after=0")
         .output()

@@ -85,6 +85,17 @@ impl Dictionary {
         Ok(entry)
     }
 
+    pub fn remove(&mut self, spoken: &str, written: &str) -> Result<bool, String> {
+        let original_len = self.entries.len();
+        self.entries
+            .retain(|entry| entry.spoken != spoken || entry.written != written);
+        let removed = self.entries.len() != original_len;
+        if removed {
+            self.save()?;
+        }
+        Ok(removed)
+    }
+
     pub fn save(&self) -> Result<(), String> {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent).map_err(|err| err.to_string())?;
@@ -252,5 +263,22 @@ mod tests {
         let reloaded = Dictionary::load_from(&path).unwrap();
         assert_eq!(reloaded.entries().len(), 1);
         assert_eq!(reloaded.entries()[0].written, "Claude Code");
+    }
+
+    #[test]
+    fn removes_exact_entry_and_persists() {
+        let dir = std::env::temp_dir().join(format!("echo-dict-remove-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("dictionary.json");
+        let mut store = Dictionary::load_from(&path).unwrap();
+        store.add("clawed code", "Claude Code").unwrap();
+        store.add("echo", "Echo").unwrap();
+
+        assert!(store.remove("clawed code", "Claude Code").unwrap());
+        assert!(!store.remove("missing", "Missing").unwrap());
+        let reloaded = Dictionary::load_from(&path).unwrap();
+        assert_eq!(reloaded.entries().len(), 1);
+        assert_eq!(reloaded.entries()[0].written, "Echo");
     }
 }

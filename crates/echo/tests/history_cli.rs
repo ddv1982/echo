@@ -10,7 +10,7 @@ fn history_survives_relaunch() {
     let data = std::env::temp_dir().join(format!("echo-hist-cli-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
     std::fs::create_dir_all(&data).unwrap();
-    let bin = env!("CARGO_BIN_EXE_echo");
+    let bin = env!("CARGO_BIN_EXE_echo-app");
     let rec = Command::new(bin)
         .args(["rec", "--once"])
         .env("ECHO_AUDIO_FIXTURE", fixture())

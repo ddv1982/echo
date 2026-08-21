@@ -1,0 +1,21 @@
+[package]
+name = "echo-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Tauri desktop shell for Echo dictation"
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+echo = { path = "../crates/echo" }
+echo-core = { path = "../crates/echo-core" }
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2.11.5", features = ["tray-icon"] }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

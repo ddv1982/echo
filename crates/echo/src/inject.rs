@@ -125,6 +125,13 @@ impl<C: Pasteboard> LinuxInjector<C> {
     }
 
     fn current_focus() -> Result<FocusTarget, FailReason> {
+        if is_wayland_session() {
+            return Ok(FocusTarget {
+                window_id: None,
+                app_id: Some("wayland".to_string()),
+                title: None,
+            });
+        }
         let id = command_stdout("xdotool", &["getwindowfocus"]).ok();
         let title = id
             .as_deref()
@@ -142,6 +149,14 @@ impl<C: Pasteboard> LinuxInjector<C> {
     }
 
     fn type_text(text: &str, window: Option<&str>) -> Option<InjectBackend> {
+        if is_wayland_session() && window.is_none() {
+            if run_simple("ydotool", &["type", text]) {
+                return Some(InjectBackend::Ydotool);
+            }
+            if run_simple("wtype", &[text]) {
+                return Some(InjectBackend::Wtype);
+            }
+        }
         if let Some(id) = window {
             let _ = Command::new("xdotool")
                 .args(["windowfocus", "--sync", id])
@@ -171,18 +186,30 @@ impl<C: Pasteboard> LinuxInjector<C> {
                 reason: FailReason::InjectPermission,
             };
         }
+        if is_wayland_session() && window.is_none() && run_simple("ydotool", &["key", "ctrl+v"]) {
+            return InjectReport::Pasted {
+                backend: InjectBackend::Ydotool,
+            };
+        }
         if paste_key(window) {
             return InjectReport::Pasted {
                 backend: InjectBackend::Xdotool,
             };
         }
-        if run_simple("ydotool", &["key", "29:1", "47:1", "47:0", "29:0"]) {
+        if run_simple("ydotool", &["key", "ctrl+v"]) {
             return InjectReport::Pasted {
                 backend: InjectBackend::Ydotool,
             };
         }
         InjectReport::ClipboardOnly
     }
+}
+
+fn is_wayland_session() -> bool {
+    matches!(
+        std::env::var("XDG_SESSION_TYPE").ok().as_deref(),
+        Some("wayland")
+    ) || std::env::var_os("WAYLAND_DISPLAY").is_some()
 }
 
 impl<C: Pasteboard> Injector for LinuxInjector<C> {

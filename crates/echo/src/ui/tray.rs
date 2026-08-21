@@ -105,10 +105,12 @@ pub fn run_app(smoke: bool) -> Result<(), String> {
             AppCommand::Quit => gtk::main_quit(),
             AppCommand::OpenHistory => {
                 history::refresh_list(&history_list);
+                history_win.show_all();
                 history_win.present();
             }
             AppCommand::OpenDictionary => {
                 dictionary::refresh_list(&dict_list);
+                dict_win.show_all();
                 dict_win.present();
             }
             AppCommand::RecordOnce => start_record(&busy, &rec_done),

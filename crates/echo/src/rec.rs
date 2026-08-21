@@ -1,4 +1,6 @@
-use std::path::PathBuf;
+use std::fs::{self, OpenOptions};
+use std::io::{ErrorKind, Write};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use echo_core::{
@@ -13,6 +15,21 @@ use crate::stt::{FakeEngine, ParakeetEngine, WhisperEngine};
 use crate::ui::tray;
 
 pub fn run_rec_once() -> i32 {
+    run_record(None)
+}
+
+pub fn run_rec_toggle() -> i32 {
+    match ToggleSession::start_or_stop() {
+        Ok(ToggleAction::Start(session)) => run_record(Some(&session)),
+        Ok(ToggleAction::Stop) => 0,
+        Err(err) => {
+            eprintln!("toggle: {err}");
+            1
+        }
+    }
+}
+
+fn run_record(toggle: Option<&ToggleSession>) -> i32 {
     let mut session = Session::new();
     log_state(&session);
     let _ = tray::write_status(session.state(), None);
@@ -21,7 +38,8 @@ pub fn run_rec_once() -> i32 {
     }
     apply_edge(&mut session, HotkeyEvent::Down);
     let _ = tray::write_status(session.state(), None);
-    let capture = match capture_pcm() {
+    let recording_hud = crate::ui::hud::RecordingHud::start();
+    let capture = match capture_pcm(toggle) {
         Ok(capture) => capture,
         Err(reason) => {
             let _ = session.fail(reason);
@@ -30,6 +48,7 @@ pub fn run_rec_once() -> i32 {
             return 1;
         }
     };
+    drop(recording_hud);
     apply_edge(&mut session, HotkeyEvent::Up);
     let _ = tray::write_status(session.state(), None);
 
@@ -141,19 +160,106 @@ fn apply_edge(session: &mut Session, event: HotkeyEvent) {
     }
 }
 
-fn capture_pcm() -> Result<audio::CaptureResult, FailReason> {
+fn capture_pcm(toggle: Option<&ToggleSession>) -> Result<audio::CaptureResult, FailReason> {
     if let Some(path) = fixture_path() {
         return audio::load_wav(&path).map_err(|_| FailReason::EngineError);
     }
     let capture = AudioCapture::open_default().map_err(|_| FailReason::MicPermission)?;
-    let cancel = capture.cancel.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(400));
+    let result = if let Some(toggle) = toggle {
+        let cancel = capture.cancel.clone();
+        let watcher_cancel = cancel.clone();
+        let stop_path = toggle.stop_path.clone();
+        let watcher = std::thread::spawn(move || {
+            while !watcher_cancel.is_cancelled() && !stop_path.exists() {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            if stop_path.exists() {
+                watcher_cancel.cancel();
+            }
+        });
+        let result = capture.record(Duration::from_secs(60));
         cancel.cancel();
-    });
-    capture
-        .record(Duration::from_secs(2))
-        .map_err(|_| FailReason::MicPermission)
+        let _ = watcher.join();
+        result
+    } else {
+        capture.record(recording_duration())
+    };
+    result.map_err(|_| FailReason::MicPermission)
+}
+
+enum ToggleAction {
+    Start(ToggleSession),
+    Stop,
+}
+
+struct ToggleSession {
+    lock_path: PathBuf,
+    stop_path: PathBuf,
+}
+
+impl ToggleSession {
+    fn start_or_stop() -> Result<ToggleAction, String> {
+        Self::start_or_stop_in(&echo_core::data_dir())
+    }
+
+    fn start_or_stop_in(dir: &Path) -> Result<ToggleAction, String> {
+        fs::create_dir_all(dir).map_err(|err| err.to_string())?;
+        let lock_path = dir.join("recording.lock");
+        let stop_path = dir.join("recording.stop");
+        for _ in 0..2 {
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&lock_path)
+            {
+                Ok(mut lock) => {
+                    let _ = fs::remove_file(&stop_path);
+                    writeln!(lock, "{}", std::process::id()).map_err(|err| err.to_string())?;
+                    return Ok(ToggleAction::Start(Self {
+                        lock_path,
+                        stop_path,
+                    }));
+                }
+                Err(err) if err.kind() == ErrorKind::AlreadyExists => {
+                    if lock_owner_is_alive(&lock_path) {
+                        fs::write(&stop_path, b"stop\n").map_err(|err| err.to_string())?;
+                        return Ok(ToggleAction::Stop);
+                    }
+                    let _ = fs::remove_file(&lock_path);
+                    let _ = fs::remove_file(&stop_path);
+                }
+                Err(err) => return Err(err.to_string()),
+            }
+        }
+        Err("could not acquire recording lock".to_string())
+    }
+}
+
+impl Drop for ToggleSession {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.stop_path);
+        let _ = fs::remove_file(&self.lock_path);
+    }
+}
+
+fn lock_owner_is_alive(path: &Path) -> bool {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u32>().ok())
+        .map(|pid| PathBuf::from("/proc").join(pid.to_string()).exists())
+        .unwrap_or(false)
+}
+
+fn recording_duration() -> Duration {
+    const DEFAULT_SECONDS: u64 = 3;
+    const MAX_SECONDS: u64 = 60;
+    let seconds = std::env::var("ECHO_RECORD_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .unwrap_or(DEFAULT_SECONDS)
+        .min(MAX_SECONDS);
+    Duration::from_secs(seconds)
 }
 
 fn fixture_path() -> Option<PathBuf> {
@@ -173,4 +279,34 @@ fn log_state(session: &Session) {
         }
     };
     println!("session {name}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn toggle_starts_stops_and_can_restart() {
+        let dir = std::env::temp_dir().join(format!("echo-toggle-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+
+        let first = match ToggleSession::start_or_stop_in(&dir).unwrap() {
+            ToggleAction::Start(session) => session,
+            ToggleAction::Stop => panic!("first toggle should start"),
+        };
+        assert!(first.lock_path.is_file());
+        assert!(matches!(
+            ToggleSession::start_or_stop_in(&dir).unwrap(),
+            ToggleAction::Stop
+        ));
+        assert!(first.stop_path.is_file());
+
+        drop(first);
+        assert!(!dir.join("recording.lock").exists());
+        assert!(!dir.join("recording.stop").exists());
+        assert!(matches!(
+            ToggleSession::start_or_stop_in(&dir).unwrap(),
+            ToggleAction::Start(_)
+        ));
+    }
 }

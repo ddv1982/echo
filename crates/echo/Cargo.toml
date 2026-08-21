@@ -4,18 +4,16 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+rust-version.workspace = true
 description = "Linux hold-to-talk dictation"
 default-run = "echo-app"
+autobins = false
 
 [lints]
 workspace = true
 
 [[bin]]
 name = "echo-app"
-path = "src/main.rs"
-
-[[bin]]
-name = "echo"
 path = "src/main.rs"
 
 [dependencies]

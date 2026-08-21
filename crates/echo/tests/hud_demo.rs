@@ -2,7 +2,7 @@ use std::process::Command;
 
 #[test]
 fn hud_demo_starts_and_exits() {
-    let bin = env!("CARGO_BIN_EXE_echo");
+    let bin = env!("CARGO_BIN_EXE_echo-app");
     let out = Command::new(bin)
         .arg("--hud-demo")
         .output()
