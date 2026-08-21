@@ -247,6 +247,7 @@
 .metadata-row {
   color: hsl(var(--text-tertiary));
   font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
 }
 
 .search-field {

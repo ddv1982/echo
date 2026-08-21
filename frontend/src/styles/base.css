@@ -15,6 +15,7 @@ body {
   background: hsl(var(--background));
   color: hsl(var(--foreground));
   font-family: var(--font-sans);
+  font-feature-settings: 'calt', 'rlig', 'salt', 'ss01', 'ss02';
   font-size: var(--text-base);
   line-height: 1.5;
   text-rendering: optimizeLegibility;
