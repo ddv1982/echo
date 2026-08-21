@@ -229,7 +229,7 @@
   gap: var(--space-4);
   border-bottom: 1px solid hsl(var(--border-subtle));
   padding: var(--space-4) var(--space-5);
-  transition: background var(--duration-fast) var(--ease-out);
+  transition: background-color var(--duration-fast) var(--ease-out);
 }
 
 .transcript-row:last-child {
@@ -318,13 +318,17 @@
   padding: var(--space-3) var(--space-5);
 }
 
+.dictionary-row {
+  padding-block: var(--space-4);
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+
 .table-header {
   border-bottom: 1px solid hsl(var(--border-subtle));
-  background: hsl(var(--surface-raised));
   color: hsl(var(--text-tertiary));
   font-size: var(--text-xs);
-  font-weight: var(--weight-semibold);
-  letter-spacing: 0.06em;
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--label-tracking);
   text-transform: uppercase;
 }
 

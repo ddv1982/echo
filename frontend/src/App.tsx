@@ -339,7 +339,7 @@ function HistoryView({ items }: { items: HistoryItem[] }) {
       <section className="panel transcript-list" aria-live="polite">
         {filtered.map((item) => <TranscriptRow key={item.id} item={item} />)}
         {filtered.length === 0 ? (
-          <div className="empty-state"><History size={28} /><strong>No matching transcripts</strong><span>Try a different search.</span></div>
+          <div className="empty-state"><strong>No matching transcripts</strong><span>Try a different search.</span></div>
         ) : null}
       </section>
     </div>
@@ -412,7 +412,7 @@ function DictionaryView({
             <button className="icon-button danger-button" type="button" onClick={() => void onRemove(item)} aria-label={`Remove ${item.written}`}><Trash2 size={16} /></button>
           </div>
         ))}
-        {items.length === 0 ? <div className="empty-state"><BookOpenText size={28} /><strong>Your dictionary is empty</strong><span>Add a phrase above to make transcription more personal.</span></div> : null}
+        {items.length === 0 ? <div className="empty-state"><strong>Your dictionary is empty</strong><span>Add a phrase above to make transcription more personal.</span></div> : null}
       </section>
     </div>
   )
