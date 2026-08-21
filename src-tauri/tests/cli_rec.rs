@@ -92,6 +92,37 @@ fn rec_once_without_engine_fails_engine_missing() {
 }
 
 #[test]
+fn rec_once_missing_microphone_name_still_records() {
+    let root = std::env::temp_dir().join(format!("echo-config-mic-{}", std::process::id()));
+    let config_dir = root.join("config");
+    let data = root.join("data");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(
+        config_dir.join("config.json"),
+        r#"{"engine":"fake","microphone":"no-such-device"}"#,
+    )
+    .unwrap();
+    let bin = env!("CARGO_BIN_EXE_echo-desktop");
+    let out = Command::new(bin)
+        .args(["rec", "--once"])
+        .env("ECHO_AUDIO_FIXTURE", fixture())
+        .env("ECHO_SKIP_INJECT", "1")
+        .env("ECHO_DATA_DIR", &data)
+        .env("ECHO_CONFIG_DIR", &config_dir)
+        .env_remove("ECHO_ENGINE")
+        .output()
+        .expect("run echo-desktop rec --once");
+    assert!(
+        out.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
 fn rec_once_without_mic_names_permission() {
     let bin = env!("CARGO_BIN_EXE_echo-desktop");
     let mut cmd = Command::new(bin);
