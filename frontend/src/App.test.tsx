@@ -1,10 +1,21 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import App from './App'
-import { getSettings, resetPreviewSettings, seedPreviewSettings } from './tauri'
+import { getSettings, resetPreviewSettings, seedPreviewSettings, setSettings } from './tauri'
+
+vi.mock('./tauri', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./tauri')>()
+  return {
+    ...actual,
+    setSettings: vi.fn((settings) => actual.setSettings(settings)),
+  }
+})
 
 describe('Echo desktop shell', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     resetPreviewSettings()
+    const actual = await vi.importActual<typeof import('./tauri')>('./tauri')
+    vi.mocked(setSettings).mockReset()
+    vi.mocked(setSettings).mockImplementation((settings) => actual.setSettings(settings))
   })
 
   it('shows the recording entry point and navigation', async () => {
@@ -64,5 +75,54 @@ describe('Echo desktop shell', () => {
     expect(screen.getByText('ECHO_ENGINE')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Whisper' }))
     expect((await getSettings()).engine.effective).toBe('fake')
+  })
+
+  it('persists two rapid settings writes', async () => {
+    const actual = await vi.importActual<typeof import('./tauri')>('./tauri')
+    let releaseFirst = () => {}
+    let signalFirstStarted = () => {}
+    const firstWriteStarted = new Promise<void>((resolve) => {
+      signalFirstStarted = resolve
+    })
+    const firstWriteGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve
+    })
+    let writes = 0
+    vi.mocked(setSettings).mockImplementation(async (settings) => {
+      writes += 1
+      if (writes === 1) {
+        signalFirstStarted()
+        await firstWriteGate
+      }
+      return actual.setSettings(settings)
+    })
+
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Fake' }))
+    await firstWriteStarted
+    fireEvent.change(screen.getByLabelText('Hold key'), { target: { value: 'RightShift' } })
+    releaseFirst()
+
+    await waitFor(async () => {
+      const stored = await getSettings()
+      expect(stored.engine).toEqual({ value: 'fake', effective: 'fake', source: 'file' })
+      expect(stored.holdKey).toEqual({
+        value: 'RightShift',
+        effective: 'RightShift',
+        source: 'file',
+      })
+    })
+  })
+
+  it('shows the error banner when a settings save fails', async () => {
+    vi.mocked(setSettings).mockRejectedValueOnce(new Error('could not write settings'))
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Fake' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('could not write settings')
+    expect(screen.getByRole('button', { name: 'Fake' })).toHaveAttribute('data-active', 'false')
   })
 })

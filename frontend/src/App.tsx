@@ -223,6 +223,7 @@ function App() {
               theme={theme}
               onThemeChange={setTheme}
               onStatusChange={refreshStatus}
+              onError={setError}
             />
           ) : null}
         </main>
@@ -467,13 +468,17 @@ function SettingsView({
   theme,
   onThemeChange,
   onStatusChange,
+  onError,
 }: {
   status: AppStatus
   theme: ThemeMode
   onThemeChange: (theme: ThemeMode) => void
   onStatusChange: () => Promise<void>
+  onError: (message: string) => void
 }) {
   const [settings, setLocalSettings] = useState<AppSettings | null>(null)
+  const settingsRef = useRef<AppSettings | null>(null)
+  const writeChainRef = useRef(Promise.resolve())
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -482,15 +487,29 @@ function SettingsView({
     return () => window.clearTimeout(timer)
   }, [])
 
+  useEffect(() => {
+    settingsRef.current = settings
+  }, [settings])
+
   const commit = async (next: AppSettings) => {
-    const written = await setSettings(next)
-    setLocalSettings(written)
-    await onStatusChange()
+    try {
+      const written = await setSettings(next)
+      settingsRef.current = written
+      setLocalSettings(written)
+      await onStatusChange()
+    } catch (reason) {
+      onError(messageFrom(reason))
+    }
   }
 
   const patch = async <K extends keyof AppSettings>(key: K, value: AppSettings[K]['value']) => {
-    if (!settings) return
-    await commit({ ...settings, [key]: { ...settings[key], value } })
+    const queued = writeChainRef.current.then(async () => {
+      const current = settingsRef.current
+      if (!current) return
+      await commit({ ...current, [key]: { ...current[key], value } })
+    })
+    writeChainRef.current = queued
+    await queued
   }
 
   const recordSecondOptions = RECORD_SECOND_PRESETS
