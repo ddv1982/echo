@@ -204,11 +204,17 @@ fn apply_edge(session: &mut Session, event: HotkeyEvent) {
 }
 
 fn capture_pcm(stop: &mut StopWhen) -> Result<audio::CaptureResult, FailReason> {
-    let capture = AudioCapture::open_default();
-    if let Some(path) = fixture_path() {
+    capture_from(fixture_path(), stop)
+}
+
+fn capture_from(
+    fixture: Option<PathBuf>,
+    stop: &mut StopWhen,
+) -> Result<audio::CaptureResult, FailReason> {
+    if let Some(path) = fixture {
         return audio::load_wav(&path).map_err(|_| FailReason::EngineError);
     }
-    let capture = capture.map_err(|err| match err {
+    let capture = AudioCapture::open_default().map_err(|err| match err {
         audio::AudioError::NoDevice => FailReason::NoInputDevice,
         _ => FailReason::CaptureFailed,
     })?;
@@ -355,6 +361,15 @@ mod tests {
         assert_eq!(record_seconds(None, None), 3);
         assert_eq!(record_seconds(Some(0), None), 1);
         assert_eq!(record_seconds(Some(90), None), MAX_RECORD_SECONDS);
+    }
+
+    #[test]
+    fn fixture_returns_wav_without_opening_host() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude_code.wav");
+        let mut stop = StopWhen::Timer;
+        let capture = capture_from(Some(path), &mut stop).expect("fixture wav");
+        assert!(capture.pcm.duration_ms() >= 300);
+        assert!(capture.peak_rms > 0.05);
     }
 
     #[test]

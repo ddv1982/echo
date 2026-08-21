@@ -125,13 +125,27 @@ pub fn list_input_devices() -> Vec<InputDevice> {
     list_host_devices(&cpal::default_host()).0
 }
 
+fn keep_default_device<T>(default: Option<(String, T)>) -> (Vec<InputDevice>, Vec<(String, T)>) {
+    match default {
+        Some((name, device)) => (
+            vec![InputDevice {
+                is_default: true,
+                name: name.clone(),
+            }],
+            vec![(name, device)],
+        ),
+        None => (Vec::new(), Vec::new()),
+    }
+}
+
 fn list_host_devices(host: &cpal::Host) -> (Vec<InputDevice>, Vec<(String, cpal::Device)>) {
-    let default_name = host
+    let default = host
         .default_input_device()
-        .and_then(|device| device.name().ok());
+        .and_then(|device| device.name().ok().map(|name| (name, device)));
+    let default_name = default.as_ref().map(|(name, _)| name.clone());
     let mut named = Vec::new();
     let Ok(devices) = host.input_devices() else {
-        return (Vec::new(), named);
+        return keep_default_device(default);
     };
     for device in devices {
         let Ok(name) = device.name() else {
@@ -376,6 +390,31 @@ mod tests {
     fn resolve_empty_list_is_none() {
         assert_eq!(resolve_device(&[], Some("USB Mic")), DeviceChoice::None);
         assert_eq!(resolve_device(&[], None), DeviceChoice::None);
+    }
+
+    #[test]
+    fn enum_failure_keeps_default_as_sole_candidate() {
+        let (list, named) = keep_default_device(Some(("Built-in".into(), ())));
+        assert_eq!(
+            list,
+            vec![InputDevice {
+                name: "Built-in".into(),
+                is_default: true,
+            }]
+        );
+        assert_eq!(named, vec![("Built-in".into(), ())]);
+        assert_eq!(
+            resolve_device(&list, None),
+            DeviceChoice::Found(list[0].clone())
+        );
+    }
+
+    #[test]
+    fn enum_failure_without_default_is_empty() {
+        let (list, named): (Vec<InputDevice>, Vec<(String, ())>) = keep_default_device(None);
+        assert!(list.is_empty());
+        assert!(named.is_empty());
+        assert_eq!(resolve_device(&list, None), DeviceChoice::None);
     }
 
     #[test]
