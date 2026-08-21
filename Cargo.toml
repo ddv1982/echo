@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/echo-core"]
+members = ["crates/echo-core", "crates/echo"]
 
 [workspace.package]
 edition = "2021"

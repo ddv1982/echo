@@ -1,0 +1,15 @@
+[package]
+name = "echo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Linux hold-to-talk dictation"
+
+[lints]
+workspace = true
+
+[dependencies]
+cpal = "0.15"
+echo-core = { path = "../echo-core" }
+hound = "3.5"
