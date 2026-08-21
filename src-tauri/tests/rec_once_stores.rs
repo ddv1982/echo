@@ -7,7 +7,7 @@ fn fixture() -> PathBuf {
 }
 
 #[test]
-fn history_survives_relaunch() {
+fn rec_once_appends_history_and_writes_status() {
     let data = std::env::temp_dir().join(format!("echo-hist-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
     std::fs::create_dir_all(&data).unwrap();
