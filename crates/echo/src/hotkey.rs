@@ -110,12 +110,24 @@ pub fn evdev_permission_hint() -> String {
     }
 }
 
-/// Hold key from `ECHO_HOLD_KEY`, defaulting to Right Ctrl.
+fn resolved_hold_key(
+    env: Option<&str>,
+    file: &echo_core::Config,
+) -> Result<HoldKeySpec, HotkeyError> {
+    let name = echo_core::resolve(
+        env.map(str::to_string),
+        file.hold_key.clone(),
+        "RightCtrl".to_string(),
+    );
+    parse_hold_key(&name)
+}
+
+/// Hold key from `ECHO_HOLD_KEY`, the config file, or Right Ctrl.
 pub fn hold_key() -> Result<HoldKeySpec, HotkeyError> {
-    match std::env::var("ECHO_HOLD_KEY") {
-        Ok(raw) => parse_hold_key(&raw),
-        Err(_) => parse_hold_key("RightCtrl"),
-    }
+    resolved_hold_key(
+        std::env::var("ECHO_HOLD_KEY").ok().as_deref(),
+        &crate::settings::file_config(),
+    )
 }
 
 /// Decode one 24-byte evdev `input_event` (64-bit Linux layout) into
@@ -199,6 +211,25 @@ mod tests {
         let spec = parse_hold_key("RightCtrl").unwrap();
         assert_eq!(spec.name, "RightCtrl");
         assert_eq!(spec.code, 97);
+    }
+
+    #[test]
+    fn hold_key_prefers_env_then_file_then_right_ctrl() {
+        let file = echo_core::Config {
+            hold_key: Some("LeftCtrl".into()),
+            ..echo_core::Config::default()
+        };
+        assert_eq!(
+            resolved_hold_key(Some("Space"), &file).unwrap().name,
+            "Space"
+        );
+        assert_eq!(resolved_hold_key(None, &file).unwrap().name, "LeftCtrl");
+        assert_eq!(
+            resolved_hold_key(None, &echo_core::Config::default())
+                .unwrap()
+                .name,
+            "RightCtrl"
+        );
     }
 
     #[test]
