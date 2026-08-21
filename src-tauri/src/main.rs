@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use echo::audio::AudioCapture;
 use echo::inject::{Pasteboard, SysClipboard};
@@ -8,6 +9,10 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, WindowEvent};
 
+/// Keyboard binding the README recommends. Echo never registers it; the
+/// desktop environment owns global shortcuts.
+const SUGGESTED_SHORTCUT: &str = "Super+Alt+Space";
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AppStatus {
@@ -15,10 +20,47 @@ struct AppStatus {
     last_transcript: Option<String>,
     recording: bool,
     microphone_ready: bool,
-    model_ready: bool,
     engine_name: String,
+    engine_ready: bool,
     injection_name: String,
+    injection_ready: bool,
     shortcut: String,
+    cleanup_name: String,
+    hud_enabled: bool,
+    max_record_seconds: u64,
+}
+
+#[derive(Debug, Clone)]
+struct Health {
+    microphone_ready: bool,
+    engine_name: String,
+    engine_ready: bool,
+    injection_name: String,
+    injection_ready: bool,
+}
+
+/// Microphone, engine, and injection probes open devices and scan PATH, too
+/// costly for the frontend's 400 ms status poll. Cache them briefly.
+fn health_snapshot() -> Health {
+    static CACHE: Mutex<Option<(Instant, Health)>> = Mutex::new(None);
+    const TTL: Duration = Duration::from_secs(10);
+    let mut cache = CACHE.lock().expect("health cache lock");
+    if let Some((at, health)) = cache.as_ref() {
+        if at.elapsed() < TTL {
+            return health.clone();
+        }
+    }
+    let (engine_name, engine_ready) = echo::stt::engine_summary();
+    let (injection_name, injection_ready) = echo::inject::detection_summary();
+    let health = Health {
+        microphone_ready: AudioCapture::open_default().is_ok(),
+        engine_name,
+        engine_ready,
+        injection_name,
+        injection_ready,
+    };
+    *cache = Some((Instant::now(), health.clone()));
+    health
 }
 
 #[derive(Debug, Serialize)]
@@ -53,33 +95,21 @@ impl From<&DictEntry> for DictionaryItem {
 
 #[tauri::command]
 fn get_app_status() -> AppStatus {
-    let (phase, last_transcript) = read_status_file();
-    let whisper_runner = ["whisper-cli", "whisper-cpp", "whisper"]
-        .into_iter()
-        .find(|name| on_path(name));
-    let model = whisper_model();
-    let model_ready = whisper_runner.is_some() && model.is_some();
-    let engine_name = if model_ready {
-        "Whisper · base.en".to_string()
-    } else {
-        "Whisper setup required".to_string()
-    };
-    let injection_name = if is_wayland() && on_path("ydotool") {
-        "ydotool · Wayland".to_string()
-    } else if on_path("xdotool") {
-        "xdotool · X11".to_string()
-    } else {
-        "Clipboard fallback".to_string()
-    };
+    let status = echo::status::read();
+    let health = health_snapshot();
     AppStatus {
-        recording: phase == "Recording",
-        phase,
-        last_transcript,
-        microphone_ready: AudioCapture::open_default().is_ok(),
-        model_ready,
-        engine_name,
-        injection_name,
-        shortcut: "Super+Alt+Space".to_string(),
+        recording: status.state == "Recording",
+        phase: status.state,
+        last_transcript: status.last,
+        microphone_ready: health.microphone_ready,
+        engine_name: health.engine_name,
+        engine_ready: health.engine_ready,
+        injection_name: health.injection_name,
+        injection_ready: health.injection_ready,
+        shortcut: SUGGESTED_SHORTCUT.to_string(),
+        cleanup_name: echo::cleanup::mode_name(),
+        hud_enabled: echo::ui::hud::enabled(),
+        max_record_seconds: echo::rec::MAX_RECORD_SECONDS,
     }
 }
 
@@ -149,47 +179,6 @@ fn start_recording_thread() -> Result<(), String> {
         })
         .map(|_| ())
         .map_err(|err| err.to_string())
-}
-
-fn read_status_file() -> (String, Option<String>) {
-    let raw = std::fs::read_to_string(echo_core::status_path()).unwrap_or_default();
-    let phase = raw
-        .lines()
-        .find_map(|line| line.strip_prefix("state="))
-        .unwrap_or("Idle")
-        .to_string();
-    let last = raw
-        .lines()
-        .find_map(|line| line.strip_prefix("last="))
-        .filter(|text| !text.trim().is_empty())
-        .map(str::to_string);
-    (phase, last)
-}
-
-fn whisper_model() -> Option<PathBuf> {
-    let dir = std::env::var_os("ECHO_MODEL_DIR")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("XDG_CACHE_HOME").map(|path| PathBuf::from(path).join("echo")))
-        .or_else(|| {
-            std::env::var_os("HOME").map(|path| PathBuf::from(path).join(".cache").join("echo"))
-        })?;
-    ["ggml-base.en.bin", "base.en.bin", "ggml-base.en.gguf"]
-        .into_iter()
-        .map(|name| dir.join(name))
-        .find(|path| path.is_file())
-}
-
-fn on_path(name: &str) -> bool {
-    std::env::var_os("PATH")
-        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(name).is_file()))
-        .unwrap_or(false)
-}
-
-fn is_wayland() -> bool {
-    matches!(
-        std::env::var("XDG_SESSION_TYPE").ok().as_deref(),
-        Some("wayland")
-    ) || std::env::var_os("WAYLAND_DISPLAY").is_some()
 }
 
 fn show_main_window(app: &tauri::AppHandle) {

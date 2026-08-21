@@ -84,7 +84,7 @@ fn is_filler(token: &str) -> bool {
         .filter(|c| c.is_ascii_alphabetic())
         .collect::<String>()
         .to_ascii_lowercase();
-    matches!(letters.as_str(), "um" | "uh" | "like")
+    matches!(letters.as_str(), "um" | "uh")
 }
 
 fn capitalize(text: &str) -> String {
@@ -123,9 +123,17 @@ mod tests {
     #[test]
     fn rules_clean_spoken_ramble() {
         let rewrite = RulesCleanup
-            .apply("um so like can we uh move the button", &empty_dict())
+            .apply("um so can we uh move the button", &empty_dict())
             .unwrap();
         assert_eq!(rewrite.text, "So can we move the button.");
+    }
+
+    #[test]
+    fn rules_keep_like_as_a_content_word() {
+        let rewrite = RulesCleanup
+            .apply("i like this approach", &empty_dict())
+            .unwrap();
+        assert_eq!(rewrite.text, "I like this approach.");
     }
 
     #[test]
@@ -143,7 +151,7 @@ mod tests {
         let mut dict = Dictionary::load_from(dir.join("dictionary.json")).unwrap();
         dict.add("button", "Button").unwrap();
         let rewrite = RulesCleanup
-            .apply("um so like can we uh move the button", &dict)
+            .apply("um so can we uh move the button", &dict)
             .unwrap();
         assert_eq!(rewrite.text, "So can we move the Button.");
         assert_eq!(rewrite.hits.len(), 1);

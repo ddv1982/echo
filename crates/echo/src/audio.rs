@@ -7,9 +7,6 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, SampleFormat, SizedSample};
 use echo_core::{Pcm16kMono, SAMPLE_RATE_HZ};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeviceName(pub String);
-
 #[derive(Debug, Clone)]
 pub struct CancellationToken {
     cancelled: Arc<AtomicBool>,
@@ -40,7 +37,6 @@ impl CancellationToken {
 }
 
 pub struct AudioCapture {
-    pub device: DeviceName,
     pub cancel: CancellationToken,
 }
 
@@ -83,10 +79,8 @@ impl std::error::Error for AudioError {}
 impl AudioCapture {
     pub fn open_default() -> Result<Self, AudioError> {
         let host = cpal::default_host();
-        let device = host.default_input_device().ok_or(AudioError::NoDevice)?;
-        let name = device.name().unwrap_or_else(|_| "default".to_string());
+        host.default_input_device().ok_or(AudioError::NoDevice)?;
         Ok(Self {
-            device: DeviceName(name),
             cancel: CancellationToken::new(),
         })
     }

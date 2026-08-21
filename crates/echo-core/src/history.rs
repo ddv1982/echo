@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::inject::InjectReport;
-use crate::paths::history_path;
+use crate::paths::{history_path, set_aside_corrupt, write_atomic};
 use crate::types::EngineId;
 
 const HISTORY_CAP: usize = 2000;
@@ -45,11 +45,14 @@ impl History {
             });
         }
         let raw = fs::read_to_string(&path).map_err(|err| err.to_string())?;
-        let file: HistoryFile = serde_json::from_str(&raw).map_err(|err| err.to_string())?;
-        Ok(Self {
-            rows: file.rows,
-            path,
-        })
+        let rows = match serde_json::from_str::<HistoryFile>(&raw) {
+            Ok(file) => file.rows,
+            Err(_) => {
+                set_aside_corrupt(&path);
+                Vec::new()
+            }
+        };
+        Ok(Self { rows, path })
     }
 
     #[must_use]
@@ -67,14 +70,11 @@ impl History {
     }
 
     pub fn save(&self) -> Result<(), String> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).map_err(|err| err.to_string())?;
-        }
         let file = HistoryFile {
             rows: self.rows.clone(),
         };
         let raw = serde_json::to_string_pretty(&file).map_err(|err| err.to_string())?;
-        fs::write(&self.path, raw).map_err(|err| err.to_string())
+        write_atomic(&self.path, raw.as_bytes())
     }
 }
 
@@ -108,5 +108,35 @@ mod tests {
         let reloaded = History::load_from(&path).unwrap();
         assert_eq!(reloaded.rows().len(), 1);
         assert_eq!(reloaded.rows()[0].text, "hello");
+    }
+
+    #[test]
+    fn corrupt_file_is_set_aside_not_fatal() {
+        let dir = std::env::temp_dir().join(format!("echo-hist-corrupt-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.json");
+        fs::write(&path, "{\"rows\": [{\"id\": \"truncat").unwrap();
+
+        let store = History::load_from(&path).unwrap();
+        assert!(store.rows().is_empty());
+        assert!(!path.exists(), "corrupt file should be moved aside");
+        assert!(dir.join("history.json.corrupt").exists());
+
+        let mut store = store;
+        store
+            .append(HistoryRow {
+                id: "1".into(),
+                text: "fresh".into(),
+                raw: "fresh".into(),
+                engine: EngineId::Whisper {
+                    model: "fake".into(),
+                },
+                started_at: 1,
+                infer_ms: 2,
+                inject: InjectReport::ClipboardOnly,
+            })
+            .unwrap();
+        assert_eq!(History::load_from(&path).unwrap().rows().len(), 1);
     }
 }

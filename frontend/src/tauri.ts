@@ -12,10 +12,14 @@ let previewStatus: AppStatus = {
   lastTranscript: 'This is a test. This is a test.',
   recording: false,
   microphoneReady: true,
-  modelReady: true,
   engineName: 'Whisper · base.en',
+  engineReady: true,
   injectionName: 'ydotool · Wayland',
+  injectionReady: true,
   shortcut: 'Super+Alt+Space',
+  cleanupName: 'Rules · fillers and punctuation',
+  hudEnabled: true,
+  maxRecordSeconds: 60,
 }
 
 const previewHistory: HistoryItem[] = [
@@ -57,42 +61,54 @@ function isTauri() {
   return Boolean(window.__TAURI_INTERNALS__)
 }
 
+// Preview fixtures back the browser dev server and tests. Vite replaces
+// import.meta.env.DEV with false in production builds, so the fixtures and
+// these branches are dropped from the shipped bundle.
+const preview = import.meta.env.DEV
+
 export function getAppStatus(): Promise<AppStatus> {
-  return isTauri() ? invoke('get_app_status') : Promise.resolve({ ...previewStatus })
+  if (isTauri()) return invoke('get_app_status')
+  return Promise.resolve(preview ? { ...previewStatus } : initialPreviewStatus())
 }
 
 export function getHistory(): Promise<HistoryItem[]> {
-  return isTauri() ? invoke('get_history') : Promise.resolve([...previewHistory])
+  if (isTauri()) return invoke('get_history')
+  return Promise.resolve(preview ? [...previewHistory] : [])
 }
 
 export function getDictionary(): Promise<DictionaryItem[]> {
-  return isTauri() ? invoke('get_dictionary') : Promise.resolve([...previewDictionary])
+  if (isTauri()) return invoke('get_dictionary')
+  return Promise.resolve(preview ? [...previewDictionary] : [])
 }
 
 export function addDictionaryEntry(spoken: string, written: string): Promise<DictionaryItem> {
   if (isTauri()) return invoke('add_dictionary_entry', { spoken, written })
   const entry = { spoken, written, createdAt: Math.floor(Date.now() / 1000) }
-  previewDictionary = [...previewDictionary, entry]
+  if (preview) previewDictionary = [...previewDictionary, entry]
   return Promise.resolve(entry)
 }
 
 export function removeDictionaryEntry(spoken: string, written: string): Promise<boolean> {
   if (isTauri()) return invoke('remove_dictionary_entry', { spoken, written })
-  previewDictionary = previewDictionary.filter(
-    (entry) => entry.spoken !== spoken || entry.written !== written,
-  )
+  if (preview) {
+    previewDictionary = previewDictionary.filter(
+      (entry) => entry.spoken !== spoken || entry.written !== written,
+    )
+  }
   return Promise.resolve(true)
 }
 
 export function toggleRecording(): Promise<void> {
   if (isTauri()) return invoke('toggle_recording')
-  if (previewStatus.recording) {
-    previewStatus = { ...previewStatus, recording: false, phase: 'Transcribing' }
-    window.setTimeout(() => {
-      previewStatus = { ...previewStatus, phase: 'Idle' }
-    }, 900)
-  } else {
-    previewStatus = { ...previewStatus, recording: true, phase: 'Recording' }
+  if (preview) {
+    if (previewStatus.recording) {
+      previewStatus = { ...previewStatus, recording: false, phase: 'Transcribing' }
+      window.setTimeout(() => {
+        previewStatus = { ...previewStatus, phase: 'Idle' }
+      }, 900)
+    } else {
+      previewStatus = { ...previewStatus, recording: true, phase: 'Recording' }
+    }
   }
   return Promise.resolve()
 }
@@ -100,4 +116,21 @@ export function toggleRecording(): Promise<void> {
 export function copyText(text: string): Promise<void> {
   if (isTauri()) return invoke('copy_text', { text })
   return navigator.clipboard.writeText(text)
+}
+
+function initialPreviewStatus(): AppStatus {
+  return {
+    phase: 'Idle',
+    lastTranscript: null,
+    recording: false,
+    microphoneReady: false,
+    engineName: 'Not connected',
+    engineReady: false,
+    injectionName: 'Not connected',
+    injectionReady: false,
+    shortcut: 'Super+Alt+Space',
+    cleanupName: 'Rules · fillers and punctuation',
+    hudEnabled: true,
+    maxRecordSeconds: 60,
+  }
 }

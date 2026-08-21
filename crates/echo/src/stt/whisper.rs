@@ -5,8 +5,9 @@ use std::time::Instant;
 
 use echo_core::{Engine, EngineError, EngineId, Pcm16kMono, Transcript};
 
-use super::cache::{on_path, ModelCache};
+use super::cache::ModelCache;
 use super::write_temp_wav;
+use crate::which::on_path;
 
 const DEFAULT_MODEL: &str = "base.en";
 
@@ -36,6 +37,18 @@ impl WhisperEngine {
             cache,
             model: model.into(),
         }
+    }
+
+    /// True when both the runner binary and a model file are installed.
+    /// A metadata check only; no inference runs.
+    #[must_use]
+    pub fn available(&self) -> bool {
+        self.model_file().is_some() && Self::binary().is_some()
+    }
+
+    #[must_use]
+    pub fn model_name(&self) -> &str {
+        &self.model
     }
 
     fn model_file(&self) -> Option<PathBuf> {

@@ -59,7 +59,8 @@ impl Pcm16kMono {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FailReason {
-    MicPermission,
+    NoInputDevice,
+    CaptureFailed,
     InjectPermission,
     EngineMissing,
     NoFocus,
@@ -71,7 +72,8 @@ impl FailReason {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::MicPermission => "microphone permission denied",
+            Self::NoInputDevice => "no microphone input device",
+            Self::CaptureFailed => "microphone capture failed",
             Self::InjectPermission => "inject permission denied",
             Self::EngineMissing => "speech engine or model missing",
             Self::NoFocus => "no focused window",

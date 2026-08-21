@@ -35,15 +35,4 @@ impl ModelCache {
     pub fn path(&self, name: &str) -> PathBuf {
         self.dir.join(name)
     }
-
-    #[must_use]
-    pub fn has(&self, name: &str) -> bool {
-        self.path(name).is_file()
-    }
-}
-
-pub fn on_path(name: &str) -> bool {
-    env::var_os("PATH")
-        .map(|paths| env::split_paths(&paths).any(|dir| dir.join(name).is_file()))
-        .unwrap_or(false)
 }

@@ -4,22 +4,18 @@ use crate::types::FailReason;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InjectBackend {
-    Libei,
     Ydotool,
     Xdotool,
     Wtype,
-    ClipboardPaste,
 }
 
 impl InjectBackend {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Libei => "libei",
             Self::Ydotool => "ydotool",
             Self::Xdotool => "xdotool",
             Self::Wtype => "wtype",
-            Self::ClipboardPaste => "clipboard-paste",
         }
     }
 }

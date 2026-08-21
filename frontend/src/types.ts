@@ -6,10 +6,14 @@ export interface AppStatus {
   lastTranscript: string | null
   recording: boolean
   microphoneReady: boolean
-  modelReady: boolean
   engineName: string
+  engineReady: boolean
   injectionName: string
+  injectionReady: boolean
   shortcut: string
+  cleanupName: string
+  hudEnabled: boolean
+  maxRecordSeconds: number
 }
 
 export interface HistoryItem {

@@ -1,5 +1,6 @@
 use std::env;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 #[must_use]
 pub fn data_dir() -> PathBuf {
@@ -31,4 +32,30 @@ pub fn history_path() -> PathBuf {
 #[must_use]
 pub fn status_path() -> PathBuf {
     data_dir().join("status")
+}
+
+/// Move an unparseable store aside so the app can start fresh without
+/// destroying the evidence.
+pub(crate) fn set_aside_corrupt(path: &Path) {
+    if let (Some(parent), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str()))
+    {
+        let _ = fs::rename(path, parent.join(format!("{name}.corrupt")));
+    }
+}
+
+/// Write via a same-directory temp file plus rename, so a crash mid-write
+/// never corrupts the previous contents and readers never see a partial file.
+pub fn write_atomic(path: &Path, contents: &[u8]) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .ok_or_else(|| format!("{} has no parent directory", path.display()))?;
+    fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| format!("{} has no file name", path.display()))?;
+    let tmp = parent.join(format!(".{name}.tmp-{}", std::process::id()));
+    fs::write(&tmp, contents).map_err(|err| err.to_string())?;
+    fs::rename(&tmp, path).map_err(|err| err.to_string())
 }

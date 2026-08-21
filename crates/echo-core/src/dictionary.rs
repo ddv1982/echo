@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::paths::dictionary_path;
+use crate::paths::{dictionary_path, set_aside_corrupt, write_atomic};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DictEntry {
@@ -58,11 +58,14 @@ impl Dictionary {
             });
         }
         let raw = fs::read_to_string(&path).map_err(|err| err.to_string())?;
-        let file: DictFile = serde_json::from_str(&raw).map_err(|err| err.to_string())?;
-        Ok(Self {
-            entries: file.entries,
-            path,
-        })
+        let entries = match serde_json::from_str::<DictFile>(&raw) {
+            Ok(file) => file.entries,
+            Err(_) => {
+                set_aside_corrupt(&path);
+                Vec::new()
+            }
+        };
+        Ok(Self { entries, path })
     }
 
     #[must_use]
@@ -97,14 +100,11 @@ impl Dictionary {
     }
 
     pub fn save(&self) -> Result<(), String> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).map_err(|err| err.to_string())?;
-        }
         let file = DictFile {
             entries: self.entries.clone(),
         };
         let raw = serde_json::to_string_pretty(&file).map_err(|err| err.to_string())?;
-        fs::write(&self.path, raw).map_err(|err| err.to_string())
+        write_atomic(&self.path, raw.as_bytes())
     }
 
     #[must_use]
@@ -280,5 +280,22 @@ mod tests {
         let reloaded = Dictionary::load_from(&path).unwrap();
         assert_eq!(reloaded.entries().len(), 1);
         assert_eq!(reloaded.entries()[0].written, "Echo");
+    }
+
+    #[test]
+    fn corrupt_file_is_set_aside_not_fatal() {
+        let dir = std::env::temp_dir().join(format!("echo-dict-corrupt-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("dictionary.json");
+        fs::write(&path, "not json at all").unwrap();
+
+        let mut store = Dictionary::load_from(&path).unwrap();
+        assert!(store.entries().is_empty());
+        assert!(!path.exists(), "corrupt file should be moved aside");
+        assert!(dir.join("dictionary.json.corrupt").exists());
+
+        store.add("clawed code", "Claude Code").unwrap();
+        assert_eq!(Dictionary::load_from(&path).unwrap().entries().len(), 1);
     }
 }

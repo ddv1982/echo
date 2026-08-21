@@ -38,10 +38,14 @@ const initialStatus: AppStatus = {
   lastTranscript: null,
   recording: false,
   microphoneReady: false,
-  modelReady: false,
-  engineName: 'Checking Whisper…',
+  engineName: 'Checking speech engine…',
+  engineReady: false,
   injectionName: 'Checking insertion…',
+  injectionReady: false,
   shortcut: 'Super+Alt+Space',
+  cleanupName: 'Rules · fillers and punctuation',
+  hudEnabled: true,
+  maxRecordSeconds: 60,
 }
 
 const navigation: Array<{ id: View; label: string; icon: typeof Home }> = [
@@ -79,12 +83,15 @@ function App() {
   }, [refreshCollections])
 
   useEffect(() => {
+    // The timeout keeps the initial fetch's setError out of the effect body,
+    // which react-hooks/set-state-in-effect would reject.
     const initialTimer = window.setTimeout(() => {
       void Promise.all([refreshStatus(), refreshCollections()]).catch((reason: unknown) => {
         setError(messageFrom(reason))
       })
     }, 0)
     const timer = window.setInterval(() => {
+      if (document.hidden) return
       void refreshStatus().catch((reason: unknown) => setError(messageFrom(reason)))
     }, 400)
     return () => {
@@ -131,7 +138,8 @@ function App() {
 
   const onRemoveDictionary = async (entry: DictionaryItem) => {
     try {
-      await removeDictionaryEntry(entry.spoken, entry.written)
+      const removed = await removeDictionaryEntry(entry.spoken, entry.written)
+      if (!removed) setError(`"${entry.spoken}" was already removed.`)
       setDictionary(await getDictionary())
     } catch (reason) {
       setError(messageFrom(reason))
@@ -177,9 +185,9 @@ function App() {
             })}
           </div>
           <div className="shortcut-card">
-            <span>Global shortcut</span>
+            <span>Suggested shortcut</span>
             <kbd>{status.shortcut}</kbd>
-            <small>Press once to start, again to stop.</small>
+            <small>Bind it in your desktop settings. Press once to start, again to stop.</small>
           </div>
         </nav>
 
@@ -213,7 +221,13 @@ function App() {
 }
 
 function StatusPill({ status }: { status: AppStatus }) {
-  const tone = status.recording ? 'recording' : status.phase === 'Idle' ? 'ready' : 'busy'
+  const tone = status.recording
+    ? 'recording'
+    : status.phase.startsWith('Failed')
+      ? 'error'
+      : status.phase === 'Idle'
+        ? 'ready'
+        : 'busy'
   return (
     <div className="status-pill" data-tone={tone} aria-label={`Echo status: ${status.phase}`}>
       <span className="status-dot" aria-hidden="true" />
@@ -296,9 +310,9 @@ function HomeView({
 
       <section className="health-grid" aria-label="Echo setup health">
         <HealthCard icon={Mic} label="Microphone" value={status.microphoneReady ? 'Ready' : 'Unavailable'} ok={status.microphoneReady} />
-        <HealthCard icon={Sparkles} label="Speech engine" value={status.engineName} ok={status.modelReady} />
-        <HealthCard icon={Keyboard} label="Global shortcut" value={status.shortcut} ok />
-        <HealthCard icon={Gauge} label="Text insertion" value={status.injectionName} ok />
+        <HealthCard icon={Sparkles} label="Speech engine" value={status.engineName} ok={status.engineReady} />
+        <HealthCard icon={Keyboard} label="Suggested shortcut" value={status.shortcut} ok />
+        <HealthCard icon={Gauge} label="Text insertion" value={status.injectionName} ok={status.injectionReady} />
       </section>
 
       <div className="home-grid">
@@ -449,17 +463,17 @@ function SettingsView({ status, theme, onThemeChange }: { status: AppStatus; the
         </div>
       </section>
       <section className="panel settings-section">
-        <SectionHeading icon={Keyboard} title="Shortcut & recording" subtitle="GNOME owns the global shortcut on this Wayland session." />
-        <SettingLine label="Global shortcut" value={status.shortcut} badge="Toggle" />
-        <SettingLine label="Recording HUD" value="Echo pulse capsule" badge="On" />
-        <SettingLine label="Maximum recording" value="60 seconds" />
+        <SectionHeading icon={Keyboard} title="Shortcut & recording" subtitle="Bind the suggested shortcut in your desktop's keyboard settings; Echo does not register it itself." />
+        <SettingLine label="Suggested shortcut" value={status.shortcut} badge="Toggle" />
+        <SettingLine label="Recording HUD" value={status.hudEnabled ? 'Echo pulse capsule (X11 sessions)' : 'Disabled via ECHO_HUD'} badge={status.hudEnabled ? 'On' : 'Off'} />
+        <SettingLine label="Maximum recording" value={`${status.maxRecordSeconds} seconds`} />
       </section>
       <section className="panel settings-section">
         <SectionHeading icon={Gauge} title="Local pipeline" subtitle="No recorded audio leaves this machine." />
-        <SettingLine label="Speech engine" value={status.engineName} badge={status.modelReady ? 'Ready' : 'Setup'} />
+        <SettingLine label="Speech engine" value={status.engineName} badge={status.engineReady ? 'Ready' : 'Setup'} />
         <SettingLine label="Microphone" value={status.microphoneReady ? 'Default input available' : 'No default input'} badge={status.microphoneReady ? 'Ready' : 'Check'} />
-        <SettingLine label="Text insertion" value={status.injectionName} badge="Ready" />
-        <SettingLine label="Cleanup" value="Rules · filler removal and punctuation" />
+        <SettingLine label="Text insertion" value={status.injectionName} badge={status.injectionReady ? 'Ready' : 'Check'} />
+        <SettingLine label="Cleanup" value={status.cleanupName} />
       </section>
     </div>
   )

@@ -28,6 +28,29 @@ fn rec_once_drives_recording_then_transcribing() {
 }
 
 #[test]
+fn rec_once_without_engine_fails_engine_missing() {
+    let data = std::env::temp_dir().join(format!("echo-rec-noengine-{}", std::process::id()));
+    let models = data.join("models");
+    let _ = std::fs::create_dir_all(&models);
+    let bin = env!("CARGO_BIN_EXE_echo-app");
+    let out = Command::new(bin)
+        .args(["rec", "--once"])
+        .env("ECHO_AUDIO_FIXTURE", fixture())
+        .env("ECHO_MODEL_DIR", &models)
+        .env("ECHO_DATA_DIR", &data)
+        .env_remove("ECHO_ENGINE")
+        .output()
+        .expect("run echo rec --once");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!out.status.success(), "expected failure, stdout={stdout:?}");
+    assert!(
+        stdout.contains("session Failed speech engine or model missing"),
+        "stdout={stdout:?} stderr={}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
 fn rec_once_without_mic_names_permission() {
     let bin = env!("CARGO_BIN_EXE_echo-app");
     let mut cmd = Command::new(bin);

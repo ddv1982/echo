@@ -4,23 +4,29 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use echo_core::{
-    Dictionary, Engine, FailReason, History, HistoryRow, InjectReport, Injector, Session,
-    SessionState,
+    Dictionary, FailReason, History, HistoryRow, InjectReport, Injector, Session, SessionState,
 };
 
-use crate::audio::{self, AudioCapture};
-use crate::hotkey::{self, HotkeyEvent, HotkeySource};
+use crate::audio::{self, AudioCapture, CancellationToken};
+use crate::hotkey::{self, HoldKey, HotkeyEvent, HotkeySource};
 use crate::inject::LinuxInjector;
-use crate::stt::{FakeEngine, ParakeetEngine, WhisperEngine};
-use crate::ui::tray;
+use crate::status;
+
+/// What ends a recording: the timer, the toggle stop file, or the hold key
+/// coming back up.
+enum StopWhen<'a> {
+    Timer,
+    ToggleFile(ToggleSession),
+    KeyUp(&'a mut HoldKey),
+}
 
 pub fn run_rec_once() -> i32 {
-    run_record(None)
+    run_record(StopWhen::Timer)
 }
 
 pub fn run_rec_toggle() -> i32 {
     match ToggleSession::start_or_stop() {
-        Ok(ToggleAction::Start(session)) => run_record(Some(&session)),
+        Ok(ToggleAction::Start(session)) => run_record(StopWhen::ToggleFile(session)),
         Ok(ToggleAction::Stop) => 0,
         Err(err) => {
             eprintln!("toggle: {err}");
@@ -29,30 +35,86 @@ pub fn run_rec_toggle() -> i32 {
     }
 }
 
-fn run_record(toggle: Option<&ToggleSession>) -> i32 {
+/// Loop forever: wait for the hold key, record while it is down, transcribe
+/// and inject on release. Ctrl-C quits.
+pub fn run_rec_hold() -> i32 {
+    let spec = match hotkey::hold_keyspec() {
+        Ok(spec) => spec,
+        Err(err) => {
+            eprintln!("hold: {err} (set ECHO_HOLD_KEY to a supported key)");
+            return 2;
+        }
+    };
+    let devices = match hotkey::readable_event_nodes() {
+        Ok(devices) if !devices.is_empty() => devices,
+        _ => {
+            eprintln!("{}", hotkey::evdev_permission_hint());
+            eprintln!(
+                "hold mode needs readable /dev/input event devices. \
+                 alternatively bind `echo-app rec --toggle` to a desktop shortcut"
+            );
+            return 1;
+        }
+    };
+    let mut hold = match HoldKey::open(&devices, &spec) {
+        Ok(hold) => hold,
+        Err(err) => {
+            eprintln!("hold: cannot open input devices: {err}");
+            return 1;
+        }
+    };
+    eprintln!("hold {} to dictate (ctrl-c to quit)", spec.keys.join("+"));
+    let never = CancellationToken::new();
+    loop {
+        match hold.wait(HotkeyEvent::Down, &never) {
+            Ok(true) => {}
+            Ok(false) => return 0,
+            Err(err) => {
+                eprintln!("hold: {err}");
+                return 1;
+            }
+        }
+        run_record(StopWhen::KeyUp(&mut hold));
+    }
+}
+
+fn run_record(mut stop: StopWhen) -> i32 {
     let mut session = Session::new();
     log_state(&session);
-    let _ = tray::write_status(session.state(), None);
+    let _ = status::write_status(session.state(), None);
     if matches!(HotkeySource::detect(), HotkeySource::Cli) {
         eprintln!("{}", hotkey::evdev_permission_hint());
     }
     apply_edge(&mut session, HotkeyEvent::Down);
-    let _ = tray::write_status(session.state(), None);
+    let _ = status::write_status(session.state(), None);
     let recording_hud = crate::ui::hud::RecordingHud::start();
-    let capture = match capture_pcm(toggle) {
+    let capture = match capture_pcm(&mut stop) {
         Ok(capture) => capture,
         Err(reason) => {
             let _ = session.fail(reason);
             log_state(&session);
-            let _ = tray::write_status(session.state(), None);
+            let _ = status::write_status(session.state(), None);
             return 1;
         }
     };
     drop(recording_hud);
     apply_edge(&mut session, HotkeyEvent::Up);
-    let _ = tray::write_status(session.state(), None);
+    let _ = status::write_status(session.state(), None);
 
-    let engine = selected_engine();
+    let engine = match crate::stt::resolve_engine() {
+        Some(engine) => engine,
+        None => {
+            let _ = session.fail(FailReason::EngineMissing);
+            log_state(&session);
+            let _ = status::write_status(session.state(), None);
+            eprintln!(
+                "no speech engine installed. install whisper-cli plus a ggml model or \
+                 sherpa-onnx plus the parakeet model (see README), or set ECHO_ENGINE=fake \
+                 for smoke tests"
+            );
+            return 1;
+        }
+    };
     let transcript = match engine.transcribe(&capture.pcm) {
         Ok(t) => t,
         Err(err) => {
@@ -62,7 +124,7 @@ fn run_record(toggle: Option<&ToggleSession>) -> i32 {
             };
             let _ = session.fail(reason);
             log_state(&session);
-            let _ = tray::write_status(session.state(), None);
+            let _ = status::write_status(session.state(), None);
             return 1;
         }
     };
@@ -85,26 +147,27 @@ fn run_record(toggle: Option<&ToggleSession>) -> i32 {
             Err(reason) => InjectReport::Failed { reason },
         }
     };
-    if inject.failed() {
+    let failed = inject.failed();
+    if failed {
         let reason = match &inject {
             InjectReport::Failed { reason } => *reason,
             _ => FailReason::InjectUnconfirmed,
         };
         let _ = session.fail(reason);
         log_state(&session);
-        let _ = session.ack();
-        log_state(&session);
     } else if session.complete_inject().is_ok() {
         log_state(&session);
     }
 
-    let started_at = SystemTime::now()
+    let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .unwrap_or_default();
+    let started_at = now.as_secs();
     if let Ok(mut history) = History::load() {
         let _ = history.append(HistoryRow {
-            id: format!("{started_at}-{}", history.rows().len() + 1),
+            // Nanoseconds plus pid keep ids unique across processes and after
+            // the store trims to its row cap.
+            id: format!("{started_at}-{}-{}", now.subsec_nanos(), std::process::id()),
             text: rewrite.text.clone(),
             raw: transcript.raw.clone(),
             engine: transcript.engine.clone(),
@@ -113,33 +176,13 @@ fn run_record(toggle: Option<&ToggleSession>) -> i32 {
             inject,
         });
     }
-    let _ = tray::write_status(session.state(), Some(&rewrite.text));
-    0
-}
-
-fn selected_engine() -> Box<dyn Engine> {
-    match std::env::var("ECHO_ENGINE").ok().as_deref() {
-        Some("whisper") => Box::new(WhisperEngine::new()),
-        Some("parakeet") => Box::new(ParakeetEngine::new()),
-        Some("fake") => Box::new(FakeEngine::default()),
-        _ => {
-            let parakeet = ParakeetEngine::new();
-            if parakeet
-                .transcribe(&echo_core::Pcm16kMono::from_samples(vec![0; 8]))
-                .is_ok()
-            {
-                return Box::new(parakeet);
-            }
-            let whisper = WhisperEngine::new();
-            if whisper
-                .transcribe(&echo_core::Pcm16kMono::from_samples(vec![0; 8]))
-                .is_ok()
-            {
-                return Box::new(whisper);
-            }
-            Box::new(FakeEngine::default())
-        }
+    if failed {
+        // Leave the Failed state visible; the next session overwrites it.
+        let _ = status::write_status(session.state(), None);
+        return 1;
     }
+    let _ = status::write_status(session.state(), Some(&rewrite.text));
+    0
 }
 
 fn skip_inject() -> bool {
@@ -160,31 +203,45 @@ fn apply_edge(session: &mut Session, event: HotkeyEvent) {
     }
 }
 
-fn capture_pcm(toggle: Option<&ToggleSession>) -> Result<audio::CaptureResult, FailReason> {
+fn capture_pcm(stop: &mut StopWhen) -> Result<audio::CaptureResult, FailReason> {
     if let Some(path) = fixture_path() {
         return audio::load_wav(&path).map_err(|_| FailReason::EngineError);
     }
-    let capture = AudioCapture::open_default().map_err(|_| FailReason::MicPermission)?;
-    let result = if let Some(toggle) = toggle {
-        let cancel = capture.cancel.clone();
-        let watcher_cancel = cancel.clone();
-        let stop_path = toggle.stop_path.clone();
-        let watcher = std::thread::spawn(move || {
-            while !watcher_cancel.is_cancelled() && !stop_path.exists() {
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            if stop_path.exists() {
-                watcher_cancel.cancel();
-            }
-        });
-        let result = capture.record(Duration::from_secs(60));
-        cancel.cancel();
-        let _ = watcher.join();
-        result
-    } else {
-        capture.record(recording_duration())
+    let capture = AudioCapture::open_default().map_err(|err| match err {
+        audio::AudioError::NoDevice => FailReason::NoInputDevice,
+        _ => FailReason::CaptureFailed,
+    })?;
+    let result = match stop {
+        StopWhen::Timer => capture.record(recording_duration()),
+        StopWhen::ToggleFile(toggle) => {
+            let cancel = capture.cancel.clone();
+            let stop_path = &toggle.stop_path;
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    while !cancel.is_cancelled() && !stop_path.exists() {
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                    cancel.cancel();
+                });
+                let result = capture.record(Duration::from_secs(MAX_RECORD_SECONDS));
+                capture.cancel.cancel();
+                result
+            })
+        }
+        StopWhen::KeyUp(hold) => {
+            let cancel = capture.cancel.clone();
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    let _ = hold.wait(HotkeyEvent::Up, &cancel);
+                    cancel.cancel();
+                });
+                let result = capture.record(Duration::from_secs(MAX_RECORD_SECONDS));
+                capture.cancel.cancel();
+                result
+            })
+        }
     };
-    result.map_err(|_| FailReason::MicPermission)
+    result.map_err(|_| FailReason::CaptureFailed)
 }
 
 enum ToggleAction {
@@ -250,15 +307,17 @@ fn lock_owner_is_alive(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Ceiling for any recording, in seconds.
+pub const MAX_RECORD_SECONDS: u64 = 60;
+
 fn recording_duration() -> Duration {
     const DEFAULT_SECONDS: u64 = 3;
-    const MAX_SECONDS: u64 = 60;
     let seconds = std::env::var("ECHO_RECORD_SECONDS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|seconds| *seconds > 0)
         .unwrap_or(DEFAULT_SECONDS)
-        .min(MAX_SECONDS);
+        .min(MAX_RECORD_SECONDS);
     Duration::from_secs(seconds)
 }
 
