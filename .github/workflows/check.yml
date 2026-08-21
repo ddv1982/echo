@@ -56,7 +56,7 @@ jobs:
 
       - name: Validate desktop entry
         run: |
-          out=$(desktop-file-validate packaging/echo.desktop 2>&1) || true
+          out=$(desktop-file-validate packaging/Echo.desktop 2>&1) || true
           if [ -n "$out" ]; then
             printf '%s\n' "$out"
             exit 1

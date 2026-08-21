@@ -1,4 +1,6 @@
 use std::env;
+use std::panic::{self, AssertUnwindSafe};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -6,6 +8,7 @@ use echo::audio::AudioCapture;
 use echo::inject::{Pasteboard, SysClipboard};
 use echo_core::{DictEntry, Dictionary, History};
 use serde::Serialize;
+use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, WindowEvent};
@@ -244,6 +247,8 @@ fn print_cli_usage() {
 }
 
 fn run_desktop() {
+    let mut context = tauri::generate_context!();
+    context.config_mut().app.tray_icon = None;
     tauri::Builder::default()
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "Open Echo", true, None::<&str>)?;
@@ -251,25 +256,39 @@ fn run_desktop() {
                 MenuItem::with_id(app, "record", "Start / stop recording", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open, &record, &quit])?;
-            let mut tray = TrayIconBuilder::new().menu(&menu).tooltip("Echo");
-            if let Some(icon) = app.default_window_icon() {
-                tray = tray.icon(icon.clone());
-            }
-            tray.on_menu_event(|app, event| match event.id().as_ref() {
-                "open" => show_main_window(app),
-                "record" => {
-                    let _ = start_recording_thread();
+            let icon = Image::from_bytes(include_bytes!("../icons/tray-24.png"))
+                .expect("tray-24.png decodes as RGBA");
+            let tray = TrayIconBuilder::new()
+                .menu(&menu)
+                .icon(icon)
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "open" => show_main_window(app),
+                    "record" => {
+                        let _ = start_recording_thread();
+                    }
+                    "quit" => app.exit(0),
+                    _ => {}
+                });
+            let tray_ready = match panic::catch_unwind(AssertUnwindSafe(|| tray.build(app))) {
+                Ok(Ok(_)) => true,
+                Ok(Err(err)) => {
+                    eprintln!("tray icon: {err}");
+                    false
                 }
-                "quit" => app.exit(0),
-                _ => {}
-            })
-            .build(app)?;
+                Err(_) => {
+                    eprintln!("tray icon: libayatana-appindicator failed to load");
+                    false
+                }
+            };
+            app.manage(AtomicBool::new(tray_ready));
             Ok(())
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+                if window.state::<AtomicBool>().load(Ordering::SeqCst) {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -281,6 +300,6 @@ fn run_desktop() {
             toggle_recording,
             copy_text,
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running Echo");
 }

@@ -98,19 +98,25 @@ The recording process writes `$XDG_DATA_HOME/echo/status` as the session moves, 
 
 ## Install the desktop entry
 
+Install the `.deb` from the [GitHub Releases](https://github.com/ddv1982/echo/releases) page. The package installs `echo-desktop`, `Echo.desktop`, and the `echo-desktop` icons.
+
+To add a menu entry from a source build, put `echo-desktop` on `PATH`, then:
+
 ```sh
-sudo apt install desktop-file-utils
 mkdir -p ~/.local/share/applications
+cp packaging/Echo.desktop ~/.local/share/applications/Echo.desktop
 mkdir -p ~/.local/share/icons/hicolor/scalable/apps
-mkdir -p ~/.local/share/icons/hicolor/256x256/apps
-cp packaging/echo.desktop ~/.local/share/applications/
-cp assets/icons/echo.svg ~/.local/share/icons/hicolor/scalable/apps/echo.svg
-cp src-tauri/icons/256x256.png ~/.local/share/icons/hicolor/256x256/apps/echo.png
+cp assets/icons/echo-app.svg ~/.local/share/icons/hicolor/scalable/apps/echo-desktop.svg
+for size in 32 128 256 512; do
+  mkdir -p ~/.local/share/icons/hicolor/${size}x${size}/apps
+  cp "src-tauri/icons/${size}x${size}.png" \
+    ~/.local/share/icons/hicolor/${size}x${size}/apps/echo-desktop.png
+done
 update-desktop-database ~/.local/share/applications
 gtk-update-icon-cache ~/.local/share/icons/hicolor
 ```
 
-`packaging/echo.desktop` runs `echo-desktop` and uses `Icon=echo`. Put `echo-desktop` on `PATH`. `src-tauri/icons/256x256.png` is generated from `assets/icons/echo-app.svg`.
+`packaging/Echo.desktop` runs `echo-desktop` and sets `Icon=echo-desktop`.
 
 ## Inject
 
