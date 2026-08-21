@@ -3,13 +3,24 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
 
-use echo_core::{strip_nonspeech, Engine, EngineError, EngineId, Pcm16kMono, Transcript};
+use echo_core::{
+    strip_nonspeech, Config, Engine, EngineError, EngineId, Pcm16kMono, Transcript,
+};
 
 use super::cache::ModelCache;
 use super::write_temp_wav;
+use crate::settings::file_config;
 use crate::which::on_path;
 
 const DEFAULT_MODEL: &str = "base.en";
+
+fn resolved_whisper_model(env: Option<String>, file: &Config) -> String {
+    echo_core::resolve(
+        env.filter(|name| !name.is_empty()),
+        file.whisper_model.clone(),
+        DEFAULT_MODEL.to_string(),
+    )
+}
 
 pub struct WhisperEngine {
     cache: ModelCache,
@@ -25,10 +36,10 @@ impl Default for WhisperEngine {
 impl WhisperEngine {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            cache: ModelCache::from_env(),
-            model: DEFAULT_MODEL.to_string(),
-        }
+        Self::with_cache(
+            ModelCache::from_env(),
+            resolved_whisper_model(std::env::var("ECHO_WHISPER_MODEL").ok(), &file_config()),
+        )
     }
 
     #[must_use]
@@ -232,5 +243,26 @@ mod tests {
         assert!(args.iter().any(|arg| arg == "--vad"));
         assert_eq!(vm_path(&args).map(Path::new), Some(v6.as_path()));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn whisper_model_prefers_env_then_file_then_default() {
+        let file = Config {
+            whisper_model: Some("tiny.en".into()),
+            ..Config::default()
+        };
+        assert_eq!(
+            resolved_whisper_model(Some("small.en".into()), &file),
+            "small.en"
+        );
+        assert_eq!(resolved_whisper_model(None, &file), "tiny.en");
+        assert_eq!(
+            resolved_whisper_model(None, &Config::default()),
+            DEFAULT_MODEL
+        );
+        assert_eq!(
+            resolved_whisper_model(Some(String::new()), &file),
+            "tiny.en"
+        );
     }
 }

@@ -310,15 +310,18 @@ fn lock_owner_is_alive(path: &Path) -> bool {
 /// Ceiling for any recording, in seconds.
 pub const MAX_RECORD_SECONDS: u64 = 60;
 
+fn record_seconds(env: Option<u64>, file: Option<u32>) -> u64 {
+    echo_core::resolve(env, file.map(u64::from), 3).clamp(1, MAX_RECORD_SECONDS)
+}
+
 fn recording_duration() -> Duration {
-    const DEFAULT_SECONDS: u64 = 3;
-    let seconds = std::env::var("ECHO_RECORD_SECONDS")
+    let env = std::env::var("ECHO_RECORD_SECONDS")
         .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|seconds| *seconds > 0)
-        .unwrap_or(DEFAULT_SECONDS)
-        .min(MAX_RECORD_SECONDS);
-    Duration::from_secs(seconds)
+        .and_then(|value| value.parse::<u64>().ok());
+    Duration::from_secs(record_seconds(
+        env,
+        crate::settings::file_config().record_seconds,
+    ))
 }
 
 fn fixture_path() -> Option<PathBuf> {
@@ -343,6 +346,15 @@ fn log_state(session: &Session) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn record_seconds_prefers_env_then_file_and_clamps() {
+        assert_eq!(record_seconds(Some(8), Some(12)), 8);
+        assert_eq!(record_seconds(None, Some(12)), 12);
+        assert_eq!(record_seconds(None, None), 3);
+        assert_eq!(record_seconds(Some(0), None), 1);
+        assert_eq!(record_seconds(Some(90), None), MAX_RECORD_SECONDS);
+    }
 
     #[test]
     fn toggle_starts_stops_and_can_restart() {

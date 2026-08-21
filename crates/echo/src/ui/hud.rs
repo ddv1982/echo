@@ -68,15 +68,23 @@ impl Drop for RecordingHud {
     }
 }
 
+fn hud_is_disabled(env: Option<&str>, file: &echo_core::Config) -> bool {
+    match env {
+        Some("0" | "false" | "off") => true,
+        Some("1" | "true" | "on") => false,
+        _ => file.hud == Some(false),
+    }
+}
+
 fn hud_disabled() -> bool {
-    matches!(
+    hud_is_disabled(
         std::env::var("ECHO_HUD").ok().as_deref(),
-        Some("0") | Some("false") | Some("off")
+        &crate::settings::file_config(),
     )
 }
 
-/// Whether `ECHO_HUD` leaves the capsule enabled. The HUD additionally needs
-/// an X11 display at record time.
+/// Whether `ECHO_HUD` and the config file leave the capsule enabled. The HUD
+/// additionally needs an X11 display at record time.
 #[must_use]
 pub fn enabled() -> bool {
     !hud_disabled()
@@ -312,3 +320,31 @@ fn set_above<C: Connection>(conn: &C, win: u32, root: u32) -> Result<(), HudErro
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use echo_core::Config;
+
+    use super::*;
+
+    #[test]
+    fn disabled_and_enabled_agree() {
+        assert_eq!(enabled(), !hud_disabled());
+    }
+
+    #[test]
+    fn hud_disable_tokens_and_file_false() {
+        let enabled_file = Config::default();
+        let disabled_file = Config {
+            hud: Some(false),
+            ..Config::default()
+        };
+        assert!(hud_is_disabled(Some("0"), &enabled_file));
+        assert!(hud_is_disabled(Some("false"), &enabled_file));
+        assert!(hud_is_disabled(Some("off"), &enabled_file));
+        assert!(hud_is_disabled(None, &disabled_file));
+        assert!(!hud_is_disabled(None, &enabled_file));
+        assert!(!hud_is_disabled(Some("1"), &disabled_file));
+        assert!(!hud_is_disabled(Some("true"), &disabled_file));
+        assert!(!hud_is_disabled(Some("on"), &disabled_file));
+    }
+}
