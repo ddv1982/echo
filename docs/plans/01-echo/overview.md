@@ -45,6 +45,8 @@ Excluded.
 
 **D. Rust workspace, two crates, Linux modules only.** Shared session machine and engine traits. Inject and hotkey are Linux files, not `cfg` soup. This is the choice. Linux dictation tools that already work, such as [flowvoice](https://github.com/GOJO-SENPA1/flowvoice), call out to the same injectors we will use.
 
+**Update (2026-08).** The desktop UI overhaul revisited C for the app shell: the settings and history surfaces now ship as a Tauri app (`src-tauri` plus `frontend/`), a third workspace member alongside the two crates above. The GTK shell that predated it is deleted. Injection still goes through the external-tool cascade, not the webview. libei never got an implementation and is out of the cascade; the order is ydotool or wtype on Wayland, xdotool on X11, then clipboard.
+
 ## Applicable skills
 
 - **how** over libei / ydotool, evdev, and whisper.cpp or sherpa-onnx before changing those subsystems.

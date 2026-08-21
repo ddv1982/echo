@@ -24,7 +24,7 @@ cargo clippy --workspace -- -D warnings
 1. Grant mic access. Speak while `echo rec --once` runs. History shows text.
 2. Focus a terminal. Hold the hotkey. The nonce or the spoken sentence appears in that terminal.
 3. Repeat in Firefox or Chromium, in a text box.
-4. On Wayland, confirm `InjectReport` names `Libei` or `Ydotool`, not a fake X11 success.
+4. On Wayland, confirm `InjectReport` names `Ydotool` or `Wtype`, not a fake X11 success.
 5. Copy a secret, dictate, confirm the clipboard holds the secret again.
 6. Hide the main window. Dictation still works from the tray process.
 7. Dictionary entry for a known mishear. HUD or history shows Corrected.

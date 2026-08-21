@@ -1,6 +1,8 @@
 # Echo
 
-Local hold-to-talk dictation for Linux. You hold a key, speak, and cleaned text lands at the cursor. Audio never leaves the machine.
+Local dictation for Linux. Hold a key (or press a toggle shortcut), speak, and cleaned text lands at the cursor. Audio never leaves the machine.
+
+Hold-to-talk (`echo-app rec --hold`) reads the key from `/dev/input` and needs the user in the `input` group. The toggle (`echo-app rec --toggle`) works everywhere through a desktop keyboard shortcut.
 
 The first-build plan is [docs/plans/01-echo/overview.md](docs/plans/01-echo/overview.md).
 
@@ -44,6 +46,7 @@ The separate `echo-app` binary is the CLI/runtime entry point used by compositor
 ```sh
 ./target/release/echo-app rec --once
 ./target/release/echo-app rec --toggle
+./target/release/echo-app rec --hold
 ./target/release/echo-app dict add "Claude Code"
 ./target/release/echo-app dict add "clawed code" "Claude Code"
 ./target/release/echo-app history
@@ -64,7 +67,9 @@ Make sure `~/.local/bin` is on your `PATH`.
 
 `echo-app rec --toggle` is intended for compositor shortcuts on Wayland. The first invocation starts recording; invoke it again to stop, transcribe, and insert at the focused cursor. It stops automatically after 60 seconds if the second invocation never arrives.
 
-While recording, Echo shows a click-through animated capsule near the bottom of the screen. It disappears before transcription and never takes keyboard focus. Set `ECHO_HUD=off` to disable it.
+`echo-app rec --hold` waits for the hold key, records while it is down, and inserts on release, looping until you press Ctrl+C. The default key is Right Ctrl; set `ECHO_HOLD_KEY` to change it (for example `ECHO_HOLD_KEY=RightShift`). It reads keys from `/dev/input`, so add yourself to the input group first: `sudo usermod -aG input $USER`, then log out and back in. Without that access it exits with a hint and you should use the toggle instead.
+
+While recording, Echo shows a click-through animated capsule near the bottom of the screen. It disappears before transcription and never takes keyboard focus. The capsule is X11-only; on a Wayland session without XWayland there is no HUD, and the desktop app and `echo-app status` are the recording indicators. Set `ECHO_HUD=off` to disable it.
 
 ### GNOME and Zorin OS global shortcut
 
@@ -89,7 +94,7 @@ Cleanup defaults to rules mode. It drops standalone um and uh, then capitalizes 
 
 ## Status file
 
-The tray writes `$XDG_DATA_HOME/echo/status` as the session moves. `echo-app status` reads that file. The tray tooltip uses the same state line.
+The recording process writes `$XDG_DATA_HOME/echo/status` as the session moves, including its pid. `echo-app status` and the desktop app read that file; an active state whose writer has died reads as Idle, and a Failed state stays visible until the next session starts.
 
 ## Install the desktop entry
 
@@ -109,7 +114,7 @@ gtk-update-icon-cache ~/.local/share/icons/hicolor
 
 ## Inject
 
-On X11 the cascade is `xdotool type`, then clipboard plus Ctrl+V, then restore the clipboard. Wayland wants libei, `ydotool`, or `wtype` when those tools exist. A log line that says the insert worked is not enough. `cargo test -p echo --test inject_linux` types a nonce into a widget this repo compiles and reads that nonce back.
+On X11 the cascade is `xdotool type`, then clipboard plus Ctrl+V, then restore the clipboard. On Wayland it uses `ydotool` or `wtype` when those tools exist. A log line that says the insert worked is not enough. `cargo test -p echo --test inject_linux` types a nonce into a widget this repo compiles and reads that nonce back.
 
 ## Live checks
 
