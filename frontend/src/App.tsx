@@ -468,12 +468,10 @@ function SettingLine({ label, value, tone }: { label: string; value: string; ton
     <div className="setting-line">
       <div><strong>{label}</strong><span>{value}</span></div>
       {tone ? (
-        <span
-          className="status-dot"
-          data-tone={tone}
-          role="img"
-          aria-label={tone === 'ok' ? 'Ready' : 'Needs attention'}
-        />
+        <span className="status-note" data-tone={tone}>
+          <span className="status-dot" data-tone={tone} aria-hidden="true" />
+          {tone === 'ok' ? 'Ready' : 'Needs setup'}
+        </span>
       ) : null}
     </div>
   )
