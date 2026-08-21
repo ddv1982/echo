@@ -13,7 +13,6 @@ import {
   Mic,
   Moon,
   Plus,
-  Radio,
   Search,
   Settings,
   Sparkles,
@@ -280,7 +279,7 @@ function HomeView({
     <div className="view-stack">
       <section className="hero-card" data-recording={status.recording}>
         <div className="hero-copy">
-          <div className="eyebrow"><Radio size={14} aria-hidden="true" /> Dictation</div>
+          <div className="eyebrow">Dictation</div>
           <h2>{stateCopy[0]}</h2>
           <p>{stateCopy[1]}</p>
           <div className="hero-actions">
@@ -292,18 +291,6 @@ function HomeView({
               <kbd>{status.shortcut}</kbd>
               <span>works from any app</span>
             </div>
-          </div>
-        </div>
-        <div className="hero-visual" aria-hidden="true">
-          <div className="orb">
-            <Mic size={36} />
-            <span className="orb-ring orb-ring-one" />
-            <span className="orb-ring orb-ring-two" />
-          </div>
-          <div className="mini-wave">
-            {[18, 30, 22, 38, 28, 44, 26, 34, 18].map((height, index) => (
-              <span key={`${height}-${index}`} style={{ '--bar-height': `${height}px` } as React.CSSProperties} />
-            ))}
           </div>
         </div>
       </section>
