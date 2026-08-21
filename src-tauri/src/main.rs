@@ -1,3 +1,4 @@
+use std::env;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -190,6 +191,59 @@ fn show_main_window(app: &tauri::AppHandle) {
 }
 
 fn main() {
+    let args: Vec<String> = env::args().skip(1).collect();
+    if let Some(code) = try_cli(&args) {
+        std::process::exit(code);
+    }
+    run_desktop();
+}
+
+/// Compositor shortcuts and hold-to-talk run these subcommands without
+/// starting the webview.
+fn try_cli(args: &[String]) -> Option<i32> {
+    match args.first().map(String::as_str) {
+        None => None,
+        Some("rec") => Some(rec(args.get(1..).unwrap_or(&[]))),
+        Some("--hud-demo") => Some(match echo::ui::hud::run_hud_demo() {
+            Ok(()) => 0,
+            Err(err) => {
+                eprintln!("hud-demo: {err}");
+                1
+            }
+        }),
+        Some("--help" | "-h") => {
+            print_cli_usage();
+            Some(0)
+        }
+        Some(other) => {
+            eprintln!("unknown command: {other}");
+            print_cli_usage();
+            Some(2)
+        }
+    }
+}
+
+fn rec(args: &[String]) -> i32 {
+    match args {
+        [arg] if arg == "--once" => echo::rec::run_rec_once(),
+        [arg] if arg == "--toggle" => echo::rec::run_rec_toggle(),
+        [arg] if arg == "--hold" => echo::rec::run_rec_hold(),
+        _ => {
+            eprintln!("usage: echo-desktop rec --once|--toggle|--hold");
+            2
+        }
+    }
+}
+
+fn print_cli_usage() {
+    eprintln!("usage: echo-desktop");
+    eprintln!("       echo-desktop rec --once");
+    eprintln!("       echo-desktop rec --toggle");
+    eprintln!("       echo-desktop rec --hold");
+    eprintln!("       echo-desktop --hud-demo");
+}
+
+fn run_desktop() {
     tauri::Builder::default()
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "Open Echo", true, None::<&str>)?;

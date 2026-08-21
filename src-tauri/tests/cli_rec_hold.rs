@@ -19,11 +19,11 @@ fn rec_hold_without_evdev_fails_with_hint() {
         eprintln!("skipping: readable evdev devices exist here; hold mode would block on a key");
         return;
     }
-    let bin = env!("CARGO_BIN_EXE_echo-app");
+    let bin = env!("CARGO_BIN_EXE_echo-desktop");
     let out = Command::new(bin)
         .args(["rec", "--hold"])
         .output()
-        .expect("run echo-app rec --hold");
+        .expect("run echo-desktop rec --hold");
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(

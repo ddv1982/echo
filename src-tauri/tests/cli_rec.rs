@@ -2,14 +2,15 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn fixture() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude_code.wav")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../crates/echo/tests/fixtures/claude_code.wav")
 }
 
 #[test]
 fn rec_once_drives_recording_then_transcribing() {
     let data = std::env::temp_dir().join(format!("echo-rec-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&data);
-    let bin = env!("CARGO_BIN_EXE_echo-app");
+    let bin = env!("CARGO_BIN_EXE_echo-desktop");
     let out = Command::new(bin)
         .args(["rec", "--once"])
         .env("ECHO_AUDIO_FIXTURE", fixture())
@@ -17,7 +18,7 @@ fn rec_once_drives_recording_then_transcribing() {
         .env("ECHO_SKIP_INJECT", "1")
         .env("ECHO_DATA_DIR", &data)
         .output()
-        .expect("run echo rec --once");
+        .expect("run echo-desktop rec --once");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains("session Recording"),
@@ -32,7 +33,7 @@ fn rec_once_without_engine_fails_engine_missing() {
     let data = std::env::temp_dir().join(format!("echo-rec-noengine-{}", std::process::id()));
     let models = data.join("models");
     let _ = std::fs::create_dir_all(&models);
-    let bin = env!("CARGO_BIN_EXE_echo-app");
+    let bin = env!("CARGO_BIN_EXE_echo-desktop");
     let out = Command::new(bin)
         .args(["rec", "--once"])
         .env("ECHO_AUDIO_FIXTURE", fixture())
@@ -40,7 +41,7 @@ fn rec_once_without_engine_fails_engine_missing() {
         .env("ECHO_DATA_DIR", &data)
         .env_remove("ECHO_ENGINE")
         .output()
-        .expect("run echo rec --once");
+        .expect("run echo-desktop rec --once");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(!out.status.success(), "expected failure, stdout={stdout:?}");
     assert!(
@@ -52,12 +53,12 @@ fn rec_once_without_engine_fails_engine_missing() {
 
 #[test]
 fn rec_once_without_mic_names_permission() {
-    let bin = env!("CARGO_BIN_EXE_echo-app");
+    let bin = env!("CARGO_BIN_EXE_echo-desktop");
     let mut cmd = Command::new(bin);
     cmd.args(["rec", "--once"]);
     cmd.env_remove("ECHO_AUDIO_FIXTURE");
     cmd.env("ECHO_RECORD_SECONDS", "1");
-    let out = cmd.output().expect("run echo rec --once");
+    let out = cmd.output().expect("run echo-desktop rec --once");
     let text = format!(
         "{}{}",
         String::from_utf8_lossy(&out.stdout),

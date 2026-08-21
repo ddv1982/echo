@@ -46,6 +46,10 @@ pub(crate) fn set_aside_corrupt(path: &Path) {
 /// Write via a same-directory temp file plus rename, so a crash mid-write
 /// never corrupts the previous contents and readers never see a partial file.
 pub fn write_atomic(path: &Path, contents: &[u8]) -> Result<(), String> {
+    // Pid alone is not unique enough: two threads of the desktop app can
+    // write the same file concurrently, so each call gets its own counter.
+    static WRITE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = WRITE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let parent = path
         .parent()
         .filter(|dir| !dir.as_os_str().is_empty())
@@ -55,7 +59,7 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> Result<(), String> {
         .file_name()
         .and_then(|n| n.to_str())
         .ok_or_else(|| format!("{} has no file name", path.display()))?;
-    let tmp = parent.join(format!(".{name}.tmp-{}", std::process::id()));
+    let tmp = parent.join(format!(".{name}.tmp-{}-{seq}", std::process::id()));
     fs::write(&tmp, contents).map_err(|err| err.to_string())?;
     fs::rename(&tmp, path).map_err(|err| err.to_string())
 }

@@ -6,15 +6,9 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 description = "Linux hold-to-talk dictation"
-default-run = "echo-app"
-autobins = false
 
 [lints]
 workspace = true
-
-[[bin]]
-name = "echo-app"
-path = "src/main.rs"
 
 [dependencies]
 cpal = "0.15"

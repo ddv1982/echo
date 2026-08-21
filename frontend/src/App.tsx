@@ -274,7 +274,7 @@ function HomeView({
   const stateCopy = status.recording
     ? ['Listening…', 'Speak naturally, then press the shortcut again.']
     : status.phase === 'Transcribing'
-      ? ['Transcribing locally…', 'Whisper is turning your recording into text.']
+      ? ['Transcribing locally…', `${status.engineName} is turning your recording into text.`]
       : ['Ready when you are', 'Your audio stays on this machine.']
   return (
     <div className="view-stack">
