@@ -54,8 +54,8 @@ impl Config {
         if !path.exists() {
             return Ok(Self::default());
         }
-        let raw = fs::read_to_string(path).map_err(|err| err.to_string())?;
-        match serde_json::from_str::<Self>(&raw) {
+        let raw = fs::read(path).map_err(|err| err.to_string())?;
+        match serde_json::from_slice::<Self>(&raw) {
             Ok(config) => Ok(config),
             Err(_) => {
                 set_aside_corrupt(path);
@@ -149,6 +149,16 @@ mod tests {
     fn corrupt_file_yields_defaults_and_sibling() {
         let path = scratch_path("corrupt");
         fs::write(&path, "not json at all").unwrap();
+        let loaded = Config::load_from(&path).unwrap();
+        assert_eq!(loaded, Config::default());
+        assert!(!path.exists(), "corrupt file should be moved aside");
+        assert!(path.with_file_name("config.json.corrupt").exists());
+    }
+
+    #[test]
+    fn invalid_utf8_file_yields_defaults_and_sibling() {
+        let path = scratch_path("invalid-utf8");
+        fs::write(&path, [0xff, 0xfe, b'{']).unwrap();
         let loaded = Config::load_from(&path).unwrap();
         assert_eq!(loaded, Config::default());
         assert!(!path.exists(), "corrupt file should be moved aside");
