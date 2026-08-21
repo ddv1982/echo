@@ -38,6 +38,7 @@ const initialStatus: AppStatus = {
   cleanupName: 'Rules · fillers and punctuation',
   hudEnabled: true,
   maxRecordSeconds: 60,
+  settingsPath: '',
 }
 
 const navigation: Array<{ id: View; label: string; icon: typeof Home }> = [

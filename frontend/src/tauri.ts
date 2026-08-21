@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { AppStatus, DictionaryItem, HistoryItem } from './types'
+import type { AppStatus, DictionaryItem, HistoryItem, SettingField, Settings } from './types'
 
 declare global {
   interface Window {
@@ -20,7 +20,10 @@ let previewStatus: AppStatus = {
   cleanupName: 'Rules · fillers and punctuation',
   hudEnabled: true,
   maxRecordSeconds: 60,
+  settingsPath: '/tmp/echo-preview/config.json',
 }
+
+let previewSettings: Settings = defaultPreviewSettings()
 
 const previewHistory: HistoryItem[] = [
   {
@@ -118,6 +121,52 @@ export function copyText(text: string): Promise<void> {
   return navigator.clipboard.writeText(text)
 }
 
+export function getSettings(): Promise<Settings> {
+  if (isTauri()) return invoke('get_settings')
+  return Promise.resolve(preview ? { ...previewSettings } : defaultPreviewSettings())
+}
+
+export function setSettings(settings: Settings): Promise<Settings> {
+  if (isTauri()) return invoke('set_settings', { settings })
+  const next = projectPreviewSettings(settings)
+  if (preview) previewSettings = next
+  return Promise.resolve({ ...next })
+}
+
+function defaultPreviewSettings(): Settings {
+  return projectPreviewSettings({
+    engine: { value: null, effective: 'auto', source: 'default' },
+    whisperModel: { value: null, effective: 'base.en', source: 'default' },
+    cleanup: { value: null, effective: 'rules', source: 'default' },
+    hud: { value: null, effective: true, source: 'default' },
+    holdKey: { value: null, effective: 'RightCtrl', source: 'default' },
+    recordSeconds: { value: null, effective: 3, source: 'default' },
+  })
+}
+
+function projectPreviewSettings(settings: Settings): Settings {
+  const recordValue =
+    settings.recordSeconds.value == null
+      ? null
+      : Math.min(60, Math.max(1, settings.recordSeconds.value))
+  return {
+    engine: previewField(settings.engine.value, 'auto'),
+    whisperModel: previewField(settings.whisperModel.value, 'base.en'),
+    cleanup: previewField(settings.cleanup.value, 'rules'),
+    hud: previewField(settings.hud.value, true),
+    holdKey: previewField(settings.holdKey.value, 'RightCtrl'),
+    recordSeconds: previewField(recordValue, 3),
+  }
+}
+
+function previewField<T>(value: T | null, fallback: T): SettingField<T> {
+  return {
+    value,
+    effective: value ?? fallback,
+    source: value == null ? 'default' : 'file',
+  }
+}
+
 function initialPreviewStatus(): AppStatus {
   return {
     phase: 'Idle',
@@ -132,5 +181,6 @@ function initialPreviewStatus(): AppStatus {
     cleanupName: 'Rules · fillers and punctuation',
     hudEnabled: true,
     maxRecordSeconds: 60,
+    settingsPath: '/tmp/echo-preview/config.json',
   }
 }

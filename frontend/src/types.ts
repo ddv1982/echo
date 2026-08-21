@@ -1,5 +1,21 @@
 export type View = 'home' | 'history' | 'dictionary' | 'settings'
 export type ThemeMode = 'system' | 'light' | 'dark'
+export type SettingSource = 'env' | 'file' | 'default'
+
+export interface SettingField<T> {
+  value: T | null
+  effective: T
+  source: SettingSource
+}
+
+export interface Settings {
+  engine: SettingField<string>
+  whisperModel: SettingField<string>
+  cleanup: SettingField<string>
+  hud: SettingField<boolean>
+  holdKey: SettingField<string>
+  recordSeconds: SettingField<number>
+}
 
 export interface AppStatus {
   phase: string
@@ -14,6 +30,7 @@ export interface AppStatus {
   cleanupName: string
   hudEnabled: boolean
   maxRecordSeconds: number
+  settingsPath: string
 }
 
 export interface HistoryItem {
