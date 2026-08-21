@@ -37,7 +37,26 @@ impl CancellationToken {
 }
 
 pub struct AudioCapture {
+    device: cpal::Device,
+    pub device_name: String,
+    pub fallback_from: Option<String>,
     pub cancel: CancellationToken,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputDevice {
+    pub name: String,
+    pub is_default: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeviceChoice {
+    Found(InputDevice),
+    Fallback {
+        requested: String,
+        device: InputDevice,
+    },
+    None,
 }
 
 #[derive(Debug, Clone)]
@@ -76,19 +95,92 @@ impl std::fmt::Display for AudioError {
 
 impl std::error::Error for AudioError {}
 
+#[must_use]
+pub fn resolve_device(candidates: &[InputDevice], requested: Option<&str>) -> DeviceChoice {
+    let default = candidates
+        .iter()
+        .find(|device| device.is_default)
+        .or_else(|| candidates.first());
+    match requested.map(str::trim).filter(|name| !name.is_empty()) {
+        Some(name) => {
+            if let Some(found) = candidates.iter().find(|device| device.name == name) {
+                DeviceChoice::Found(found.clone())
+            } else if let Some(default) = default {
+                DeviceChoice::Fallback {
+                    requested: name.to_string(),
+                    device: default.clone(),
+                }
+            } else {
+                DeviceChoice::None
+            }
+        }
+        None => default
+            .cloned()
+            .map(DeviceChoice::Found)
+            .unwrap_or(DeviceChoice::None),
+    }
+}
+
+pub fn list_input_devices() -> Vec<InputDevice> {
+    list_host_devices(&cpal::default_host()).0
+}
+
+fn list_host_devices(host: &cpal::Host) -> (Vec<InputDevice>, Vec<(String, cpal::Device)>) {
+    let default_name = host
+        .default_input_device()
+        .and_then(|device| device.name().ok());
+    let mut named = Vec::new();
+    let Ok(devices) = host.input_devices() else {
+        return (Vec::new(), named);
+    };
+    for device in devices {
+        let Ok(name) = device.name() else {
+            continue;
+        };
+        named.push((name, device));
+    }
+    let list = named
+        .iter()
+        .map(|(name, _)| InputDevice {
+            is_default: default_name.as_deref() == Some(name.as_str()),
+            name: name.clone(),
+        })
+        .collect();
+    (list, named)
+}
+
 impl AudioCapture {
     pub fn open_default() -> Result<Self, AudioError> {
+        Self::open(crate::settings::file_config().microphone.as_deref())
+    }
+
+    pub fn open(requested: Option<&str>) -> Result<Self, AudioError> {
         let host = cpal::default_host();
-        host.default_input_device().ok_or(AudioError::NoDevice)?;
+        let (candidates, named) = list_host_devices(&host);
+        let (chosen, fallback_from) = match resolve_device(&candidates, requested) {
+            DeviceChoice::Found(device) => (device, None),
+            DeviceChoice::Fallback { requested, device } => {
+                eprintln!("microphone {requested} is gone; using {}", device.name);
+                (device, Some(requested))
+            }
+            DeviceChoice::None => return Err(AudioError::NoDevice),
+        };
+        let device = named
+            .into_iter()
+            .find(|(name, _)| *name == chosen.name)
+            .map(|(_, device)| device)
+            .ok_or(AudioError::NoDevice)?;
         Ok(Self {
+            device,
+            device_name: chosen.name,
+            fallback_from,
             cancel: CancellationToken::new(),
         })
     }
 
     pub fn record(&self, max: Duration) -> Result<CaptureResult, AudioError> {
-        let host = cpal::default_host();
-        let device = host.default_input_device().ok_or(AudioError::NoDevice)?;
-        let config = device
+        let config = self
+            .device
             .default_input_config()
             .map_err(|err| AudioError::Stream(err.to_string()))?;
         let src_hz = config.sample_rate().0;
@@ -97,16 +189,16 @@ impl AudioCapture {
         let err_slot: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let stream = match config.sample_format() {
             SampleFormat::F32 => {
-                build_stream::<f32>(&device, &config.into(), &collected, &err_slot)?
+                build_stream::<f32>(&self.device, &config.into(), &collected, &err_slot)?
             }
             SampleFormat::I16 => {
-                build_stream::<i16>(&device, &config.into(), &collected, &err_slot)?
+                build_stream::<i16>(&self.device, &config.into(), &collected, &err_slot)?
             }
             SampleFormat::I32 => {
-                build_stream::<i32>(&device, &config.into(), &collected, &err_slot)?
+                build_stream::<i32>(&self.device, &config.into(), &collected, &err_slot)?
             }
             SampleFormat::F64 => {
-                build_stream::<f64>(&device, &config.into(), &collected, &err_slot)?
+                build_stream::<f64>(&self.device, &config.into(), &collected, &err_slot)?
             }
             other => {
                 return Err(AudioError::Stream(format!(
@@ -240,6 +332,50 @@ mod tests {
             capture.pcm.len(),
             (capture.pcm.duration_ms() * u64::from(SAMPLE_RATE_HZ) / 1000) as usize
         );
+    }
+
+    fn sample_devices() -> Vec<InputDevice> {
+        vec![
+            InputDevice {
+                name: "Built-in".into(),
+                is_default: true,
+            },
+            InputDevice {
+                name: "USB Mic".into(),
+                is_default: false,
+            },
+        ]
+    }
+
+    #[test]
+    fn resolve_matches_requested_name() {
+        assert_eq!(
+            resolve_device(&sample_devices(), Some("USB Mic")),
+            DeviceChoice::Found(InputDevice {
+                name: "USB Mic".into(),
+                is_default: false,
+            })
+        );
+    }
+
+    #[test]
+    fn resolve_missing_name_falls_back_to_default() {
+        assert_eq!(
+            resolve_device(&sample_devices(), Some("Headset")),
+            DeviceChoice::Fallback {
+                requested: "Headset".into(),
+                device: InputDevice {
+                    name: "Built-in".into(),
+                    is_default: true,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_empty_list_is_none() {
+        assert_eq!(resolve_device(&[], Some("USB Mic")), DeviceChoice::None);
+        assert_eq!(resolve_device(&[], None), DeviceChoice::None);
     }
 
     #[test]

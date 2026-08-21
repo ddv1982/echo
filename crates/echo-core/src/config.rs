@@ -42,6 +42,8 @@ pub struct Config {
     pub hold_key: Option<String>,
     #[serde(default)]
     pub record_seconds: Option<u32>,
+    #[serde(default)]
+    pub microphone: Option<String>,
 }
 
 impl Config {
@@ -112,6 +114,7 @@ mod tests {
             hud: Some(true),
             hold_key: Some("RightCtrl".into()),
             record_seconds: Some(8),
+            microphone: Some("USB Mic".into()),
         };
         original.save_to(&path).unwrap();
         assert_eq!(Config::load_from(&path).unwrap(), original);
@@ -128,6 +131,7 @@ mod tests {
         assert_eq!(loaded.hud, None);
         assert_eq!(loaded.hold_key, None);
         assert_eq!(loaded.record_seconds, None);
+        assert_eq!(loaded.microphone, None);
     }
 
     #[test]

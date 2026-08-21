@@ -294,26 +294,26 @@ fn settings_from(env: &SettingsEnv, file: &echo_core::Config) -> Settings {
 }
 
 fn config_from_values(settings: &Settings) -> Result<echo_core::Config, String> {
-    Ok(echo_core::Config {
-        engine: match settings.engine.value.as_deref() {
-            None => None,
-            Some(raw) => Some(
-                echo_core::EngineChoice::from_env_var(raw)
-                    .ok_or_else(|| format!("unknown engine {raw}"))?,
-            ),
-        },
-        whisper_model: nonempty(settings.whisper_model.value.clone()),
-        cleanup: match settings.cleanup.value.as_deref() {
-            None => None,
-            Some(raw) => Some(echo_core::CleanupMode::parse(raw).map_err(|err| err.to_string())?),
-        },
-        hud: settings.hud.value,
-        hold_key: nonempty(settings.hold_key.value.clone()),
-        record_seconds: settings
-            .record_seconds
-            .value
-            .map(|secs| secs.clamp(1, echo::rec::MAX_RECORD_SECONDS as u32)),
-    })
+    let mut config = echo_core::Config::load().unwrap_or_default();
+    config.engine = match settings.engine.value.as_deref() {
+        None => None,
+        Some(raw) => Some(
+            echo_core::EngineChoice::from_env_var(raw)
+                .ok_or_else(|| format!("unknown engine {raw}"))?,
+        ),
+    };
+    config.whisper_model = nonempty(settings.whisper_model.value.clone());
+    config.cleanup = match settings.cleanup.value.as_deref() {
+        None => None,
+        Some(raw) => Some(echo_core::CleanupMode::parse(raw).map_err(|err| err.to_string())?),
+    };
+    config.hud = settings.hud.value;
+    config.hold_key = nonempty(settings.hold_key.value.clone());
+    config.record_seconds = settings
+        .record_seconds
+        .value
+        .map(|secs| secs.clamp(1, echo::rec::MAX_RECORD_SECONDS as u32));
+    Ok(config)
 }
 
 fn setting_field<T: Clone>(env: Option<T>, file: Option<T>, default: T) -> SettingField<T> {

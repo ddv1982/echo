@@ -204,10 +204,11 @@ fn apply_edge(session: &mut Session, event: HotkeyEvent) {
 }
 
 fn capture_pcm(stop: &mut StopWhen) -> Result<audio::CaptureResult, FailReason> {
+    let capture = AudioCapture::open_default();
     if let Some(path) = fixture_path() {
         return audio::load_wav(&path).map_err(|_| FailReason::EngineError);
     }
-    let capture = AudioCapture::open_default().map_err(|err| match err {
+    let capture = capture.map_err(|err| match err {
         audio::AudioError::NoDevice => FailReason::NoInputDevice,
         _ => FailReason::CaptureFailed,
     })?;
