@@ -120,7 +120,7 @@
   color: hsl(var(--text-secondary));
   padding: 0.7rem var(--space-3);
   text-align: left;
-  transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out), border var(--duration-fast) var(--ease-out);
+  transition: background-color var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
 }
 
 .nav-item:hover {
