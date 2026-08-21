@@ -1,3 +1,5 @@
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
 use crate::dictionary::{Dictionary, Rewrite};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +47,27 @@ impl CleanupMode {
                 "unknown cleanup mode {other}"
             ))),
         }
+    }
+
+    fn as_file_str(&self) -> String {
+        match self {
+            Self::Off => "off".to_string(),
+            Self::Rules => "rules".to_string(),
+            Self::LocalModel { model } => format!("local:{model}"),
+        }
+    }
+}
+
+impl Serialize for CleanupMode {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.as_file_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for CleanupMode {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        Self::parse(&raw).map_err(serde::de::Error::custom)
     }
 }
 

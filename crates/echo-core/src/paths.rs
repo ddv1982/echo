@@ -20,6 +20,25 @@ pub fn data_dir() -> PathBuf {
 }
 
 #[must_use]
+pub fn config_dir() -> PathBuf {
+    if let Some(dir) = env::var_os("ECHO_CONFIG_DIR") {
+        return PathBuf::from(dir);
+    }
+    if let Some(xdg) = env::var_os("XDG_CONFIG_HOME") {
+        return PathBuf::from(xdg).join("echo");
+    }
+    if let Some(home) = env::var_os("HOME") {
+        return PathBuf::from(home).join(".config").join("echo");
+    }
+    PathBuf::from("/tmp/echo-config")
+}
+
+#[must_use]
+pub fn config_path() -> PathBuf {
+    config_dir().join("config.json")
+}
+
+#[must_use]
 pub fn dictionary_path() -> PathBuf {
     data_dir().join("dictionary.json")
 }
@@ -37,8 +56,7 @@ pub fn status_path() -> PathBuf {
 /// Move an unparseable store aside so the app can start fresh without
 /// destroying the evidence.
 pub(crate) fn set_aside_corrupt(path: &Path) {
-    if let (Some(parent), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str()))
-    {
+    if let (Some(parent), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) {
         let _ = fs::rename(path, parent.join(format!("{name}.corrupt")));
     }
 }
