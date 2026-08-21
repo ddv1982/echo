@@ -40,8 +40,8 @@ Underneath four of these five sits one absence. **Echo has no persisted configur
 - A background daemon. The one-shot CLI process is the design and a config file is enough to make it work; a daemon would be a much larger change for the same user-visible result (**principle-laziness-protocol**).
 - Real-time audio level metering in the HUD. Phase 12 adds a one-shot level check for the mic picker only. Continuous metering needs the capture path off its mutex, which is a separate piece of work.
 - Cleanup rules for non-English languages. Phase 17 stops the English rules from corrupting other languages; writing German or Japanese rules is out of scope.
-- Migrating to whisper.cpp's new native `parakeet-cli`. Flagged in Alternatives as worth evaluating, not committed to.
 - Changing the design language. Phases 11, 12, 15 and 18 add controls to the existing Settings view using the existing token system.
+- **Migrating** to whisper.cpp's native `parakeet-cli`. Phase 20 measures whether Echo should, and is allowed to conclude that it should not. The migration itself, if the numbers support one, is a follow-up plan.
 
 ## Constraints
 
@@ -89,9 +89,11 @@ Four decisions had real competing options (**principle-exhaust-the-design-space*
 
 1. Parakeet TDT 0.6B v3. 25 European languages with automatic identification, no way to pin one, and an empty `lang` field so Echo cannot display what it detected.
 2. **Whisper multilingual, chosen as the language-capable path.** 100 languages, pinnable, `-l auto` for detection, and `result.language` in the JSON so the UI can show what was actually used.
-3. whisper.cpp's native `parakeet-cli`, with GGML weights at `ggml-org/parakeet-GGUF`. It would let Echo drop sherpa-onnx and the ONNX runtime entirely and ship one binary family with one model format. Genuinely attractive and deliberately not in this plan. It is new, no accuracy comparison against sherpa-onnx exists, and committing to it before measuring would be the kind of bet this plan should not make. Evaluate after phase 19.
+3. whisper.cpp's native `parakeet-cli`, with GGML weights at `ggml-org/parakeet-GGUF`. It would let Echo drop sherpa-onnx and the ONNX runtime entirely and ship one binary family with one model format. Genuinely attractive, and not decidable from documentation. It is new and no accuracy comparison against sherpa-onnx exists. **Phase 20 measures it instead of guessing**, after phase 16 has made the incumbent work, so the comparison has a real baseline. That phase is allowed to end in "keep sherpa-onnx".
 
-Both engines stay. Parakeet keeps its place as the fast automatic option and gets its stdout parse fixed; Whisper becomes the option you choose when you want control.
+For phases 1 through 19, both engines stay. Parakeet keeps its place as the fast automatic option and gets its stdout parse fixed; Whisper becomes the option you choose when you want control. Phase 20 then asks whether Echo needs both.
+
+**Alpha, not 1.0.** Everything phase 2 produces is labelled alpha: a pre-release GitHub Release, `v0.1.0-alpha.N` tags, alpha-marked artifact filenames, and the version shown in Settings from phase 15. Two things make this less trivial than it sounds. Version currently lives in two independent places, `Cargo.toml:10` and `src-tauri/tauri.conf.json:41`, and they will drift. And a semver prerelease suffix uses `-`, which is a field separator in both Debian and RPM version formats, with RPM's `Version` field disallowing it outright. Phase 2 verifies what the bundlers actually do with `0.1.0-alpha.1` rather than assuming, and names the fallback.
 
 ## Applicable skills
 
@@ -149,6 +151,12 @@ Ordered so the delivery gate lands first, then the symptom the user actually fee
 17. [Phase 17: the language model](phase-17-language-model.md)
 18. [Phase 18: language picker and detected-language display](phase-18-language-ui.md)
 19. [Phase 19: guided model download](phase-19-model-fetch.md)
+
+**Engine consolidation**
+
+20. [Phase 20: the parakeet-cli bakeoff](phase-20-parakeet-cli-bakeoff.md)
+
+Phase 20 is the only phase whose deliverable is a document rather than a change, and the only one that is safe to drop. Phases 1 through 19 leave Echo with two working engines; phase 20 asks whether it needs both. It depends on phase 16, because a bakeoff against a broken baseline measures nothing.
 
 Verification detail per phase lives in [testing.md](testing.md).
 

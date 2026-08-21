@@ -23,6 +23,7 @@ Answer "what model is transcribing my speech" exactly, and let the user change i
 - Whether that model is multilingual, from `model.multilingual`.
 - Whether VAD was active.
 - The measured inference time, which `Transcript.infer_ms` already carries and nothing displays.
+- The Echo version and its alpha label, from the single version source phase 2 establishes. This is the one field here that is not about the model, and it belongs on the same panel because it answers the same question: what exactly am I running. A bug report that names the build is worth several that do not.
 
 Configuration says what was requested. This says what happened. When they disagree the user needs to see both, and today the Settings row shows a compile-time constant dressed up as a fact.
 

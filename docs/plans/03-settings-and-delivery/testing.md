@@ -71,6 +71,10 @@ An environment-only implementation of any setting passes every test you would th
 
 Two JSON fixture sets get committed: whisper-cli `-oj` output in phase 13 and `sherpa-onnx-offline` stdout in phase 16. Both formats are log-adjacent with no compatibility guarantee, so record the upstream version that produced each one.
 
+Phase 20 needs a real dictation corpus, roughly 20 utterances with hand-written references. Two words of `claude_code.wav` cannot separate two engines. Cover normal speech, fast speech, a technical sentence with identifiers, a quiet utterance, one with background noise, and several non-English languages inside Parakeet's 25. Commit the audio, or a manifest plus a fetch script if it is large.
+
+`crates/echo/tests/compare_engines.rs` becomes that harness. Today it asserts nothing and swallows errors at `:16-24`, which is why the phase 16 Parakeet bug survived. At minimum it must fail when an engine returns empty text for a speech fixture.
+
 Note that `ECHO_AUDIO_FIXTURE` suppresses the HUD as a side effect (`crates/echo/src/ui/hud.rs:39`), intentionally. The fixture path and the HUD can never be exercised in the same run.
 
 ## The non-speech marker inventory
@@ -104,11 +108,13 @@ Do not reach for these when tuning phase 3 or 4. Measured at whisper.cpp `45f159
 
 The gate for the program as a whole. Each item maps to one of the five original complaints.
 
-1. **Identity.** Install the phase 2 deb on a clean GNOME session. One menu entry. Recognisable icon in the panel at default and 200% scale, in the titlebar, in the dock, and as the webview favicon. Corners transparent on a dark panel.
+1. **Identity.** Install the phase 2 deb on a clean GNOME session. One menu entry. Recognisable icon in the panel at default and 200% scale, in the titlebar, in the dock, and as the webview favicon. **Check the panel on a dark theme and a light theme**, because one background cannot prove an alpha channel: the current icon looks right on a light panel and shows a white box on a dark one.
 2. **Microphone.** Two input devices attached. Pin the non-default one in Settings, restart, and dictate through both the GUI button and the bound compositor shortcut. Both use the pinned device.
 3. **Transparency.** Read the model path off the Settings transparency panel and find that exact file on disk. Swap the model, dictate, and watch the panel follow.
 4. **Silence.** Two seconds of silence through a real microphone, then `ECHO_CLEANUP=off`, then again with the VAD model removed. Nothing typed in any of the three.
 5. **Languages.** Download `ggml-small.bin` from inside the app, pick German, dictate German, get German. Switch to Auto, dictate German, and see German reported as detected.
-6. **Delivery.** All of the above using only artifacts downloaded from GitHub Actions, with no local toolchain.
+6. **Delivery.** All of the above using only artifacts downloaded from GitHub Actions, with no local toolchain. The Release is marked as a pre-release, and the version shown in Settings matches the tag it was built from.
 
 Item 6 is the one that proves the rest. A green CI badge is not evidence; a working download is (**principle-prove-it-works**).
+
+Phase 20 is deliberately outside this gate. Its output is a measured verdict, so its acceptance is a reproducible table and a written decision, not a working feature.

@@ -12,6 +12,8 @@ The same mark in the window, the dock, the tray, the app menu, and the webview, 
 
 Add an `app.trayIcon` block. It is the supported place to point at a dedicated tray asset and it is absent today, which is why the tray silently falls back to the window icon. Set `iconPath` to the 24 px tray raster. Note that `tooltip` does nothing on Linux; the GTK implementation ignores the argument and upstream documents it as unsupported. Do not add it and assume it works.
 
+Consider `iconAsTemplate` for the tray. It asks the platform to treat the image as a monochrome mask and recolour it to the panel's foreground, which is the behaviour that makes a tray icon correct on every theme rather than on the one you tested. Verify it does something on GTK before relying on it; several `trayIcon` options are macOS-only in practice and this plan does not assume otherwise.
+
 **`src-tauri/src/main.rs`.** The tray currently takes `app.default_window_icon()` and clones it in, falling back to no icon at all when that returns `None` (`:255-257`). Point it at the tray asset instead, and make a missing tray icon a hard error rather than a silent build-with-no-icon. A tray with no icon is invisible, and the tray is load-bearing: `on_window_event` intercepts `CloseRequested` and hides the window (`:269-274`), so once the user closes the window the tray is the only way back.
 
 **`frontend/index.html`.** Add `<link rel="icon">` pointing at the generated favicon. There is none today; the file has a `theme-color` meta tag and no icon reference.
@@ -37,7 +39,9 @@ None.
 
 **Runtime.** The GTK tray cannot be driven by any control skill, so this is screenshots on a real desktop.
 
-1. Install the phase 2 deb on a GNOME session. Screenshot the panel at the default scale, then at 200% scale. The corners must be transparent against the panel, and the bars must be countable.
+1. Install the phase 2 deb on a GNOME session. Screenshot the panel at the default scale, then at 200% scale. The bars must be countable.
+
+   **Screenshot the panel on a dark theme and a light theme.** One background cannot prove an alpha channel. The current icon looks correct on a light panel and shows a white box on a dark one, precisely because its corners are opaque white rather than transparent. Two backgrounds is the cheapest test that distinguishes "transparent" from "happens to match".
 2. Screenshot the window titlebar and the dock/overview entry.
 3. Screenshot the app menu entry and confirm there is exactly **one**, which is the assertion that proves the naming collision is fixed. Install the deb *and* run the README's manual steps, then check again.
 4. Load the webview and confirm the favicon appears.

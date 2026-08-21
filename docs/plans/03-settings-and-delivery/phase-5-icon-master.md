@@ -34,7 +34,13 @@ Outputs, sized to what the consumers actually need:
 - `src-tauri/icons/tray-{22,24,32,48}.png` from the tray master.
 - `frontend/public/favicon.png` at 32 px.
 
-**Every PNG must be RGBA 32-bit with genuinely transparent corners.** `tauri-codegen` panics with `icon ... is not RGBA`, not warns. And the current `icon.png` declares RGBA while setting alpha to 255 everywhere, which is why the tray renders a white square on a dark panel. That is the single worst defect in the current asset set.
+**Every PNG must be RGBA 32-bit with a real alpha channel, not a declared one.** This is the single worst defect in the current asset set and it is worth being precise about, because the current file passes every check you would write casually.
+
+`src-tauri/icons/icon.png` **is** 8-bit RGBA. `tauri-codegen`'s check passes, because that check is `reader.output_color_type().0 != png::ColorType::Rgba` and nothing more. But every alpha value in the file is 255, and the pixels outside the rounded corners are painted opaque near-white `(254,254,254)`. So the corners are not transparent, they are white. On a dark panel the tray renders a white square with a dark tile inside it, and on a light panel it looks fine, which is why this survives casual review.
+
+`assets/icons/echo.png` is the opposite failure. It is colour type 2, plain RGB with no alpha channel at all, which is why adding it to `bundle.icon` would panic the build with `icon ... is not RGBA`.
+
+Both requirements are therefore separate and both are tested in this phase. Every generated PNG carries an alpha channel, **and** the pixels outside the mark are `alpha == 0`. The tray glyph has no tile at all, so its background is fully transparent everywhere, not just at the corners.
 
 **Tooling.** Prefer a Rust binary using `resvg`, run through `cargo run -p xtask`, over a shell script shelling out to `rsvg-convert` or `inkscape`. Neither is installed on the CI image and both would become an apt dependency. `resvg` is a workspace dev-dependency and renders identically everywhere, which matters for the drift check in phase 1's CI.
 
@@ -48,7 +54,14 @@ None. The generator's output manifest is a list of `(master, size, destination)`
 
 ## Verification
 
-**Static.** `cargo test --workspace`. Assert every generated PNG is square, is `ColorType::Rgba`, and has at least one pixel with alpha below 255, which is the test that would have caught the white-corner defect.
+**Static.** `cargo test --workspace`. Four assertions per generated PNG, and the alpha ones are the point of the phase:
+
+1. Square, and the declared size matches the filename.
+2. `ColorType::Rgba`. This is what `tauri-codegen` enforces with a panic.
+3. **All four corner pixels have `alpha == 0`.** Not "some pixel is below 255", which the current `icon.png` would fail but which a slightly different broken file could pass. Corner pixels are exactly where the rounded tile leaves the canvas, so this is the assertion that pins the defect.
+4. **For the tray glyph, no pixel outside the bars is opaque.** It has no tile, so a background of any alpha means the master was drawn wrong.
+
+Write these against the current `src-tauri/icons/icon.png` first and watch all of 3 and 4 fail. A test that has never failed has not been tested (**principle-prove-it-works**).
 
 **Runtime.** No control skill covers icon rendering, so this is measured and screenshotted.
 
