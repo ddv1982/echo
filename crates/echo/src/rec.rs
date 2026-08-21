@@ -159,13 +159,15 @@ fn run_record(mut stop: StopWhen) -> i32 {
         log_state(&session);
     }
 
-    let started_at = SystemTime::now()
+    let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .unwrap_or_default();
+    let started_at = now.as_secs();
     if let Ok(mut history) = History::load() {
         let _ = history.append(HistoryRow {
-            id: format!("{started_at}-{}", history.rows().len() + 1),
+            // Nanoseconds plus pid keep ids unique across processes and after
+            // the store trims to its row cap.
+            id: format!("{started_at}-{}-{}", now.subsec_nanos(), std::process::id()),
             text: rewrite.text.clone(),
             raw: transcript.raw.clone(),
             engine: transcript.engine.clone(),
@@ -205,7 +207,10 @@ fn capture_pcm(stop: &mut StopWhen) -> Result<audio::CaptureResult, FailReason> 
     if let Some(path) = fixture_path() {
         return audio::load_wav(&path).map_err(|_| FailReason::EngineError);
     }
-    let capture = AudioCapture::open_default().map_err(|_| FailReason::MicPermission)?;
+    let capture = AudioCapture::open_default().map_err(|err| match err {
+        audio::AudioError::NoDevice => FailReason::NoInputDevice,
+        _ => FailReason::CaptureFailed,
+    })?;
     let result = match stop {
         StopWhen::Timer => capture.record(recording_duration()),
         StopWhen::ToggleFile(toggle) => {
@@ -236,7 +241,7 @@ fn capture_pcm(stop: &mut StopWhen) -> Result<audio::CaptureResult, FailReason> 
             })
         }
     };
-    result.map_err(|_| FailReason::MicPermission)
+    result.map_err(|_| FailReason::CaptureFailed)
 }
 
 enum ToggleAction {

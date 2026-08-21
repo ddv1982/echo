@@ -138,7 +138,8 @@ function App() {
 
   const onRemoveDictionary = async (entry: DictionaryItem) => {
     try {
-      await removeDictionaryEntry(entry.spoken, entry.written)
+      const removed = await removeDictionaryEntry(entry.spoken, entry.written)
+      if (!removed) setError(`"${entry.spoken}" was already removed.`)
       setDictionary(await getDictionary())
     } catch (reason) {
       setError(messageFrom(reason))
