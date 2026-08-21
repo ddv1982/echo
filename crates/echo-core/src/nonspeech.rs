@@ -1,5 +1,8 @@
 pub fn strip_nonspeech(raw: &str) -> &str {
-    if raw.starts_with('[') || raw.starts_with('(') {
+    let trimmed = raw.trim();
+    if (trimmed.starts_with('[') && trimmed.ends_with(']'))
+        || (trimmed.starts_with('(') && trimmed.ends_with(')'))
+    {
         return "";
     }
     if raw.starts_with('*') && raw.ends_with('*') {
@@ -63,6 +66,8 @@ mod tests {
             ("...", ""),
             ("…", ""),
             ("Open (paren) here", "Open (paren) here"),
+            ("[MUSIC] hello", "[MUSIC] hello"),
+            ("(noise) continue", "(noise) continue"),
             ("Rate it 5 stars *", "Rate it 5 stars *"),
             ("He said \"music\" loudly", "He said \"music\" loudly"),
             ("claude code", "claude code"),
