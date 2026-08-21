@@ -7,12 +7,8 @@ use std::time::{Duration, Instant};
 use echo::audio::AudioCapture;
 use echo::inject::{Pasteboard, SysClipboard};
 use echo_core::{DictEntry, Dictionary, History};
-<<<<<<< HEAD
-use serde::Serialize;
-use tauri::image::Image;
-=======
 use serde::{Deserialize, Serialize};
->>>>>>> ded1e55 (feat(settings): expose get_settings and set_settings over IPC)
+use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, WindowEvent};
