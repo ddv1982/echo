@@ -15,48 +15,55 @@ pub enum HotkeyEvent {
     Up,
 }
 
+/// A canonical hold key: display name plus its evdev key code.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KeySpec {
-    pub keys: Vec<String>,
+pub struct HoldKeySpec {
+    pub name: String,
+    pub code: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HotkeyError {
     UnknownKey(String),
+    MultiKey(String),
 }
 
 impl std::fmt::Display for HotkeyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::UnknownKey(name) => write!(f, "unknown key {name}"),
+            Self::MultiKey(spec) => write!(
+                f,
+                "hold key must be a single key, got {spec}; bind combos to a desktop shortcut running rec --toggle"
+            ),
         }
     }
 }
 
 impl std::error::Error for HotkeyError {}
 
-pub fn parse_keyspec(spec: &str) -> Result<KeySpec, HotkeyError> {
-    let keys = spec
-        .split('+')
-        .map(canonicalize)
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(KeySpec { keys })
-}
-
-fn canonicalize(name: &str) -> Result<String, HotkeyError> {
-    let folded = name.trim().to_ascii_lowercase().replace(['_', '-'], "");
-    let canon = match folded.as_str() {
-        "rightctrl" | "rctrl" | "controlr" => "RightCtrl",
-        "leftctrl" | "lctrl" | "controll" => "LeftCtrl",
-        "ctrl" | "control" => "Ctrl",
-        "rightshift" | "rshift" => "RightShift",
-        "leftshift" | "lshift" | "shift" => "Shift",
-        "super" | "meta" | "win" | "mod4" => "Super",
-        "alt" | "mod1" => "Alt",
-        "space" => "Space",
+/// Parse a single hold key name. Hold-to-talk watches one key; the edge
+/// matcher has no chord state, so multi-key specs are rejected rather than
+/// silently OR-matched.
+pub fn parse_hold_key(spec: &str) -> Result<HoldKeySpec, HotkeyError> {
+    if spec.contains('+') {
+        return Err(HotkeyError::MultiKey(spec.to_string()));
+    }
+    let folded = spec.trim().to_ascii_lowercase().replace(['_', '-'], "");
+    let (name, code) = match folded.as_str() {
+        "rightctrl" | "rctrl" | "controlr" => ("RightCtrl", 97),
+        "leftctrl" | "lctrl" | "controll" | "ctrl" | "control" => ("LeftCtrl", 29),
+        "rightshift" | "rshift" => ("RightShift", 54),
+        "leftshift" | "lshift" | "shift" => ("LeftShift", 42),
+        "super" | "meta" | "win" | "mod4" => ("Super", 125),
+        "alt" | "mod1" => ("Alt", 56),
+        "space" => ("Space", 57),
         other => return Err(HotkeyError::UnknownKey(other.to_string())),
     };
-    Ok(canon.to_string())
+    Ok(HoldKeySpec {
+        name: name.to_string(),
+        code,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,10 +111,10 @@ pub fn evdev_permission_hint() -> String {
 }
 
 /// Hold key from `ECHO_HOLD_KEY`, defaulting to Right Ctrl.
-pub fn hold_keyspec() -> Result<KeySpec, HotkeyError> {
+pub fn hold_key() -> Result<HoldKeySpec, HotkeyError> {
     match std::env::var("ECHO_HOLD_KEY") {
-        Ok(raw) => parse_keyspec(&raw),
-        Err(_) => parse_keyspec("RightCtrl"),
+        Ok(raw) => parse_hold_key(&raw),
+        Err(_) => parse_hold_key("RightCtrl"),
     }
 }
 
@@ -124,9 +131,9 @@ pub fn decode_input_event(buf: &[u8; 24]) -> (u16, u16, i32) {
 /// Map a decoded event to a hold-key edge. Value 1 is press and 0 release;
 /// 2 (autorepeat) and non-key events return None.
 #[must_use]
-pub fn key_edge(codes: &[u16], event: (u16, u16, i32)) -> Option<HotkeyEvent> {
+pub fn key_edge(hold_code: u16, event: (u16, u16, i32)) -> Option<HotkeyEvent> {
     let (ev_type, code, value) = event;
-    if ev_type != EV_KEY || !codes.contains(&code) {
+    if ev_type != EV_KEY || code != hold_code {
         return None;
     }
     match value {
@@ -139,11 +146,11 @@ pub fn key_edge(codes: &[u16], event: (u16, u16, i32)) -> Option<HotkeyEvent> {
 /// Nonblocking evdev reader for one hold key across every readable device.
 pub struct HoldKey {
     files: Vec<fs::File>,
-    codes: Vec<u16>,
+    code: u16,
 }
 
 impl HoldKey {
-    pub fn open(devices: &[PathBuf], spec: &KeySpec) -> io::Result<Self> {
+    pub fn open(devices: &[PathBuf], code: u16) -> io::Result<Self> {
         let files = devices
             .iter()
             .map(|path| {
@@ -153,10 +160,7 @@ impl HoldKey {
                     .open(path)
             })
             .collect::<io::Result<Vec<_>>>()?;
-        Ok(Self {
-            files,
-            codes: evdev_codes(spec),
-        })
+        Ok(Self { files, code })
     }
 
     /// Poll every device until the wanted edge arrives or `cancel` fires.
@@ -171,7 +175,7 @@ impl HoldKey {
                 loop {
                     match file.read(&mut buf) {
                         Ok(24) => {
-                            if key_edge(&self.codes, decode_input_event(&buf)) == Some(want) {
+                            if key_edge(self.code, decode_input_event(&buf)) == Some(want) {
                                 return Ok(true);
                             }
                         }
@@ -186,42 +190,29 @@ impl HoldKey {
     }
 }
 
-fn evdev_codes(spec: &KeySpec) -> Vec<u16> {
-    spec.keys
-        .iter()
-        .filter_map(|key| match key.as_str() {
-            "RightCtrl" => Some(97),
-            "LeftCtrl" | "Ctrl" => Some(29),
-            "RightShift" => Some(54),
-            "Shift" => Some(42),
-            "Super" => Some(125),
-            "Alt" => Some(56),
-            "Space" => Some(57),
-            _ => None,
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn parses_right_ctrl() {
-        let spec = parse_keyspec("RightCtrl").unwrap();
-        assert_eq!(spec.keys, ["RightCtrl"]);
+    fn parses_right_ctrl_with_its_evdev_code() {
+        let spec = parse_hold_key("RightCtrl").unwrap();
+        assert_eq!(spec.name, "RightCtrl");
+        assert_eq!(spec.code, 97);
     }
 
     #[test]
-    fn parses_super_alt_space() {
-        let spec = parse_keyspec("Super+Alt+Space").unwrap();
-        assert_eq!(spec.keys, ["Super", "Alt", "Space"]);
+    fn rejects_multi_key_specs() {
+        assert_eq!(
+            parse_hold_key("Super+Alt+Space"),
+            Err(HotkeyError::MultiKey("Super+Alt+Space".to_string()))
+        );
     }
 
     #[test]
     fn rejects_unknown_names() {
         assert!(matches!(
-            parse_keyspec("Hyper+Thumb"),
+            parse_hold_key("Thumb"),
             Err(HotkeyError::UnknownKey(_))
         ));
     }
@@ -256,20 +247,13 @@ mod tests {
 
     #[test]
     fn key_edges_only_for_matching_key_events() {
-        let codes = [97u16];
-        assert_eq!(key_edge(&codes, (EV_KEY, 97, 1)), Some(HotkeyEvent::Down));
-        assert_eq!(key_edge(&codes, (EV_KEY, 97, 0)), Some(HotkeyEvent::Up));
+        assert_eq!(key_edge(97, (EV_KEY, 97, 1)), Some(HotkeyEvent::Down));
+        assert_eq!(key_edge(97, (EV_KEY, 97, 0)), Some(HotkeyEvent::Up));
         // Autorepeat is not an edge.
-        assert_eq!(key_edge(&codes, (EV_KEY, 97, 2)), None);
+        assert_eq!(key_edge(97, (EV_KEY, 97, 2)), None);
         // Other keys and non-key events are ignored.
-        assert_eq!(key_edge(&codes, (EV_KEY, 30, 1)), None);
-        assert_eq!(key_edge(&codes, (2, 97, 1)), None);
-    }
-
-    #[test]
-    fn right_ctrl_maps_to_evdev_code_97() {
-        let spec = parse_keyspec("RightCtrl").unwrap();
-        assert_eq!(evdev_codes(&spec), [97]);
+        assert_eq!(key_edge(97, (EV_KEY, 30, 1)), None);
+        assert_eq!(key_edge(97, (2, 97, 1)), None);
     }
 
     #[test]
@@ -283,8 +267,8 @@ mod tests {
         raw.extend_from_slice(&event_bytes(EV_KEY, 97, 1)); // the edge
         fs::write(&path, raw).unwrap();
 
-        let spec = parse_keyspec("RightCtrl").unwrap();
-        let mut hold = HoldKey::open(&[path], &spec).unwrap();
+        let spec = parse_hold_key("RightCtrl").unwrap();
+        let mut hold = HoldKey::open(&[path], spec.code).unwrap();
         let cancel = CancellationToken::new();
         assert!(hold.wait(HotkeyEvent::Down, &cancel).unwrap());
     }
@@ -296,8 +280,8 @@ mod tests {
         let path = dir.join("events");
         fs::write(&path, event_bytes(EV_KEY, 97, 1)).unwrap();
 
-        let spec = parse_keyspec("RightCtrl").unwrap();
-        let mut hold = HoldKey::open(&[path], &spec).unwrap();
+        let spec = parse_hold_key("RightCtrl").unwrap();
+        let mut hold = HoldKey::open(&[path], spec.code).unwrap();
         let cancel = CancellationToken::new();
         cancel.cancel();
         // Wants Up but the stream only has Down; only the cancel ends the wait.

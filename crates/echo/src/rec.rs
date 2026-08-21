@@ -38,10 +38,10 @@ pub fn run_rec_toggle() -> i32 {
 /// Loop forever: wait for the hold key, record while it is down, transcribe
 /// and inject on release. Ctrl-C quits.
 pub fn run_rec_hold() -> i32 {
-    let spec = match hotkey::hold_keyspec() {
+    let spec = match hotkey::hold_key() {
         Ok(spec) => spec,
         Err(err) => {
-            eprintln!("hold: {err} (set ECHO_HOLD_KEY to a supported key)");
+            eprintln!("hold: {err} (set ECHO_HOLD_KEY to a supported single key)");
             return 2;
         }
     };
@@ -56,14 +56,14 @@ pub fn run_rec_hold() -> i32 {
             return 1;
         }
     };
-    let mut hold = match HoldKey::open(&devices, &spec) {
+    let mut hold = match HoldKey::open(&devices, spec.code) {
         Ok(hold) => hold,
         Err(err) => {
             eprintln!("hold: cannot open input devices: {err}");
             return 1;
         }
     };
-    eprintln!("hold {} to dictate (ctrl-c to quit)", spec.keys.join("+"));
+    eprintln!("hold {} to dictate (ctrl-c to quit)", spec.name);
     let never = CancellationToken::new();
     loop {
         match hold.wait(HotkeyEvent::Down, &never) {
