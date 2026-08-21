@@ -18,8 +18,8 @@ All five must pass before a phase PR opens. Phases 1 to 10 should not change Rus
 
 Use the control-ui skill (from `cursor-team-kit`) against the running app. Two acceptable surfaces:
 
-1. The real Tauri webview (`cargo run -p echo-desktop`), which is WebKitGTK. Required at least once per phase because font features, `backdrop-filter`, and color rendering differ from Chromium.
-2. The Vite dev server in a browser for fast iteration, with `ECHO_ENGINE=fake` and `ECHO_DATA_DIR` pointed at a scratch directory so history and dictionary flows run end to end without hardware.
+1. The real Tauri webview (`cargo run -p echo-desktop`), which is WebKitGTK. Required at least once per phase because font features, `backdrop-filter`, and color rendering differ from Chromium. This is also the only surface for end-to-end data-flow checks: launch it with `ECHO_ENGINE=fake` and `ECHO_DATA_DIR` pointed at a scratch directory so history and dictionary flows exercise the real backend without hardware.
+2. The Vite dev server in a browser for fast styling iteration only. Outside Tauri, `frontend/src/tauri.ts` serves in-memory preview fixtures (`previewStatus`, `previewHistory`, `previewDictionary`) and never starts the Rust backend, so `ECHO_ENGINE` and `ECHO_DATA_DIR` are no-ops there. Interactions work against the fixtures, which is enough for visual checks but proves nothing about the input-to-output chain.
 
 Per phase checks are listed in each phase file. The cross-phase constants:
 
@@ -34,4 +34,9 @@ No control skill exists for raw X11 windows; flagged per the plan playbook. Manu
 
 ## End-to-end acceptance, after phase 11
 
-With the fake engine, run one full dictation loop from the desktop app (toggle record, speak or feed `ECHO_AUDIO_FIXTURE`, watch HUD, confirm insertion into history) and confirm the window and the capsule read as one design. This is the prove-it-works gate for the overhaul as a whole.
+Two checks, because the fixture path and the HUD are mutually exclusive: `RecordingHud::start` returns without creating a HUD when `ECHO_AUDIO_FIXTURE` is set.
+
+1. **Data flow.** With the fake engine and `ECHO_AUDIO_FIXTURE`, run one full dictation loop from the desktop app (toggle record, stop, confirm the transcript lands in history and Last transcript). No HUD appears on this path by design.
+2. **HUD consistency.** Validate the capsule separately, via a live microphone capture where hardware exists or `--hud-demo` otherwise, and confirm the window and the capsule read as one design.
+
+Together these are the prove-it-works gate for the overhaul as a whole.
