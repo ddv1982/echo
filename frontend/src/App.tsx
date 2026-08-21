@@ -57,8 +57,9 @@ function App() {
     return stored === 'light' || stored === 'dark' || stored === 'system' ? stored : 'system'
   })
   const [error, setError] = useState<string | null>(null)
+  const [recordingStartedAt, setRecordingStartedAt] = useState<number | null>(null)
   const previousPhase = useRef('Idle')
-  const recordingSeconds = useRecordingSeconds(status.recording)
+  const recordingSeconds = useElapsedSeconds(recordingStartedAt)
 
   const refreshCollections = useCallback(async () => {
     const [nextHistory, nextDictionary] = await Promise.all([getHistory(), getDictionary()])
@@ -69,6 +70,8 @@ function App() {
   const refreshStatus = useCallback(async () => {
     const next = await getAppStatus()
     setStatus(next)
+    const observedAt = Date.now()
+    setRecordingStartedAt((prev) => (next.recording ? (prev ?? observedAt) : null))
     if (previousPhase.current !== 'Idle' && next.phase === 'Idle') {
       void refreshCollections()
     }
@@ -309,20 +312,18 @@ function HomeView({
   )
 }
 
-function useRecordingSeconds(recording: boolean) {
-  const [seconds, setSeconds] = useState(0)
+// Elapsed time is derived from the start timestamp instead of stored in a
+// counter, so nothing needs a synchronous reset when recording stops. The
+// clamp covers the render between a new start and the first tick, when `now`
+// is still from the previous recording.
+function useElapsedSeconds(startedAt: number | null) {
+  const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
-    if (!recording) {
-      setSeconds(0)
-      return
-    }
-    const startedAt = Date.now()
-    const timer = window.setInterval(() => {
-      setSeconds(Math.floor((Date.now() - startedAt) / 1000))
-    }, 250)
+    if (startedAt === null) return
+    const timer = window.setInterval(() => setNow(Date.now()), 250)
     return () => window.clearInterval(timer)
-  }, [recording])
-  return seconds
+  }, [startedAt])
+  return startedAt === null ? 0 : Math.max(0, Math.floor((now - startedAt) / 1000))
 }
 
 function HistoryView({ items }: { items: HistoryItem[] }) {
