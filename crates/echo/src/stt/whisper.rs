@@ -84,10 +84,17 @@ impl Engine for WhisperEngine {
         let wav = write_temp_wav(pcm).map_err(EngineError::Infer)?;
         let out_prefix = wav.with_extension("");
         let vad = self.cache.vad_model();
-        let status = Command::new(bin)
+        let mut status = Command::new(bin)
             .args(whisper_args(&model, &wav, &out_prefix, vad.as_deref()))
             .output()
             .map_err(|err| EngineError::Infer(err.to_string()))?;
+        if !status.status.success() && vad.is_some() {
+            let _ = fs::remove_file(out_prefix.with_extension("txt"));
+            status = Command::new(bin)
+                .args(whisper_args(&model, &wav, &out_prefix, None))
+                .output()
+                .map_err(|err| EngineError::Infer(err.to_string()))?;
+        }
         let txt = out_prefix.with_extension("txt");
         let raw = read_transcript(&txt, &status.stdout);
         let _ = fs::remove_file(&wav);
@@ -180,6 +187,27 @@ mod tests {
         assert!(args.iter().any(|arg| arg == "--vad"));
         assert_eq!(vm_path(&args).map(Path::new), Some(vad.as_path()));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn whisper_args_include_vad_flags_only_when_model_is_some() {
+        let vad = Path::new("ggml-silero-v6.2.0.bin");
+        let with_vad = whisper_args(
+            Path::new("model.bin"),
+            Path::new("in.wav"),
+            Path::new("out"),
+            Some(vad),
+        );
+        assert!(with_vad.iter().any(|arg| arg == "--vad"));
+        assert_eq!(vm_path(&with_vad), Some("ggml-silero-v6.2.0.bin"));
+
+        let without_vad = whisper_args(
+            Path::new("model.bin"),
+            Path::new("in.wav"),
+            Path::new("out"),
+            None,
+        );
+        assert!(without_vad.iter().all(|arg| arg != "--vad" && arg != "-vm"));
     }
 
     #[test]
