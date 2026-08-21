@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 /// 16 kHz is the only sample rate a `Pcm16kMono` buffer may represent.
 pub const SAMPLE_RATE_HZ: u32 = 16_000;
 
@@ -55,7 +57,7 @@ impl Pcm16kMono {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FailReason {
     MicPermission,
     InjectPermission,
@@ -85,7 +87,7 @@ impl std::fmt::Display for FailReason {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EngineId {
     ParakeetTdt06bV3,
     Whisper { model: String },

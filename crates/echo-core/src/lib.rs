@@ -1,10 +1,16 @@
+mod dictionary;
 mod engine;
+mod history;
 mod inject;
+mod paths;
 mod session;
 mod types;
 
+pub use dictionary::{DictEntry, DictHit, Dictionary, Rewrite};
 pub use engine::{Engine, EngineError, Transcript};
+pub use history::{AppCommand, History, HistoryRow};
 pub use inject::{FocusTarget, InjectBackend, InjectReport, Injector};
+pub use paths::{data_dir, dictionary_path, history_path, status_path};
 pub use session::{Session, SessionError, SessionState};
 pub use types::{EngineId, FailReason, Pcm16kMono, SAMPLE_RATE_HZ};
 
