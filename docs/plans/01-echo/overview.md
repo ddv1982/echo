@@ -1,10 +1,10 @@
-# Echo. A local Wispr Flow clone for Linux and macOS
+# Echo. Local hold-to-talk dictation for Linux and macOS
 
 ## Context
 
-[Wispr Flow](https://wisprflow.ai/) is a system-wide push-to-talk dictation app. Hold a key, speak, and cleaned text lands at the cursor in whatever app is focused. The company sells that loop on Mac, Windows, iPhone, and Android. There is no Linux build. Pricing starts free at 2,000 words per week, then Pro for unlimited use.
+Echo is a system-wide push-to-talk app. Hold a key, speak, and cleaned text lands at the cursor in whatever app is focused. Audio stays on the machine.
 
-The video at [https://www.youtube.com/watch?v=IMQw3aHjf2Q](https://www.youtube.com/watch?v=IMQw3aHjf2Q) clones that loop on a Mac in a few Claude Code turns. The creator names the app Murmur YouTube. The working architecture is a Swift shell, a waveform HUD, a `CGEventTap` hotkey, microphone capture, Apple `SpeechAnalyzer` / `SpeechTranscriber` on macOS 26, optional NVIDIA Parakeet, optional cleanup, and cursor injection. The first real bug is the one that matters. Accessibility insertion reports success inside Cursor and types nothing. That is the Electron AX silent-failure case.
+The video at [https://www.youtube.com/watch?v=IMQw3aHjf2Q](https://www.youtube.com/watch?v=IMQw3aHjf2Q) builds that loop on a Mac in a few Claude Code turns. The working architecture is a Swift shell, a waveform HUD, a `CGEventTap` hotkey, microphone capture, Apple `SpeechAnalyzer` / `SpeechTranscriber` on macOS 26, optional NVIDIA Parakeet, optional cleanup, and cursor injection. The first real bug is the one that matters. Accessibility insertion reports success inside Cursor and types nothing. That is the Electron AX silent-failure case.
 
 This plan keeps the video's pipeline and throws out the Mac-only shell. Echo has to run on Linux and macOS. The language is Rust. Go was the other candidate and loses on STT bindings and OS input.
 
@@ -25,8 +25,7 @@ Excluded.
 - Cloud STT and cloud cleanup.
 - Mobile.
 - A notes or meeting-recorder product.
-- Wispr Flow branding, trademarks, or a copy of their UI.
-- Snippets, tone profiles, and team sync. Those are Wispr differentiators we can add after the loop is honest.
+- Snippets, tone profiles, and team sync. Add those after the loop is honest.
 
 ## Constraints
 
@@ -39,13 +38,13 @@ Excluded.
 
 ## Alternatives
 
-**A. Native Swift on macOS, separate Linux app.** This is what the video did, plus the "Windows Parakeet repo" they promised and did not build. Two codebases. Dictionary, history, and engine comparison would drift on day one. Rejected because Linux is a v1 requirement, not a port.
+**A. Native Swift on macOS, separate Linux app.** This is what the video did, plus a second repo they promised for non-Mac users and did not build. Two codebases. Dictionary, history, and engine comparison would drift on day one. Rejected because Linux is a v1 requirement, not a port.
 
 **B. Go daemon plus CGo.** One static binary is attractive. whisper.cpp and sherpa-onnx become CGo or subprocesses. `CGEventTap`, evdev, and libei bindings are thinner than Rust's. A GC in the audio callback is a problem we would spend the first month dancing around. Rejected.
 
-**C. Electron or Tauri, like [OpenWhispr](https://github.com/OpenWhispr/openwhispr).** Cross-platform HUD for free. We would also ship a browser and re-enter the injection mess the video hit in Cursor. Rejected for the app shell. We can still steal their engine list. They already run Parakeet through sherpa-onnx and Whisper through whisper.cpp on Mac, Windows, and Linux. See [their local-models guide](https://docs.openwhispr.com/guides/local-models).
+**C. Electron or Tauri.** Cross-platform HUD for free. We would also ship a browser and re-enter the injection mess the video hit in Cursor. Rejected for the app shell. The engine list is still the right one. Parakeet through [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) and Whisper through [whisper.cpp](https://github.com/ggml-org/whisper.cpp) already run on Mac and Linux.
 
-**D. Rust workspace, two crates, platform modules behind `cfg`.** Shared session machine and engine traits. Linux and macOS adapters at the edges. This is the choice. The Linux dictation tools that already work ([whisrs](https://github.com/y0sif/whisrs), [xhisper-rs](https://github.com/PrivateGER/xhisper-rs), [flowvoice](https://github.com/GOJO-SENPA1/flowvoice)) are mostly Rust or call out to the same injectors we will use.
+**D. Rust workspace, two crates, platform modules behind `cfg`.** Shared session machine and engine traits. Linux and macOS adapters at the edges. This is the choice. Linux dictation tools that already work, such as [flowvoice](https://github.com/GOJO-SENPA1/flowvoice), are Rust or call out to the same injectors we will use.
 
 ## Applicable skills
 

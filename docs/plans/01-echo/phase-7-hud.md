@@ -18,7 +18,7 @@ Linux may need a layer-shell path for wlroots. If that is a second window backen
 
 `HudState` is a projection of `SessionState` plus a ring buffer of RMS samples. The UI does not own the session.
 
-`HudConfig` is `{ enabled, anchor }`. Default anchor is bottom-center, matching the video more than Wispr's side pill.
+`HudConfig` is `{ enabled, anchor }`. Default anchor is bottom-center, matching the video.
 
 ## Verification
 

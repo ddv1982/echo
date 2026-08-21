@@ -15,7 +15,7 @@ Run on this Linux host. macOS-only modules stay behind `cfg` so the command stay
 
 ## Runtime harness
 
-`crates/echo/tests/compare_engines.rs` is the video's comparison window in test form. One WAV fixture. Every enabled engine. Print `engine`, `infer_ms`, and `raw`. Do not scrape Wispr Flow's local database. That number in the video includes IPC they do not own.
+`crates/echo/tests/compare_engines.rs` is the video's comparison window in test form. One WAV fixture. Every enabled engine. Print `engine`, `infer_ms`, and `raw`. Do not scrape another app's local database for timings. That number in the video includes IPC they do not own.
 
 `crates/echo/tests/inject_linux.rs` reads a nonce back from a widget we spawn.
 

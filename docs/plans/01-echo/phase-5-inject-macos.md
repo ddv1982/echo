@@ -18,7 +18,7 @@ The same `Injector` trait, a Mac cascade that survives Electron. AX insert only 
 
 Reuse `InjectReport`. Add `InjectBackend::AxSetValue` and `InjectBackend::CgEventPaste`.
 
-`AxFocus` is `TextField { role } | Missing | NonText { role }`. `Missing` still attempts Cmd+V. That is the Chrome `kAXErrorNoValue` case from [EnviousWispr #278](https://github.com/saurabhav88/EnviousWispr/pull/278). `NonText` does not paste.
+`AxFocus` is `TextField { role } | Missing | NonText { role }`. `Missing` still attempts Cmd+V. That is the Chrome `kAXErrorNoValue` case. `NonText` does not paste.
 
 ## Verification
 

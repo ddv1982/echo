@@ -4,7 +4,7 @@ Back to [overview](./overview.md).
 
 ## Goal
 
-Optional local rewrite that strips fillers and adds punctuation. This is the Wispr feel. It is last because an insert that does not work makes a prettier sentence irrelevant.
+Optional local rewrite that strips fillers and adds punctuation. This is last because an insert that does not work makes a prettier sentence irrelevant.
 
 ## Changes
 
@@ -24,6 +24,6 @@ Do not call a cloud API.
 
 ## Verification
 
-Static. Rules tests on the Wispr homepage ramble, copied into a fixture. "um so like can we uh move the button" becomes a clean sentence. Dictionary hits still apply after cleanup.
+Static. Rules tests on a spoken ramble fixture. "um so like can we uh move the button" becomes a clean sentence. Dictionary hits still apply after cleanup.
 
 Runtime. With `CleanupMode::Off`, output equals the engine raw plus dictionary. With `Rules`, the fixture matches golden text. With `LocalModel`, an ignored test runs only if the binary is on `PATH` and compares fillers-removed, not exact wording. Linux can prove Off and Rules. The model path is best-effort here.

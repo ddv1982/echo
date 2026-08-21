@@ -10,7 +10,7 @@ One `Engine` trait, two local adapters that run on Linux and macOS. Parakeet thr
 
 `crates/echo-core/src/engine.rs` defines the trait and `Transcript`.
 
-`crates/echo/src/stt/parakeet.rs` wraps sherpa-onnx. First-run downloads the INT8 tarball OpenWhispr already documents, then caches it under the platform data dir.
+`crates/echo/src/stt/parakeet.rs` wraps sherpa-onnx. First-run downloads the INT8 tarball from the [sherpa-onnx model releases](https://github.com/k2-fsa/sherpa-onnx/releases), then caches it under the platform data dir.
 
 `crates/echo/src/stt/whisper.rs` wraps whisper.cpp or a `whisper-rs` binding. Default model is `base.en`. Larger models are a config key, not a rewrite.
 
