@@ -483,7 +483,7 @@ function SettingsView({
   const settingsRef = useRef<AppSettings | null>(null)
   const writeChainRef = useRef(Promise.resolve())
   const [devices, setDevices] = useState<InputDevice[]>([])
-  const [micLevel, setMicLevel] = useState<number | null>(null)
+  const [micMeter, setMicMeter] = useState<number | 'unavailable' | null>(null)
   const [testingMic, setTestingMic] = useState(false)
 
   useEffect(() => {
@@ -554,7 +554,10 @@ function SettingsView({
                 aria-label="Microphone"
                 value={settings.microphone.effective}
                 disabled={settings.microphone.source === 'env'}
-                onChange={(event) => void patch('microphone', event.target.value || null)}
+                onChange={(event) => {
+                  setMicMeter(null)
+                  void patch('microphone', event.target.value || null)
+                }}
               >
                 <option value="">System default</option>
                 {microphoneOptions(devices, settings.microphone.effective).map((device) => (
@@ -568,16 +571,22 @@ function SettingsView({
                 onClick={() => {
                   setTestingMic(true)
                   void testInputDevice(settings.microphone.effective || null)
-                    .then(setMicLevel)
+                    .then(setMicMeter)
+                    .catch(() => setMicMeter('unavailable'))
                     .finally(() => setTestingMic(false))
                 }}
               >
                 Test
               </button>
-              {micLevel != null ? (
-                <span className="status-note" data-tone={micLevel > 0.001 ? 'ok' : 'attention'}>
-                  <span className="status-dot" data-tone={micLevel > 0.001 ? 'ok' : 'attention'} aria-hidden="true" />
-                  {micLevel > 0.001 ? `Level ${micLevel.toFixed(3)}` : 'Silent'}
+              {micMeter === 'unavailable' ? (
+                <span className="status-note" data-tone="attention">
+                  <span className="status-dot" data-tone="attention" aria-hidden="true" />
+                  Unavailable
+                </span>
+              ) : micMeter != null ? (
+                <span className="status-note" data-tone={micMeter > 0.001 ? 'ok' : 'attention'}>
+                  <span className="status-dot" data-tone={micMeter > 0.001 ? 'ok' : 'attention'} aria-hidden="true" />
+                  {micMeter > 0.001 ? `Level ${micMeter.toFixed(3)}` : 'Silent'}
                 </span>
               ) : (
                 <span className="status-note" data-tone={status.microphoneReady ? 'ok' : 'attention'}>

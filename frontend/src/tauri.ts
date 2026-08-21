@@ -140,14 +140,21 @@ export function setSettings(settings: Settings): Promise<Settings> {
   return Promise.resolve({ ...next })
 }
 
+let previewMicTestError: string | null = null
+
 export function seedPreviewSettings(settings: Settings) {
   previewSettings = settings
   applyPreviewStatus(settings)
 }
 
+export function seedPreviewMicTestError(message: string) {
+  previewMicTestError = message
+}
+
 export function resetPreviewSettings() {
   previewSettings = defaultPreviewSettings()
   previewStatus = richPreviewStatus()
+  previewMicTestError = null
 }
 
 const previewDevices: InputDevice[] = [
@@ -163,6 +170,7 @@ export function listInputDevices(): Promise<InputDevice[]> {
 
 export function testInputDevice(name: string | null): Promise<number> {
   if (isTauri()) return invoke('test_input_device', { name })
+  if (previewMicTestError) return Promise.reject(new Error(previewMicTestError))
   return Promise.resolve(name === 'Bluetooth Headset' ? 0 : 0.042)
 }
 
