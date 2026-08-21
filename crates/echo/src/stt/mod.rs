@@ -61,7 +61,12 @@ pub fn engine_summary() -> (String, bool) {
 fn whisper_summary() -> (String, bool) {
     let engine = WhisperEngine::new();
     if engine.available() {
-        (format!("Whisper · {}", engine.model_name()), true)
+        let vad = if ModelCache::from_env().vad_model().is_some() {
+            "VAD on"
+        } else {
+            "VAD unavailable"
+        };
+        (format!("Whisper · {} · {vad}", engine.model_name()), true)
     } else {
         ("Whisper setup required".to_string(), false)
     }
