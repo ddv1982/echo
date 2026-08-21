@@ -197,7 +197,6 @@
 .shortcut-hint kbd {
   width: fit-content;
   border: 1px solid hsl(var(--border-strong));
-  border-bottom-width: 2px;
   border-radius: var(--radius-sm);
   background: hsl(var(--surface-raised));
   color: hsl(var(--foreground));

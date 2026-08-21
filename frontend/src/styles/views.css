@@ -321,7 +321,7 @@
 }
 
 .icon-button:hover {
-  border-color: hsl(var(--border-strong));
+  background: hsl(var(--surface-hover));
   color: hsl(var(--foreground));
 }
 

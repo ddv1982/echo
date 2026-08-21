@@ -41,34 +41,24 @@ button:disabled {
 }
 
 button:focus-visible,
-input:focus-visible {
-  outline: 2px solid hsl(var(--focus));
-  outline-offset: 2px;
+input:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px hsl(var(--background)), 0 0 0 4px hsl(var(--focus));
 }
 
 input {
   width: 100%;
   height: 2.55rem;
-  border: 1px solid hsl(var(--border-strong));
+  border: 1px solid hsl(var(--border-subtle));
   border-radius: var(--radius-sm);
   outline: none;
-  background: hsl(var(--surface-panel));
+  background: hsl(var(--surface-card));
   color: hsl(var(--foreground));
   padding: 0 var(--space-3);
-  transition: border-color var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out);
 }
 
 input::placeholder {
   color: hsl(var(--text-tertiary));
-}
-
-input:hover {
-  border-color: hsl(var(--border-strong));
-}
-
-input:focus {
-  border-color: hsl(var(--focus));
-  box-shadow: 0 0 0 3px hsl(var(--focus) / 0.18);
 }
 
 h1,
