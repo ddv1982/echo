@@ -20,10 +20,20 @@ import {
   getAppStatus,
   getDictionary,
   getHistory,
+  getSettings,
   removeDictionaryEntry,
+  setSettings,
   toggleRecording,
 } from './tauri'
-import type { AppStatus, DictionaryItem, HistoryItem, ThemeMode, View } from './types'
+import type {
+  AppStatus,
+  DictionaryItem,
+  HistoryItem,
+  SettingSource,
+  Settings as AppSettings,
+  ThemeMode,
+  View,
+} from './types'
 
 const initialStatus: AppStatus = {
   phase: 'Idle',
@@ -208,7 +218,13 @@ function App() {
             />
           ) : null}
           {view === 'settings' ? (
-            <SettingsView status={status} theme={theme} onThemeChange={setTheme} />
+            <SettingsView
+              status={status}
+              theme={theme}
+              onThemeChange={setTheme}
+              onStatusChange={refreshStatus}
+              onError={setError}
+            />
           ) : null}
         </main>
       </div>
@@ -423,10 +439,88 @@ function DictionaryView({
   )
 }
 
-function SettingsView({ status, theme, onThemeChange }: { status: AppStatus; theme: ThemeMode; onThemeChange: (theme: ThemeMode) => void }) {
+const ENGINE_OPTIONS = [
+  { value: 'auto', label: 'Auto' },
+  { value: 'whisper', label: 'Whisper' },
+  { value: 'parakeet', label: 'Parakeet' },
+  { value: 'fake', label: 'Fake' },
+] as const
+
+const CLEANUP_OPTIONS = [
+  { value: 'off', label: 'Off' },
+  { value: 'rules', label: 'Rules' },
+] as const
+
+const HOLD_KEY_OPTIONS = [
+  { value: 'RightCtrl', label: 'Right Ctrl' },
+  { value: 'LeftCtrl', label: 'Left Ctrl' },
+  { value: 'RightShift', label: 'Right Shift' },
+  { value: 'LeftShift', label: 'Left Shift' },
+  { value: 'Super', label: 'Super' },
+  { value: 'Alt', label: 'Alt' },
+  { value: 'Space', label: 'Space' },
+]
+
+const RECORD_SECOND_PRESETS = [3, 5, 10, 15, 30, 60]
+
+function SettingsView({
+  status,
+  theme,
+  onThemeChange,
+  onStatusChange,
+  onError,
+}: {
+  status: AppStatus
+  theme: ThemeMode
+  onThemeChange: (theme: ThemeMode) => void
+  onStatusChange: () => Promise<void>
+  onError: (message: string) => void
+}) {
+  const [settings, setLocalSettings] = useState<AppSettings | null>(null)
+  const settingsRef = useRef<AppSettings | null>(null)
+  const writeChainRef = useRef(Promise.resolve())
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void getSettings().then(setLocalSettings)
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [])
+
+  useEffect(() => {
+    settingsRef.current = settings
+  }, [settings])
+
+  const commit = async (next: AppSettings) => {
+    try {
+      const written = await setSettings(next)
+      settingsRef.current = written
+      setLocalSettings(written)
+      await onStatusChange()
+    } catch (reason) {
+      onError(messageFrom(reason))
+    }
+  }
+
+  const patch = async <K extends keyof AppSettings>(key: K, value: AppSettings[K]['value']) => {
+    const queued = writeChainRef.current.then(async () => {
+      const current = settingsRef.current
+      if (!current) return
+      await commit({ ...current, [key]: { ...current[key], value } })
+    })
+    writeChainRef.current = queued
+    await queued
+  }
+
+  const recordSecondOptions = RECORD_SECOND_PRESETS
+    .concat(settings ? [settings.recordSeconds.effective] : [])
+    .filter((secs, index, all) => all.indexOf(secs) === index)
+    .sort((left, right) => left - right)
+    .map((secs) => ({ value: String(secs), label: `${secs} seconds` }))
+
   return (
     <div className="view-stack">
-      <ViewHeader title="Settings" subtitle="Review the local components Echo uses for dictation." />
+      <ViewHeader title="Settings" subtitle="Change how Echo records and transcribes, on this machine." />
       <section className="panel settings-section">
         <SectionHeading title="Appearance" subtitle="Follow the system or choose a fixed theme." />
         <div className="setting-row">
@@ -439,18 +533,173 @@ function SettingsView({ status, theme, onThemeChange }: { status: AppStatus; the
         </div>
       </section>
       <section className="panel settings-section">
-        <SectionHeading title="Shortcut & recording" subtitle="Bind the suggested shortcut in your desktop's keyboard settings; Echo does not register it itself." />
-        <SettingLine label="Suggested shortcut" value={`${status.shortcut} · press once to start, again to stop`} />
-        <SettingLine label="Recording HUD" value={status.hudEnabled ? 'Echo pulse capsule (X11 sessions)' : 'Disabled via ECHO_HUD'} />
-        <SettingLine label="Maximum recording" value={`${status.maxRecordSeconds} seconds`} />
+        <SectionHeading title="Audio" subtitle="Input stays on this machine." />
+        <SettingLine label="Microphone" value={status.microphoneReady ? 'Default input available' : 'No default input'} tone={status.microphoneReady ? 'ok' : 'attention'} />
       </section>
       <section className="panel settings-section">
-        <SectionHeading title="Local pipeline" subtitle="No recorded audio leaves this machine." />
-        <SettingLine label="Speech engine" value={status.engineName} tone={status.engineReady ? 'ok' : 'attention'} />
-        <SettingLine label="Microphone" value={status.microphoneReady ? 'Default input available' : 'No default input'} tone={status.microphoneReady ? 'ok' : 'attention'} />
-        <SettingLine label="Text insertion" value={status.injectionName} tone={status.injectionReady ? 'ok' : 'attention'} />
-        <SettingLine label="Cleanup" value={status.cleanupName} />
+        <SectionHeading title="Transcription" subtitle="No recorded audio leaves this machine." />
+        {settings ? (
+          <div className="setting-row">
+            <div>
+              <strong>Speech engine</strong>
+              <span>{overrideHint(settings.engine.source, 'ECHO_ENGINE', 'Which local engine transcribes recordings.')}</span>
+            </div>
+            <div className="segmented-control" role="group" aria-label="Speech engine">
+              {ENGINE_OPTIONS.map((option) => (
+                <button
+                  type="button"
+                  key={option.value}
+                  data-active={settings.engine.effective === option.value}
+                  disabled={settings.engine.source === 'env'}
+                  onClick={() => void patch('engine', option.value)}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+        <SettingLine label="Resolved engine" value={status.engineName} tone={status.engineReady ? 'ok' : 'attention'} />
       </section>
+      <section className="panel settings-section">
+        <SectionHeading title="Shortcut and recording" subtitle="Bind the suggested shortcut in your desktop's keyboard settings; Echo does not register it itself." />
+        <SettingLine label="Suggested shortcut" value={`${status.shortcut} · press once to start, again to stop`} />
+        {settings ? (
+          <>
+            <SettingToggle
+              label="Recording HUD"
+              description="Echo pulse capsule on X11 sessions."
+              value={settings.hud.effective}
+              source={settings.hud.source}
+              envName="ECHO_HUD"
+              onChange={(value) => void patch('hud', value)}
+            />
+            <SettingSelect
+              label="Hold key"
+              description="Used by rec --hold. Combos belong on a desktop shortcut."
+              value={settings.holdKey.effective}
+              options={holdKeyOptions(settings.holdKey.effective)}
+              source={settings.holdKey.source}
+              envName="ECHO_HOLD_KEY"
+              onChange={(value) => void patch('holdKey', value)}
+            />
+            <SettingSelect
+              label="Timed recording"
+              description={`Used by rec --once. Toggle recording still caps at ${status.maxRecordSeconds} seconds.`}
+              value={String(settings.recordSeconds.effective)}
+              options={recordSecondOptions}
+              source={settings.recordSeconds.source}
+              envName="ECHO_RECORD_SECONDS"
+              onChange={(value) => void patch('recordSeconds', Number(value))}
+            />
+          </>
+        ) : null}
+      </section>
+      <section className="panel settings-section">
+        <SectionHeading title="Text" subtitle="What Echo writes after transcription." />
+        {settings ? (
+          <div className="setting-row">
+            <div>
+              <strong>Cleanup</strong>
+              <span>{overrideHint(settings.cleanup.source, 'ECHO_CLEANUP', status.cleanupName)}</span>
+            </div>
+            <div className="segmented-control" role="group" aria-label="Cleanup">
+              {CLEANUP_OPTIONS.map((option) => (
+                <button
+                  type="button"
+                  key={option.value}
+                  data-active={settings.cleanup.effective === option.value}
+                  disabled={settings.cleanup.source === 'env'}
+                  onClick={() => void patch('cleanup', option.value)}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
+        <SettingLine label="Text insertion" value={status.injectionName} tone={status.injectionReady ? 'ok' : 'attention'} />
+      </section>
+      {status.settingsPath ? (
+        <p className="settings-path">Saved at <code>{status.settingsPath}</code></p>
+      ) : null}
+    </div>
+  )
+}
+
+function holdKeyOptions(current: string) {
+  if (HOLD_KEY_OPTIONS.some((option) => option.value === current)) return HOLD_KEY_OPTIONS
+  return [...HOLD_KEY_OPTIONS, { value: current, label: current }]
+}
+
+function overrideHint(source: SettingSource, envName: string, fallback: string) {
+  return source === 'env' ? envName : fallback
+}
+
+function SettingSelect({
+  label,
+  description,
+  value,
+  options,
+  source,
+  envName,
+  onChange,
+}: {
+  label: string
+  description: string
+  value: string
+  options: Array<{ value: string; label: string }>
+  source: SettingSource
+  envName: string
+  onChange: (value: string) => void
+}) {
+  const locked = source === 'env'
+  return (
+    <label className="setting-row">
+      <div>
+        <strong>{label}</strong>
+        <span>{locked ? envName : description}</span>
+      </div>
+      <select
+        aria-label={label}
+        value={value}
+        disabled={locked}
+        onChange={(event) => onChange(event.target.value)}
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>{option.label}</option>
+        ))}
+      </select>
+    </label>
+  )
+}
+
+function SettingToggle({
+  label,
+  description,
+  value,
+  source,
+  envName,
+  onChange,
+}: {
+  label: string
+  description: string
+  value: boolean
+  source: SettingSource
+  envName: string
+  onChange: (value: boolean) => void
+}) {
+  const locked = source === 'env'
+  return (
+    <div className="setting-row">
+      <div>
+        <strong>{label}</strong>
+        <span>{locked ? envName : description}</span>
+      </div>
+      <div className="segmented-control" role="group" aria-label={label}>
+        <button type="button" data-active={value} disabled={locked} onClick={() => onChange(true)}>On</button>
+        <button type="button" data-active={!value} disabled={locked} onClick={() => onChange(false)}>Off</button>
+      </div>
     </div>
   )
 }
