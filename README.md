@@ -6,6 +6,10 @@ Hold-to-talk (`echo-desktop rec --hold`) reads the key from `/dev/input` and nee
 
 The first-build plan is [docs/plans/01-echo/overview.md](docs/plans/01-echo/overview.md).
 
+## Download
+
+Tagged alpha builds are on [GitHub Releases](https://github.com/ddv1982/echo/releases). Nightly Linux artifacts come from the [release workflow](https://github.com/ddv1982/echo/actions/workflows/release.yml).
+
 ## Build
 
 You need Rust 1.88 or newer and Node.js 22 or newer. On Ubuntu, Debian, Zorin OS, and their derivatives, install the native build and runtime dependencies with:
