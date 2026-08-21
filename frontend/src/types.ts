@@ -15,6 +15,12 @@ export interface Settings {
   hud: SettingField<boolean>
   holdKey: SettingField<string>
   recordSeconds: SettingField<number>
+  microphone: SettingField<string>
+}
+
+export interface InputDevice {
+  name: string
+  isDefault: boolean
 }
 
 export interface AppStatus {

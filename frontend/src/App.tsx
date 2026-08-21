@@ -21,8 +21,10 @@ import {
   getDictionary,
   getHistory,
   getSettings,
+  listInputDevices,
   removeDictionaryEntry,
   setSettings,
+  testInputDevice,
   toggleRecording,
 } from './tauri'
 import type {
@@ -33,6 +35,7 @@ import type {
   Settings as AppSettings,
   ThemeMode,
   View,
+  InputDevice,
 } from './types'
 
 const initialStatus: AppStatus = {
@@ -479,10 +482,16 @@ function SettingsView({
   const [settings, setLocalSettings] = useState<AppSettings | null>(null)
   const settingsRef = useRef<AppSettings | null>(null)
   const writeChainRef = useRef(Promise.resolve())
+  const [devices, setDevices] = useState<InputDevice[]>([])
+  const [micLevel, setMicLevel] = useState<number | null>(null)
+  const [testingMic, setTestingMic] = useState(false)
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      void getSettings().then(setLocalSettings)
+      void Promise.all([getSettings(), listInputDevices()]).then(([next, listed]) => {
+        setLocalSettings(next)
+        setDevices(listed)
+      })
     }, 0)
     return () => window.clearTimeout(timer)
   }, [])
@@ -534,7 +543,53 @@ function SettingsView({
       </section>
       <section className="panel settings-section">
         <SectionHeading title="Audio" subtitle="Input stays on this machine." />
-        <SettingLine label="Microphone" value={status.microphoneReady ? 'Default input available' : 'No default input'} tone={status.microphoneReady ? 'ok' : 'attention'} />
+        {settings ? (
+          <div className="setting-row">
+            <div>
+              <strong>Microphone</strong>
+              <span>{microphoneHint(settings, devices)}</span>
+            </div>
+            <div className="setting-actions">
+              <select
+                aria-label="Microphone"
+                value={settings.microphone.effective}
+                disabled={settings.microphone.source === 'env'}
+                onChange={(event) => void patch('microphone', event.target.value || null)}
+              >
+                <option value="">System default</option>
+                {microphoneOptions(devices, settings.microphone.effective).map((device) => (
+                  <option key={device.name} value={device.name}>{device.name}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="compact-button"
+                disabled={testingMic}
+                onClick={() => {
+                  setTestingMic(true)
+                  void testInputDevice(settings.microphone.effective || null)
+                    .then(setMicLevel)
+                    .finally(() => setTestingMic(false))
+                }}
+              >
+                Test
+              </button>
+              {micLevel != null ? (
+                <span className="status-note" data-tone={micLevel > 0.001 ? 'ok' : 'attention'}>
+                  <span className="status-dot" data-tone={micLevel > 0.001 ? 'ok' : 'attention'} aria-hidden="true" />
+                  {micLevel > 0.001 ? `Level ${micLevel.toFixed(3)}` : 'Silent'}
+                </span>
+              ) : (
+                <span className="status-note" data-tone={status.microphoneReady ? 'ok' : 'attention'}>
+                  <span className="status-dot" data-tone={status.microphoneReady ? 'ok' : 'attention'} aria-hidden="true" />
+                  {status.microphoneReady ? 'Ready' : 'Needs setup'}
+                </span>
+              )}
+            </div>
+          </div>
+        ) : (
+          <SettingLine label="Microphone" value={status.microphoneReady ? 'Default input available' : 'No default input'} tone={status.microphoneReady ? 'ok' : 'attention'} />
+        )}
       </section>
       <section className="panel settings-section">
         <SectionHeading title="Transcription" subtitle="No recorded audio leaves this machine." />
@@ -625,6 +680,22 @@ function SettingsView({
       ) : null}
     </div>
   )
+}
+
+function microphoneOptions(devices: InputDevice[], current: string) {
+  if (!current || devices.some((device) => device.name === current)) return devices
+  return [...devices, { name: current, isDefault: false }]
+}
+
+function microphoneHint(settings: AppSettings, devices: InputDevice[]) {
+  if (settings.microphone.source === 'env') return 'ECHO_MICROPHONE'
+  const requested = settings.microphone.effective
+  if (!requested) return 'Follow the system default input.'
+  if (devices.some((device) => device.name === requested)) {
+    return 'Used for GUI recording and rec --toggle.'
+  }
+  const fallback = devices.find((device) => device.isDefault)?.name ?? 'the system default'
+  return `${requested} is gone; using ${fallback}`
 }
 
 function holdKeyOptions(current: string) {

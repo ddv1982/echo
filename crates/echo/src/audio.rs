@@ -165,7 +165,15 @@ fn list_host_devices(host: &cpal::Host) -> (Vec<InputDevice>, Vec<(String, cpal:
 
 impl AudioCapture {
     pub fn open_default() -> Result<Self, AudioError> {
-        Self::open(crate::settings::file_config().microphone.as_deref())
+        let env = std::env::var("ECHO_MICROPHONE")
+            .ok()
+            .filter(|name| !name.is_empty());
+        let requested = echo_core::resolve(
+            env,
+            crate::settings::file_config().microphone,
+            String::new(),
+        );
+        Self::open((!requested.is_empty()).then_some(requested).as_deref())
     }
 
     pub fn open(requested: Option<&str>) -> Result<Self, AudioError> {

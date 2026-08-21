@@ -59,6 +59,7 @@ struct Settings {
     hud: SettingField<bool>,
     hold_key: SettingField<String>,
     record_seconds: SettingField<u32>,
+    microphone: SettingField<String>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -69,6 +70,7 @@ struct SettingsEnv {
     hud: Option<String>,
     hold_key: Option<String>,
     record_seconds: Option<String>,
+    microphone: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -228,6 +230,33 @@ fn set_settings(settings: Settings) -> Result<Settings, String> {
     write_settings(settings)
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InputDeviceDto {
+    name: String,
+    is_default: bool,
+}
+
+#[tauri::command]
+fn list_input_devices() -> Result<Vec<InputDeviceDto>, String> {
+    Ok(echo::audio::list_input_devices()
+        .into_iter()
+        .map(|device| InputDeviceDto {
+            name: device.name,
+            is_default: device.is_default,
+        })
+        .collect())
+}
+
+#[tauri::command]
+fn test_input_device(name: Option<String>) -> Result<f32, String> {
+    let capture = echo::audio::AudioCapture::open(name.as_deref()).map_err(|err| err.to_string())?;
+    let result = capture
+        .record(std::time::Duration::from_secs(1))
+        .map_err(|err| err.to_string())?;
+    Ok(result.peak_rms)
+}
+
 fn read_settings() -> Result<Settings, String> {
     Ok(settings_from(
         &process_settings_env(),
@@ -250,6 +279,7 @@ fn process_settings_env() -> SettingsEnv {
         hud: env::var("ECHO_HUD").ok(),
         hold_key: env::var("ECHO_HOLD_KEY").ok(),
         record_seconds: env::var("ECHO_RECORD_SECONDS").ok(),
+        microphone: env::var("ECHO_MICROPHONE").ok(),
     }
 }
 
@@ -290,6 +320,11 @@ fn settings_from(env: &SettingsEnv, file: &echo_core::Config) -> Settings {
                 .and_then(|raw| raw.parse::<u64>().ok()),
             file.record_seconds,
         ),
+        microphone: setting_field(
+            env.microphone.clone().filter(|name| !name.is_empty()),
+            file.microphone.clone(),
+            String::new(),
+        ),
     }
 }
 
@@ -313,6 +348,7 @@ fn config_from_values(settings: &Settings) -> Result<echo_core::Config, String> 
         .record_seconds
         .value
         .map(|secs| secs.clamp(1, echo::rec::MAX_RECORD_SECONDS as u32));
+    config.microphone = nonempty(settings.microphone.value.clone());
     Ok(config)
 }
 
@@ -517,6 +553,8 @@ fn run_desktop() {
             copy_text,
             get_settings,
             set_settings,
+            list_input_devices,
+            test_input_device,
         ])
         .run(context)
         .expect("error while running Echo");
@@ -590,6 +628,11 @@ mod settings_tests {
                 effective: 3,
                 source: SettingSource::Default,
             },
+            microphone: SettingField {
+                value: Some("USB Mic".into()),
+                effective: String::new(),
+                source: SettingSource::Default,
+            },
         };
         config_from_values(&incoming)
             .unwrap()
@@ -610,6 +653,9 @@ mod settings_tests {
         assert_eq!(got.record_seconds.value, Some(8));
         assert_eq!(got.record_seconds.effective, 8);
         assert_eq!(got.record_seconds.source, SettingSource::File);
+        assert_eq!(got.microphone.value.as_deref(), Some("USB Mic"));
+        assert_eq!(got.microphone.effective, "USB Mic");
+        assert_eq!(got.microphone.source, SettingSource::File);
     }
 
     #[test]
