@@ -35,9 +35,4 @@ impl ModelCache {
     pub fn path(&self, name: &str) -> PathBuf {
         self.dir.join(name)
     }
-
-    #[must_use]
-    pub fn has(&self, name: &str) -> bool {
-        self.path(name).is_file()
-    }
 }

@@ -8,7 +8,6 @@ pub use fake::FakeEngine;
 pub use parakeet::ParakeetEngine;
 pub use whisper::WhisperEngine;
 
-use std::fs;
 use std::path::PathBuf;
 
 use echo_core::{Engine, Pcm16kMono, SAMPLE_RATE_HZ};
@@ -92,6 +91,5 @@ fn write_temp_wav(pcm: &Pcm16kMono) -> Result<PathBuf, String> {
             .map_err(|err| err.to_string())?;
     }
     writer.finalize().map_err(|err| err.to_string())?;
-    let _ = fs::metadata(&path);
     Ok(path)
 }

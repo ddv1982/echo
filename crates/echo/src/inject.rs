@@ -317,14 +317,14 @@ mod tests {
         let report = with_restored_clipboard(&board, || {
             board.set("transcript").unwrap();
             InjectReport::Pasted {
-                backend: InjectBackend::ClipboardPaste,
+                backend: InjectBackend::Xdotool,
             }
         });
         assert_eq!(board.get().unwrap(), "secret");
         assert_eq!(
             report,
             InjectReport::Pasted {
-                backend: InjectBackend::ClipboardPaste
+                backend: InjectBackend::Xdotool
             }
         );
     }

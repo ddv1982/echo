@@ -1,6 +1,5 @@
 use std::fs;
 use std::io::{self, Read};
-use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -15,39 +14,19 @@ pub struct KeySpec {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HotkeyConfig {
-    pub hold: KeySpec,
-    pub toggle: Option<KeySpec>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HotkeyError {
     UnknownKey(String),
-    ToggleUnsupported,
 }
 
 impl std::fmt::Display for HotkeyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::UnknownKey(name) => write!(f, "unknown key {name}"),
-            Self::ToggleUnsupported => f.write_str("toggle hotkeys are not enabled yet"),
         }
     }
 }
 
 impl std::error::Error for HotkeyError {}
-
-impl HotkeyConfig {
-    pub fn parse(hold: &str, toggle: Option<&str>) -> Result<Self, HotkeyError> {
-        if toggle.is_some() {
-            return Err(HotkeyError::ToggleUnsupported);
-        }
-        Ok(Self {
-            hold: parse_keyspec(hold)?,
-            toggle: None,
-        })
-    }
-}
 
 pub fn parse_keyspec(spec: &str) -> Result<KeySpec, HotkeyError> {
     let keys = spec
@@ -117,15 +96,6 @@ pub fn evdev_permission_hint() -> String {
     }
 }
 
-/// Read a CLI edge from a line. `down` / `up` only.
-pub fn parse_cli_edge(line: &str) -> Option<HotkeyEvent> {
-    match line.trim().to_ascii_lowercase().as_str() {
-        "down" => Some(HotkeyEvent::Down),
-        "up" => Some(HotkeyEvent::Up),
-        _ => None,
-    }
-}
-
 /// Blocking evdev read. Returns the first Down/Up for the hold key.
 pub fn next_evdev_event(devices: &[PathBuf], hold: &KeySpec) -> io::Result<HotkeyEvent> {
     let mut files: Vec<fs::File> = devices
@@ -176,12 +146,6 @@ fn evdev_codes(spec: &KeySpec) -> Vec<u16> {
         .collect()
 }
 
-pub fn is_input_char_device(path: &Path) -> bool {
-    fs::metadata(path)
-        .map(|meta| meta.file_type().is_char_device())
-        .unwrap_or(false)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,8 +154,6 @@ mod tests {
     fn parses_right_ctrl() {
         let spec = parse_keyspec("RightCtrl").unwrap();
         assert_eq!(spec.keys, ["RightCtrl"]);
-        let cfg = HotkeyConfig::parse("RightCtrl", None).unwrap();
-        assert_eq!(cfg.hold, spec);
     }
 
     #[test]
@@ -206,21 +168,6 @@ mod tests {
             parse_keyspec("Hyper+Thumb"),
             Err(HotkeyError::UnknownKey(_))
         ));
-    }
-
-    #[test]
-    fn rejects_toggle_until_later() {
-        assert_eq!(
-            HotkeyConfig::parse("RightCtrl", Some("Space")),
-            Err(HotkeyError::ToggleUnsupported)
-        );
-    }
-
-    #[test]
-    fn cli_edges() {
-        assert_eq!(parse_cli_edge("down"), Some(HotkeyEvent::Down));
-        assert_eq!(parse_cli_edge("UP"), Some(HotkeyEvent::Up));
-        assert_eq!(parse_cli_edge("hold"), None);
     }
 
     #[test]
