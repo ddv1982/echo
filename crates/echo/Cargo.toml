@@ -13,3 +13,4 @@ workspace = true
 cpal = "0.15"
 echo-core = { path = "../echo-core" }
 hound = "3.5"
+x11rb = { version = "0.13", features = ["shape"] }

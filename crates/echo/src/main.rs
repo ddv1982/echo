@@ -5,6 +5,13 @@ fn main() -> ExitCode {
     let mut args = env::args().skip(1);
     match args.next().as_deref() {
         Some("rec") => rec(args.collect()),
+        Some("--hud-demo") => match echo::ui::hud::run_hud_demo() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                eprintln!("hud-demo: {err}");
+                ExitCode::from(1)
+            }
+        },
         Some("--help" | "-h") => {
             print_usage();
             ExitCode::SUCCESS
@@ -38,4 +45,5 @@ fn rec(args: Vec<String>) -> ExitCode {
 
 fn print_usage() {
     eprintln!("usage: echo rec --once");
+    eprintln!("       echo --hud-demo");
 }
