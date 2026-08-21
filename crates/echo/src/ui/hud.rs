@@ -69,7 +69,11 @@ impl Drop for RecordingHud {
 }
 
 fn hud_is_disabled(env: Option<&str>, file: &echo_core::Config) -> bool {
-    matches!(env, Some("0") | Some("false") | Some("off")) || file.hud == Some(false)
+    match env {
+        Some("0" | "false" | "off") => true,
+        Some("1" | "true" | "on") => false,
+        _ => file.hud == Some(false),
+    }
 }
 
 fn hud_disabled() -> bool {
@@ -339,6 +343,8 @@ mod tests {
         assert!(hud_is_disabled(Some("off"), &enabled_file));
         assert!(hud_is_disabled(None, &disabled_file));
         assert!(!hud_is_disabled(None, &enabled_file));
-        assert!(hud_is_disabled(Some("1"), &disabled_file));
+        assert!(!hud_is_disabled(Some("1"), &disabled_file));
+        assert!(!hud_is_disabled(Some("true"), &disabled_file));
+        assert!(!hud_is_disabled(Some("on"), &disabled_file));
     }
 }
