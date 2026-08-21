@@ -30,7 +30,10 @@ fn history_survives_relaunch() {
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&hist.stdout);
-    assert!(stdout.contains("claude code"), "history={stdout:?}");
+    assert!(
+        stdout.to_ascii_lowercase().contains("claude code"),
+        "history={stdout:?}"
+    );
     let status = Command::new(bin)
         .arg("status")
         .env("ECHO_DATA_DIR", &data)

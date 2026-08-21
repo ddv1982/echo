@@ -52,7 +52,7 @@ pub fn run_rec_once() -> i32 {
         log_state(&session);
     }
     let dict = Dictionary::load().unwrap_or_else(|_| Dictionary::empty());
-    let rewrite = dict.rewrite(&transcript.raw);
+    let rewrite = crate::cleanup::apply(&transcript.raw, &dict);
     if session.begin_injecting().is_ok() {
         log_state(&session);
     }
