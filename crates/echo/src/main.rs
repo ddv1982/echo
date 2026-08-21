@@ -104,16 +104,12 @@ fn history() -> ExitCode {
 }
 
 fn status() -> ExitCode {
-    match echo::ui::tray::read_status() {
-        Ok(text) => {
-            print!("{text}");
-            ExitCode::SUCCESS
-        }
-        Err(_) => {
-            println!("state=Idle");
-            ExitCode::SUCCESS
-        }
+    let status = echo::status::read();
+    println!("state={}", status.state);
+    if let Some(last) = status.last {
+        println!("last={last}");
     }
+    ExitCode::SUCCESS
 }
 
 fn print_usage() {

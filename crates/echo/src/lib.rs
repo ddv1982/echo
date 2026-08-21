@@ -4,5 +4,6 @@ pub mod hotkey;
 mod icon;
 pub mod inject;
 pub mod rec;
+pub mod status;
 pub mod stt;
 pub mod ui;

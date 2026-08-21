@@ -6,56 +6,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use echo_core::{status_path, AppCommand, SessionState};
+use echo_core::{AppCommand, SessionState};
 use gtk::prelude::*;
 use libappindicator::{AppIndicator, AppIndicatorStatus};
 
+use crate::status;
 use crate::ui::{dictionary, history};
-
-pub fn write_status(state: SessionState, last: Option<&str>) -> Result<(), String> {
-    let path = status_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
-    }
-    let name = match state {
-        SessionState::Idle => "Idle",
-        SessionState::Recording { .. } => "Recording",
-        SessionState::Transcribing => "Transcribing",
-        SessionState::Cleaning => "Cleaning",
-        SessionState::Injecting => "Injecting",
-        SessionState::Failed { reason } => {
-            return write(&format!("Failed {}", reason.as_str()), last)
-        }
-    };
-    write(name, last)
-}
-
-fn write(state: &str, last: Option<&str>) -> Result<(), String> {
-    let mut body = format!("state={state}\n");
-    if let Some(text) = last {
-        body.push_str("last=");
-        body.push_str(text);
-        body.push('\n');
-    }
-    fs::write(status_path(), body).map_err(|err| err.to_string())
-}
-
-pub fn read_status() -> Result<String, String> {
-    fs::read_to_string(status_path()).map_err(|err| err.to_string())
-}
-
-pub fn status_summary() -> String {
-    match read_status() {
-        Ok(text) => {
-            let state = text
-                .lines()
-                .find_map(|line| line.strip_prefix("state="))
-                .unwrap_or("Idle");
-            format!("Echo: {state}")
-        }
-        Err(_) => "Echo: Idle".to_string(),
-    }
-}
 
 pub fn load_icon() -> Result<gdk_pixbuf::Pixbuf, String> {
     let loader = gdk_pixbuf::PixbufLoader::with_type("png").map_err(|err| err.to_string())?;
@@ -78,7 +34,7 @@ pub fn run_app(smoke: bool) -> Result<(), String> {
         return Ok(());
     }
 
-    let _ = write_status(SessionState::Idle, None);
+    let _ = status::write_status(SessionState::Idle, None);
     let icon_file = install_runtime_icon()?;
     let theme_dir = icon_file
         .parent()
@@ -121,7 +77,7 @@ pub fn run_app(smoke: bool) -> Result<(), String> {
     let mut indicator = AppIndicator::new("echo-app", "echo");
     indicator.set_status(AppIndicatorStatus::Active);
     indicator.set_icon_theme_path(theme_dir);
-    indicator.set_icon_full("echo", &status_summary());
+    indicator.set_icon_full("echo", &status::summary());
     indicator.set_menu(&mut menu);
     menu.show_all();
 
@@ -133,7 +89,7 @@ pub fn run_app(smoke: bool) -> Result<(), String> {
             if rec_done.swap(false, Ordering::SeqCst) {
                 busy.store(false, Ordering::SeqCst);
             }
-            let tip = status_summary();
+            let tip = status::summary();
             if last.borrow().as_str() != tip {
                 indicator.borrow_mut().set_icon_full("echo", &tip);
                 *last.borrow_mut() = tip;

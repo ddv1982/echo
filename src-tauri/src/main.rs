@@ -53,7 +53,8 @@ impl From<&DictEntry> for DictionaryItem {
 
 #[tauri::command]
 fn get_app_status() -> AppStatus {
-    let (phase, last_transcript) = read_status_file();
+    let status = echo::status::read();
+    let (phase, last_transcript) = (status.state, status.last);
     let whisper_runner = ["whisper-cli", "whisper-cpp", "whisper"]
         .into_iter()
         .find(|name| on_path(name));
@@ -149,21 +150,6 @@ fn start_recording_thread() -> Result<(), String> {
         })
         .map(|_| ())
         .map_err(|err| err.to_string())
-}
-
-fn read_status_file() -> (String, Option<String>) {
-    let raw = std::fs::read_to_string(echo_core::status_path()).unwrap_or_default();
-    let phase = raw
-        .lines()
-        .find_map(|line| line.strip_prefix("state="))
-        .unwrap_or("Idle")
-        .to_string();
-    let last = raw
-        .lines()
-        .find_map(|line| line.strip_prefix("last="))
-        .filter(|text| !text.trim().is_empty())
-        .map(str::to_string);
-    (phase, last)
 }
 
 fn whisper_model() -> Option<PathBuf> {

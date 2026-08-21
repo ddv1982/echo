@@ -10,7 +10,7 @@ use echo_core::{
 use crate::audio::{self, AudioCapture};
 use crate::hotkey::{self, HotkeyEvent, HotkeySource};
 use crate::inject::LinuxInjector;
-use crate::ui::tray;
+use crate::status;
 
 pub fn run_rec_once() -> i32 {
     run_record(None)
@@ -30,32 +30,32 @@ pub fn run_rec_toggle() -> i32 {
 fn run_record(toggle: Option<&ToggleSession>) -> i32 {
     let mut session = Session::new();
     log_state(&session);
-    let _ = tray::write_status(session.state(), None);
+    let _ = status::write_status(session.state(), None);
     if matches!(HotkeySource::detect(), HotkeySource::Cli) {
         eprintln!("{}", hotkey::evdev_permission_hint());
     }
     apply_edge(&mut session, HotkeyEvent::Down);
-    let _ = tray::write_status(session.state(), None);
+    let _ = status::write_status(session.state(), None);
     let recording_hud = crate::ui::hud::RecordingHud::start();
     let capture = match capture_pcm(toggle) {
         Ok(capture) => capture,
         Err(reason) => {
             let _ = session.fail(reason);
             log_state(&session);
-            let _ = tray::write_status(session.state(), None);
+            let _ = status::write_status(session.state(), None);
             return 1;
         }
     };
     drop(recording_hud);
     apply_edge(&mut session, HotkeyEvent::Up);
-    let _ = tray::write_status(session.state(), None);
+    let _ = status::write_status(session.state(), None);
 
     let engine = match crate::stt::resolve_engine() {
         Some(engine) => engine,
         None => {
             let _ = session.fail(FailReason::EngineMissing);
             log_state(&session);
-            let _ = tray::write_status(session.state(), None);
+            let _ = status::write_status(session.state(), None);
             eprintln!(
                 "no speech engine installed. install whisper-cli plus a ggml model or \
                  sherpa-onnx plus the parakeet model (see README), or set ECHO_ENGINE=fake \
@@ -73,7 +73,7 @@ fn run_record(toggle: Option<&ToggleSession>) -> i32 {
             };
             let _ = session.fail(reason);
             log_state(&session);
-            let _ = tray::write_status(session.state(), None);
+            let _ = status::write_status(session.state(), None);
             return 1;
         }
     };
@@ -96,14 +96,13 @@ fn run_record(toggle: Option<&ToggleSession>) -> i32 {
             Err(reason) => InjectReport::Failed { reason },
         }
     };
-    if inject.failed() {
+    let failed = inject.failed();
+    if failed {
         let reason = match &inject {
             InjectReport::Failed { reason } => *reason,
             _ => FailReason::InjectUnconfirmed,
         };
         let _ = session.fail(reason);
-        log_state(&session);
-        let _ = session.ack();
         log_state(&session);
     } else if session.complete_inject().is_ok() {
         log_state(&session);
@@ -124,7 +123,12 @@ fn run_record(toggle: Option<&ToggleSession>) -> i32 {
             inject,
         });
     }
-    let _ = tray::write_status(session.state(), Some(&rewrite.text));
+    if failed {
+        // Leave the Failed state visible; the next session overwrites it.
+        let _ = status::write_status(session.state(), None);
+        return 1;
+    }
+    let _ = status::write_status(session.state(), Some(&rewrite.text));
     0
 }
 
