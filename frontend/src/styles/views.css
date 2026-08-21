@@ -11,7 +11,6 @@
 
 .view-header h2 {
   font-size: var(--text-xl);
-  font-weight: var(--weight-semibold);
 }
 
 .view-header p {
@@ -33,7 +32,7 @@
 
 .hero-card {
   display: grid;
-  border-radius: var(--radius-xl);
+  border-radius: var(--radius-lg);
 }
 
 .hero-card[data-recording='true'] {
@@ -51,10 +50,10 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  color: hsl(var(--brand));
+  color: hsl(var(--text-tertiary));
   font-size: var(--text-xs);
-  font-weight: var(--weight-semibold);
-  letter-spacing: 0.08em;
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--label-tracking);
   text-transform: uppercase;
 }
 
@@ -66,7 +65,6 @@
   max-width: 32rem;
   margin-top: var(--space-3);
   font-size: clamp(1.75rem, 4vw, 2.5rem);
-  font-weight: var(--weight-semibold);
 }
 
 .hero-copy > p {
@@ -90,25 +88,20 @@
   align-items: center;
   justify-content: center;
   gap: var(--space-2);
-  border: 1px solid hsl(var(--brand-strong));
-  border-radius: var(--radius-md);
-  background: hsl(var(--brand));
-  color: hsl(220 35% 8%);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: hsl(var(--accent));
+  color: hsl(var(--background));
   padding: 0 var(--space-4);
-  font-weight: var(--weight-semibold);
+  font-weight: var(--weight-medium);
   transition: background-color var(--duration-fast) var(--ease-out);
 }
 
-:root[data-theme='light'] .primary-button {
-  color: white;
-}
-
 .primary-button:hover:not(:disabled) {
-  background: hsl(var(--brand-strong));
+  background: hsl(var(--foreground));
 }
 
 .hero-card[data-recording='true'] .primary-button {
-  border-color: hsl(var(--recording));
   background: hsl(var(--recording));
   color: white;
 }
@@ -142,9 +135,9 @@
   flex: 0 0 auto;
   place-items: center;
   border: 1px solid hsl(var(--border-subtle));
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   background: hsl(var(--surface-raised));
-  color: hsl(var(--brand));
+  color: hsl(var(--text-secondary));
 }
 
 .health-icon {
@@ -203,7 +196,6 @@
 
 .section-heading h3 {
   font-size: var(--text-base);
-  font-weight: var(--weight-semibold);
 }
 
 .section-heading p {
@@ -212,7 +204,7 @@
 }
 
 .last-transcript blockquote {
-  border-left: 2px solid hsl(var(--brand));
+  border-left: 2px solid hsl(var(--border-strong));
   color: hsl(var(--foreground));
   padding-left: var(--space-4);
   font-size: var(--text-md);
@@ -323,14 +315,14 @@
   flex: 0 0 auto;
   place-items: center;
   border: 1px solid hsl(var(--border-subtle));
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   background: hsl(var(--surface-raised));
   color: hsl(var(--text-secondary));
 }
 
 .icon-button:hover {
-  border-color: hsl(var(--brand) / 0.4);
-  color: hsl(var(--brand));
+  border-color: hsl(var(--border-strong));
+  color: hsl(var(--foreground));
 }
 
 .dictionary-form {
@@ -388,7 +380,7 @@
 }
 
 .dictionary-row code {
-  color: hsl(var(--brand));
+  color: hsl(var(--foreground));
 }
 
 .dictionary-row strong {
@@ -439,7 +431,7 @@
 .segmented-control {
   display: flex;
   border: 1px solid hsl(var(--border-subtle));
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-sm);
   background: hsl(var(--surface-raised));
   padding: 3px;
 }
@@ -454,15 +446,15 @@
 }
 
 .segmented-control button[data-active='true'] {
-  background: hsl(var(--brand-soft));
-  color: hsl(var(--brand));
+  background: hsl(var(--surface-hover));
+  color: hsl(var(--foreground));
 }
 
 .small-badge {
   width: fit-content;
   border-radius: var(--radius-pill);
-  background: hsl(var(--brand-soft));
-  color: hsl(var(--brand));
+  background: hsl(var(--surface-raised));
+  color: hsl(var(--text-secondary));
   padding: 0.25rem 0.55rem;
   font-size: var(--text-xs);
   font-weight: var(--weight-medium);
