@@ -829,12 +829,8 @@ version = "0.1.0"
 dependencies = [
  "cpal",
  "echo-core",
- "gdk-pixbuf",
- "glib",
- "gtk",
  "hound",
  "indexmap 2.13.1",
- "libappindicator",
  "x11rb",
 ]
 

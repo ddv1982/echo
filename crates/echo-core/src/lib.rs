@@ -1,4 +1,3 @@
-mod app;
 mod cleanup;
 mod dictionary;
 mod engine;
@@ -8,7 +7,6 @@ mod paths;
 mod session;
 mod types;
 
-pub use app::AppCommand;
 pub use cleanup::{Cleanup, CleanupError, CleanupMode, OffCleanup, RulesCleanup};
 pub use dictionary::{DictEntry, DictHit, Dictionary, Rewrite};
 pub use engine::{Engine, EngineError, Transcript};

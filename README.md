@@ -37,9 +37,7 @@ cargo run -p echo-desktop
 ./target/release/echo-desktop
 ```
 
-The separate `echo-app` binary is the CLI/runtime entry point used by compositor shortcuts and scripts. It remains available even when the desktop window is closed.
-
-`ECHO_APP_SMOKE=1` or `--quit-after=0` initializes GTK, loads the icon, and exits 0. Use that for a display check that should not hang.
+The separate `echo-app` binary is the CLI/runtime entry point used by compositor shortcuts and scripts. It has no window or tray of its own; run it with a subcommand.
 
 ## CLI
 

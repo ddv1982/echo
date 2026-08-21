@@ -15,7 +15,6 @@ fn main() -> ExitCode {
                 ExitCode::from(1)
             }
         },
-        Some(arg) if arg.starts_with("--quit-after=") => app(true),
         Some("--help" | "-h") => {
             print_usage();
             ExitCode::SUCCESS
@@ -26,21 +25,8 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
         None => {
-            let smoke = matches!(
-                env::var("ECHO_APP_SMOKE").ok().as_deref(),
-                Some("1") | Some("true")
-            );
-            app(smoke)
-        }
-    }
-}
-
-fn app(smoke: bool) -> ExitCode {
-    match echo::ui::tray::run_app(smoke) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(err) => {
-            eprintln!("echo-app: {err}");
-            ExitCode::from(1)
+            print_usage();
+            ExitCode::from(2)
         }
     }
 }
@@ -93,13 +79,23 @@ fn dict(args: Vec<String>) -> ExitCode {
 fn history() -> ExitCode {
     match echo_core::History::load() {
         Ok(store) => {
-            echo::ui::history::print_history(&store);
+            print_history(&store);
             ExitCode::SUCCESS
         }
         Err(err) => {
             eprintln!("history: {err}");
             ExitCode::from(1)
         }
+    }
+}
+
+fn print_history(store: &echo_core::History) {
+    if store.rows().is_empty() {
+        println!("(empty)");
+        return;
+    }
+    for row in store.rows() {
+        println!("{}  {}  {}  {}", row.id, row.engine, row.infer_ms, row.text);
     }
 }
 
