@@ -83,9 +83,9 @@ impl Engine for WhisperEngine {
         let started = Instant::now();
         let wav = write_temp_wav(pcm).map_err(EngineError::Infer)?;
         let out_prefix = wav.with_extension("");
+        let vad = self.cache.vad_model();
         let status = Command::new(bin)
-            .args(["-m", &model.to_string_lossy(), "-f", &wav.to_string_lossy()])
-            .args(["-nt", "-otxt", "-of", &out_prefix.to_string_lossy()])
+            .args(whisper_args(&model, &wav, &out_prefix, vad.as_deref()))
             .output()
             .map_err(|err| EngineError::Infer(err.to_string()))?;
         let txt = out_prefix.with_extension("txt");
@@ -104,6 +104,25 @@ impl Engine for WhisperEngine {
             infer_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         })
     }
+}
+
+fn whisper_args(model: &Path, wav: &Path, out_prefix: &Path, vad: Option<&Path>) -> Vec<String> {
+    let mut args = vec![
+        "-m".into(),
+        model.to_string_lossy().into_owned(),
+        "-f".into(),
+        wav.to_string_lossy().into_owned(),
+        "-nt".into(),
+        "-otxt".into(),
+        "-of".into(),
+        out_prefix.to_string_lossy().into_owned(),
+    ];
+    if let Some(vad) = vad {
+        args.push("--vad".into());
+        args.push("-vm".into());
+        args.push(vad.to_string_lossy().into_owned());
+    }
+    args
 }
 
 fn raw_text(text: &str) -> String {
@@ -133,5 +152,57 @@ mod tests {
     #[test]
     fn blank_audio_raw_is_empty() {
         assert!(raw_text("[BLANK_AUDIO]").is_empty());
+    }
+
+    fn args_for_cache(dir: &Path) -> Vec<String> {
+        let cache = ModelCache::at(dir);
+        whisper_args(
+            Path::new("model.bin"),
+            Path::new("in.wav"),
+            Path::new("out"),
+            cache.vad_model().as_deref(),
+        )
+    }
+
+    fn vm_path(args: &[String]) -> Option<&str> {
+        args.windows(2)
+            .find(|pair| pair[0] == "-vm")
+            .map(|pair| pair[1].as_str())
+    }
+
+    #[test]
+    fn whisper_args_include_vad_when_silero_v6_present() {
+        let dir = std::env::temp_dir().join(format!("echo-vad-v6-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let vad = dir.join("ggml-silero-v6.2.0.bin");
+        fs::write(&vad, []).expect("dummy vad model");
+        let args = args_for_cache(&dir);
+        assert!(args.iter().any(|arg| arg == "--vad"));
+        assert_eq!(vm_path(&args).map(Path::new), Some(vad.as_path()));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn whisper_args_omit_vad_when_cache_empty() {
+        let dir = std::env::temp_dir().join(format!("echo-vad-empty-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::create_dir_all(&dir);
+        let args = args_for_cache(&dir);
+        assert!(args.iter().all(|arg| arg != "--vad" && arg != "-vm"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn vad_model_prefers_v6_when_both_exist() {
+        let dir = std::env::temp_dir().join(format!("echo-vad-prefer-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let v6 = dir.join("ggml-silero-v6.2.0.bin");
+        let v5 = dir.join("ggml-silero-v5.1.2.bin");
+        fs::write(&v6, []).expect("dummy v6");
+        fs::write(&v5, []).expect("dummy v5");
+        let args = args_for_cache(&dir);
+        assert!(args.iter().any(|arg| arg == "--vad"));
+        assert_eq!(vm_path(&args).map(Path::new), Some(v6.as_path()));
+        let _ = fs::remove_dir_all(&dir);
     }
 }

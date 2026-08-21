@@ -35,4 +35,12 @@ impl ModelCache {
     pub fn path(&self, name: &str) -> PathBuf {
         self.dir.join(name)
     }
+
+    #[must_use]
+    pub fn vad_model(&self) -> Option<PathBuf> {
+        ["ggml-silero-v6.2.0.bin", "ggml-silero-v5.1.2.bin"]
+            .into_iter()
+            .map(|name| self.path(name))
+            .find(|path| path.is_file())
+    }
 }
