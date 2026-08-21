@@ -34,6 +34,8 @@ Rust 1.88 or newer for `rust-version`, and Cargo 1.85 or newer separately, to pa
 
 Measured cold timings on a 4-core machine, for sizing CI: 67 s for a cold `cargo check`, 74 s for `cargo test --workspace`, 150 s for a warm-cache release build.
 
+`desktop-file-validate` is not a usable gate on its exit code. Version 0.27 prints `error: (will be fatal in the future)` for the invalid `Categories` value in `packaging/echo.desktop` and still exits 0, and `--warn-kde` does not change it. Any CI step using it must fail on non-empty output instead. Phase 1 owns that.
+
 ## Runtime surfaces and their control skills
 
 | Surface | How | Skill |
