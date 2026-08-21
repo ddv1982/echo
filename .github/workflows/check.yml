@@ -1,0 +1,57 @@
+name: check
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            build-essential \
+            pkg-config \
+            libasound2-dev \
+            libwebkit2gtk-4.1-dev \
+            libdbus-1-dev \
+            libayatana-appindicator3-dev \
+            xdotool \
+            desktop-file-utils
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.88.0"
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: npm ci --prefix frontend
+
+      - run: npm run build --prefix frontend
+
+      - run: npm run lint --prefix frontend
+
+      - run: npm run test --prefix frontend
+
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - run: cargo test --workspace
+
+      - name: Validate desktop entry
+        run: |
+          out=$(desktop-file-validate packaging/echo.desktop 2>&1) || true
+          if [ -n "$out" ]; then
+            printf '%s\n' "$out"
+            exit 1
+          fi
