@@ -4,6 +4,7 @@ use crate::types::{EngineId, Pcm16kMono};
 pub struct Transcript {
     pub raw: String,
     pub engine: EngineId,
+    pub language: Option<String>,
     pub audio_ms: u64,
     pub infer_ms: u64,
 }

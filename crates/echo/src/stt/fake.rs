@@ -41,6 +41,7 @@ impl Engine for FakeEngine {
         Ok(Transcript {
             raw,
             engine: self.id(),
+            language: None,
             audio_ms: pcm.duration_ms(),
             infer_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         })

@@ -6,6 +6,7 @@ use std::time::Instant;
 use echo_core::{
     strip_nonspeech, Config, Engine, EngineError, EngineId, Pcm16kMono, Transcript,
 };
+use serde::Deserialize;
 
 use super::cache::ModelCache;
 use super::write_temp_wav;
@@ -93,47 +94,45 @@ impl Engine for WhisperEngine {
         let bin = Self::binary().ok_or(EngineError::Missing)?;
         let started = Instant::now();
         let wav = write_temp_wav(pcm).map_err(EngineError::Infer)?;
-        let out_prefix = wav.with_extension("");
         let vad = self.cache.vad_model();
         let mut status = Command::new(bin)
-            .args(whisper_args(&model, &wav, &out_prefix, vad.as_deref()))
+            .args(whisper_args(&model, &wav, vad.as_deref()))
             .output()
             .map_err(|err| EngineError::Infer(err.to_string()))?;
         if !status.status.success() && vad.is_some() {
-            let _ = fs::remove_file(out_prefix.with_extension("txt"));
             status = Command::new(bin)
-                .args(whisper_args(&model, &wav, &out_prefix, None))
+                .args(whisper_args(&model, &wav, None))
                 .output()
                 .map_err(|err| EngineError::Infer(err.to_string()))?;
         }
-        let txt = out_prefix.with_extension("txt");
-        let raw = read_transcript(&txt, &status.stdout);
         let _ = fs::remove_file(&wav);
-        let _ = fs::remove_file(&txt);
-        if !status.status.success() && raw.is_empty() {
-            return Err(EngineError::Infer(
-                String::from_utf8_lossy(&status.stderr).into_owned(),
-            ));
-        }
+        let parsed = finish_whisper(
+            status.status.success(),
+            &status.stdout,
+            &String::from_utf8_lossy(&status.stderr),
+        )?;
         Ok(Transcript {
-            raw: raw_text(&raw),
-            engine: self.id(),
+            raw: raw_text(&parsed.text),
+            engine: EngineId::Whisper {
+                model: parsed.model,
+            },
+            language: parsed.language,
             audio_ms: pcm.duration_ms(),
             infer_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         })
     }
 }
 
-fn whisper_args(model: &Path, wav: &Path, out_prefix: &Path, vad: Option<&Path>) -> Vec<String> {
+fn whisper_args(model: &Path, wav: &Path, vad: Option<&Path>) -> Vec<String> {
     let mut args = vec![
         "-m".into(),
         model.to_string_lossy().into_owned(),
         "-f".into(),
         wav.to_string_lossy().into_owned(),
         "-nt".into(),
-        "-otxt".into(),
+        "-oj".into(),
         "-of".into(),
-        out_prefix.to_string_lossy().into_owned(),
+        "-".into(),
     ];
     if let Some(vad) = vad {
         args.push("--vad".into());
@@ -147,11 +146,74 @@ fn raw_text(text: &str) -> String {
     strip_nonspeech(text.trim()).to_string()
 }
 
-fn read_transcript(path: &Path, stdout: &[u8]) -> String {
-    fs::read_to_string(path)
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| String::from_utf8_lossy(stdout).into_owned())
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WhisperParse {
+    text: String,
+    language: Option<String>,
+    model: String,
+    #[allow(dead_code)]
+    multilingual: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct WhisperOutput {
+    model: ModelInfo,
+    #[serde(default)]
+    result: ResultInfo,
+    #[serde(default)]
+    transcription: Vec<Segment>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelInfo {
+    #[serde(rename = "type")]
+    model_type: String,
+    multilingual: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ResultInfo {
+    language: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Segment {
+    text: String,
+}
+
+fn finish_whisper(success: bool, stdout: &[u8], stderr: &str) -> Result<WhisperParse, EngineError> {
+    if !success {
+        return Err(EngineError::Infer(stderr.to_string()));
+    }
+    parse_whisper_stdout(stdout)
+}
+
+fn parse_whisper_stdout(stdout: &[u8]) -> Result<WhisperParse, EngineError> {
+    parse_whisper_json(&String::from_utf8_lossy(stdout))
+}
+
+fn parse_whisper_json(raw: &str) -> Result<WhisperParse, EngineError> {
+    let output: WhisperOutput = serde_json::from_str(raw.trim()).map_err(|err| {
+        EngineError::Infer(format!("whisper json: {err}"))
+    })?;
+    let text = output
+        .transcription
+        .iter()
+        .map(|segment| segment.text.as_str())
+        .collect::<String>()
+        .trim()
+        .to_string();
+    let language = if output.transcription.is_empty() {
+        None
+    } else {
+        output.result.language.filter(|code| !code.is_empty())
+    };
+    Ok(WhisperParse {
+        text,
+        language,
+        model: output.model.model_type,
+        multilingual: output.model.multilingual,
+    })
 }
 
 #[cfg(test)]
@@ -177,7 +239,6 @@ mod tests {
         whisper_args(
             Path::new("model.bin"),
             Path::new("in.wav"),
-            Path::new("out"),
             cache.vad_model().as_deref(),
         )
     }
@@ -203,21 +264,11 @@ mod tests {
     #[test]
     fn whisper_args_include_vad_flags_only_when_model_is_some() {
         let vad = Path::new("ggml-silero-v6.2.0.bin");
-        let with_vad = whisper_args(
-            Path::new("model.bin"),
-            Path::new("in.wav"),
-            Path::new("out"),
-            Some(vad),
-        );
+        let with_vad = whisper_args(Path::new("model.bin"), Path::new("in.wav"), Some(vad));
         assert!(with_vad.iter().any(|arg| arg == "--vad"));
         assert_eq!(vm_path(&with_vad), Some("ggml-silero-v6.2.0.bin"));
 
-        let without_vad = whisper_args(
-            Path::new("model.bin"),
-            Path::new("in.wav"),
-            Path::new("out"),
-            None,
-        );
+        let without_vad = whisper_args(Path::new("model.bin"), Path::new("in.wav"), None);
         assert!(without_vad.iter().all(|arg| arg != "--vad" && arg != "-vm"));
     }
 
@@ -264,5 +315,56 @@ mod tests {
             resolved_whisper_model(Some(String::new()), &file),
             "tiny.en"
         );
+    }
+
+    fn fixture(name: &str) -> String {
+        fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/whisper")
+                .join(name),
+        )
+        .unwrap_or_else(|err| panic!("read {name}: {err}"))
+    }
+
+    #[test]
+    fn parses_multilingual_result() {
+        let parsed = parse_whisper_json(&fixture("multilingual.json")).unwrap();
+        assert_eq!(parsed.text, "Claude Code.");
+        assert_eq!(parsed.language.as_deref(), Some("de"));
+        assert_eq!(parsed.model, "base");
+        assert!(parsed.multilingual);
+    }
+
+    #[test]
+    fn parses_english_only_result() {
+        let parsed = parse_whisper_json(&fixture("english.json")).unwrap();
+        assert_eq!(parsed.text, "Claude Code.");
+        assert_eq!(parsed.language.as_deref(), Some("en"));
+        assert_eq!(parsed.model, "base");
+        assert!(!parsed.multilingual);
+    }
+
+    #[test]
+    fn empty_transcription_hides_stale_language() {
+        let parsed = parse_whisper_json(&fixture("empty_transcription.json")).unwrap();
+        assert!(parsed.text.is_empty());
+        assert_eq!(parsed.language, None);
+        assert!(!parsed.multilingual);
+    }
+
+    #[test]
+    fn malformed_json_is_a_named_error() {
+        let err = parse_whisper_json("not json at all").unwrap_err();
+        match err {
+            EngineError::Infer(msg) => assert!(msg.starts_with("whisper json:"), "msg={msg}"),
+            other => panic!("expected Infer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn nonzero_exit_is_an_error_even_with_text() {
+        let err = finish_whisper(false, fixture("english.json").as_bytes(), "decoder crashed")
+            .unwrap_err();
+        assert_eq!(err, EngineError::Infer("decoder crashed".into()));
     }
 }

@@ -1,0 +1,6 @@
+{
+  "model": { "type": "base", "multilingual": true, "vocab": 51865, "ftype": 1 },
+  "params": { "model": "models/ggml-base.bin", "language": "auto" },
+  "result": { "language": "de" },
+  "transcription": [ { "text": " Claude Code." } ]
+}
