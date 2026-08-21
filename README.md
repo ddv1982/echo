@@ -87,7 +87,7 @@ If the selected engine or its model is missing, recording ends with `EngineMissi
 
 Dictionary and history live under `$XDG_DATA_HOME/echo`, or `$HOME/.local/share/echo`. Tests override that with `ECHO_DATA_DIR`.
 
-Cleanup defaults to rules mode. It drops standalone um, uh, and like, then capitalizes and adds ending punctuation. Set `ECHO_CLEANUP=off` to skip that pass. `ECHO_CLEANUP=local:binary` runs a stdin/stdout program on `PATH`.
+Cleanup defaults to rules mode. It drops standalone um and uh, then capitalizes and adds ending punctuation. Set `ECHO_CLEANUP=off` to skip that pass. `ECHO_CLEANUP=local:binary` runs a stdin/stdout program on `PATH`.
 
 ## Status file
 
