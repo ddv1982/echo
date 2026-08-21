@@ -830,7 +830,6 @@ dependencies = [
  "cpal",
  "echo-core",
  "hound",
- "indexmap 2.13.1",
  "x11rb",
 ]
 
