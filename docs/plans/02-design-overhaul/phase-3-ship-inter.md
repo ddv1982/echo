@@ -10,6 +10,7 @@ The token file has claimed Inter since day one without bundling it, so users see
 
 - `frontend/package.json`. Add `@fontsource-variable/inter` as a dependency (latest version via npm). It ships WOFF2 into the Vite bundle, satisfying CSP `font-src 'self'`.
 - `frontend/src/styles/index.css`. Import the fontsource CSS before the local stylesheets.
+- `frontend/src/styles/tokens.css`. The fontsource import registers the face as `"Inter Variable"`, not `Inter`, so `--font-sans` must name `"Inter Variable"` first (keeping `Inter` as a fallback for environments with a system install). Without this the bundled WOFF2 loads and then goes unused.
 - `frontend/src/styles/base.css`. Set `font-feature-settings: "calt", "rlig", "salt", "ss01", "ss02"` on `body`. Keep `font-variant-numeric: tabular-nums` on `code`/`kbd` and extend it to the metadata rows (History timestamps, `inferMs`) so columns stop jittering.
 
 ## Data structures
