@@ -25,12 +25,21 @@
         "fullscreen": false,
         "center": true
       }
-    ]
+    ],
+    "trayIcon": {
+      "iconPath": "icons/tray-24.png"
+    }
   },
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["icons/icon.png"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/256x256.png",
+      "icons/512x512.png"
+    ],
     "shortDescription": "Local hold-to-talk dictation",
     "longDescription": "Echo records speech, transcribes it locally, cleans it up, and inserts it at the active cursor.",
     "category": "Utility"
