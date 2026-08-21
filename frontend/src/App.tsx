@@ -58,6 +58,7 @@ function App() {
   })
   const [error, setError] = useState<string | null>(null)
   const previousPhase = useRef('Idle')
+  const recordingSeconds = useRecordingSeconds(status.recording)
 
   const refreshCollections = useCallback(async () => {
     const [nextHistory, nextDictionary] = await Promise.all([getHistory(), getDictionary()])
@@ -189,6 +190,7 @@ function App() {
             <HomeView
               status={status}
               history={history}
+              recordingSeconds={recordingSeconds}
               onToggleRecording={onToggleRecording}
               onOpenSettings={() => setView('settings')}
             />
@@ -229,15 +231,16 @@ function StatusPill({ status }: { status: AppStatus }) {
 function HomeView({
   status,
   history,
+  recordingSeconds,
   onToggleRecording,
   onOpenSettings,
 }: {
   status: AppStatus
   history: HistoryItem[]
+  recordingSeconds: number
   onToggleRecording: () => Promise<void>
   onOpenSettings: () => void
 }) {
-  const elapsed = useRecordingSeconds(status.recording)
   const readout = status.recording ? 'Listening' : status.phase === 'Transcribing' ? 'Transcribing' : 'Ready'
   const stateCopy = status.recording
     ? ['Listening…', 'Speak naturally, then press the shortcut again.']
@@ -255,7 +258,7 @@ function HomeView({
         <div className="readout">
           <span>{readout}</span>
           {status.recording ? (
-            <span className="readout-timer">{elapsed}s / {status.maxRecordSeconds}s</span>
+            <span className="readout-timer">{recordingSeconds}s / {status.maxRecordSeconds}s</span>
           ) : null}
         </div>
         <h2>{stateCopy[0]}</h2>
