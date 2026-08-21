@@ -35,13 +35,20 @@ pub fn state_name(state: SessionState) -> String {
 /// Persist the session state for other processes. The file carries the
 /// writer's pid so readers can spot a session whose process died.
 pub fn write_status(state: SessionState, last: Option<&str>) -> Result<(), String> {
+    write_atomic(&status_path(), render(state, last).as_bytes())
+}
+
+fn render(state: SessionState, last: Option<&str>) -> String {
     let mut body = format!("state={}\npid={}\n", state_name(state), std::process::id());
     if let Some(text) = last {
+        // The file is line-oriented; collapse newlines so a multiline
+        // transcript cannot leave stray lines behind the last= field.
+        let text = text.replace(['\r', '\n'], " ");
         body.push_str("last=");
-        body.push_str(text);
+        body.push_str(text.trim());
         body.push('\n');
     }
-    write_atomic(&status_path(), body.as_bytes())
+    body
 }
 
 /// Read the status file. A missing file, or an active state whose writing
@@ -116,5 +123,15 @@ mod tests {
         let status = parse("state=Idle\npid=42\nlast=hello there\n", |_| false);
         assert_eq!(status.state, "Idle");
         assert_eq!(status.last.as_deref(), Some("hello there"));
+    }
+
+    #[test]
+    fn multiline_transcript_stays_on_the_last_line() {
+        let body = render(SessionState::Idle, Some("first line.\r\nsecond line."));
+        let status = parse(&body, |_| false);
+        assert_eq!(status.state, "Idle");
+        assert_eq!(status.last.as_deref(), Some("first line.  second line."));
+        // No unparsed stray lines besides state, pid, and last.
+        assert_eq!(body.lines().count(), 3);
     }
 }
