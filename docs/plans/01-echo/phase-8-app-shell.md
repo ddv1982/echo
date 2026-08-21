@@ -20,7 +20,7 @@ Wire `main.rs` so one process runs hotkey, audio, STT, inject, HUD, and the tray
 
 `HistoryRow` is `{ id, text, raw, engine, started_at, infer_ms, inject: InjectReport }`.
 
-`AppCommand` is `OpenHistory | OpenDictionary | Quit`. The session machine does not see these.
+`AppCommand` is `RecordOnce | OpenHistory | OpenDictionary | Quit`. The session machine does not see these.
 
 ## Verification
 

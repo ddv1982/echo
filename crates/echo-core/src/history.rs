@@ -78,13 +78,6 @@ impl History {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AppCommand {
-    OpenHistory,
-    OpenDictionary,
-    Quit,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
