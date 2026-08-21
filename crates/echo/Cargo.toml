@@ -1,0 +1,31 @@
+[package]
+name = "echo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Linux hold-to-talk dictation"
+default-run = "echo-app"
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "echo-app"
+path = "src/main.rs"
+
+[[bin]]
+name = "echo"
+path = "src/main.rs"
+
+[dependencies]
+cpal = "0.15"
+echo-core = { path = "../echo-core" }
+gdk-pixbuf = "0.18"
+glib = "0.18"
+gtk = "0.18"
+hound = "3.5"
+# 2.14 needs edition 2024. Rust 1.83 stops at 2.13.
+indexmap = "=2.13.1"
+libappindicator = "0.9"
+x11rb = { version = "0.13", features = ["shape"] }
