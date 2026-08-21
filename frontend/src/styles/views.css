@@ -368,8 +368,21 @@
   padding: var(--space-4) 0 0;
 }
 
+.setting-row + .setting-row,
+.setting-row + .setting-line,
+.setting-line + .setting-row,
 .setting-line + .setting-line {
   margin-top: var(--space-4);
+}
+
+.setting-row select {
+  width: auto;
+  min-width: 11rem;
+}
+
+.setting-row select:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .status-note {
@@ -423,6 +436,16 @@
 .segmented-control button[data-active='true'] {
   background: hsl(var(--surface-hover));
   color: hsl(var(--foreground));
+}
+
+.settings-path {
+  color: hsl(var(--text-tertiary));
+  font-size: var(--text-xs);
+  margin: 0;
+}
+
+.settings-path code {
+  font-family: var(--font-mono);
 }
 
 .empty-state {

@@ -7,21 +7,25 @@ declare global {
   }
 }
 
-let previewStatus: AppStatus = {
-  phase: 'Idle',
-  lastTranscript: 'This is a test. This is a test.',
-  recording: false,
-  microphoneReady: true,
-  engineName: 'Whisper · base.en',
-  engineReady: true,
-  injectionName: 'ydotool · Wayland',
-  injectionReady: true,
-  shortcut: 'Super+Alt+Space',
-  cleanupName: 'Rules · fillers and punctuation',
-  hudEnabled: true,
-  maxRecordSeconds: 60,
-  settingsPath: '/tmp/echo-preview/config.json',
+function richPreviewStatus(): AppStatus {
+  return {
+    phase: 'Idle',
+    lastTranscript: 'This is a test. This is a test.',
+    recording: false,
+    microphoneReady: true,
+    engineName: 'Whisper · base.en',
+    engineReady: true,
+    injectionName: 'ydotool · Wayland',
+    injectionReady: true,
+    shortcut: 'Super+Alt+Space',
+    cleanupName: 'Rules · fillers and punctuation',
+    hudEnabled: true,
+    maxRecordSeconds: 60,
+    settingsPath: '/tmp/echo-preview/config.json',
+  }
 }
+
+let previewStatus: AppStatus = richPreviewStatus()
 
 let previewSettings: Settings = defaultPreviewSettings()
 
@@ -129,8 +133,21 @@ export function getSettings(): Promise<Settings> {
 export function setSettings(settings: Settings): Promise<Settings> {
   if (isTauri()) return invoke('set_settings', { settings })
   const next = projectPreviewSettings(settings)
-  if (preview) previewSettings = next
+  if (preview) {
+    previewSettings = next
+    applyPreviewStatus(next)
+  }
   return Promise.resolve({ ...next })
+}
+
+export function seedPreviewSettings(settings: Settings) {
+  previewSettings = settings
+  applyPreviewStatus(settings)
+}
+
+export function resetPreviewSettings() {
+  previewSettings = defaultPreviewSettings()
+  previewStatus = richPreviewStatus()
 }
 
 function defaultPreviewSettings(): Settings {
@@ -164,6 +181,26 @@ function previewField<T>(value: T | null, fallback: T): SettingField<T> {
     value,
     effective: value ?? fallback,
     source: value == null ? 'default' : 'file',
+  }
+}
+
+function applyPreviewStatus(settings: Settings) {
+  const engineNames: Record<string, string> = {
+    auto: 'Auto · first installed engine',
+    whisper: 'Whisper · base.en',
+    parakeet: 'Parakeet · tdt-0.6b-v3',
+    fake: 'Fake test engine',
+  }
+  const cleanupNames: Record<string, string> = {
+    off: 'Off',
+    rules: 'Rules · fillers and punctuation',
+  }
+  previewStatus = {
+    ...previewStatus,
+    engineName: engineNames[settings.engine.effective] ?? settings.engine.effective,
+    engineReady: settings.engine.effective !== 'auto',
+    cleanupName: cleanupNames[settings.cleanup.effective] ?? settings.cleanup.effective,
+    hudEnabled: settings.hud.effective,
   }
 }
 
