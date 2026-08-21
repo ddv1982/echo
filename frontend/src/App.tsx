@@ -3,7 +3,6 @@ import {
   Check,
   CircleAlert,
   Clock3,
-  Command,
   Copy,
   Gauge,
   Headphones,
@@ -11,12 +10,10 @@ import {
   Home,
   Keyboard,
   Mic,
-  Moon,
   Plus,
   Search,
   Settings,
   Sparkles,
-  Sun,
   Trash2,
   Waves,
 } from 'lucide-react'
@@ -149,17 +146,10 @@ function App() {
     <div className="app-shell">
       <header className="topbar">
         <div className="brand-lockup">
-          <div className="brand-mark" aria-hidden="true">
-            <Waves size={21} />
-          </div>
-          <div>
-            <h1>Echo</h1>
-            <span>Local dictation</span>
-          </div>
+          <h1>Echo</h1>
         </div>
         <div className="topbar-actions">
           <StatusPill status={status} />
-          <ThemeControl theme={theme} onChange={setTheme} />
         </div>
       </header>
 
@@ -231,32 +221,6 @@ function StatusPill({ status }: { status: AppStatus }) {
     <div className="status-pill" data-tone={tone} aria-label={`Echo status: ${status.phase}`}>
       <span className="status-dot" aria-hidden="true" />
       {status.phase}
-    </div>
-  )
-}
-
-function ThemeControl({ theme, onChange }: { theme: ThemeMode; onChange: (theme: ThemeMode) => void }) {
-  const options: Array<{ value: ThemeMode; label: string; icon: typeof Sun }> = [
-    { value: 'system', label: 'Use system theme', icon: Command },
-    { value: 'light', label: 'Use light theme', icon: Sun },
-    { value: 'dark', label: 'Use dark theme', icon: Moon },
-  ]
-  return (
-    <div className="theme-control" role="group" aria-label="Theme mode">
-      {options.map((option) => {
-        const Icon = option.icon
-        return (
-          <button
-            type="button"
-            key={option.value}
-            aria-label={option.label}
-            aria-pressed={theme === option.value}
-            onClick={() => onChange(option.value)}
-          >
-            <Icon size={15} aria-hidden="true" />
-          </button>
-        )
-      })}
     </div>
   )
 }

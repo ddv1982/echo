@@ -6,7 +6,7 @@ describe('Echo desktop shell', () => {
     render(<App />)
     expect(await screen.findByRole('button', { name: 'Start recording' })).toBeInTheDocument()
     expect(screen.getByRole('navigation', { name: 'Echo sections' })).toBeInTheDocument()
-    expect(screen.getByText('Local dictation')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Echo' })).toBeInTheDocument()
   })
 
   it('navigates, toggles recording, and edits the preview dictionary', async () => {

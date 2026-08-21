@@ -514,7 +514,6 @@
 
 @media (max-width: 520px) {
   .status-pill { display: none; }
-  .brand-lockup span { display: none; }
   .health-grid { grid-template-columns: 1fr; }
   .hero-actions { align-items: flex-start; flex-direction: column; }
   .dictionary-row,
