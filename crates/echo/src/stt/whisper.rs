@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
 
-use echo_core::{Engine, EngineError, EngineId, Pcm16kMono, Transcript};
+use echo_core::{strip_nonspeech, Engine, EngineError, EngineId, Pcm16kMono, Transcript};
 
 use super::cache::ModelCache;
 use super::write_temp_wav;
@@ -98,12 +98,16 @@ impl Engine for WhisperEngine {
             ));
         }
         Ok(Transcript {
-            raw: raw.trim().to_string(),
+            raw: raw_text(&raw),
             engine: self.id(),
             audio_ms: pcm.duration_ms(),
             infer_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         })
     }
+}
+
+fn raw_text(text: &str) -> String {
+    strip_nonspeech(text.trim()).to_string()
 }
 
 fn read_transcript(path: &Path, stdout: &[u8]) -> String {
@@ -124,5 +128,10 @@ mod tests {
         let engine = WhisperEngine::with_cache(ModelCache::at(&dir), "base.en");
         let pcm = Pcm16kMono::from_samples(vec![0; 16]);
         assert_eq!(engine.transcribe(&pcm), Err(EngineError::Missing));
+    }
+
+    #[test]
+    fn blank_audio_raw_is_empty() {
+        assert!(raw_text("[BLANK_AUDIO]").is_empty());
     }
 }
