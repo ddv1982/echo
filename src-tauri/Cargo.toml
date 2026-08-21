@@ -19,3 +19,6 @@ tauri = { version = "2.11.5", features = ["tray-icon"] }
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+
+[lints]
+workspace = true

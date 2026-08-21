@@ -2,6 +2,9 @@ use std::process::Command;
 
 #[test]
 fn hud_demo_starts_and_exits() {
+    if std::env::var_os("DISPLAY").is_none() {
+        return;
+    }
     let bin = env!("CARGO_BIN_EXE_echo-desktop");
     let out = Command::new(bin)
         .arg("--hud-demo")

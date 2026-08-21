@@ -13,7 +13,8 @@ You need Rust 1.88 or newer and Node.js 22 or newer. On Ubuntu, Debian, Zorin OS
 ```sh
 sudo apt update
 sudo apt install build-essential pkg-config libasound2-dev \
-  libwebkit2gtk-4.1-dev xdotool
+  libwebkit2gtk-4.1-dev libdbus-1-dev libayatana-appindicator3-dev \
+  xdotool
 ```
 
 Then build and check the project:
