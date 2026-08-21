@@ -97,6 +97,11 @@ jobs:
     continue-on-error: true
     env:
       ARTIFACT_STEM: ${{ github.ref_type == 'tag' && format('echo-{0}-linux', github.ref_name) || format('echo-nightly-{0}-linux', github.sha) }}
+      # linuxdeploy is an AppImage. GitHub-hosted Ubuntu 24.04 runners
+      # block FUSE mounts, so extract instead of mounting.
+      APPIMAGE_EXTRACT_AND_RUN: "1"
+      # linuxdeploy's bundled strip rejects .relr.dyn on current glibc.
+      NO_STRIP: "true"
     steps:
       - uses: actions/checkout@v4
 
@@ -117,7 +122,8 @@ jobs:
             libdbus-1-dev \
             libayatana-appindicator3-dev \
             xdotool \
-            desktop-file-utils
+            desktop-file-utils \
+            patchelf
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -133,7 +139,7 @@ jobs:
 
       - name: Bundle AppImage
         working-directory: src-tauri
-        run: cargo tauri build --bundles appimage
+        run: cargo tauri build --bundles appimage --verbose
 
       - uses: actions/upload-artifact@v4
         with:
