@@ -1,0 +1,144 @@
+name: release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+  schedule:
+    - cron: "17 4 * * *"
+
+jobs:
+  linux-packages:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      ARTIFACT_STEM: ${{ github.ref_type == 'tag' && format('echo-{0}-linux', github.ref_name) || format('echo-nightly-{0}-linux', github.sha) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            build-essential \
+            pkg-config \
+            libasound2-dev \
+            libwebkit2gtk-4.1-dev \
+            libdbus-1-dev \
+            libayatana-appindicator3-dev \
+            xdotool \
+            desktop-file-utils
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.88.0"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: npm ci --prefix frontend
+
+      - run: npm run build --prefix frontend
+
+      - run: cargo build --release
+
+      - run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Bundle deb and rpm
+        working-directory: src-tauri
+        run: cargo tauri build --bundles deb,rpm
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_STEM }}
+          path: |
+            target/release/bundle/deb/*.deb
+            target/release/bundle/rpm/*.rpm
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/rpm/*.rpm
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_STEM }}-bin
+          path: |
+            target/release/echo-desktop
+            src-tauri/target/release/echo-desktop
+          if-no-files-found: error
+
+      - name: Extract release notes
+        if: github.ref_type == 'tag'
+        run: python3 scripts/changelog-notes.py "${{ github.ref_name }}" > release-notes.md
+
+      - name: Attach GitHub Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release-notes.md
+          files: |
+            target/release/bundle/deb/*.deb
+            target/release/bundle/rpm/*.rpm
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/rpm/*.rpm
+            target/release/echo-desktop
+            src-tauri/target/release/echo-desktop
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: false
+
+  appimage:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    env:
+      ARTIFACT_STEM: ${{ github.ref_type == 'tag' && format('echo-{0}-linux', github.ref_name) || format('echo-nightly-{0}-linux', github.sha) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            build-essential \
+            pkg-config \
+            libasound2-dev \
+            libwebkit2gtk-4.1-dev \
+            libdbus-1-dev \
+            libayatana-appindicator3-dev \
+            xdotool \
+            desktop-file-utils
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.88.0"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: npm ci --prefix frontend
+
+      - run: npm run build --prefix frontend
+
+      - run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Bundle AppImage
+        working-directory: src-tauri
+        run: cargo tauri build --bundles appimage
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_STEM }}-appimage
+          path: |
+            target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error

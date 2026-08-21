@@ -56,3 +56,8 @@ jobs:
             printf '%s\n' "$out"
             exit 1
           fi
+
+      - name: Check changelog notes
+        run: |
+          python3 scripts/changelog-notes.py --self-test
+          python3 scripts/changelog-notes.py v0.1.0-alpha.1 > /dev/null
