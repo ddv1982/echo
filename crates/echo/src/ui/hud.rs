@@ -120,6 +120,13 @@ fn hud_disabled() -> bool {
     )
 }
 
+/// Whether `ECHO_HUD` leaves the capsule enabled. The HUD additionally needs
+/// an X11 display at record time.
+#[must_use]
+pub fn enabled() -> bool {
+    !hud_disabled()
+}
+
 pub fn run_hud_demo() -> Result<(), HudError> {
     let mut state = HudState::from_session(SessionState::Recording {
         started: Instant::now(),

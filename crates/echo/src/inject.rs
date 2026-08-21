@@ -3,6 +3,8 @@ use std::sync::{Arc, Mutex};
 
 use echo_core::{FailReason, FocusTarget, InjectBackend, InjectReport, Injector};
 
+use crate::which::on_path;
+
 pub trait Pasteboard {
     fn get(&self) -> Result<String, String>;
     fn set(&self, text: &str) -> Result<(), String>;
@@ -205,11 +207,34 @@ impl<C: Pasteboard> LinuxInjector<C> {
     }
 }
 
-fn is_wayland_session() -> bool {
+#[must_use]
+pub fn is_wayland_session() -> bool {
     matches!(
         std::env::var("XDG_SESSION_TYPE").ok().as_deref(),
         Some("wayland")
     ) || std::env::var_os("WAYLAND_DISPLAY").is_some()
+}
+
+/// Label and readiness of the injection backend a session would try first,
+/// for status surfaces. Clipboard-only counts as not ready because nothing
+/// lands at the cursor.
+#[must_use]
+pub fn detection_summary() -> (String, bool) {
+    if is_wayland_session() {
+        if on_path("ydotool") {
+            return ("ydotool · Wayland".to_string(), true);
+        }
+        if on_path("wtype") {
+            return ("wtype · Wayland".to_string(), true);
+        }
+    }
+    if on_path("xdotool") {
+        return ("xdotool · X11".to_string(), true);
+    }
+    if on_path("xclip") || on_path("wl-copy") {
+        return ("Clipboard fallback".to_string(), false);
+    }
+    ("No injection tool found".to_string(), false)
 }
 
 impl<C: Pasteboard> Injector for LinuxInjector<C> {

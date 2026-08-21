@@ -36,6 +36,46 @@ pub fn resolve_engine() -> Option<Box<dyn Engine>> {
     }
 }
 
+/// Label and readiness of the engine `resolve_engine` would pick, for status
+/// surfaces. Mirrors `resolve_engine` so the UI never reports an engine the
+/// recorder would not use.
+#[must_use]
+pub fn engine_summary() -> (String, bool) {
+    match std::env::var("ECHO_ENGINE").ok().as_deref() {
+        Some("fake") => ("Fake test engine".to_string(), true),
+        Some("whisper") => whisper_summary(),
+        Some("parakeet") => parakeet_summary(),
+        _ => {
+            let parakeet = parakeet_summary();
+            if parakeet.1 {
+                return parakeet;
+            }
+            let whisper = whisper_summary();
+            if whisper.1 {
+                return whisper;
+            }
+            ("No local engine installed".to_string(), false)
+        }
+    }
+}
+
+fn whisper_summary() -> (String, bool) {
+    let engine = WhisperEngine::new();
+    if engine.available() {
+        (format!("Whisper · {}", engine.model_name()), true)
+    } else {
+        ("Whisper setup required".to_string(), false)
+    }
+}
+
+fn parakeet_summary() -> (String, bool) {
+    if ParakeetEngine::new().available() {
+        ("Parakeet · tdt-0.6b-v3".to_string(), true)
+    } else {
+        ("Parakeet setup required".to_string(), false)
+    }
+}
+
 fn write_temp_wav(pcm: &Pcm16kMono) -> Result<PathBuf, String> {
     let path =
         std::env::temp_dir().join(format!("echo-stt-{}-{}.wav", std::process::id(), pcm.len()));

@@ -5,8 +5,9 @@ use std::time::Instant;
 
 use echo_core::{Engine, EngineError, EngineId, Pcm16kMono, Transcript};
 
-use super::cache::{on_path, ModelCache};
+use super::cache::ModelCache;
 use super::write_temp_wav;
+use crate::which::on_path;
 
 pub struct ParakeetEngine {
     cache: ModelCache,

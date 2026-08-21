@@ -12,10 +12,14 @@ let previewStatus: AppStatus = {
   lastTranscript: 'This is a test. This is a test.',
   recording: false,
   microphoneReady: true,
-  modelReady: true,
   engineName: 'Whisper · base.en',
+  engineReady: true,
   injectionName: 'ydotool · Wayland',
+  injectionReady: true,
   shortcut: 'Super+Alt+Space',
+  cleanupName: 'Rules · fillers and punctuation',
+  hudEnabled: true,
+  maxRecordSeconds: 60,
 }
 
 const previewHistory: HistoryItem[] = [

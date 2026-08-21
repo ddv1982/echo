@@ -28,3 +28,14 @@ pub fn apply(raw: &str, dict: &Dictionary) -> Rewrite {
         .apply(raw, dict)
         .unwrap_or_else(|_| dict.rewrite(raw))
 }
+
+/// The active cleanup mode as a label for status surfaces.
+#[must_use]
+pub fn mode_name() -> String {
+    let raw = std::env::var("ECHO_CLEANUP").unwrap_or_else(|_| "rules".to_string());
+    match CleanupMode::parse(&raw) {
+        Ok(CleanupMode::Off) => "Off".to_string(),
+        Ok(CleanupMode::LocalModel { model }) => format!("Local · {model}"),
+        Ok(CleanupMode::Rules) | Err(_) => "Rules · fillers and punctuation".to_string(),
+    }
+}

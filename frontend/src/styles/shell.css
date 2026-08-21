@@ -93,6 +93,17 @@
   box-shadow: 0 0 0 3px hsl(var(--brand) / 0.14);
 }
 
+.status-pill[data-tone='error'] {
+  border-color: hsl(var(--danger) / 0.32);
+  background: hsl(var(--danger) / 0.1);
+  color: hsl(var(--danger));
+}
+
+.status-pill[data-tone='error'] .status-dot {
+  background: hsl(var(--danger));
+  box-shadow: 0 0 0 3px hsl(var(--danger) / 0.14);
+}
+
 .theme-control {
   gap: 2px;
   border: 1px solid hsl(var(--border-subtle));

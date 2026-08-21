@@ -41,9 +41,3 @@ impl ModelCache {
         self.path(name).is_file()
     }
 }
-
-pub fn on_path(name: &str) -> bool {
-    env::var_os("PATH")
-        .map(|paths| env::split_paths(&paths).any(|dir| dir.join(name).is_file()))
-        .unwrap_or(false)
-}

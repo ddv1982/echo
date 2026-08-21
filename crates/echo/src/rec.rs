@@ -167,7 +167,7 @@ fn capture_pcm(toggle: Option<&ToggleSession>) -> Result<audio::CaptureResult, F
                 watcher_cancel.cancel();
             }
         });
-        let result = capture.record(Duration::from_secs(60));
+        let result = capture.record(Duration::from_secs(MAX_RECORD_SECONDS));
         cancel.cancel();
         let _ = watcher.join();
         result
@@ -240,15 +240,17 @@ fn lock_owner_is_alive(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Ceiling for any recording, in seconds.
+pub const MAX_RECORD_SECONDS: u64 = 60;
+
 fn recording_duration() -> Duration {
     const DEFAULT_SECONDS: u64 = 3;
-    const MAX_SECONDS: u64 = 60;
     let seconds = std::env::var("ECHO_RECORD_SECONDS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|seconds| *seconds > 0)
         .unwrap_or(DEFAULT_SECONDS)
-        .min(MAX_SECONDS);
+        .min(MAX_RECORD_SECONDS);
     Duration::from_secs(seconds)
 }
 
