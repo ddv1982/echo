@@ -854,6 +854,8 @@ dependencies = [
  "cpal",
  "echo-core",
  "hound",
+ "serde",
+ "serde_json",
  "x11rb",
 ]
 
