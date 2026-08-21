@@ -1,6 +1,6 @@
 .app-shell {
   min-height: 100vh;
-  background: var(--texture), hsl(var(--surface-app));
+  background: hsl(var(--surface-app));
 }
 
 .topbar {
@@ -39,7 +39,6 @@
   border-radius: 0.75rem;
   background: hsl(var(--brand-soft));
   color: hsl(var(--brand));
-  box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.05);
 }
 
 .brand-lockup h1 {
@@ -73,7 +72,6 @@
   height: 0.48rem;
   border-radius: 50%;
   background: hsl(var(--success));
-  box-shadow: 0 0 0 3px hsl(var(--success) / 0.12);
 }
 
 .status-pill[data-tone='recording'] {
@@ -84,13 +82,11 @@
 
 .status-pill[data-tone='recording'] .status-dot {
   background: hsl(var(--recording));
-  box-shadow: 0 0 0 3px hsl(var(--recording) / 0.14);
   animation: status-pulse 1.2s ease-in-out infinite;
 }
 
 .status-pill[data-tone='busy'] .status-dot {
   background: hsl(var(--brand));
-  box-shadow: 0 0 0 3px hsl(var(--brand) / 0.14);
 }
 
 .status-pill[data-tone='error'] {
@@ -101,7 +97,6 @@
 
 .status-pill[data-tone='error'] .status-dot {
   background: hsl(var(--danger));
-  box-shadow: 0 0 0 3px hsl(var(--danger) / 0.14);
 }
 
 .theme-control {

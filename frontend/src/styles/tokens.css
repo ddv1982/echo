@@ -53,9 +53,6 @@
   --warning: 37 88% 59%;
   --danger: 4 76% 58%;
   --focus: 194 82% 61%;
-  --shadow-card: 0 1px 2px hsl(0 0% 0% / 0.36), 0 18px 48px hsl(0 0% 0% / 0.2);
-  --shadow-raised: 0 12px 34px hsl(0 0% 0% / 0.34);
-  --texture: radial-gradient(62rem 28rem at 42% -8rem, hsl(var(--brand) / 0.08), transparent 72%);
   color-scheme: dark;
 }
 
@@ -82,9 +79,6 @@
   --warning: 32 86% 37%;
   --danger: 356 66% 43%;
   --focus: 202 82% 42%;
-  --shadow-card: 0 1px 2px hsl(214 44% 24% / 0.08), 0 16px 42px hsl(214 44% 24% / 0.08);
-  --shadow-raised: 0 12px 34px hsl(214 44% 24% / 0.13);
-  --texture: radial-gradient(58rem 26rem at 42% -8rem, hsl(var(--brand) / 0.09), transparent 72%);
   color-scheme: light;
 }
 

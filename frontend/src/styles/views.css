@@ -24,7 +24,6 @@
 .health-card {
   border: 1px solid hsl(var(--border-subtle));
   background: hsl(var(--surface-card));
-  box-shadow: var(--shadow-card);
 }
 
 .panel {
@@ -97,8 +96,7 @@
   color: hsl(220 35% 8%);
   padding: 0 var(--space-4);
   font-weight: var(--weight-semibold);
-  box-shadow: 0 8px 24px hsl(var(--brand) / 0.18), inset 0 1px 0 hsl(0 0% 100% / 0.22);
-  transition: transform var(--duration-fast) var(--ease-out), filter var(--duration-fast) var(--ease-out);
+  transition: background-color var(--duration-fast) var(--ease-out);
 }
 
 :root[data-theme='light'] .primary-button {
@@ -106,15 +104,13 @@
 }
 
 .primary-button:hover:not(:disabled) {
-  filter: brightness(1.08);
-  transform: translateY(-1px);
+  background: hsl(var(--brand-strong));
 }
 
 .hero-card[data-recording='true'] .primary-button {
   border-color: hsl(var(--recording));
   background: hsl(var(--recording));
   color: white;
-  box-shadow: 0 8px 24px hsl(var(--recording) / 0.2);
 }
 
 .shortcut-hint {
