@@ -51,7 +51,7 @@ pub fn run_rec_hold() -> i32 {
             eprintln!("{}", hotkey::evdev_permission_hint());
             eprintln!(
                 "hold mode needs readable /dev/input event devices. \
-                 alternatively bind `echo-app rec --toggle` to a desktop shortcut"
+                 alternatively bind `echo-desktop rec --toggle` to a desktop shortcut"
             );
             return 1;
         }
