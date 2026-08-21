@@ -54,11 +54,6 @@ jobs:
           cargo run -p xtask
           git diff --exit-code -- src-tauri/icons frontend/public assets/icons
 
-      - name: Check icon raster drift
-        run: |
-          cargo run -p xtask
-          git diff --exit-code -- src-tauri/icons frontend/public assets/icons
-
       - name: Validate desktop entry
         run: |
           out=$(desktop-file-validate packaging/Echo.desktop 2>&1) || true
