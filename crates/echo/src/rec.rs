@@ -7,18 +7,26 @@ use echo_core::{
     Dictionary, FailReason, History, HistoryRow, InjectReport, Injector, Session, SessionState,
 };
 
-use crate::audio::{self, AudioCapture};
-use crate::hotkey::{self, HotkeyEvent, HotkeySource};
+use crate::audio::{self, AudioCapture, CancellationToken};
+use crate::hotkey::{self, HoldKey, HotkeyEvent, HotkeySource};
 use crate::inject::LinuxInjector;
 use crate::status;
 
+/// What ends a recording: the timer, the toggle stop file, or the hold key
+/// coming back up.
+enum StopWhen<'a> {
+    Timer,
+    ToggleFile(ToggleSession),
+    KeyUp(&'a mut HoldKey),
+}
+
 pub fn run_rec_once() -> i32 {
-    run_record(None)
+    run_record(StopWhen::Timer)
 }
 
 pub fn run_rec_toggle() -> i32 {
     match ToggleSession::start_or_stop() {
-        Ok(ToggleAction::Start(session)) => run_record(Some(&session)),
+        Ok(ToggleAction::Start(session)) => run_record(StopWhen::ToggleFile(session)),
         Ok(ToggleAction::Stop) => 0,
         Err(err) => {
             eprintln!("toggle: {err}");
@@ -27,7 +35,50 @@ pub fn run_rec_toggle() -> i32 {
     }
 }
 
-fn run_record(toggle: Option<&ToggleSession>) -> i32 {
+/// Loop forever: wait for the hold key, record while it is down, transcribe
+/// and inject on release. Ctrl-C quits.
+pub fn run_rec_hold() -> i32 {
+    let spec = match hotkey::hold_keyspec() {
+        Ok(spec) => spec,
+        Err(err) => {
+            eprintln!("hold: {err} (set ECHO_HOLD_KEY to a supported key)");
+            return 2;
+        }
+    };
+    let devices = match hotkey::readable_event_nodes() {
+        Ok(devices) if !devices.is_empty() => devices,
+        _ => {
+            eprintln!("{}", hotkey::evdev_permission_hint());
+            eprintln!(
+                "hold mode needs readable /dev/input event devices. \
+                 alternatively bind `echo-app rec --toggle` to a desktop shortcut"
+            );
+            return 1;
+        }
+    };
+    let mut hold = match HoldKey::open(&devices, &spec) {
+        Ok(hold) => hold,
+        Err(err) => {
+            eprintln!("hold: cannot open input devices: {err}");
+            return 1;
+        }
+    };
+    eprintln!("hold {} to dictate (ctrl-c to quit)", spec.keys.join("+"));
+    let never = CancellationToken::new();
+    loop {
+        match hold.wait(HotkeyEvent::Down, &never) {
+            Ok(true) => {}
+            Ok(false) => return 0,
+            Err(err) => {
+                eprintln!("hold: {err}");
+                return 1;
+            }
+        }
+        run_record(StopWhen::KeyUp(&mut hold));
+    }
+}
+
+fn run_record(mut stop: StopWhen) -> i32 {
     let mut session = Session::new();
     log_state(&session);
     let _ = status::write_status(session.state(), None);
@@ -37,7 +88,7 @@ fn run_record(toggle: Option<&ToggleSession>) -> i32 {
     apply_edge(&mut session, HotkeyEvent::Down);
     let _ = status::write_status(session.state(), None);
     let recording_hud = crate::ui::hud::RecordingHud::start();
-    let capture = match capture_pcm(toggle) {
+    let capture = match capture_pcm(&mut stop) {
         Ok(capture) => capture,
         Err(reason) => {
             let _ = session.fail(reason);
@@ -150,29 +201,40 @@ fn apply_edge(session: &mut Session, event: HotkeyEvent) {
     }
 }
 
-fn capture_pcm(toggle: Option<&ToggleSession>) -> Result<audio::CaptureResult, FailReason> {
+fn capture_pcm(stop: &mut StopWhen) -> Result<audio::CaptureResult, FailReason> {
     if let Some(path) = fixture_path() {
         return audio::load_wav(&path).map_err(|_| FailReason::EngineError);
     }
     let capture = AudioCapture::open_default().map_err(|_| FailReason::MicPermission)?;
-    let result = if let Some(toggle) = toggle {
-        let cancel = capture.cancel.clone();
-        let watcher_cancel = cancel.clone();
-        let stop_path = toggle.stop_path.clone();
-        let watcher = std::thread::spawn(move || {
-            while !watcher_cancel.is_cancelled() && !stop_path.exists() {
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            if stop_path.exists() {
-                watcher_cancel.cancel();
-            }
-        });
-        let result = capture.record(Duration::from_secs(MAX_RECORD_SECONDS));
-        cancel.cancel();
-        let _ = watcher.join();
-        result
-    } else {
-        capture.record(recording_duration())
+    let result = match stop {
+        StopWhen::Timer => capture.record(recording_duration()),
+        StopWhen::ToggleFile(toggle) => {
+            let cancel = capture.cancel.clone();
+            let stop_path = &toggle.stop_path;
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    while !cancel.is_cancelled() && !stop_path.exists() {
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                    cancel.cancel();
+                });
+                let result = capture.record(Duration::from_secs(MAX_RECORD_SECONDS));
+                capture.cancel.cancel();
+                result
+            })
+        }
+        StopWhen::KeyUp(hold) => {
+            let cancel = capture.cancel.clone();
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    let _ = hold.wait(HotkeyEvent::Up, &cancel);
+                    cancel.cancel();
+                });
+                let result = capture.record(Duration::from_secs(MAX_RECORD_SECONDS));
+                capture.cancel.cancel();
+                result
+            })
+        }
     };
     result.map_err(|_| FailReason::MicPermission)
 }

@@ -35,8 +35,9 @@ fn rec(args: Vec<String>) -> ExitCode {
     match args.as_slice() {
         [arg] if arg == "--once" => ExitCode::from(echo::rec::run_rec_once() as u8),
         [arg] if arg == "--toggle" => ExitCode::from(echo::rec::run_rec_toggle() as u8),
+        [arg] if arg == "--hold" => ExitCode::from(echo::rec::run_rec_hold() as u8),
         _ => {
-            eprintln!("usage: echo-app rec --once|--toggle");
+            eprintln!("usage: echo-app rec --once|--toggle|--hold");
             ExitCode::from(2)
         }
     }
@@ -109,9 +110,9 @@ fn status() -> ExitCode {
 }
 
 fn print_usage() {
-    eprintln!("usage: echo-app");
-    eprintln!("       echo-app rec --once");
+    eprintln!("usage: echo-app rec --once");
     eprintln!("       echo-app rec --toggle");
+    eprintln!("       echo-app rec --hold");
     eprintln!("       echo-app dict add \"Claude Code\"");
     eprintln!("       echo-app history");
     eprintln!("       echo-app status");
