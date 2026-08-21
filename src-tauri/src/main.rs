@@ -1,5 +1,6 @@
 use std::env;
 use std::panic::{self, AssertUnwindSafe};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -268,17 +269,26 @@ fn run_desktop() {
                     "quit" => app.exit(0),
                     _ => {}
                 });
-            match panic::catch_unwind(AssertUnwindSafe(|| tray.build(app))) {
-                Ok(Ok(_)) => {}
-                Ok(Err(err)) => eprintln!("tray icon: {err}"),
-                Err(_) => eprintln!("tray icon: libayatana-appindicator failed to load"),
-            }
+            let tray_ready = match panic::catch_unwind(AssertUnwindSafe(|| tray.build(app))) {
+                Ok(Ok(_)) => true,
+                Ok(Err(err)) => {
+                    eprintln!("tray icon: {err}");
+                    false
+                }
+                Err(_) => {
+                    eprintln!("tray icon: libayatana-appindicator failed to load");
+                    false
+                }
+            };
+            app.manage(AtomicBool::new(tray_ready));
             Ok(())
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+                if window.state::<AtomicBool>().load(Ordering::SeqCst) {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
