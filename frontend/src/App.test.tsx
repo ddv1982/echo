@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import App from './App'
-import { getSettings, resetPreviewSettings, seedPreviewSettings, setSettings } from './tauri'
+import { getSettings, resetPreviewSettings, seedPreviewMicTestError, seedPreviewSettings, setSettings } from './tauri'
 
 vi.mock('./tauri', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./tauri')>()
@@ -124,5 +124,53 @@ describe('Echo desktop shell', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Fake' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('could not write settings')
     expect(screen.getByRole('button', { name: 'Fake' })).toHaveAttribute('data-active', 'false')
+  })
+
+  it('lists preview microphones and persists a named choice', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    const picker = await screen.findByLabelText('Microphone')
+    expect(screen.getByRole('option', { name: 'System default' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'USB Microphone' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'Built-in Audio Analog Stereo' })).toBeInTheDocument()
+    fireEvent.change(picker, { target: { value: 'USB Microphone' } })
+    await waitFor(() => expect(picker).toHaveValue('USB Microphone'))
+    expect((await getSettings()).microphone).toEqual({
+      value: 'USB Microphone',
+      effective: 'USB Microphone',
+      source: 'file',
+    })
+  })
+
+  it('names the fallback when the configured microphone is gone', async () => {
+    const defaults = await getSettings()
+    seedPreviewSettings({
+      ...defaults,
+      microphone: { value: 'Missing Headset', effective: 'Missing Headset', source: 'file' },
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(await screen.findByText('Missing Headset is gone; using Built-in Audio Analog Stereo')).toBeInTheDocument()
+  })
+
+  it('clears the mic meter when the selection changes', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Test' }))
+    expect(await screen.findByText('Level 0.042')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Microphone'), { target: { value: 'USB Microphone' } })
+    await waitFor(() => expect(screen.queryByText('Level 0.042')).not.toBeInTheDocument())
+  })
+
+  it('shows unavailable when a microphone test fails', async () => {
+    seedPreviewMicTestError('device busy')
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Test' }))
+    expect(await screen.findByText('Unavailable')).toBeInTheDocument()
   })
 })

@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { AppStatus, DictionaryItem, HistoryItem, SettingField, Settings } from './types'
+import type { AppStatus, DictionaryItem, HistoryItem, InputDevice, SettingField, Settings } from './types'
 
 declare global {
   interface Window {
@@ -140,14 +140,38 @@ export function setSettings(settings: Settings): Promise<Settings> {
   return Promise.resolve({ ...next })
 }
 
+let previewMicTestError: string | null = null
+
 export function seedPreviewSettings(settings: Settings) {
   previewSettings = settings
   applyPreviewStatus(settings)
 }
 
+export function seedPreviewMicTestError(message: string) {
+  previewMicTestError = message
+}
+
 export function resetPreviewSettings() {
   previewSettings = defaultPreviewSettings()
   previewStatus = richPreviewStatus()
+  previewMicTestError = null
+}
+
+const previewDevices: InputDevice[] = [
+  { name: 'Built-in Audio Analog Stereo', isDefault: true },
+  { name: 'USB Microphone', isDefault: false },
+  { name: 'Bluetooth Headset', isDefault: false },
+]
+
+export function listInputDevices(): Promise<InputDevice[]> {
+  if (isTauri()) return invoke('list_input_devices')
+  return Promise.resolve(preview ? previewDevices.map((device) => ({ ...device })) : [])
+}
+
+export function testInputDevice(name: string | null): Promise<number> {
+  if (isTauri()) return invoke('test_input_device', { name })
+  if (previewMicTestError) return Promise.reject(new Error(previewMicTestError))
+  return Promise.resolve(name === 'Bluetooth Headset' ? 0 : 0.042)
 }
 
 function defaultPreviewSettings(): Settings {
@@ -158,6 +182,7 @@ function defaultPreviewSettings(): Settings {
     hud: { value: null, effective: true, source: 'default' },
     holdKey: { value: null, effective: 'RightCtrl', source: 'default' },
     recordSeconds: { value: null, effective: 3, source: 'default' },
+    microphone: { value: null, effective: '', source: 'default' },
   })
 }
 
@@ -173,6 +198,7 @@ function projectPreviewSettings(settings: Settings): Settings {
     hud: previewField(settings.hud.value, true),
     holdKey: previewField(settings.holdKey.value, 'RightCtrl'),
     recordSeconds: previewField(recordValue, 3),
+    microphone: previewField(settings.microphone.value, ''),
   }
 }
 
