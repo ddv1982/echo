@@ -597,7 +597,7 @@ mod settings_tests {
         assert_eq!(got.cleanup.value.as_deref(), Some("off"));
         assert_eq!(got.cleanup.effective, "off");
         assert_eq!(got.hud.value, Some(false));
-        assert_eq!(got.hud.effective, false);
+        assert!(!got.hud.effective);
         assert_eq!(got.hold_key.value.as_deref(), Some("RightShift"));
         assert_eq!(got.record_seconds.value, Some(8));
         assert_eq!(got.record_seconds.effective, 8);
