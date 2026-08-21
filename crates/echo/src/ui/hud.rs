@@ -198,11 +198,15 @@ fn draw_recording_frame<C: Connection>(
     height: u16,
     elapsed: f32,
 ) -> Result<(), HudError> {
-    const BG: u32 = 0x0014_1821;
-    const RED: u32 = 0x00ff_5a67;
-    const RED_DARK: u32 = 0x006f_2933;
-    const CYAN: u32 = 0x006e_c1e4;
-    const CYAN_DIM: u32 = 0x0034_7086;
+    // Paired with the dark-theme tokens in frontend/src/styles/tokens.css:
+    // --background 0 0% 4%, --recording 354 100% 67%, --recording-soft 354 55% 15%,
+    // --text-secondary 0 0% 70%, --text-tertiary 0 0% 52%. X11 cannot read CSS,
+    // so update both places together.
+    const BG: u32 = 0x000a_0a0a;
+    const RED: u32 = 0x00ff_5768;
+    const RED_DARK: u32 = 0x003b_1115;
+    const GRAY: u32 = 0x00b3_b3b3;
+    const GRAY_DIM: u32 = 0x0085_8585;
 
     conn.change_window_attributes(win, &ChangeWindowAttributesAux::new().background_pixel(BG))
         .map_err(|err| HudError::Display(err.to_string()))?;
@@ -211,8 +215,8 @@ fn draw_recording_frame<C: Connection>(
 
     let red_gc = create_color_gc(conn, win, RED)?;
     let red_dark_gc = create_color_gc(conn, win, RED_DARK)?;
-    let cyan_gc = create_color_gc(conn, win, CYAN)?;
-    let cyan_dim_gc = create_color_gc(conn, win, CYAN_DIM)?;
+    let gray_gc = create_color_gc(conn, win, GRAY)?;
+    let gray_dim_gc = create_color_gc(conn, win, GRAY_DIM)?;
 
     let pulse = ((elapsed * 4.4).sin() * 0.5 + 0.5).clamp(0.0, 1.0);
     let outer = (14.0 + pulse * 4.0).round() as u16;
@@ -251,7 +255,7 @@ fn draw_recording_frame<C: Connection>(
         let envelope = 1.0 - ((index as f32 - 6.0).abs() / 8.5).min(0.72);
         let bar_height = (6.0 + carrier * envelope * 28.0).round() as i32;
         let x = 52 + index * 9;
-        let gc = if index % 3 == 0 { cyan_dim_gc } else { cyan_gc };
+        let gc = if index % 3 == 0 { gray_dim_gc } else { gray_gc };
         conn.poly_fill_rectangle(
             win,
             gc,
@@ -265,7 +269,7 @@ fn draw_recording_frame<C: Connection>(
         .map_err(|err| HudError::Display(err.to_string()))?;
     }
 
-    for gc in [red_gc, red_dark_gc, cyan_gc, cyan_dim_gc] {
+    for gc in [red_gc, red_dark_gc, gray_gc, gray_dim_gc] {
         conn.free_gc(gc)
             .map_err(|err| HudError::Display(err.to_string()))?;
     }
