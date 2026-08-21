@@ -46,8 +46,17 @@
 .status-dot {
   width: 0.48rem;
   height: 0.48rem;
+  flex: 0 0 auto;
   border-radius: 50%;
   background: hsl(var(--text-tertiary));
+}
+
+.status-dot[data-tone='ok'] {
+  background: hsl(var(--success));
+}
+
+.status-dot[data-tone='attention'] {
+  background: hsl(var(--warning));
 }
 
 .status-pill[data-tone='recording'] {

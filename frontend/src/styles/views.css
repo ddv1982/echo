@@ -411,16 +411,6 @@
   color: hsl(var(--foreground));
 }
 
-.small-badge {
-  width: fit-content;
-  border-radius: var(--radius-pill);
-  background: hsl(var(--surface-raised));
-  color: hsl(var(--text-secondary));
-  padding: 0.25rem 0.55rem;
-  font-size: var(--text-xs);
-  font-weight: var(--weight-medium);
-}
-
 .empty-state {
   display: flex;
   min-height: 14rem;

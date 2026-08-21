@@ -435,15 +435,15 @@ function SettingsView({ status, theme, onThemeChange }: { status: AppStatus; the
       </section>
       <section className="panel settings-section">
         <SectionHeading title="Shortcut & recording" subtitle="Bind the suggested shortcut in your desktop's keyboard settings; Echo does not register it itself." />
-        <SettingLine label="Suggested shortcut" value={status.shortcut} badge="Toggle" />
-        <SettingLine label="Recording HUD" value={status.hudEnabled ? 'Echo pulse capsule (X11 sessions)' : 'Disabled via ECHO_HUD'} badge={status.hudEnabled ? 'On' : 'Off'} />
+        <SettingLine label="Suggested shortcut" value={`${status.shortcut} · press once to start, again to stop`} />
+        <SettingLine label="Recording HUD" value={status.hudEnabled ? 'Echo pulse capsule (X11 sessions)' : 'Disabled via ECHO_HUD'} />
         <SettingLine label="Maximum recording" value={`${status.maxRecordSeconds} seconds`} />
       </section>
       <section className="panel settings-section">
         <SectionHeading title="Local pipeline" subtitle="No recorded audio leaves this machine." />
-        <SettingLine label="Speech engine" value={status.engineName} badge={status.engineReady ? 'Ready' : 'Setup'} />
-        <SettingLine label="Microphone" value={status.microphoneReady ? 'Default input available' : 'No default input'} badge={status.microphoneReady ? 'Ready' : 'Check'} />
-        <SettingLine label="Text insertion" value={status.injectionName} badge={status.injectionReady ? 'Ready' : 'Check'} />
+        <SettingLine label="Speech engine" value={status.engineName} tone={status.engineReady ? 'ok' : 'attention'} />
+        <SettingLine label="Microphone" value={status.microphoneReady ? 'Default input available' : 'No default input'} tone={status.microphoneReady ? 'ok' : 'attention'} />
+        <SettingLine label="Text insertion" value={status.injectionName} tone={status.injectionReady ? 'ok' : 'attention'} />
         <SettingLine label="Cleanup" value={status.cleanupName} />
       </section>
     </div>
@@ -458,8 +458,22 @@ function SectionHeading({ title, subtitle }: { title: string; subtitle: string }
   return <div className="section-heading"><h3>{title}</h3><p>{subtitle}</p></div>
 }
 
-function SettingLine({ label, value, badge }: { label: string; value: string; badge?: string }) {
-  return <div className="setting-line"><div><strong>{label}</strong><span>{value}</span></div>{badge ? <span className="small-badge">{badge}</span> : null}</div>
+type SettingTone = 'ok' | 'attention'
+
+function SettingLine({ label, value, tone }: { label: string; value: string; tone?: SettingTone }) {
+  return (
+    <div className="setting-line">
+      <div><strong>{label}</strong><span>{value}</span></div>
+      {tone ? (
+        <span
+          className="status-dot"
+          data-tone={tone}
+          role="img"
+          aria-label={tone === 'ok' ? 'Ready' : 'Needs attention'}
+        />
+      ) : null}
+    </div>
+  )
 }
 
 function formatTime(timestamp: number) {
