@@ -1,4 +1,4 @@
-# Phase 7. HUD
+# Phase 6. HUD
 
 Back to [overview](./overview.md).
 
@@ -12,7 +12,7 @@ A click-through overlay that shows we are listening, then that we are transcribi
 
 `crates/echo/src/ui/waveform.rs` turns `peak_rms` samples into bars. Cosmetic only. Do not block inject on animation.
 
-Linux may need a layer-shell path for wlroots. If that is a second window backend, it still lives under `ui/`, not a new crate.
+A layer-shell path for wlroots still lives under `ui/`, not a new crate.
 
 ## Data structures
 
@@ -24,4 +24,4 @@ Linux may need a layer-shell path for wlroots. If that is a second window backen
 
 Static. Workspace test and clippy. Waveform math is unit-tested with a sine fixture.
 
-Runtime. No control skill for this surface. Linux. Launch `echo --hud-demo`, confirm the window ignores clicks into the app beneath it, and confirm it hides on `Idle`. macOS. Same check plus "does not steal focus from TextEdit during inject." Screenshot optional. Focus theft is a phase failure.
+Runtime. No control skill for this surface. Launch `echo --hud-demo`, confirm the window ignores clicks into the app beneath it, and confirm it hides on `Idle`. Focus theft is a phase failure.

@@ -1,4 +1,4 @@
-# Phase 4. Linux injection
+# Phase 4. Injection
 
 Back to [overview](./overview.md).
 
@@ -10,7 +10,7 @@ A Linux `Injector` that puts text into a focused field we own. The cascade is li
 
 `crates/echo-core/src/inject.rs` defines `Injector`, `FocusTarget`, and `InjectReport`.
 
-`crates/echo/src/inject/linux.rs` implements the cascade. Each backend is a function, not a trait object soup.
+`crates/echo/src/inject.rs` implements the cascade. Each backend is a function, not a trait object soup.
 
 `crates/echo/tests/inject_linux.rs` spawns a tiny GTK or winit text field, focuses it, injects a nonce, and reads the widget value back.
 
@@ -20,7 +20,7 @@ A Linux `Injector` that puts text into a focused field we own. The cascade is li
 
 `InjectBackend` is `Libei | Ydotool | Xdotool | Wtype | ClipboardPaste`.
 
-`FocusTarget` on Linux is `{ window_id, app_id, title }`. Missing focus is `NoFocus`, not a paste into the void.
+`FocusTarget` is `{ window_id, app_id, title }`. Missing focus is `NoFocus`, not a paste into the void.
 
 ## Verification
 

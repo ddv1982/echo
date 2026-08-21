@@ -1,27 +1,27 @@
-# Echo. Local hold-to-talk dictation for Linux and macOS
+# Echo. Local hold-to-talk dictation for Linux
 
 ## Context
 
-Echo is a system-wide push-to-talk app. Hold a key, speak, and cleaned text lands at the cursor in whatever app is focused. Audio stays on the machine.
+Echo is a system-wide push-to-talk app. Hold a key, speak, and cleaned text lands at the cursor in whatever app is focused. Audio stays on the machine. v1 is Linux only. X11 and Wayland.
 
-The video at [https://www.youtube.com/watch?v=IMQw3aHjf2Q](https://www.youtube.com/watch?v=IMQw3aHjf2Q) builds that loop on a Mac in a few Claude Code turns. The working architecture is a Swift shell, a waveform HUD, a `CGEventTap` hotkey, microphone capture, Apple `SpeechAnalyzer` / `SpeechTranscriber` on macOS 26, optional NVIDIA Parakeet, optional cleanup, and cursor injection. The first real bug is the one that matters. Accessibility insertion reports success inside Cursor and types nothing. That is the Electron AX silent-failure case.
+The video at [https://www.youtube.com/watch?v=IMQw3aHjf2Q](https://www.youtube.com/watch?v=IMQw3aHjf2Q) builds that loop as a Swift Mac app. The pipeline is still the right one. Shell, HUD, hotkey, audio, STT, optional cleanup, cursor injection. The first real bug in the video is the one that matters on Linux too. Insertion reports success and types nothing. We prove insert by reading text back from a widget we own.
 
-This plan keeps the video's pipeline and throws out the Mac-only shell. Echo has to run on Linux and macOS. The language is Rust. Go was the other candidate and loses on STT bindings and OS input.
+This plan keeps the pipeline and throws out the Mac shell, Apple speech APIs, and any `cfg(target_os = "macos")` stubs. The language is Rust. Go was the other candidate and loses on STT bindings and OS input.
 
 ## Scope
 
 Included.
 
-- Hold-to-talk dictation on Linux (X11 and Wayland) and macOS.
+- Hold-to-talk dictation on Linux, X11 and Wayland.
 - Local STT only. Audio never leaves the machine.
-- A shared engine protocol. Default engines are NVIDIA Parakeet via sherpa-onnx and whisper.cpp. Both run on both OSes.
-- A platform injection cascade that actually types into the focused app, including Electron and Chromium.
+- A shared engine protocol. Default engines are NVIDIA Parakeet via sherpa-onnx and whisper.cpp.
+- An injection cascade that types into the focused app, including Electron, Chromium, terminals, and native toolkits.
 - A click-through waveform HUD, a tray presence, transcription history, and a personal dictionary.
 - An engine comparison harness like the one in the video.
 
 Excluded.
 
-- Windows. Add it later behind the same traits. Do not block v1 on it.
+- macOS and Windows. A later plan can add them behind the same traits. Do not leave empty adapters in the tree.
 - Cloud STT and cloud cleanup.
 - Mobile.
 - A notes or meeting-recorder product.
@@ -29,26 +29,25 @@ Excluded.
 
 ## Constraints
 
-- This Cloud Agent host is Linux. Core types, audio, STT, and the Linux inject/hotkey path can be proven here. macOS adapters need a Mac.
-- Native macOS UI has no `control-ui` or `control-cli` skill. Runtime proof on Mac is a scripted log plus a human checking TextEdit and Cursor. Runtime proof on Linux is a scripted log plus a focused text field we control.
+- This Cloud Agent host is Linux. Every v1 phase must be provable here.
+- Native overlay UI has no `control-ui` or `control-cli` skill. Runtime proof is a scripted log plus a focused text field we spawn.
 - Wayland will not let a normal app type into another window without help. Plan on libei / the input portal, then `ydotool` (uinput), then clipboard paste. wlroots `wtype` is a compositor-specific extra, not the default.
-- Apple `SpeechAnalyzer` exists only on macOS 26+ / iOS 26+. It is an optional later adapter, not the default engine. [WWDC25 session 277](https://developer.apple.com/videos/play/wwdc2025/277/) is the source for that API.
-- Do not ship Chromium to draw a waveform. The video's first failure is an Electron accessibility bug. We are not becoming that target.
-- Permissions are part of the product. Linux needs microphone plus uinput or portal access. macOS needs Microphone, Accessibility, and often Input Monitoring.
+- Do not ship Chromium to draw a waveform.
+- Permissions are part of the product. Microphone plus uinput or portal access. First-run UX is an exact command, not a silent fail.
 
 ## Alternatives
 
-**A. Native Swift on macOS, separate Linux app.** This is what the video did, plus a second repo they promised for non-Mac users and did not build. Two codebases. Dictionary, history, and engine comparison would drift on day one. Rejected because Linux is a v1 requirement, not a port.
+**A. Follow the video and start in Swift.** That is a Mac app. Rejected. v1 is Linux.
 
-**B. Go daemon plus CGo.** One static binary is attractive. whisper.cpp and sherpa-onnx become CGo or subprocesses. `CGEventTap`, evdev, and libei bindings are thinner than Rust's. A GC in the audio callback is a problem we would spend the first month dancing around. Rejected.
+**B. Go daemon plus CGo.** One static binary is attractive. whisper.cpp and sherpa-onnx become CGo or subprocesses. evdev and libei bindings are thinner than Rust's. A GC in the audio callback is a problem we would spend the first month dancing around. Rejected.
 
-**C. Electron or Tauri.** Cross-platform HUD for free. We would also ship a browser and re-enter the injection mess the video hit in Cursor. Rejected for the app shell. The engine list is still the right one. Parakeet through [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) and Whisper through [whisper.cpp](https://github.com/ggml-org/whisper.cpp) already run on Mac and Linux.
+**C. Electron or Tauri.** Cross-platform HUD for free. We would also ship a browser and make insert harder. Rejected for the app shell. The engine list is still the right one. Parakeet through [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) and Whisper through [whisper.cpp](https://github.com/ggml-org/whisper.cpp).
 
-**D. Rust workspace, two crates, platform modules behind `cfg`.** Shared session machine and engine traits. Linux and macOS adapters at the edges. This is the choice. Linux dictation tools that already work, such as [flowvoice](https://github.com/GOJO-SENPA1/flowvoice), are Rust or call out to the same injectors we will use.
+**D. Rust workspace, two crates, Linux modules only.** Shared session machine and engine traits. Inject and hotkey are Linux files, not `cfg` soup. This is the choice. Linux dictation tools that already work, such as [flowvoice](https://github.com/GOJO-SENPA1/flowvoice), call out to the same injectors we will use.
 
 ## Applicable skills
 
-- **how** over SpeechAnalyzer, `CGEventTap`, libei / ydotool, and whisper.cpp or sherpa-onnx before changing those subsystems.
+- **how** over libei / ydotool, evdev, and whisper.cpp or sherpa-onnx before changing those subsystems.
 - **interrogate** on the injection cascade and the engine protocol before those ship.
 - **unslop** on every prose surface. `/deslop` on every diff before commit.
 - **show-me-your-work** for the engine and injection decisions.
@@ -59,21 +58,20 @@ Excluded.
 1. [Session machine](./phase-1-session-machine.md)
 2. [Audio capture](./phase-2-audio.md)
 3. [STT engines](./phase-3-stt-engines.md)
-4. [Linux injection](./phase-4-inject-linux.md)
-5. [macOS injection](./phase-5-inject-macos.md)
-6. [Hotkeys](./phase-6-hotkey.md)
-7. [HUD](./phase-7-hud.md)
-8. [Dictionary](./phase-8-dictionary.md)
-9. [App shell](./phase-9-app-shell.md)
-10. [Cleanup pass](./phase-10-cleanup.md)
+4. [Injection](./phase-4-inject.md)
+5. [Hotkeys](./phase-5-hotkey.md)
+6. [HUD](./phase-6-hud.md)
+7. [Dictionary](./phase-7-dictionary.md)
+8. [App shell](./phase-8-app-shell.md)
+9. [Cleanup pass](./phase-9-cleanup.md)
 
 Project-level checks live in [testing.md](./testing.md). The video read lives in [investigation.md](./investigation.md).
 
 ## Verification
 
-Static. `cargo test --workspace` and `cargo clippy --workspace -- -D warnings` on Linux in this environment.
+Static. `cargo test --workspace` and `cargo clippy --workspace -- -D warnings` on this Linux host.
 
-Runtime. Linux phases must insert text into a real focused widget we spawn, not only log `injected=true`. macOS phases must do the same in TextEdit and in an Electron app (Cursor or VS Code). The comparison harness records one WAV and runs every enabled engine on it.
+Runtime. Injection must put text into a real focused widget we spawn, not only log `injected=true`. Repeat in a terminal and in Chromium when doing the manual checklist. The comparison harness records one WAV and runs every enabled engine on it.
 
 ## Implementation guidance
 
@@ -81,7 +79,7 @@ Implementers apply these before coding a phase.
 
 - Read this overview and the matching phase file. Then run the **how** skill on any subsystem that is new to the thread.
 - Keep the session machine in `echo-core`. Do not let platform modules own dictation state.
-- Linux is the first proving ground because this repo's agents run there. Do not start with the Apple adapter.
+- Do not add `macos.rs` or Apple engine variants. That is a later plan.
 - `/deslop` each diff. Apply **unslop** to commits, comments, and any markdown you add.
 - Use **interrogate** on injection and the `Engine` trait before calling those done.
 - Keep a **show-me-your-work** trail for engine picks and inject fallbacks.

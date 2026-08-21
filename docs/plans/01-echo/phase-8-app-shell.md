@@ -1,10 +1,10 @@
-# Phase 9. App shell
+# Phase 8. App shell
 
 Back to [overview](./overview.md).
 
 ## Goal
 
-A real app you can start and forget. Tray icon, history window, dictionary editor, quit. Close the window and dictation keeps working, like the video's last demo in a Google Doc.
+A real app you can start and forget. Tray icon, history window, dictionary editor, quit. Close the window and dictation keeps working.
 
 ## Changes
 
@@ -26,4 +26,4 @@ Wire `main.rs` so one process runs hotkey, audio, STT, inject, HUD, and the tray
 
 Static. Workspace test and clippy. Persistence tests restart a store from disk.
 
-Runtime. Linux. Launch the binary, dictate once via CLI if the tray grab is flaky, open history, confirm the row, quit, relaunch, confirm the row is still there. macOS. Same, then hide the window and inject into TextEdit to prove the process did not die with the window. No control skill. This is a recorded checklist in [testing.md](./testing.md).
+Runtime. Launch the binary, dictate once via CLI if the tray grab is flaky, open history, confirm the row, quit, relaunch, confirm the row is still there. Hide the window and inject into a terminal to prove the process did not die with the window. No control skill. This is a recorded checklist in [testing.md](./testing.md).

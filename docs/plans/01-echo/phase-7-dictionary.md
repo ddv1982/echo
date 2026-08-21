@@ -1,18 +1,18 @@
-# Phase 8. Dictionary
+# Phase 7. Dictionary
 
 Back to [overview](./overview.md).
 
 ## Goal
 
-A stored list of phrases that rewrites a transcript after STT and before inject. "clawed code" becomes "Claude Code", the way the video's dictionary did. This pass runs on every engine so Linux is not a second-class citizen.
+A stored list of phrases that rewrites a transcript after STT and before inject. "clawed code" becomes "Claude Code", the way the video's dictionary did.
 
 ## Changes
 
 `crates/echo-core/src/dictionary.rs` is the store and the rewriter.
 
-`crates/echo/src/ui/dictionary.rs` is a later-window concern. In this phase a `echo dict add "Claude Code"` CLI is enough. The GUI list waits for phase 9.
+`crates/echo/src/ui/dictionary.rs` is a later-window concern. In this phase a `echo dict add "Claude Code"` CLI is enough. The GUI list waits for phase 8.
 
-Persistence is a JSON or TOML file in the platform data dir. One file. No sqlite.
+Persistence is a JSON or TOML file under `$XDG_DATA_HOME/echo`. One file. No sqlite.
 
 ## Data structures
 
