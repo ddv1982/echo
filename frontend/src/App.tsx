@@ -4,16 +4,12 @@ import {
   CircleAlert,
   Clock3,
   Copy,
-  Gauge,
-  Headphones,
   History,
   Home,
-  Keyboard,
   Mic,
   Plus,
   Search,
   Settings,
-  Sparkles,
   Trash2,
   Waves,
 } from 'lucide-react'
@@ -190,7 +186,12 @@ function App() {
           ) : null}
 
           {view === 'home' ? (
-            <HomeView status={status} history={history} onToggleRecording={onToggleRecording} />
+            <HomeView
+              status={status}
+              history={history}
+              onToggleRecording={onToggleRecording}
+              onOpenSettings={() => setView('settings')}
+            />
           ) : null}
           {view === 'history' ? <HistoryView items={history} /> : null}
           {view === 'dictionary' ? (
@@ -229,54 +230,67 @@ function HomeView({
   status,
   history,
   onToggleRecording,
+  onOpenSettings,
 }: {
   status: AppStatus
   history: HistoryItem[]
   onToggleRecording: () => Promise<void>
+  onOpenSettings: () => void
 }) {
+  const elapsed = useRecordingSeconds(status.recording)
+  const readout = status.recording ? 'Listening' : status.phase === 'Transcribing' ? 'Transcribing' : 'Ready'
   const stateCopy = status.recording
     ? ['Listening…', 'Speak naturally, then press the shortcut again.']
     : status.phase === 'Transcribing'
       ? ['Transcribing locally…', `${status.engineName} is turning your recording into text.`]
       : ['Ready when you are', 'Your audio stays on this machine.']
+  const attention = [
+    !status.microphoneReady ? 'microphone' : null,
+    !status.engineReady ? 'speech engine' : null,
+    !status.injectionReady ? 'text insertion' : null,
+  ].filter((item): item is string => item !== null)
   return (
     <div className="view-stack">
-      <section className="hero-card" data-recording={status.recording}>
-        <div className="hero-copy">
-          <div className="eyebrow">Dictation</div>
-          <h2>{stateCopy[0]}</h2>
-          <p>{stateCopy[1]}</p>
-          <div className="hero-actions">
-            <button className="primary-button" type="button" onClick={() => void onToggleRecording()}>
-              {status.recording ? <Waves size={18} /> : <Mic size={18} />}
-              {status.recording ? 'Stop & transcribe' : 'Start recording'}
-            </button>
-            <div className="shortcut-hint">
-              <kbd>{status.shortcut}</kbd>
-              <span>works from any app</span>
-            </div>
+      <section className="record-panel" data-recording={status.recording}>
+        <div className="readout">
+          <span>{readout}</span>
+          {status.recording ? (
+            <span className="readout-timer">{elapsed}s / {status.maxRecordSeconds}s</span>
+          ) : null}
+        </div>
+        <h2>{stateCopy[0]}</h2>
+        <p>{stateCopy[1]}</p>
+        <div className="record-actions">
+          <button className="primary-button" type="button" onClick={() => void onToggleRecording()}>
+            {status.recording ? <Waves size={18} /> : <Mic size={18} />}
+            {status.recording ? 'Stop & transcribe' : 'Start recording'}
+          </button>
+          <div className="shortcut-hint">
+            <kbd>{status.shortcut}</kbd>
+            <span>works from any app</span>
           </div>
         </div>
       </section>
 
-      <section className="health-grid" aria-label="Echo setup health">
-        <HealthCard icon={Mic} label="Microphone" value={status.microphoneReady ? 'Ready' : 'Unavailable'} ok={status.microphoneReady} />
-        <HealthCard icon={Sparkles} label="Speech engine" value={status.engineName} ok={status.engineReady} />
-        <HealthCard icon={Keyboard} label="Suggested shortcut" value={status.shortcut} ok />
-        <HealthCard icon={Gauge} label="Text insertion" value={status.injectionName} ok={status.injectionReady} />
-      </section>
+      {attention.length > 0 ? (
+        <div className="attention-strip" role="status">
+          <CircleAlert size={16} aria-hidden="true" />
+          <span>Needs setup: {attention.join(', ')}.</span>
+          <button type="button" onClick={onOpenSettings}>Open Settings</button>
+        </div>
+      ) : null}
 
       <div className="home-grid">
         <section className="panel last-transcript">
-          <SectionHeading icon={Headphones} title="Last transcript" subtitle="Most recently inserted text" />
+          <SectionHeading title="Last transcript" subtitle="Most recently inserted text" />
           {status.lastTranscript ? (
             <blockquote>{status.lastTranscript}</blockquote>
           ) : (
-            <div className="empty-state compact"><Waves size={22} /><span>Your next transcript will appear here.</span></div>
+            <div className="empty-state compact"><span>Your next transcript will appear here.</span></div>
           )}
         </section>
         <section className="panel recent-panel">
-          <SectionHeading icon={Clock3} title="Recent" subtitle={`${history.length} saved transcript${history.length === 1 ? '' : 's'}`} />
+          <SectionHeading title="Recent" subtitle={`${history.length} saved transcript${history.length === 1 ? '' : 's'}`} />
           <div className="recent-list">
             {history.slice(0, 3).map((item) => (
               <div className="recent-row" key={item.id}>
@@ -292,14 +306,20 @@ function HomeView({
   )
 }
 
-function HealthCard({ icon: Icon, label, value, ok }: { icon: typeof Mic; label: string; value: string; ok: boolean }) {
-  return (
-    <div className="health-card" data-ok={ok}>
-      <div className="health-icon"><Icon size={17} aria-hidden="true" /></div>
-      <div><span>{label}</span><strong>{value}</strong></div>
-      {ok ? <Check size={16} aria-label="Ready" /> : <CircleAlert size={16} aria-label="Needs attention" />}
-    </div>
-  )
+function useRecordingSeconds(recording: boolean) {
+  const [seconds, setSeconds] = useState(0)
+  useEffect(() => {
+    if (!recording) {
+      setSeconds(0)
+      return
+    }
+    const startedAt = Date.now()
+    const timer = window.setInterval(() => {
+      setSeconds(Math.floor((Date.now() - startedAt) / 1000))
+    }, 250)
+    return () => window.clearInterval(timer)
+  }, [recording])
+  return seconds
 }
 
 function HistoryView({ items }: { items: HistoryItem[] }) {
@@ -403,7 +423,7 @@ function SettingsView({ status, theme, onThemeChange }: { status: AppStatus; the
     <div className="view-stack">
       <ViewHeader title="Settings" subtitle="Review the local components Echo uses for dictation." />
       <section className="panel settings-section">
-        <SectionHeading icon={Sparkles} title="Appearance" subtitle="Follow the system or choose a fixed theme." />
+        <SectionHeading title="Appearance" subtitle="Follow the system or choose a fixed theme." />
         <div className="setting-row">
           <div><strong>Theme</strong><span>Applied to the Echo window only.</span></div>
           <div className="segmented-control" role="group" aria-label="Application theme">
@@ -414,13 +434,13 @@ function SettingsView({ status, theme, onThemeChange }: { status: AppStatus; the
         </div>
       </section>
       <section className="panel settings-section">
-        <SectionHeading icon={Keyboard} title="Shortcut & recording" subtitle="Bind the suggested shortcut in your desktop's keyboard settings; Echo does not register it itself." />
+        <SectionHeading title="Shortcut & recording" subtitle="Bind the suggested shortcut in your desktop's keyboard settings; Echo does not register it itself." />
         <SettingLine label="Suggested shortcut" value={status.shortcut} badge="Toggle" />
         <SettingLine label="Recording HUD" value={status.hudEnabled ? 'Echo pulse capsule (X11 sessions)' : 'Disabled via ECHO_HUD'} badge={status.hudEnabled ? 'On' : 'Off'} />
         <SettingLine label="Maximum recording" value={`${status.maxRecordSeconds} seconds`} />
       </section>
       <section className="panel settings-section">
-        <SectionHeading icon={Gauge} title="Local pipeline" subtitle="No recorded audio leaves this machine." />
+        <SectionHeading title="Local pipeline" subtitle="No recorded audio leaves this machine." />
         <SettingLine label="Speech engine" value={status.engineName} badge={status.engineReady ? 'Ready' : 'Setup'} />
         <SettingLine label="Microphone" value={status.microphoneReady ? 'Default input available' : 'No default input'} badge={status.microphoneReady ? 'Ready' : 'Check'} />
         <SettingLine label="Text insertion" value={status.injectionName} badge={status.injectionReady ? 'Ready' : 'Check'} />
@@ -434,8 +454,8 @@ function ViewHeader({ title, subtitle }: { title: string; subtitle: string }) {
   return <header className="view-header"><h2>{title}</h2><p>{subtitle}</p></header>
 }
 
-function SectionHeading({ icon: Icon, title, subtitle }: { icon: typeof Mic; title: string; subtitle: string }) {
-  return <div className="section-heading"><div className="section-icon"><Icon size={17} /></div><div><h3>{title}</h3><p>{subtitle}</p></div></div>
+function SectionHeading({ title, subtitle }: { title: string; subtitle: string }) {
+  return <div className="section-heading"><h3>{title}</h3><p>{subtitle}</p></div>
 }
 
 function SettingLine({ label, value, badge }: { label: string; value: string; badge?: string }) {
