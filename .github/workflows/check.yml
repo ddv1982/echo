@@ -27,7 +27,8 @@ jobs:
             libdbus-1-dev \
             libayatana-appindicator3-dev \
             xdotool \
-            desktop-file-utils
+            desktop-file-utils \
+            xvfb
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -46,7 +47,7 @@ jobs:
 
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - run: cargo test --workspace
+      - run: xvfb-run -a cargo test --workspace
 
       - name: Validate desktop entry
         run: |
