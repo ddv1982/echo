@@ -95,18 +95,18 @@ The recording process writes `$XDG_DATA_HOME/echo/status` as the session moves, 
 ## Install the desktop entry
 
 ```sh
-sudo apt install desktop-file-utils ffmpeg
+sudo apt install desktop-file-utils
 mkdir -p ~/.local/share/applications
 mkdir -p ~/.local/share/icons/hicolor/scalable/apps
 mkdir -p ~/.local/share/icons/hicolor/256x256/apps
 cp packaging/echo.desktop ~/.local/share/applications/
 cp assets/icons/echo.svg ~/.local/share/icons/hicolor/scalable/apps/echo.svg
-ffmpeg -y -i assets/icons/echo.png -vf scale=256:256 ~/.local/share/icons/hicolor/256x256/apps/echo.png
+cp src-tauri/icons/256x256.png ~/.local/share/icons/hicolor/256x256/apps/echo.png
 update-desktop-database ~/.local/share/applications
 gtk-update-icon-cache ~/.local/share/icons/hicolor
 ```
 
-`packaging/echo.desktop` runs `echo-desktop` and uses `Icon=echo`. Put `echo-desktop` on `PATH`. Leave `assets/icons/echo.png` in the repo as the 1024 source.
+`packaging/echo.desktop` runs `echo-desktop` and uses `Icon=echo`. Put `echo-desktop` on `PATH`. `src-tauri/icons/256x256.png` is generated from `assets/icons/echo-app.svg`.
 
 ## Inject
 
