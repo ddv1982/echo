@@ -235,7 +235,7 @@ fn set_settings(settings: Settings) -> Result<Settings, String> {
 fn read_settings() -> Result<Settings, String> {
     Ok(settings_from(
         &process_settings_env(),
-        &echo_core::Config::load()?,
+        &echo::settings::file_config(),
     ))
 }
 
@@ -291,7 +291,7 @@ fn settings_from(env: &SettingsEnv, file: &echo_core::Config) -> Settings {
         record_seconds: record_seconds_field(
             env.record_seconds
                 .as_deref()
-                .and_then(|raw| raw.parse().ok()),
+                .and_then(|raw| raw.parse::<u64>().ok()),
             file.record_seconds,
         ),
     }
@@ -336,23 +336,35 @@ fn setting_field<T: Clone>(env: Option<T>, file: Option<T>, default: T) -> Setti
 }
 
 fn hud_field(env: Option<&str>, file: Option<bool>) -> SettingField<bool> {
-    let env_off = matches!(env, Some("0" | "false" | "off"));
-    let source = if env_off {
-        SettingSource::Env
-    } else if file.is_some() {
-        SettingSource::File
-    } else {
-        SettingSource::Default
-    };
-    SettingField {
-        value: file,
-        effective: !env_off && file != Some(false),
-        source,
+    match env {
+        Some("0" | "false" | "off") => SettingField {
+            value: file,
+            effective: false,
+            source: SettingSource::Env,
+        },
+        Some("1" | "true" | "on") => SettingField {
+            value: file,
+            effective: true,
+            source: SettingSource::Env,
+        },
+        _ => SettingField {
+            value: file,
+            effective: file != Some(false),
+            source: if file.is_some() {
+                SettingSource::File
+            } else {
+                SettingSource::Default
+            },
+        },
     }
 }
 
-fn record_seconds_field(env: Option<u32>, file: Option<u32>) -> SettingField<u32> {
-    let field = setting_field(env, file, 3);
+fn record_seconds_field(env: Option<u64>, file: Option<u32>) -> SettingField<u32> {
+    let field = setting_field(
+        env.map(|secs| secs.clamp(1, echo::rec::MAX_RECORD_SECONDS) as u32),
+        file,
+        3,
+    );
     SettingField {
         effective: field
             .effective
@@ -602,5 +614,73 @@ mod settings_tests {
         assert_eq!(got.record_seconds.value, Some(8));
         assert_eq!(got.record_seconds.effective, 8);
         assert_eq!(got.record_seconds.source, SettingSource::File);
+    }
+
+    #[test]
+    fn record_seconds_env_above_u32_max_clamps_like_recorder() {
+        let env = SettingsEnv {
+            record_seconds: Some(((u32::MAX as u64) + 1).to_string()),
+            ..SettingsEnv::default()
+        };
+        let file = Config {
+            record_seconds: Some(12),
+            ..Config::default()
+        };
+        let settings = settings_from(&env, &file);
+        assert_eq!(settings.record_seconds.value, Some(12));
+        assert_eq!(
+            settings.record_seconds.effective,
+            echo::rec::MAX_RECORD_SECONDS as u32
+        );
+        assert_eq!(settings.record_seconds.source, SettingSource::Env);
+    }
+
+    #[test]
+    fn hud_enable_tokens_override_file_false() {
+        for token in ["1", "true", "on"] {
+            let env = SettingsEnv {
+                hud: Some(token.into()),
+                ..SettingsEnv::default()
+            };
+            let file = Config {
+                hud: Some(false),
+                ..Config::default()
+            };
+            let settings = settings_from(&env, &file);
+            assert_eq!(settings.hud.value, Some(false), "token {token}");
+            assert!(settings.hud.effective, "token {token}");
+            assert_eq!(settings.hud.source, SettingSource::Env, "token {token}");
+        }
+    }
+
+    #[test]
+    fn hud_off_tokens_disable_and_unknown_consults_file() {
+        let disabled = Config {
+            hud: Some(false),
+            ..Config::default()
+        };
+        let enabled = Config {
+            hud: Some(true),
+            ..Config::default()
+        };
+        for token in ["0", "false", "off"] {
+            let env = SettingsEnv {
+                hud: Some(token.into()),
+                ..SettingsEnv::default()
+            };
+            let settings = settings_from(&env, &enabled);
+            assert!(!settings.hud.effective, "token {token}");
+            assert_eq!(settings.hud.source, SettingSource::Env, "token {token}");
+        }
+        let unknown = SettingsEnv {
+            hud: Some("maybe".into()),
+            ..SettingsEnv::default()
+        };
+        assert!(!settings_from(&unknown, &disabled).hud.effective);
+        assert_eq!(
+            settings_from(&unknown, &disabled).hud.source,
+            SettingSource::File
+        );
+        assert!(settings_from(&unknown, &enabled).hud.effective);
     }
 }
