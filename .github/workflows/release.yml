@@ -73,10 +73,15 @@ jobs:
             src-tauri/target/release/echo-desktop
           if-no-files-found: error
 
+      - name: Extract release notes
+        if: github.ref_type == 'tag'
+        run: python3 scripts/changelog-notes.py "${{ github.ref_name }}" > release-notes.md
+
       - name: Attach GitHub Release
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
+          body_path: release-notes.md
           files: |
             target/release/bundle/deb/*.deb
             target/release/bundle/rpm/*.rpm
