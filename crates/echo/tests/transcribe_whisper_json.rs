@@ -7,26 +7,8 @@ fn fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude_code.wav")
 }
 
-#[test]
-#[ignore = "needs cached models under ECHO_MODEL_DIR or $XDG_CACHE_HOME/echo"]
-fn transcribe_fixture_uses_stdout_json() {
-    let capture = load_wav(&fixture()).expect("fixture wav");
-    let engine = WhisperEngine::new();
-    let before = std::fs::read_dir(std::env::temp_dir())
-        .unwrap()
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| {
-            entry
-                .path()
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| ext == "txt")
-        })
-        .count();
-    let transcript = engine
-        .transcribe(&capture.pcm)
-        .expect("cached whisper model and runner");
-    let after = std::fs::read_dir(std::env::temp_dir())
+fn echo_stt_txt_count() -> usize {
+    std::fs::read_dir(std::env::temp_dir())
         .unwrap()
         .filter_map(|entry| entry.ok())
         .filter(|entry| {
@@ -36,7 +18,19 @@ fn transcribe_fixture_uses_stdout_json() {
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| name.starts_with("echo-stt-") && name.ends_with(".txt"))
         })
-        .count();
+        .count()
+}
+
+#[test]
+#[ignore = "needs cached models under ECHO_MODEL_DIR or $XDG_CACHE_HOME/echo"]
+fn transcribe_fixture_uses_stdout_json() {
+    let capture = load_wav(&fixture()).expect("fixture wav");
+    let engine = WhisperEngine::new();
+    let before = echo_stt_txt_count();
+    let transcript = engine
+        .transcribe(&capture.pcm)
+        .expect("cached whisper model and runner");
+    let after = echo_stt_txt_count();
     assert_eq!(after, before, "whisper must not write a .txt sidecar");
     assert!(
         matches!(transcript.engine, EngineId::Whisper { .. }),
