@@ -13,6 +13,7 @@ export interface Settings {
   whisperModel: SettingField<string>
   cleanup: SettingField<string>
   hud: SettingField<boolean>
+  toggleShortcut: SettingField<string>
   holdKey: SettingField<string>
   recordSeconds: SettingField<number>
   microphone: SettingField<string>
@@ -46,7 +47,23 @@ export interface AppStatus {
   currentExe: string
   firstPathHit: string | null
   staleInstalls: string[]
-  holdListener: 'active' | 'needs-permission' | 'unavailable'
+  holdListener: 'native' | 'active' | 'needs-permission' | 'unavailable'
+  holdListenerError: string | null
+  shortcutBackend: 'portal' | 'x11' | 'unsupported'
+  shortcutHealthy: boolean
+  shortcutError: string | null
+  requestedShortcut: string
+  requestedHoldShortcut: string
+  effectiveHoldShortcut: string | null
+  legacyShortcut: LegacyShortcutSetup | null
+  shortcutActivation: string | null
+}
+
+export interface LegacyShortcutSetup {
+  state: 'missing' | 'stale' | 'conflicting' | 'ready' | 'unsupported'
+  detail: string
+  command: string
+  binding: string
 }
 
 export interface LastRun {

@@ -49,6 +49,8 @@ jobs:
 
       - run: xvfb-run -a cargo test --workspace
 
+      - run: cargo build --release
+
       - name: Check icon raster drift
         run: |
           cargo run -p xtask

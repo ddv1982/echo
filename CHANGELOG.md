@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.4.0
+
+Linux shortcuts are now configurable, source-aware, and resilient across modern Wayland, X11, and older GNOME sessions.
+
+- Toggle and push-to-talk shortcuts support canonical multi-key chords, environment overrides, persisted settings, capture/reset controls, and effective-trigger reporting.
+- Echo uses the GlobalShortcuts portal when available and native X11 grabs otherwise, with explicit conflict and registration errors instead of silent fallback claims.
+- GNOME releases without the portal get an explicit, ownership-checked setup and repair action for the Echo custom toggle shortcut; startup and status polling never change desktop settings.
+- Push-to-talk prefers native desktop shortcuts and falls back to a chord-aware evdev supervisor that handles multiple keyboards, hotplug, reconnect, cancellation, permission denial, and listener failure without granting privileges.
+- Advanced Settings identifies toggle and push-to-talk sources independently, and Test shortcut accepts only a successful action from the configured shortcut command path.
+- The recording HUD is smaller and its premultiplied ARGB edges render cleanly without a pale fringe.
+- CI now includes a release build alongside frontend, test, and lint gates.
+
 ## v0.4.0-alpha.1
 
 Fourth Linux alpha of Echo. Your language back by default, hotkeys you can trust, and a Settings view for humans.

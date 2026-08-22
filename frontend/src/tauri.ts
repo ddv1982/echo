@@ -7,6 +7,7 @@ import type {
   HistoryItem,
   InputDevice,
   LanguageOptions,
+  LegacyShortcutSetup,
   ModelInventory,
   ModelOffer,
   SettingField,
@@ -51,7 +52,16 @@ function richPreviewStatus(): AppStatus {
     currentExe: '/usr/bin/echo-desktop',
     firstPathHit: '/usr/bin/echo-desktop',
     staleInstalls: [],
-    holdListener: 'active',
+    holdListener: 'native',
+    holdListenerError: null,
+    shortcutBackend: 'portal',
+    shortcutHealthy: true,
+    shortcutError: null,
+    requestedShortcut: 'Super+Alt+Space',
+    requestedHoldShortcut: 'RightCtrl',
+    effectiveHoldShortcut: 'RightCtrl',
+    legacyShortcut: null,
+    shortcutActivation: null,
   }
 }
 
@@ -149,6 +159,22 @@ const preview = import.meta.env.DEV
 export function getAppStatus(): Promise<AppStatus> {
   if (isTauri()) return invoke('get_app_status')
   return Promise.resolve(preview ? { ...previewStatus } : initialPreviewStatus())
+}
+
+export function repairLegacyShortcut(): Promise<LegacyShortcutSetup> {
+  if (isTauri()) return invoke('repair_legacy_shortcut')
+  const setup = previewStatus.legacyShortcut
+  if (!setup) return Promise.reject(new Error('This session does not need a legacy shortcut.'))
+  if (setup.state === 'conflicting' || setup.state === 'unsupported') {
+    return Promise.reject(new Error(setup.detail))
+  }
+  const repaired: LegacyShortcutSetup = {
+    ...setup,
+    state: 'ready',
+    detail: 'GNOME owns this Echo shortcut and its command is current.',
+  }
+  previewStatus = { ...previewStatus, legacyShortcut: repaired }
+  return Promise.resolve(repaired)
 }
 
 export function getHistory(): Promise<HistoryItem[]> {
@@ -443,6 +469,7 @@ function defaultPreviewSettings(): Settings {
     whisperModel: { value: null, effective: '', source: 'default' },
     cleanup: { value: null, effective: 'rules', source: 'default' },
     hud: { value: null, effective: true, source: 'default' },
+    toggleShortcut: { value: null, effective: 'Super+Alt+Space', source: 'default' },
     holdKey: { value: null, effective: 'RightCtrl', source: 'default' },
     recordSeconds: { value: null, effective: 3, source: 'default' },
     microphone: { value: null, effective: '', source: 'default' },
@@ -460,6 +487,7 @@ function projectPreviewSettings(settings: Settings): Settings {
     whisperModel: previewField(settings.whisperModel.value, ''),
     cleanup: previewField(settings.cleanup.value, 'rules'),
     hud: previewField(settings.hud.value, true),
+    toggleShortcut: previewField(settings.toggleShortcut.value, 'Super+Alt+Space'),
     holdKey: previewField(settings.holdKey.value, 'RightCtrl'),
     recordSeconds: previewField(recordValue, 3),
     microphone: previewField(settings.microphone.value, ''),
@@ -492,6 +520,7 @@ function applyPreviewStatus(settings: Settings) {
     engineReady: settings.engine.effective !== 'auto',
     cleanupName: cleanupNames[settings.cleanup.effective] ?? settings.cleanup.effective,
     hudEnabled: settings.hud.effective,
+    shortcut: settings.toggleShortcut.effective,
   }
 }
 
@@ -519,5 +548,14 @@ function initialPreviewStatus(): AppStatus {
     firstPathHit: null,
     staleInstalls: [],
     holdListener: 'unavailable',
+    holdListenerError: null,
+    shortcutBackend: 'unsupported',
+    shortcutHealthy: false,
+    shortcutError: 'Not connected',
+    requestedShortcut: 'Super+Alt+Space',
+    requestedHoldShortcut: 'RightCtrl',
+    effectiveHoldShortcut: null,
+    legacyShortcut: null,
+    shortcutActivation: null,
   }
 }

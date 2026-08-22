@@ -560,15 +560,16 @@ mod tests {
             other => panic!("expected refusal, got {other:?}"),
         }
 
-        // Pinned English on an .en model is the one combination that runs;
-        // with no binary installed it reaches Missing instead of a refusal.
-        let english = WhisperEngine::with_cache(ModelCache::at(&dir), "base.en");
-        assert_eq!(english.transcribe(&pcm), Err(EngineError::Missing));
+        // Pinned English on an .en model is accepted by the preflight check.
+        assert!(refuse_impossible_language(
+            &dir.join("ggml-base.en.bin"),
+            false,
+            LanguageChoice::Pinned(Language::ENGLISH),
+        )
+        .is_ok());
 
         // A multilingual model takes any pinned language.
-        fs::write(dir.join("ggml-small.bin"), []).unwrap();
-        let multi = WhisperEngine::with_cache(ModelCache::at(&dir), "small").with_language(german);
-        assert_eq!(multi.transcribe(&pcm), Err(EngineError::Missing));
+        assert!(refuse_impossible_language(&dir.join("ggml-small.bin"), true, german).is_ok());
         let _ = fs::remove_dir_all(&dir);
     }
 

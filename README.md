@@ -2,7 +2,7 @@
 
 Local dictation for Linux. Hold a key (or press a toggle shortcut), speak, and cleaned text lands at the cursor. Audio never leaves the machine.
 
-Hold-to-talk (`echo-desktop rec --hold`) reads the key from `/dev/input` and needs the user in the `input` group. The toggle (`echo-desktop rec --toggle`) works everywhere through a desktop keyboard shortcut.
+Hold-to-talk (`echo-desktop rec --hold`) can use readable Linux keyboard devices when native push-to-talk is unavailable. The toggle (`echo-desktop rec --toggle`) works everywhere through a desktop keyboard shortcut.
 
 The first-build plan is [docs/plans/01-echo/overview.md](docs/plans/01-echo/overview.md).
 
@@ -67,19 +67,28 @@ Compositor shortcuts and hold-to-talk use subcommands on the same binary:
 
 `echo-desktop rec --toggle` is intended for compositor shortcuts on Wayland. The first invocation starts recording; invoke it again to stop, transcribe, and insert at the focused cursor. It stops automatically after 60 seconds if the second invocation never arrives.
 
-Hold-to-talk works from the desktop app with no terminal: while Echo is running, the hold key listener watches `/dev/input` and records while the key is down. The default key is Right Ctrl; change it in Settings or with `ECHO_HOLD_KEY` (for example `ECHO_HOLD_KEY=RightShift`). It reads keys from `/dev/input`, so add yourself to the input group first: `sudo usermod -aG input $USER`, then log out and back in; the Settings row says when that access is missing. `echo-desktop rec --hold` runs the same machinery as a terminal loop until Ctrl+C, for setups where the desktop app is not running.
+Hold-to-talk works from the desktop app with no terminal. Echo prefers the desktop's native global-shortcut support; when that is unavailable, an optional evdev supervisor watches only readable keyboard-capable `/dev/input/event*` devices, reconnects after hotplug, and records while the complete configured chord is down. The default is Right Ctrl; change it in Settings or with `ECHO_HOLD_KEY` (for example `ECHO_HOLD_KEY=Ctrl+Shift+A`). If raw keyboard input is not available, Settings reports that state without changing device permissions or asking for hidden privilege changes; use the desktop toggle shortcut instead. `echo-desktop rec --hold` runs the same supervised machinery as a terminal loop until Ctrl+C, for setups where the desktop app is not running.
 
 While recording, Echo shows a click-through capsule near the bottom of the screen with live microphone levels; it stays up through transcription and ends on a Done or Failed state. It never takes keyboard focus. The capsule is X11-only; on a Wayland session without XWayland there is no HUD, and the desktop app is the recording indicator. Set `ECHO_HUD=off` to disable it.
 
-### GNOME and Zorin OS global shortcut
+### Wayland global shortcuts
 
-Install `echo-desktop`, then open **Settings → Keyboard → View and Customize Shortcuts → Custom Shortcuts** and add:
+Echo registers the configured toggle and push-to-talk shortcuts directly when the desktop provides the GlobalShortcuts portal. GNOME 46 and older do not provide that portal. On those releases, Echo Settings inspects GNOME's `Echo Dictation` custom shortcut and shows **Set up GNOME shortcut** or **Repair GNOME shortcut** when an explicit write is safe. Echo never edits desktop settings at startup. On click, it rechecks the complete shortcut state and aborts if anything changed, then applies the Echo fields and merged path list as one atomic dconf changeset. Keep GNOME Settings closed during that click: dconf has no compare-and-swap operation, so a different process writing in the final interval after Echo's recheck remains a last-writer-wins race.
 
-- Name: `Echo Dictation`
-- Command: `echo-desktop rec --toggle`
-- Shortcut: `Super+Alt+Space` (or another unused combination)
+The GNOME fallback uses the running executable's absolute path, for example `/usr/bin/echo-desktop rec --toggle`, rather than a PATH lookup that an old source install could shadow. Press the shortcut once to start recording and again to stop. GNOME keeps focus in the current application, so Echo inserts the transcript at its active cursor.
 
-Press the shortcut once to start recording and again to stop. GNOME keeps focus in the current application, so Echo inserts the transcript at its active cursor.
+On another Wayland compositor without GlobalShortcuts support, Settings reports that automatic setup is unsupported and shows the exact command and key combination to add in that compositor's keyboard settings. Echo does not silently grant raw-input access or mutate compositor configuration.
+
+### Shortcut diagnostics and evidence
+
+Advanced Settings reports the active source independently for the toggle and push-to-talk shortcuts. Toggle health distinguishes the desktop portal, X11, a ready GNOME custom shortcut, and unavailable or failed registration. Push-to-talk health distinguishes a native desktop shortcut, active raw keyboard input, permission denial, and an unavailable listener. A GUI or tray recording by itself is not accepted as proof that a shortcut source worked.
+
+| Source | Acceptance evidence | Claim boundary |
+| --- | --- | --- |
+| GlobalShortcuts portal | The production ashpd path registers, binds, routes activation/deactivation, handles changed triggers, and closes its session against a private D-Bus service implementing the official Registry, Request, Session, and GlobalShortcuts contracts. | Protocol and Echo state-machine behavior only; this does not certify a real compositor's consent dialog or UI. |
+| X11 | The production global-hotkey path runs in nested Xephyr. Hardware-level ydotool input reaches toggle and hold handlers while another inner application owns focus; a separate check proves conflict rejection and unregister cleanup. | Native X11 routing and ownership, not Wayland behavior. |
+| GNOME 46 Wayland | This host proves the GlobalShortcuts interface is absent, the production status IPC exposes explicit setup/repair, and repair changes only the confirmed Echo-owned custom binding. | Older-GNOME fallback only; desktop settings are never changed at startup. |
+| evdev fallback | Supervisor tests cover complete chords, repeat suppression, independent keyboards, hotplug, reconnect, read failure, cancellation, and final release. The current host proves denied or unavailable raw input stays visible through production status IPC while the GNOME toggle remains ready. | Only readable eligible keyboards are used; Echo does not grant or request device privileges. |
 
 Models live under `$XDG_CACHE_HOME/echo` (normally `~/.cache/echo`) or `ECHO_MODEL_DIR`. Settings → Get a model downloads curated Whisper and VAD models over HTTPS with SHA-1 verification; a model you drop into the directory yourself is picked up the same way. Engine binaries are not downloaded: put `whisper-cli` (or `whisper-cpp`/`whisper`) on `PATH` for Whisper, or `sherpa-onnx-offline` (or `sherpa-onnx`) plus the `parakeet-tdt-0.6b-v3/` model files for Parakeet. `ECHO_ENGINE` forces an engine; the default is Auto, the first installed real engine.
 
@@ -99,7 +108,7 @@ The recording process writes `$XDG_DATA_HOME/echo/status` as the session moves, 
 
 ## Install the desktop entry
 
-Install the `.deb` from the [GitHub Releases](https://github.com/ddv1982/echo/releases) page. The package installs `echo-desktop`, `Echo.desktop`, and the `echo-desktop` icons.
+Install the `.deb` from the [GitHub Releases](https://github.com/ddv1982/echo/releases) page. The package installs `echo-desktop`, `io.github.ddv1982.echo.desktop`, and the `echo-desktop` icons.
 
 To add a menu entry from a source build, put `echo-desktop` on `PATH`, then:
 
