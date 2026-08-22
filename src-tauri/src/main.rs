@@ -869,6 +869,9 @@ fn try_cli(args: &[String]) -> Option<i32> {
 }
 
 fn rec(args: &[String]) -> i32 {
+    // Bare CLI process: failures must reach the user where they are looking,
+    // which is not the journal. The GUI's in-process sessions leave this off.
+    echo::notify::enable_failure_notifications();
     match args {
         [arg] if arg == "--once" => echo::rec::run_rec_once(),
         [arg] if arg == "--toggle" => echo::rec::run_rec_toggle(),

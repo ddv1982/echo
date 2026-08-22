@@ -126,6 +126,7 @@ fn run_record(mut stop: StopWhen) -> i32 {
             let _ = session.fail(reason);
             log_state(&session);
             let _ = status::write_status(session.state(), None, None);
+            crate::notify::notify_session_failure(reason, None);
             return 1;
         }
     };
@@ -144,6 +145,7 @@ fn run_record(mut stop: StopWhen) -> i32 {
                  sherpa-onnx plus the parakeet model (see README), or set ECHO_ENGINE=fake \
                  for smoke tests"
             );
+            crate::notify::notify_session_failure(FailReason::EngineMissing, None);
             return 1;
         }
     };
@@ -162,6 +164,7 @@ fn run_record(mut stop: StopWhen) -> i32 {
             let _ = session.fail(reason);
             log_state(&session);
             let _ = status::write_status(session.state(), None, detail);
+            crate::notify::notify_session_failure(reason, detail);
             return 1;
         }
     };
@@ -198,6 +201,7 @@ fn run_record(mut stop: StopWhen) -> i32 {
         hud.set_state(crate::ui::hud::HudState::Failed);
         let _ = session.fail(reason);
         log_state(&session);
+        crate::notify::notify_session_failure(reason, None);
     } else if session.complete_inject().is_ok() {
         hud.set_state(crate::ui::hud::HudState::Done);
         log_state(&session);
