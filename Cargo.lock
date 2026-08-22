@@ -1052,7 +1052,7 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "echo"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "cpal",
  "echo-core",
@@ -1067,7 +1067,7 @@ dependencies = [
 
 [[package]]
 name = "echo-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1075,7 +1075,7 @@ dependencies = [
 
 [[package]]
 name = "echo-desktop"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "echo",
  "echo-core",
@@ -5536,7 +5536,7 @@ checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
 
 [[package]]
 name = "xtask"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "png 0.18.1",
  "resvg",
