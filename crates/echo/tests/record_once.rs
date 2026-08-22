@@ -17,7 +17,7 @@ fn record_once() {
         cancel.cancel();
     });
     let result = capture
-        .record(Duration::from_secs(3))
+        .record(Duration::from_secs(3), None)
         .expect("record 16 kHz mono");
     assert!(
         result.pcm.duration_ms() >= 1500,

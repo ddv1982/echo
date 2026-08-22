@@ -69,7 +69,7 @@ Compositor shortcuts and hold-to-talk use subcommands on the same binary:
 
 `echo-desktop rec --hold` waits for the hold key, records while it is down, and inserts on release, looping until you press Ctrl+C. The default key is Right Ctrl; set `ECHO_HOLD_KEY` to change it (for example `ECHO_HOLD_KEY=RightShift`). It reads keys from `/dev/input`, so add yourself to the input group first: `sudo usermod -aG input $USER`, then log out and back in. Without that access it exits with a hint and you should use the toggle instead.
 
-While recording, Echo shows a click-through animated capsule near the bottom of the screen. It disappears before transcription and never takes keyboard focus. The capsule is X11-only; on a Wayland session without XWayland there is no HUD, and the desktop app is the recording indicator. Set `ECHO_HUD=off` to disable it.
+While recording, Echo shows a click-through capsule near the bottom of the screen with live microphone levels; it stays up through transcription and ends on a Done or Failed state. It never takes keyboard focus. The capsule is X11-only; on a Wayland session without XWayland there is no HUD, and the desktop app is the recording indicator. Set `ECHO_HUD=off` to disable it.
 
 ### GNOME and Zorin OS global shortcut
 

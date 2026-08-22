@@ -24,7 +24,7 @@ fn record_named_device() {
         cancel.cancel();
     });
     let result = capture
-        .record(Duration::from_secs(3))
+        .record(Duration::from_secs(3), None)
         .expect("record 16 kHz mono");
     assert!(
         result.peak_rms > 0.001,
