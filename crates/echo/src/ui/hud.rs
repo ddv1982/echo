@@ -134,10 +134,10 @@ pub fn enabled() -> bool {
     !hud_disabled()
 }
 
-const WIDTH: u32 = 220;
-const HEIGHT: u32 = 56;
+const WIDTH: u32 = 152;
+const HEIGHT: u32 = 44;
 const FRAME: Duration = Duration::from_millis(33);
-const BAR_COUNT: usize = 14;
+const BAR_COUNT: usize = 11;
 /// Done holds briefly, then the capsule fades. Failed holds about a second.
 const DONE_HOLD: Duration = Duration::from_millis(300);
 const DONE_FADE: Duration = Duration::from_millis(200);
@@ -158,8 +158,8 @@ fn smooth(displayed: f32, measured: f32) -> f32 {
     }
 }
 
-const BAR_MIN: f32 = 4.0;
-const BAR_MAX: f32 = 34.0;
+const BAR_MIN: f32 = 3.0;
+const BAR_MAX: f32 = 26.0;
 /// Speech RMS sits well under 1.0; gain brings conversational levels to
 /// mid-scale, and the square root keeps quiet sounds visible.
 const LEVEL_GAIN: f32 = 3.0;
@@ -278,12 +278,12 @@ fn render_frame(
                 1.0
             };
             if translucent {
-                let glow = 16.0 + pulse * 6.0;
+                let glow = 14.0 + pulse * 5.0;
                 let glow_path =
-                    rounded_rect(28.0 - glow / 2.0, 28.0 - glow / 2.0, glow, glow, glow / 2.0);
+                    rounded_rect(22.0 - glow / 2.0, 22.0 - glow / 2.0, glow, glow, glow / 2.0);
                 fill(frame, &glow_path, RED, 0.18 * fade);
             }
-            let dot = rounded_rect(23.0, 23.0, 10.0, 10.0, 5.0);
+            let dot = rounded_rect(18.0, 18.0, 8.0, 8.0, 4.0);
             fill(frame, &dot, RED, (0.55 + 0.45 * pulse) * fade);
             if state == HudState::Recording {
                 draw_bars(frame, bars, fade);
@@ -298,8 +298,8 @@ fn draw_bars(frame: &mut FrameBuffer, bars: &[f32], fade: f32) {
     let center_y = frame.height as f32 / 2.0;
     for (index, level) in bars.iter().enumerate() {
         let height = bar_height(*level);
-        let x = 52.0 + index as f32 * 9.0;
-        let bar = rounded_rect(x, center_y - height / 2.0, 5.0, height, 2.5);
+        let x = 42.0 + index as f32 * 8.0;
+        let bar = rounded_rect(x, center_y - height / 2.0, 4.0, height, 2.0);
         fill(frame, &bar, GRAY, fade);
     }
 }
@@ -310,7 +310,7 @@ fn draw_shimmer_dots(frame: &mut FrameBuffer, elapsed: f32, fade: f32) {
         // A traveling shimmer: each dot brightens in turn, left to right.
         let phase = (elapsed * 2.2 - index as f32 * 0.33).rem_euclid(1.0);
         let brightness = 0.35 + 0.65 * (1.0 - (phase * 2.0 - 1.0).abs());
-        let x = 96.0 + index as f32 * 14.0;
+        let x = frame.width as f32 / 2.0 - 18.0 + index as f32 * 14.0;
         let dot = rounded_rect(x, center_y - 4.0, 8.0, 8.0, 4.0);
         fill(frame, &dot, GRAY, brightness * fade);
     }
@@ -409,10 +409,16 @@ fn argb_visual<C: Connection>(
 /// Pack one premultiplied RGBA pixel for the window's visual. The masks come
 /// from the visual itself; the alpha byte is kept only on the 32-bit path.
 fn pack_pixel(pixel: tiny_skia::PremultipliedColorU8, masks: (u32, u32, u32), alpha: bool) -> u32 {
-    let color = pixel.demultiply();
-    let mut packed = shift_into(color.red(), masks.0) | shift_into(color.green(), masks.1) | shift_into(color.blue(), masks.2);
+    let (red, green, blue) = if alpha {
+        (pixel.red(), pixel.green(), pixel.blue())
+    } else {
+        let color = pixel.demultiply();
+        (color.red(), color.green(), color.blue())
+    };
+    let mut packed =
+        shift_into(red, masks.0) | shift_into(green, masks.1) | shift_into(blue, masks.2);
     if alpha {
-        packed |= shift_into(color.alpha(), !(masks.0 | masks.1 | masks.2));
+        packed |= shift_into(pixel.alpha(), !(masks.0 | masks.1 | masks.2));
     }
     packed
 }
@@ -833,8 +839,11 @@ mod tests {
         let red = tiny_skia::ColorU8::from_rgba(0xff, 0x00, 0x00, 0xff).premultiply();
         let packed = pack_pixel(red, (0xff0000, 0xff00, 0xff), true);
         assert_eq!(packed, 0xffff_0000);
-        let half = tiny_skia::ColorU8::from_rgba(0x80, 0x00, 0x00, 0xff).premultiply();
-        let packed = pack_pixel(half, (0xff0000, 0xff00, 0xff), false);
+        let dim = tiny_skia::ColorU8::from_rgba(0x80, 0x00, 0x00, 0xff).premultiply();
+        let packed = pack_pixel(dim, (0xff0000, 0xff00, 0xff), false);
         assert_eq!(packed, 0x0080_0000);
+        let half_alpha = tiny_skia::ColorU8::from_rgba(0xff, 0x00, 0x00, 0x80).premultiply();
+        let packed = pack_pixel(half_alpha, (0xff0000, 0xff00, 0xff), true);
+        assert_eq!(packed, 0x8080_0000, "ARGB channels stay premultiplied");
     }
 }
