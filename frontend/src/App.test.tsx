@@ -535,8 +535,12 @@ describe('Echo desktop shell', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     const warning = await screen.findAllByText(/ggml-base\.en\.bin is English-only/)
     const warningRow = warning[0].closest('.setting-row')!
-    // The fix is a click, right at the point of failure.
-    fireEvent.click(within(warningRow as HTMLElement).getByRole('button', { name: 'Download' }))
+    // The fix is a click, right at the point of failure. The button renders
+    // once the async offer fetch resolves, later than the status-driven
+    // warning text, so the lookup must wait for it.
+    fireEvent.click(
+      await within(warningRow as HTMLElement).findByRole('button', { name: 'Download' }),
+    )
     expect(
       await within(warningRow as HTMLElement).findByRole('progressbar', {
         name: 'Downloading ggml-small.bin',
