@@ -294,8 +294,14 @@ fn portal_runtime_registers_binds_routes_and_closes() {
             .expect("test shortcut observer lock") = Some(action_sender);
         let cancel = echo::audio::CancellationToken::new();
         let listener_cancel = cancel.clone();
-        let listener =
-            run_portal_shortcuts_async("Super+Alt+Space", "RightCtrl", &listener_cancel, client);
+        let active = AtomicBool::new(false);
+        let listener = run_portal_shortcuts_async(
+            "Super+Alt+Space",
+            "RightCtrl",
+            &listener_cancel,
+            &active,
+            client,
+        );
         let exercise = async {
             let deadline = Instant::now() + Duration::from_secs(3);
             while (!calls.bound.load(Ordering::SeqCst) || !native_shortcut_status().healthy)
@@ -305,6 +311,7 @@ fn portal_runtime_registers_binds_routes_and_closes() {
             }
             assert_eq!(calls.stage.load(Ordering::SeqCst), 2);
             assert!(native_shortcut_status().healthy);
+            assert!(active.load(Ordering::SeqCst));
             assert_eq!(
                 native_shortcut_status().effective_toggle.as_deref(),
                 Some("Ctrl+Alt+T")
@@ -422,7 +429,11 @@ fn portal_runtime_registers_binds_routes_and_closes() {
                 TestShortcutAction::HoldStart
             );
             recording_env.assert_active();
-            cancel.cancel();
+            let session_emitter = SignalEmitter::new(&service, session.clone())
+                .expect("portal session signal emitter");
+            Session::closed(&session_emitter, &empty)
+                .await
+                .expect("emit unexpected portal session closure");
             assert_eq!(
                 receive_action(&action_receiver).await,
                 TestShortcutAction::HoldStop
@@ -430,7 +441,10 @@ fn portal_runtime_registers_binds_routes_and_closes() {
         };
 
         let (result, ()) = tokio::join!(listener, exercise);
-        result.expect("portal listener result");
+        assert_eq!(
+            result.expect_err("portal closure should terminate the listener"),
+            "portal shortcut session terminated"
+        );
         recording_env.wait_until_inactive();
         assert!(calls.closed.load(Ordering::SeqCst));
         *TEST_SHORTCUT_ACTIONS

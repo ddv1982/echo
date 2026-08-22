@@ -1939,6 +1939,14 @@ static NATIVE_RECONCILE: Mutex<()> = Mutex::new(());
 /// joined (which closes a portal session or unregisters X11 grabs) before the
 /// replacement can register, while the runtime/status mutexes stay unlocked.
 fn reconcile_native_shortcuts() {
+    reconcile_native_shortcuts_with_recovery(false);
+}
+
+fn retry_native_shortcuts() {
+    reconcile_native_shortcuts_with_recovery(true);
+}
+
+fn reconcile_native_shortcuts_with_recovery(recovering: bool) {
     let _reconcile = NATIVE_RECONCILE
         .lock()
         .expect("native shortcut reconcile lock");
@@ -2016,19 +2024,47 @@ fn reconcile_native_shortcuts() {
             .to_string(),
         )
         .spawn(move || {
+            let active = AtomicBool::new(false);
             let result = panic::catch_unwind(AssertUnwindSafe(|| match session {
                 echo::hotkey::DesktopSession::Wayland => {
-                    run_portal_shortcuts(&thread_toggle, &thread_hold, &thread_cancel)
+                    run_portal_shortcuts(&thread_toggle, &thread_hold, &thread_cancel, &active)
                 }
                 echo::hotkey::DesktopSession::X11 => {
-                    run_x11_shortcuts(&thread_toggle, &thread_hold, &thread_cancel)
+                    run_x11_shortcuts(&thread_toggle, &thread_hold, &thread_cancel, &active)
                 }
                 echo::hotkey::DesktopSession::Unknown => Ok(()),
             }));
-            match result {
-                Ok(Ok(())) => {}
-                Ok(Err(err)) => mark_native_failure(err),
-                Err(_) => mark_native_failure("native shortcut listener panicked".to_string()),
+            let failure = match result {
+                Ok(Ok(())) => None,
+                Ok(Err(err)) => Some(err),
+                Err(_) => Some("native shortcut listener panicked".to_string()),
+            };
+            let active = active.load(Ordering::SeqCst);
+            if let Some(error) = failure {
+                if thread_cancel.is_cancelled() {
+                    eprintln!("native shortcuts: listener teardown failed: {error}");
+                    return;
+                }
+                mark_native_failure(error);
+                if should_retry_native_listener(active, recovering, false) {
+                    if let Err(err) = schedule_native_retry(
+                        thread_cancel,
+                        Duration::from_secs(1),
+                        retry_native_shortcuts,
+                    ) {
+                        eprintln!("native shortcuts: {err}");
+                    }
+                }
+            } else if !active
+                && should_retry_native_listener(active, recovering, thread_cancel.is_cancelled())
+            {
+                if let Err(err) = schedule_native_retry(
+                    thread_cancel,
+                    Duration::from_secs(1),
+                    retry_native_shortcuts,
+                ) {
+                    eprintln!("native shortcuts: {err}");
+                }
             }
         });
     match spawned {
@@ -2080,6 +2116,34 @@ fn mark_native_unsupported(error: String, global_shortcuts_absent: bool) {
         status.effective_hold = None;
     });
     reconcile_evdev_fallback(NativeHoldState::Failed);
+}
+
+fn schedule_native_retry(
+    cancel: echo::audio::CancellationToken,
+    delay: Duration,
+    retry: impl FnOnce() + Send + 'static,
+) -> Result<(), String> {
+    std::thread::Builder::new()
+        .name("echo-shortcuts-retry".to_string())
+        .spawn(move || {
+            let deadline = Instant::now() + delay;
+            while !cancel.is_cancelled() {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    if !cancel.is_cancelled() {
+                        retry();
+                    }
+                    break;
+                }
+                std::thread::sleep(remaining.min(Duration::from_millis(50)));
+            }
+        })
+        .map(|_| ())
+        .map_err(|err| format!("cannot schedule native shortcut retry: {err}"))
+}
+
+fn should_retry_native_listener(active: bool, recovering: bool, cancelled: bool) -> bool {
+    !cancelled && (active || recovering)
 }
 
 fn dispatch_shortcut_edge(
@@ -2139,12 +2203,19 @@ fn run_x11_shortcuts(
     requested_toggle: &str,
     requested_hold: &str,
     cancel: &echo::audio::CancellationToken,
+    active: &AtomicBool,
 ) -> Result<(), String> {
     let mut toggle = echo::hotkey::ToggleDriver::new();
     let mut hold = None;
-    let result = run_x11_event_loop(requested_toggle, requested_hold, cancel, |id, edge| {
-        dispatch_shortcut_edge(id, edge, &mut toggle, &mut hold);
-    });
+    let result = run_x11_event_loop(
+        requested_toggle,
+        requested_hold,
+        cancel,
+        active,
+        |id, edge| {
+            dispatch_shortcut_edge(id, edge, &mut toggle, &mut hold);
+        },
+    );
     toggle.terminate();
     stop_held_recording(&mut hold);
     result
@@ -2154,6 +2225,7 @@ fn run_x11_event_loop(
     requested_toggle: &str,
     requested_hold: &str,
     cancel: &echo::audio::CancellationToken,
+    active: &AtomicBool,
     mut on_edge: impl FnMut(&'static str, echo::hotkey::HotkeyEvent),
 ) -> Result<(), String> {
     let decision = echo::hotkey::select_native_backend(echo::hotkey::DesktopSession::X11, None);
@@ -2170,29 +2242,39 @@ fn run_x11_event_loop(
     manager
         .register(toggle_key)
         .map_err(|err| format!("X11 toggle shortcut conflict: {err}"))?;
-    if let Err(err) = manager.register(hold_key) {
-        let _ = manager.unregister(toggle_key);
-        return Err(format!("X11 push-to-talk shortcut conflict: {err}"));
-    }
+    let hold_registered = match manager.register(hold_key) {
+        Ok(()) => true,
+        Err(err) => {
+            eprintln!("native shortcuts: X11 push-to-talk shortcut conflict: {err}");
+            false
+        }
+    };
+    let registered = if hold_registered {
+        vec![toggle_key, hold_key]
+    } else {
+        vec![toggle_key]
+    };
     update_native_status(|status| {
         status.backend = ShortcutBackendName::X11;
         status.healthy = true;
         status.global_shortcuts_absent = false;
         status.error = None;
-        set_effective_shortcuts(
-            status,
-            requested_toggle.to_string(),
-            requested_hold.to_string(),
-        );
+        status.effective_toggle = Some(requested_toggle.to_string());
+        status.effective_hold = hold_registered.then(|| requested_hold.to_string());
     });
-    reconcile_evdev_fallback(NativeHoldState::Healthy);
+    reconcile_evdev_fallback(if hold_registered {
+        NativeHoldState::Healthy
+    } else {
+        NativeHoldState::Failed
+    });
+    active.store(true, Ordering::SeqCst);
 
     while !cancel.is_cancelled() {
         match GlobalHotKeyEvent::receiver().recv_timeout(Duration::from_millis(50)) {
             Ok(event) => {
                 let id = if event.id == toggle_key.id() {
                     TOGGLE_SHORTCUT_ID
-                } else if event.id == hold_key.id() {
+                } else if hold_registered && event.id == hold_key.id() {
                     HOLD_SHORTCUT_ID
                 } else {
                     continue;
@@ -2205,13 +2287,13 @@ fn run_x11_event_loop(
             }
             Err(err) if err.is_timeout() => {}
             Err(err) => {
-                let _ = manager.unregister_all(&[toggle_key, hold_key]);
+                let _ = manager.unregister_all(&registered);
                 return Err(format!("X11 shortcut listener terminated: {err}"));
             }
         }
     }
     manager
-        .unregister_all(&[toggle_key, hold_key])
+        .unregister_all(&registered)
         .map_err(|err| format!("cannot unregister X11 shortcuts: {err}"))
 }
 
@@ -2219,6 +2301,7 @@ fn run_portal_shortcuts(
     requested_toggle: &str,
     requested_hold: &str,
     cancel: &echo::audio::CancellationToken,
+    active: &AtomicBool,
 ) -> Result<(), String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -2228,7 +2311,8 @@ fn run_portal_shortcuts(
         let connection = ashpd::zbus::Connection::session()
             .await
             .map_err(|err| format!("cannot connect to the session bus: {err}"))?;
-        run_portal_shortcuts_async(requested_toggle, requested_hold, cancel, connection).await
+        run_portal_shortcuts_async(requested_toggle, requested_hold, cancel, active, connection)
+            .await
     })
 }
 
@@ -2236,6 +2320,7 @@ async fn run_portal_shortcuts_async(
     requested_toggle: &str,
     requested_hold: &str,
     cancel: &echo::audio::CancellationToken,
+    active: &AtomicBool,
     connection: ashpd::zbus::Connection,
 ) -> Result<(), String> {
     let app_id = APP_ID
@@ -2394,6 +2479,7 @@ async fn run_portal_shortcuts_async(
         set_effective_shortcuts(status, effective_toggle, effective_hold);
     });
     reconcile_evdev_fallback(NativeHoldState::Healthy);
+    active.store(true, Ordering::SeqCst);
 
     let mut toggle = echo::hotkey::ToggleDriver::new();
     let mut hold = None;
@@ -3259,10 +3345,12 @@ mod settings_tests {
         assert!(std::path::Path::new("/usr/bin/echo-desktop").is_file());
         let binding = gnome_accelerator(DEFAULT_TOGGLE_SHORTCUT).unwrap();
         update_native_status(|status| *status = NativeShortcutStatus::default());
+        let active = AtomicBool::new(false);
         run_portal_shortcuts(
             DEFAULT_TOGGLE_SHORTCUT,
             "RightCtrl",
             &echo::audio::CancellationToken::new(),
+            &active,
         )
         .unwrap();
         assert!(native_shortcut_status().global_shortcuts_absent);
@@ -3785,6 +3873,34 @@ mod settings_tests {
     }
 
     #[test]
+    fn native_retry_runs_after_delay_unless_cancelled() {
+        assert!(!should_retry_native_listener(false, false, false));
+        assert!(should_retry_native_listener(true, false, false));
+        assert!(should_retry_native_listener(false, true, false));
+        assert!(!should_retry_native_listener(true, true, true));
+
+        let (send, receive) = std::sync::mpsc::channel();
+        schedule_native_retry(
+            echo::audio::CancellationToken::new(),
+            Duration::from_millis(20),
+            move || send.send(()).unwrap(),
+        )
+        .unwrap();
+        receive
+            .recv_timeout(Duration::from_secs(1))
+            .expect("native retry callback");
+
+        let cancel = echo::audio::CancellationToken::new();
+        cancel.cancel();
+        let (send, receive) = std::sync::mpsc::channel();
+        schedule_native_retry(cancel, Duration::from_millis(20), move || {
+            send.send(()).unwrap()
+        })
+        .unwrap();
+        assert!(receive.recv_timeout(Duration::from_millis(100)).is_err());
+    }
+
+    #[test]
     fn only_confirmed_global_shortcuts_absence_enables_legacy_setup() {
         let registry_missing = ashpd::Error::PortalNotFound(
             "org.freedesktop.host.portal.Registry".try_into().unwrap(),
@@ -3805,13 +3921,20 @@ mod settings_tests {
 
     #[test]
     #[ignore = "needs an isolated X11 display"]
-    fn x11_runtime_reports_conflicts_and_releases_grabs() {
+    fn x11_runtime_keeps_toggle_when_hold_conflicts_and_releases_grabs() {
         let toggle = "Ctrl+Alt+F12";
         let hold = "Ctrl+Alt+F11";
+        let hold_owner = GlobalHotKeyManager::new().unwrap();
+        let held = x11_hotkey(hold).unwrap();
+        hold_owner.register(held).unwrap();
+        update_native_status(|status| *status = NativeShortcutStatus::default());
         let cancel = echo::audio::CancellationToken::new();
         let listener_cancel = cancel.clone();
-        let listener =
-            std::thread::spawn(move || run_x11_shortcuts(toggle, hold, &listener_cancel));
+        let active = Arc::new(AtomicBool::new(false));
+        let listener_active = active.clone();
+        let listener = std::thread::spawn(move || {
+            run_x11_shortcuts(toggle, hold, &listener_cancel, &listener_active)
+        });
 
         let deadline = Instant::now() + Duration::from_secs(3);
         while !native_shortcut_status().healthy && Instant::now() < deadline {
@@ -3821,6 +3944,16 @@ mod settings_tests {
             native_shortcut_status().healthy,
             "X11 listener did not become healthy"
         );
+        assert_eq!(
+            native_shortcut_status().effective_toggle.as_deref(),
+            Some(toggle)
+        );
+        assert_eq!(native_shortcut_status().effective_hold, None);
+        assert!(active.load(Ordering::SeqCst));
+        assert!(!matches!(
+            evdev_listener_state(),
+            EvdevListenerState::StoppedForNative
+        ));
 
         let competing = GlobalHotKeyManager::new().unwrap();
         assert!(
@@ -3830,10 +3963,23 @@ mod settings_tests {
 
         cancel.cancel();
         listener.join().unwrap().unwrap();
+        stop_evdev_listener();
         let after = GlobalHotKeyManager::new().unwrap();
         let released = x11_hotkey(toggle).unwrap();
-        after.register(released).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while let Err(err) = after.register(released) {
+            assert!(
+                Instant::now() < deadline,
+                "Echo's toggle grab was not released: {err}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
         after.unregister(released).unwrap();
+        assert!(
+            after.register(held).is_err(),
+            "the competing hold grab was lost"
+        );
+        hold_owner.unregister(held).unwrap();
     }
 
     #[test]
@@ -3886,7 +4032,8 @@ mod settings_tests {
             .lock()
             .expect("test shortcut observer lock") = Some(actions);
         let listener = std::thread::spawn(move || {
-            run_x11_shortcuts("Ctrl+Shift+9", "Ctrl+Shift+8", &listener_cancel)
+            let active = AtomicBool::new(false);
+            run_x11_shortcuts("Ctrl+Shift+9", "Ctrl+Shift+8", &listener_cancel, &active)
         });
         let deadline = Instant::now() + Duration::from_secs(3);
         while !native_shortcut_status().healthy && Instant::now() < deadline {
