@@ -58,23 +58,8 @@ const RASTERS: &[Raster] = &[
     },
     Raster {
         master: Master::Tray,
-        size: 22,
-        dest: "src-tauri/icons/tray-22.png",
-    },
-    Raster {
-        master: Master::Tray,
         size: 24,
         dest: "src-tauri/icons/tray-24.png",
-    },
-    Raster {
-        master: Master::Tray,
-        size: 32,
-        dest: "src-tauri/icons/tray-32.png",
-    },
-    Raster {
-        master: Master::Tray,
-        size: 48,
-        dest: "src-tauri/icons/tray-48.png",
     },
     Raster {
         master: Master::App,

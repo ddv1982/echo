@@ -1,4 +1,6 @@
 # Design overhaul: aura-inspired minimal Echo
+**Status: shipped in v0.1.0-alpha.1.** Every phase landed; this document is the audit trail, not open work.
+
 
 ## Context
 

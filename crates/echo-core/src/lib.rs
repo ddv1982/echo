@@ -13,7 +13,7 @@ mod types;
 
 pub use cleanup::{Cleanup, CleanupError, CleanupMode, OffCleanup, RulesCleanup};
 pub use config::{resolve, Config, EngineChoice};
-pub use dictionary::{DictEntry, DictHit, Dictionary, Rewrite};
+pub use dictionary::{DictEntry, Dictionary, Rewrite};
 pub use engine::{Engine, EngineError, RunDetail, Transcript};
 pub use history::{History, HistoryRow};
 pub use language::{Language, LanguageChoice, PARAKEET_LANGUAGES};

@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.4.0-alpha.1
+
+Fourth Linux alpha of Echo. Your language back by default, hotkeys you can trust, and a Settings view for humans.
+
+- With a multilingual model, Echo detects the language automatically instead of defaulting to English. Pin a language in Settings or with `ECHO_LANGUAGE`; after a confident detection, Settings offers to pin it in one click. English-only models pin English, and impossible combinations are still refused before recording.
+- A failed hotkey session now tells you: desktop notifications name the failure and the fix for shortcut-spawned sessions, instead of silence in the journal.
+- Hold-to-talk works without a terminal: the desktop app listens for the hold key itself while it runs, and the Settings row says when input-group access is missing.
+- The shortcut checklist item is verified, not asserted: a Test shortcut flow confirms your binding by watching a real session start.
+- Tidy-up: plan documents carry status headers, the Fake test engine left the shipping selector, unreferenced tray rasters and dead dictionary hit-tracking are gone, and the README matches the app.
+- Settings regroup into a short General surface (Microphone, Language, Model quality, Push-to-talk key, Shortcut, Theme) with an Advanced disclosure for the engine override, transparency readout, and the rest.
+
 ## v0.3.0-alpha.1
 
 Third Linux alpha of Echo. Upgrades now reach you, and Echo tells you when they cannot.

@@ -50,13 +50,21 @@ impl WhisperEngine {
             &file,
             &cache.inventory(),
         );
-        let language =
-            super::resolved_language(std::env::var("ECHO_LANGUAGE").ok().as_deref(), &file);
-        Self {
+        let mut engine = Self {
             cache,
             model,
-            language,
-        }
+            language: LanguageChoice::default(),
+        };
+        // The model-aware default: a multilingual model auto-detects, an
+        // English-only model pins English. selected_model covers both the
+        // scanned inventory and the probe fallback.
+        let multilingual = engine.selected_model().map(|(_, multilingual)| multilingual);
+        engine.language = super::resolved_language(
+            std::env::var("ECHO_LANGUAGE").ok().as_deref(),
+            &file,
+            multilingual,
+        );
+        engine
     }
 
     #[must_use]
