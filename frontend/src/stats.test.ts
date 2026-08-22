@@ -49,7 +49,10 @@ describe('groupByDay', () => {
   it('groups Today, Yesterday, then dates, preserving order', () => {
     const items = [row('a', 0), row('b', 0, 9), row('c', 1), row('d', 3)]
     const groups = groupByDay(items, NOW)
-    expect(groups.map((group) => group.label)).toEqual(['Today', 'Yesterday', 'Aug 19, 2026'])
+    const olderDate = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(
+      new Date(items[3].startedAt * 1000),
+    )
+    expect(groups.map((group) => group.label)).toEqual(['Today', 'Yesterday', olderDate])
     expect(groups[0].items.map((item) => item.text)).toEqual(['a', 'b'])
     expect(groups[1].items.map((item) => item.text)).toEqual(['c'])
   })
