@@ -1,0 +1,12 @@
+[Desktop Entry]
+Categories={{categories}}
+{{#if comment}}
+Comment={{comment}}
+{{/if}}
+Exec={{exec}}
+StartupWMClass={{exec}}
+Icon={{icon}}
+Name=Echo
+Terminal=false
+Type=Application
+X-GNOME-Application-ID=io.github.ddv1982.echo
