@@ -59,12 +59,13 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByText('Advanced'))
     fireEvent.click(within(await screen.findByRole('group', { name: 'Cleanup' })).getByRole('button', { name: 'Off' }))
     expect(within(await screen.findByRole('group', { name: 'Cleanup' })).getByRole('button', { name: 'Off' })).toHaveAttribute('data-active', 'true')
     expect((await getSettings()).cleanup).toEqual({ value: 'off', effective: 'off', source: 'file' })
 
-    fireEvent.change(screen.getByLabelText('Hold key'), { target: { value: 'RightShift' } })
-    await waitFor(() => expect(screen.getByLabelText('Hold key')).toHaveValue('RightShift'))
+    fireEvent.change(screen.getByLabelText('Push-to-talk key'), { target: { value: 'RightShift' } })
+    await waitFor(() => expect(screen.getByLabelText('Push-to-talk key')).toHaveValue('RightShift'))
     expect((await getSettings()).holdKey).toEqual({
       value: 'RightShift',
       effective: 'RightShift',
@@ -112,9 +113,10 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByText('Advanced'))
     fireEvent.click(within(await screen.findByRole('group', { name: 'Cleanup' })).getByRole('button', { name: 'Off' }))
     await firstWriteStarted
-    fireEvent.change(screen.getByLabelText('Hold key'), { target: { value: 'RightShift' } })
+    fireEvent.change(screen.getByLabelText('Push-to-talk key'), { target: { value: 'RightShift' } })
     releaseFirst()
 
     await waitFor(async () => {
@@ -133,6 +135,7 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByText('Advanced'))
     const cleanup = await screen.findByRole('group', { name: 'Cleanup' })
     fireEvent.click(within(cleanup).getByRole('button', { name: 'Off' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('could not write settings')
@@ -209,17 +212,13 @@ describe('Echo desktop shell', () => {
     expect(await screen.findByRole('button', { name: 'Fake' })).toBeInTheDocument()
   })
 
-  it('shows the model picker only when the engine is Whisper', async () => {
-    const defaults = await getSettings()
-    seedPreviewSettings({
-      ...defaults,
-      engine: { value: 'whisper', effective: 'whisper', source: 'file' },
-    })
+  it('shows the model picker while Whisper runs, and hides it for Parakeet', async () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
 
-    const picker = await screen.findByLabelText('Model')
+    // Default fixture: engine auto with Whisper available, so the picker shows.
+    const picker = await screen.findByLabelText('Model quality')
     expect(screen.getByRole('option', { name: 'Auto · best installed' })).toBeInTheDocument()
     expect(
       screen.getByRole('option', { name: 'small · multilingual · full precision · 466 MiB' }),
@@ -237,8 +236,33 @@ describe('Echo desktop shell', () => {
       })
     })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Parakeet' }))
-    await waitFor(() => expect(screen.queryByLabelText('Model')).not.toBeInTheDocument())
+    // The engine override lives in Advanced.
+    fireEvent.click(await screen.findByText('Advanced'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Parakeet' }))
+    await waitFor(() => expect(screen.queryByLabelText('Model quality')).not.toBeInTheDocument())
+  })
+
+  it('pins the General surface and keeps Advanced collapsed until asked', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+
+    // General: the four decisions that matter, plus shortcut and theme.
+    await screen.findByLabelText('Microphone')
+    await screen.findByLabelText('Language')
+    await screen.findByLabelText('Model quality')
+    await screen.findByLabelText('Push-to-talk key')
+    expect(screen.getByRole('group', { name: 'Application theme' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Test shortcut' })).toBeInTheDocument()
+
+    // Advanced is collapsed by default and expands on click. A details
+    // element keeps its children in the DOM; the open attribute is the state.
+    const advanced = document.querySelector('.advanced-section')!
+    expect(advanced).not.toHaveAttribute('open')
+    fireEvent.click(await screen.findByText('Advanced'))
+    expect(advanced).toHaveAttribute('open')
+    expect(await screen.findByRole('group', { name: 'Speech engine' })).toBeInTheDocument()
+    expect(screen.getByText('Resolved engine')).toBeInTheDocument()
   })
 
   it('marks an unavailable engine with its reason', async () => {
@@ -466,7 +490,7 @@ describe('Echo desktop shell', () => {
 
     // The installed offer renders no download button; uninstalled ones do.
     expect(await screen.findByText('Balanced, multilingual')).toBeInTheDocument()
-    expect(screen.getByText(/ggml-small\.bin · 465 MiB · ~852 MB memory · multilingual/)).toBeInTheDocument()
+    expect(screen.getByText(/465 MiB · ~852 MB memory · multilingual/)).toBeInTheDocument()
     expect(screen.getByText('https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin')).toBeInTheDocument()
     expect(screen.queryByText('Fast, English')).not.toBeInTheDocument()
 
@@ -527,7 +551,7 @@ describe('Echo desktop shell', () => {
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     expect(await screen.findByText('Silence detection')).toBeInTheDocument()
-    expect(screen.getByText(/ggml-silero-v6\.2\.0\.bin · 864 KiB/)).toBeInTheDocument()
+    expect(screen.getByText(/864 KiB/)).toBeInTheDocument()
   })
 
   it('shows usage stats derived from history', async () => {
@@ -619,7 +643,7 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    await screen.findByLabelText('Hold key')
+    await screen.findByLabelText('Push-to-talk key')
     expect(screen.getByText('Active')).toBeInTheDocument()
   })
 
@@ -628,7 +652,7 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    await screen.findByLabelText('Hold key')
+    await screen.findByLabelText('Push-to-talk key')
     expect(
       screen.getByText('Needs input group: sudo usermod -aG input $USER'),
     ).toBeInTheDocument()

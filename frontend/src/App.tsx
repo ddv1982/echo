@@ -868,22 +868,18 @@ function SettingsView({
     .sort((left, right) => left - right)
     .map((secs) => ({ value: String(secs), label: `${secs} seconds` }))
 
+  const whisperRuns =
+    settings != null &&
+    (settings.engine.effective === 'whisper' ||
+      (settings.engine.effective === 'auto' &&
+        (inventory?.engines.some((engine) => engine.id === 'whisper' && engine.available) ??
+          false)))
+
   return (
     <div className="view-stack">
       <ViewHeader title="Settings" subtitle="Change how Echo records and transcribes, on this machine." />
-      <section className="panel settings-section">
-        <SectionHeading title="Appearance" subtitle="Follow the system or choose a fixed theme." />
-        <div className="setting-row">
-          <div><strong>Theme</strong><span>Applied to the Echo window only.</span></div>
-          <div className="segmented-control" role="group" aria-label="Application theme">
-            {(['system', 'light', 'dark'] as ThemeMode[]).map((mode) => (
-              <button type="button" key={mode} data-active={theme === mode} onClick={() => onThemeChange(mode)}>{capitalize(mode)}</button>
-            ))}
-          </div>
-        </div>
-      </section>
-      <section className="panel settings-section">
-        <SectionHeading title="Audio" subtitle="Input stays on this machine." />
+      <section className="panel settings-section" aria-label="General">
+        <SectionHeading title="General" subtitle="The few decisions that matter." />
         {settings ? (
           <div className="setting-row">
             <div>
@@ -940,9 +936,169 @@ function SettingsView({
         ) : (
           <SettingLine label="Microphone" value={status.microphoneReady ? 'Default input available' : 'No default input'} tone={status.microphoneReady ? 'ok' : 'attention'} />
         )}
+        {settings && languages ? (
+          <LanguageRow
+            languages={languages}
+            settings={settings}
+            status={status}
+            onChange={(value) => void patch('language', value)}
+          />
+        ) : null}
+        {status.languageWarning ? (
+          <div className="setting-row" role="status">
+            <span className="status-note" data-tone="attention">
+              <span className="status-dot" data-tone="attention" aria-hidden="true" />
+              {status.languageWarning}
+            </span>
+            {offers
+              .filter((offer) => offer.id === 'small' && !offer.installed)
+              .map((offer) => (
+                <OfferAction
+                  key={offer.id}
+                  offer={offer}
+                  progress={downloads[offer.id]}
+                  onDownload={() => void downloadModel(offer.id)}
+                  onCancel={() => void cancelDownload(offer.id)}
+                />
+              ))}
+          </div>
+        ) : null}
+        {settings && whisperRuns && inventory ? (
+          <div className="setting-row">
+            <div>
+              <strong>Model quality</strong>
+              <span>{overrideHintPlain(settings.whisperModel.source, 'Auto runs the best installed model.')}</span>
+              {selectedModelMeta(inventory.whisper, settings.whisperModel.effective) ? (
+                <span className="model-meta">{selectedModelMeta(inventory.whisper, settings.whisperModel.effective)}</span>
+              ) : null}
+            </div>
+            <select
+              aria-label="Model quality"
+              value={settings.whisperModel.effective}
+              disabled={settings.whisperModel.source === 'env'}
+              onChange={(event) => void patch('whisperModel', event.target.value || null)}
+            >
+              <option value="">Auto · best installed</option>
+              {modelOptions(inventory.whisper, settings.whisperModel.effective).map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </div>
+        ) : null}
+        {inventory && inventory.vad.length === 0
+          ? offers
+              .filter((offer) => offer.id === 'silero-vad' && !offer.installed)
+              .map((offer) => (
+                <div className="setting-row" key={offer.id}>
+                  <div>
+                    <strong>Silence detection</strong>
+                    <span>
+                      Trims non-speech before transcription. {formatSize(offer.sizeBytes)} · {offer.url}
+                    </span>
+                  </div>
+                  <OfferAction
+                    offer={offer}
+                    progress={downloads[offer.id]}
+                    onDownload={() => void downloadModel(offer.id)}
+                    onCancel={() => void cancelDownload(offer.id)}
+                  />
+                </div>
+              ))
+          : null}
+        {offers.filter(
+          (offer) =>
+            offer.id !== 'silero-vad' &&
+            !(status.languageWarning && offer.id === 'small') &&
+            (!offer.installed || downloads[offer.id]),
+        ).length > 0 ? (
+          <>
+            <div className="setting-row">
+              <div>
+                <strong>Get a model</strong>
+                <span>Downloaded over HTTPS from huggingface.co and verified against the published SHA-1.</span>
+              </div>
+            </div>
+            {offers
+              .filter(
+                (offer) =>
+                  offer.id !== 'silero-vad' &&
+                  !(status.languageWarning && offer.id === 'small') &&
+                  (!offer.installed || downloads[offer.id]),
+              )
+              .map((offer) => (
+                <div className="setting-row" key={offer.id}>
+                  <div>
+                    <strong>{offer.label}</strong>
+                    <span>
+                      {formatSize(offer.sizeBytes)}
+                      {offer.runtimeMb != null ? ` · ~${offer.runtimeMb} MB memory` : ''}
+                      {offer.multilingual ? ' · multilingual' : ''}
+                    </span>
+                    <span className="offer-url">{offer.url}</span>
+                  </div>
+                  <OfferAction
+                    offer={offer}
+                    progress={downloads[offer.id]}
+                    onDownload={() => void downloadModel(offer.id)}
+                    onCancel={() => void cancelDownload(offer.id)}
+                  />
+                </div>
+              ))}
+          </>
+        ) : null}
+        {settings ? (
+          <div className="setting-row">
+            <div>
+              <strong>Push-to-talk key</strong>
+              <span>
+                {overrideHintPlain(
+                  settings.holdKey.source,
+                  'Hold to dictate from anywhere.',
+                )}
+              </span>
+            </div>
+            <div className="setting-actions">
+              <select
+                aria-label="Push-to-talk key"
+                value={settings.holdKey.effective}
+                disabled={settings.holdKey.source === 'env'}
+                onChange={(event) => void patch('holdKey', event.target.value)}
+              >
+                {holdKeyOptions(settings.holdKey.effective).map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+              {status.holdListener === 'active' ? (
+                <span className="status-note" data-tone="ok">
+                  <span className="status-dot" data-tone="ok" aria-hidden="true" />
+                  Active
+                </span>
+              ) : status.holdListener === 'needs-permission' ? (
+                <span className="status-note" data-tone="attention">
+                  <span className="status-dot" data-tone="attention" aria-hidden="true" />
+                  Needs input group: sudo usermod -aG input $USER
+                </span>
+              ) : (
+                <span className="status-note" data-tone="attention">
+                  <span className="status-dot" data-tone="attention" aria-hidden="true" />
+                  Not available here
+                </span>
+              )}
+            </div>
+          </div>
+        ) : null}
+        <ShortcutRow status={status} />
+        <div className="setting-row">
+          <div><strong>Theme</strong><span>Applied to the Echo window only.</span></div>
+          <div className="segmented-control" role="group" aria-label="Application theme">
+            {(['system', 'light', 'dark'] as ThemeMode[]).map((mode) => (
+              <button type="button" key={mode} data-active={theme === mode} onClick={() => onThemeChange(mode)}>{capitalize(mode)}</button>
+            ))}
+          </div>
+        </div>
       </section>
-      <section className="panel settings-section">
-        <SectionHeading title="Transcription" subtitle="No recorded audio leaves this machine." />
+      <details className="panel settings-section advanced-section">
+        <summary>Advanced</summary>
         {settings ? (
           <>
             <div className="setting-row">
@@ -981,119 +1137,45 @@ function SettingsView({
                   </span>
                 </div>
               ))}
-            {settings.engine.effective === 'whisper' && inventory ? (
-              <div className="setting-row">
-                <div>
-                  <strong>Model</strong>
-                  <span>{overrideHint(settings.whisperModel.source, 'ECHO_WHISPER_MODEL', 'Auto runs the best installed model.')}</span>
-                  {selectedModelMeta(inventory.whisper, settings.whisperModel.effective) ? (
-                    <span className="model-meta">{selectedModelMeta(inventory.whisper, settings.whisperModel.effective)}</span>
-                  ) : null}
-                </div>
-                <select
-                  aria-label="Model"
-                  value={settings.whisperModel.effective}
-                  disabled={settings.whisperModel.source === 'env'}
-                  onChange={(event) => void patch('whisperModel', event.target.value || null)}
-                >
-                  <option value="">Auto · best installed</option>
-                  {modelOptions(inventory.whisper, settings.whisperModel.effective).map((option) => (
-                    <option key={option.value} value={option.value}>{option.label}</option>
-                  ))}
-                </select>
+            <SettingToggle
+              label="Recording HUD"
+              description="Show the recording capsule while you dictate."
+              value={settings.hud.effective}
+              source={settings.hud.source}
+              envName="ECHO_HUD"
+              onChange={(value) => void patch('hud', value)}
+            />
+            <SettingSelect
+              label="Recording length"
+              description={`Timed recordings from the command line. Toggle recording still caps at ${status.maxRecordSeconds} seconds.`}
+              value={String(settings.recordSeconds.effective)}
+              options={recordSecondOptions}
+              source={settings.recordSeconds.source}
+              envName="ECHO_RECORD_SECONDS"
+              onChange={(value) => void patch('recordSeconds', Number(value))}
+            />
+            <div className="setting-row">
+              <div>
+                <strong>Cleanup</strong>
+                <span>{overrideHint(settings.cleanup.source, 'ECHO_CLEANUP', 'Tidy transcripts: drop um and uh, capitalize, punctuate.')}</span>
               </div>
-            ) : null}
-            {languages ? (
-              <LanguageRow
-                languages={languages}
-                settings={settings}
-                status={status}
-                onChange={(value) => void patch('language', value)}
-              />
-            ) : null}
-            {status.languageWarning ? (
-              <div className="setting-row" role="status">
-                <span className="status-note" data-tone="attention">
-                  <span className="status-dot" data-tone="attention" aria-hidden="true" />
-                  {status.languageWarning}
-                </span>
-                {offers
-                  .filter((offer) => offer.id === 'small' && !offer.installed)
-                  .map((offer) => (
-                    <OfferAction
-                      key={offer.id}
-                      offer={offer}
-                      progress={downloads[offer.id]}
-                      onDownload={() => void downloadModel(offer.id)}
-                      onCancel={() => void cancelDownload(offer.id)}
-                    />
-                  ))}
+              <div className="segmented-control" role="group" aria-label="Cleanup">
+                {CLEANUP_OPTIONS.map((option) => (
+                  <button
+                    type="button"
+                    key={option.value}
+                    data-active={settings.cleanup.effective === option.value}
+                    disabled={settings.cleanup.source === 'env'}
+                    onClick={() => void patch('cleanup', option.value)}
+                  >
+                    {option.label}
+                  </button>
+                ))}
               </div>
-            ) : null}
-            {inventory && inventory.vad.length === 0
-              ? offers
-                  .filter((offer) => offer.id === 'silero-vad' && !offer.installed)
-                  .map((offer) => (
-                    <div className="setting-row" key={offer.id}>
-                      <div>
-                        <strong>Silence detection</strong>
-                        <span>
-                          VAD trims non-speech before transcription. {offer.filename} ·{' '}
-                          {formatSize(offer.sizeBytes)}
-                        </span>
-                      </div>
-                      <OfferAction
-                        offer={offer}
-                        progress={downloads[offer.id]}
-                        onDownload={() => void downloadModel(offer.id)}
-                        onCancel={() => void cancelDownload(offer.id)}
-                      />
-                    </div>
-                  ))
-              : null}
-            {offers.filter(
-              (offer) =>
-                offer.id !== 'silero-vad' &&
-                !(status.languageWarning && offer.id === 'small') &&
-                (!offer.installed || downloads[offer.id]),
-            ).length > 0 ? (
-              <>
-                <div className="setting-row">
-                  <div>
-                    <strong>Get a model</strong>
-                    <span>Downloaded over HTTPS from huggingface.co and verified against the published SHA-1.</span>
-                  </div>
-                </div>
-                {offers
-                  .filter(
-                    (offer) =>
-                      offer.id !== 'silero-vad' &&
-                      !(status.languageWarning && offer.id === 'small') &&
-                      (!offer.installed || downloads[offer.id]),
-                  )
-                  .map((offer) => (
-                    <div className="setting-row" key={offer.id}>
-                      <div>
-                        <strong>{offer.label}</strong>
-                        <span>
-                          {offer.filename} · {formatSize(offer.sizeBytes)}
-                          {offer.runtimeMb != null ? ` · ~${offer.runtimeMb} MB memory` : ''}
-                          {offer.multilingual ? ' · multilingual' : ''}
-                        </span>
-                        <span className="offer-url">{offer.url}</span>
-                      </div>
-                      <OfferAction
-                        offer={offer}
-                        progress={downloads[offer.id]}
-                        onDownload={() => void downloadModel(offer.id)}
-                        onCancel={() => void cancelDownload(offer.id)}
-                      />
-                    </div>
-                  ))}
-              </>
-            ) : null}
+            </div>
           </>
         ) : null}
+        <SettingLine label="Text insertion" value={status.injectionName} tone={status.injectionReady ? 'ok' : 'attention'} />
         <SettingLine label="Resolved engine" value={status.engineName} tone={status.engineReady ? 'ok' : 'attention'} />
         {status.lastError ? (
           <div className="setting-line">
@@ -1118,100 +1200,10 @@ function SettingsView({
             <SettingLine label="Version" value={status.version} />
           </>
         ) : null}
-      </section>
-      <section className="panel settings-section">
-        <SectionHeading title="Shortcut and recording" subtitle="Bind the suggested shortcut in your desktop's keyboard settings; Echo does not register it itself." />
-        <ShortcutRow status={status} />
-        {settings ? (
-          <>
-            <SettingToggle
-              label="Recording HUD"
-              description="Echo pulse capsule on X11 sessions."
-              value={settings.hud.effective}
-              source={settings.hud.source}
-              envName="ECHO_HUD"
-              onChange={(value) => void patch('hud', value)}
-            />
-            <div className="setting-row">
-              <div>
-                <strong>Hold key</strong>
-                <span>
-                  {overrideHint(
-                    settings.holdKey.source,
-                    'ECHO_HOLD_KEY',
-                    'Hold to dictate from anywhere. Combos belong on a desktop shortcut.',
-                  )}
-                </span>
-              </div>
-              <div className="setting-actions">
-                <select
-                  aria-label="Hold key"
-                  value={settings.holdKey.effective}
-                  disabled={settings.holdKey.source === 'env'}
-                  onChange={(event) => void patch('holdKey', event.target.value)}
-                >
-                  {holdKeyOptions(settings.holdKey.effective).map((option) => (
-                    <option key={option.value} value={option.value}>{option.label}</option>
-                  ))}
-                </select>
-                {status.holdListener === 'active' ? (
-                  <span className="status-note" data-tone="ok">
-                    <span className="status-dot" data-tone="ok" aria-hidden="true" />
-                    Active
-                  </span>
-                ) : status.holdListener === 'needs-permission' ? (
-                  <span className="status-note" data-tone="attention">
-                    <span className="status-dot" data-tone="attention" aria-hidden="true" />
-                    Needs input group: sudo usermod -aG input $USER
-                  </span>
-                ) : (
-                  <span className="status-note" data-tone="attention">
-                    <span className="status-dot" data-tone="attention" aria-hidden="true" />
-                    Not available here
-                  </span>
-                )}
-              </div>
-            </div>
-            <SettingSelect
-              label="Timed recording"
-              description={`Used by rec --once. Toggle recording still caps at ${status.maxRecordSeconds} seconds.`}
-              value={String(settings.recordSeconds.effective)}
-              options={recordSecondOptions}
-              source={settings.recordSeconds.source}
-              envName="ECHO_RECORD_SECONDS"
-              onChange={(value) => void patch('recordSeconds', Number(value))}
-            />
-          </>
+        {status.settingsPath ? (
+          <p className="settings-path">Saved at <code>{status.settingsPath}</code></p>
         ) : null}
-      </section>
-      <section className="panel settings-section">
-        <SectionHeading title="Text" subtitle="What Echo writes after transcription." />
-        {settings ? (
-          <div className="setting-row">
-            <div>
-              <strong>Cleanup</strong>
-              <span>{overrideHint(settings.cleanup.source, 'ECHO_CLEANUP', status.cleanupName)}</span>
-            </div>
-            <div className="segmented-control" role="group" aria-label="Cleanup">
-              {CLEANUP_OPTIONS.map((option) => (
-                <button
-                  type="button"
-                  key={option.value}
-                  data-active={settings.cleanup.effective === option.value}
-                  disabled={settings.cleanup.source === 'env'}
-                  onClick={() => void patch('cleanup', option.value)}
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
-          </div>
-        ) : null}
-        <SettingLine label="Text insertion" value={status.injectionName} tone={status.injectionReady ? 'ok' : 'attention'} />
-      </section>
-      {status.settingsPath ? (
-        <p className="settings-path">Saved at <code>{status.settingsPath}</code></p>
-      ) : null}
+      </details>
     </div>
   )
 }
@@ -1441,6 +1433,11 @@ function holdKeyOptions(current: string) {
 
 function overrideHint(source: SettingSource, envName: string, fallback: string) {
   return source === 'env' ? envName : fallback
+}
+
+/// General-surface rows name no environment variables; Advanced rows do.
+function overrideHintPlain(source: SettingSource, fallback: string) {
+  return source === 'env' ? 'Set by environment' : fallback
 }
 
 function SettingSelect({
