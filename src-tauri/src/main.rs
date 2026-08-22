@@ -812,10 +812,43 @@ fn print_cli_usage() {
     eprintln!("       echo-desktop --version");
 }
 
+/// The path and file identity this process was loaded from, recorded at
+/// startup so a second launch can tell "same binary" from "replaced by a
+/// package upgrade".
+struct UpgradeWatch {
+    path: std::path::PathBuf,
+    identity: echo::upgrade::FileIdentity,
+}
+
 fn run_desktop() {
     let mut context = tauri::generate_context!();
     context.config_mut().app.tray_icon = None;
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            let Some(watch) = app.try_state::<UpgradeWatch>() else {
+                show_main_window(app);
+                return;
+            };
+            let current = echo::upgrade::file_identity(&watch.path).ok();
+            match echo::upgrade::second_launch_decision(watch.identity, current) {
+                echo::upgrade::SecondLaunch::Focus => show_main_window(app),
+                echo::upgrade::SecondLaunch::Restart => {
+                    // The binary was replaced since this process started.
+                    // Hand over to the on-disk build and exit; a failed spawn
+                    // falls back to focusing, so an upgrade can never loop.
+                    match std::process::Command::new(&watch.path).spawn() {
+                        Ok(_) => {
+                            eprintln!("echo-desktop: binary changed on disk; restarting into the new build");
+                            app.exit(0);
+                        }
+                        Err(err) => {
+                            eprintln!("echo-desktop: restart spawn failed: {err}");
+                            show_main_window(app);
+                        }
+                    }
+                }
+            }
+        }))
         .setup(|app| {
             let open = MenuItem::with_id(app, "open", "Open Echo", true, None::<&str>)?;
             let record =
@@ -847,6 +880,11 @@ fn run_desktop() {
                 }
             };
             app.manage(AtomicBool::new(tray_ready));
+            if let Ok(path) = std::env::current_exe().and_then(|path| path.canonicalize()) {
+                if let Ok(identity) = echo::upgrade::file_identity(&path) {
+                    app.manage(UpgradeWatch { path, identity });
+                }
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
