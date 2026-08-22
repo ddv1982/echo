@@ -8,7 +8,7 @@ The first-build plan is [docs/plans/01-echo/overview.md](docs/plans/01-echo/over
 
 ## Download
 
-Tagged alpha builds are on [GitHub Releases](https://github.com/ddv1982/echo/releases). Nightly Linux artifacts come from the [release workflow](https://github.com/ddv1982/echo/actions/workflows/release.yml).
+Tagged builds are on [GitHub Releases](https://github.com/ddv1982/echo/releases). Nightly Linux artifacts come from the [release workflow](https://github.com/ddv1982/echo/actions/workflows/release.yml). Maintainers should follow the [release runbook](docs/RELEASING.md); pushing the tag is the only manual publishing step.
 
 ## Build
 

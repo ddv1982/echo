@@ -30,6 +30,18 @@ fn packaged_desktop_basename_matches_the_portal_app_id() {
 }
 
 #[test]
+fn tauri_frontend_hooks_have_an_explicit_working_directory() {
+    let config: serde_json::Value =
+        serde_json::from_str(include_str!("../tauri.conf.json")).expect("valid Tauri config");
+
+    let build = &config["build"];
+    assert_eq!(build["beforeDevCommand"]["script"], "npm run dev");
+    assert_eq!(build["beforeDevCommand"]["cwd"], "../frontend");
+    assert_eq!(build["beforeBuildCommand"]["script"], "npm run build");
+    assert_eq!(build["beforeBuildCommand"]["cwd"], "../frontend");
+}
+
+#[test]
 fn deb_and_rpm_bundles_use_the_template() {
     let config = include_str!("../tauri.conf.json");
     assert_eq!(
