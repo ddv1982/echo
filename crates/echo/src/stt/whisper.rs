@@ -8,24 +8,28 @@ use echo_core::{
 };
 use serde::Deserialize;
 
-use super::cache::ModelCache;
+use super::cache::{ModelCache, ModelInventory};
 use super::write_temp_wav;
 use crate::settings::file_config;
 use crate::which::on_path;
 
-const DEFAULT_MODEL: &str = "base.en";
-
-fn resolved_whisper_model(env: Option<String>, file: &Config) -> String {
-    echo_core::resolve(
-        env.filter(|name| !name.is_empty()),
-        file.whisper_model.clone(),
-        DEFAULT_MODEL.to_string(),
-    )
+/// The model Echo runs: `ECHO_WHISPER_MODEL` wins over the config file, and
+/// with neither set the best installed model runs instead of a hardcoded
+/// name, so dropping a better model into the directory never silently changes
+/// the weights under a pinned choice, and a better download is used at once.
+fn resolved_whisper_model(
+    env: Option<String>,
+    file: &Config,
+    inventory: &ModelInventory,
+) -> Option<String> {
+    env.filter(|name| !name.is_empty())
+        .or_else(|| file.whisper_model.clone())
+        .or_else(|| inventory.best_whisper().map(|model| model.name.clone()))
 }
 
 pub struct WhisperEngine {
     cache: ModelCache,
-    model: String,
+    model: Option<String>,
 }
 
 impl Default for WhisperEngine {
@@ -37,17 +41,20 @@ impl Default for WhisperEngine {
 impl WhisperEngine {
     #[must_use]
     pub fn new() -> Self {
-        Self::with_cache(
-            ModelCache::from_env(),
-            resolved_whisper_model(std::env::var("ECHO_WHISPER_MODEL").ok(), &file_config()),
-        )
+        let cache = ModelCache::from_env();
+        let model = resolved_whisper_model(
+            std::env::var("ECHO_WHISPER_MODEL").ok(),
+            &file_config(),
+            &cache.inventory(),
+        );
+        Self { cache, model }
     }
 
     #[must_use]
     pub fn with_cache(cache: ModelCache, model: impl Into<String>) -> Self {
         Self {
             cache,
-            model: model.into(),
+            model: Some(model.into()),
         }
     }
 
@@ -59,15 +66,22 @@ impl WhisperEngine {
     }
 
     #[must_use]
-    pub fn model_name(&self) -> &str {
-        &self.model
+    pub fn model_name(&self) -> Option<&str> {
+        self.model.as_deref()
     }
 
     fn model_file(&self) -> Option<PathBuf> {
+        let model = self.model.as_deref()?;
+        let inventory = self.cache.inventory();
+        if let Some(installed) = inventory.whisper.iter().find(|m| m.name == model) {
+            return Some(installed.path.clone());
+        }
+        // A configured name outside the GGML convention still resolves, so a
+        // fine-tuned file the scanner ignores remains usable when pinned.
         let candidates = [
-            format!("ggml-{}.bin", self.model),
-            format!("{}.bin", self.model),
-            format!("ggml-{}.gguf", self.model),
+            format!("ggml-{model}.bin"),
+            format!("{model}.bin"),
+            format!("ggml-{model}.gguf"),
         ];
         candidates
             .into_iter()
@@ -85,7 +99,7 @@ impl WhisperEngine {
 impl Engine for WhisperEngine {
     fn id(&self) -> EngineId {
         EngineId::Whisper {
-            model: self.model.clone(),
+            model: self.model.clone().unwrap_or_default(),
         }
     }
 
@@ -297,24 +311,61 @@ mod tests {
     }
 
     #[test]
-    fn whisper_model_prefers_env_then_file_then_default() {
+    fn whisper_model_prefers_env_then_file_then_best_installed() {
+        let dir = std::env::temp_dir().join(format!("echo-resolve-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("ggml-base.en.bin"), []).unwrap();
+        fs::write(dir.join("ggml-small.bin"), []).unwrap();
+        let inventory = ModelCache::at(&dir).inventory();
         let file = Config {
             whisper_model: Some("tiny.en".into()),
             ..Config::default()
         };
         assert_eq!(
-            resolved_whisper_model(Some("small.en".into()), &file),
-            "small.en"
-        );
-        assert_eq!(resolved_whisper_model(None, &file), "tiny.en");
-        assert_eq!(
-            resolved_whisper_model(None, &Config::default()),
-            DEFAULT_MODEL
+            resolved_whisper_model(Some("small.en".into()), &file, &inventory).as_deref(),
+            Some("small.en")
         );
         assert_eq!(
-            resolved_whisper_model(Some(String::new()), &file),
-            "tiny.en"
+            resolved_whisper_model(None, &file, &inventory).as_deref(),
+            Some("tiny.en")
         );
+        assert_eq!(
+            resolved_whisper_model(None, &Config::default(), &inventory).as_deref(),
+            Some("small")
+        );
+        assert_eq!(
+            resolved_whisper_model(Some(String::new()), &file, &inventory).as_deref(),
+            Some("tiny.en")
+        );
+        let empty = ModelInventory::default();
+        assert_eq!(
+            resolved_whisper_model(None, &Config::default(), &empty),
+            None
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn model_file_finds_scanned_and_unconventional_names() {
+        let dir = std::env::temp_dir().join(format!("echo-model-file-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("ggml-small.en-q5_1.bin"), []).unwrap();
+        fs::write(dir.join("my-finetune.bin"), []).unwrap();
+        let scanned = WhisperEngine::with_cache(ModelCache::at(&dir), "small.en-q5_1");
+        assert_eq!(
+            scanned.model_file().as_deref(),
+            Some(dir.join("ggml-small.en-q5_1.bin").as_path())
+        );
+        let custom = WhisperEngine::with_cache(ModelCache::at(&dir), "my-finetune");
+        assert_eq!(
+            custom.model_file().as_deref(),
+            Some(dir.join("my-finetune.bin").as_path())
+        );
+        let missing = WhisperEngine::with_cache(ModelCache::at(&dir), "large-v3");
+        assert_eq!(missing.model_file(), None);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     fn fixture(name: &str) -> String {

@@ -91,7 +91,8 @@ fn whisper_summary() -> (String, bool) {
         } else {
             "VAD unavailable"
         };
-        (format!("Whisper · {} · {vad}", engine.model_name()), true)
+        let model = engine.model_name().unwrap_or("no model selected");
+        (format!("Whisper · {model} · {vad}"), true)
     } else {
         ("Whisper setup required".to_string(), false)
     }
