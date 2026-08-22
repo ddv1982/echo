@@ -882,6 +882,11 @@ fn run_desktop() {
             }
         }))
         .setup(|app| {
+            // Old Echo processes predate the single-instance gate; without a
+            // takeover, a new launch coexists with them and the upgrade looks
+            // like it never happened. Runs after the gate admitted us, before
+            // the tray is built.
+            echo::upgrade::terminate_old_echo_processes();
             let open = MenuItem::with_id(app, "open", "Open Echo", true, None::<&str>)?;
             let record =
                 MenuItem::with_id(app, "record", "Start / stop recording", true, None::<&str>)?;
