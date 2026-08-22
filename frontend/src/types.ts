@@ -42,6 +42,7 @@ export interface AppStatus {
   lastError: string | null
   lastRun: LastRun | null
   languageWarning: string | null
+  recordingInProcess: boolean
 }
 
 export interface LastRun {

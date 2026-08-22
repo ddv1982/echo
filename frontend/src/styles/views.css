@@ -18,27 +18,11 @@
   margin-top: var(--space-1);
 }
 
-.panel,
-.record-panel {
-  border: 1px solid hsl(var(--border-subtle));
-  background: hsl(var(--surface-card));
-}
-
 .panel {
+  border: 1px solid hsl(var(--border-subtle));
   border-radius: var(--radius-lg);
+  background: hsl(var(--surface-card));
   padding: var(--space-5);
-}
-
-.record-panel {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  border-radius: var(--radius-lg);
-  padding: var(--space-8);
-}
-
-.record-panel[data-recording='true'] {
-  border-color: hsl(var(--recording) / 0.3);
 }
 
 .readout {
@@ -52,7 +36,7 @@
   text-transform: uppercase;
 }
 
-.record-panel[data-recording='true'] .readout {
+.record-hero[data-state='recording'] .readout {
   color: hsl(var(--recording));
 }
 
@@ -60,13 +44,7 @@
   font-variant-numeric: tabular-nums;
 }
 
-.record-panel h2 {
-  max-width: 32rem;
-  margin-top: var(--space-3);
-  font-size: clamp(1.75rem, 4vw, 2.5rem);
-}
-
-.record-panel > p {
+.record-hero .hero-copy > p {
   max-width: 30rem;
   color: hsl(var(--text-secondary));
   margin-top: var(--space-2);
@@ -128,7 +106,7 @@
   background: hsl(var(--foreground));
 }
 
-.record-panel[data-recording='true'] .primary-button {
+.record-hero[data-state='recording'] .primary-button {
   background: hsl(var(--recording));
   color: white;
 }
@@ -499,7 +477,8 @@
   .nav-item span { display: none; }
   .shortcut-card { display: none; }
   .main-content { padding: var(--space-4); }
-  .record-panel { padding: var(--space-6); }
+  .record-hero { padding: var(--space-6); }
+  .hero-main { flex-direction: column; align-items: flex-start; }
   .home-grid { grid-template-columns: 1fr; }
   .dictionary-form { grid-template-columns: 1fr; }
   .mapping-arrow { display: none; }
@@ -536,4 +515,254 @@
   border-radius: var(--radius-pill);
   background: hsl(var(--accent));
   transition: width var(--duration-fast) var(--ease-out);
+}
+
+/* Phase 8: the beauty pass. */
+
+.record-hero {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid hsl(var(--border-subtle));
+  border-radius: var(--radius-lg);
+  background: hsl(var(--surface-card));
+  padding: var(--space-8);
+  transition: border-color var(--duration-fast) var(--ease-out);
+}
+
+.record-hero[data-state='recording'] {
+  border-color: hsl(var(--recording) / 0.3);
+}
+
+.hero-glow {
+  position: absolute;
+  inset: -30% 40% 30% -10%;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, hsl(var(--recording) / 0.16), transparent);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 500ms var(--ease-out);
+}
+
+.record-hero[data-state='recording'] .hero-glow {
+  opacity: 1;
+}
+
+.hero-main {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+}
+
+.record-orb {
+  position: relative;
+  display: grid;
+  width: 4.5rem;
+  height: 4.5rem;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: hsl(var(--surface-raised));
+  color: hsl(var(--foreground));
+  transition: background-color var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
+}
+
+.record-orb:hover {
+  background: hsl(var(--surface-hover));
+}
+
+.record-ring {
+  position: absolute;
+  inset: 0;
+  border: 1.5px solid hsl(var(--border-strong));
+  border-radius: 50%;
+  transition: border-color var(--duration-fast) var(--ease-out);
+}
+
+.record-hero[data-state='recording'] .record-orb {
+  background: hsl(var(--recording));
+  color: white;
+}
+
+.record-hero[data-state='recording'] .record-ring {
+  border-color: hsl(var(--recording));
+  animation: record-ring-pulse 1.6s ease-in-out infinite;
+}
+
+.record-hero[data-state='transcribing'] .record-ring {
+  border-color: hsl(var(--text-tertiary));
+  border-top-color: hsl(var(--foreground));
+  animation: record-ring-spin 0.9s linear infinite;
+}
+
+.hero-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.record-hero h2 {
+  max-width: 32rem;
+  margin-top: var(--space-3);
+  font-size: clamp(1.75rem, 4vw, 2.5rem);
+}
+
+.record-hero .record-actions {
+  margin-top: var(--space-5);
+}
+
+.level-bars {
+  display: flex;
+  height: 2.2rem;
+  align-items: center;
+  gap: 5px;
+  margin-top: var(--space-4);
+}
+
+.level-bar {
+  width: 5px;
+  height: 15%;
+  border-radius: var(--radius-pill);
+  background: hsl(var(--text-tertiary));
+  transition: height 90ms linear;
+}
+
+.level-bars[data-live='false'] .level-bar {
+  animation: level-breathe 2.2s ease-in-out infinite;
+}
+
+.level-bars[data-live='false'] .level-bar:nth-child(odd) {
+  animation-delay: 120ms;
+}
+
+.level-bars[data-live='false'] .level-bar:nth-child(3n) {
+  animation-delay: 240ms;
+}
+
+.record-hero[data-state='recording'] .level-bar {
+  background: hsl(var(--recording) / 0.85);
+}
+
+.stats-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-4);
+  border: 1px solid hsl(var(--border-subtle));
+  border-radius: var(--radius-lg);
+  background: hsl(var(--surface-card));
+  padding: var(--space-5);
+}
+
+.stat strong {
+  display: block;
+  font-size: var(--text-xl);
+  font-variant-numeric: tabular-nums;
+}
+
+.stat span {
+  color: hsl(var(--text-tertiary));
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--label-tracking);
+  text-transform: uppercase;
+}
+
+.checklist {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.checklist-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.checklist-check {
+  display: grid;
+  width: 1.25rem;
+  height: 1.25rem;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1.5px solid hsl(var(--border-strong));
+  border-radius: 50%;
+  color: hsl(var(--success));
+  transition: border-color var(--duration-fast) var(--ease-out);
+}
+
+.checklist-item[data-done='true'] .checklist-check {
+  border-color: hsl(var(--success));
+  animation: check-pop 200ms var(--ease-out);
+}
+
+.checklist-item[data-done='true'] .checklist-label {
+  color: hsl(var(--text-tertiary));
+  text-decoration: line-through;
+}
+
+.checklist-label {
+  flex: 1;
+}
+
+.checklist-item .compact-button {
+  min-height: 2rem;
+  font-size: var(--text-xs);
+}
+
+.day-header {
+  border-bottom: 1px solid hsl(var(--border-subtle));
+  color: hsl(var(--text-tertiary));
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--label-tracking);
+  padding: var(--space-3) var(--space-5);
+  text-transform: uppercase;
+}
+
+.bars-motif {
+  width: 2.6rem;
+  height: 2.6rem;
+  color: hsl(var(--text-tertiary));
+}
+
+.empty-state {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-2);
+  padding: var(--space-8) var(--space-4);
+  text-align: center;
+}
+
+.empty-state.compact {
+  padding: var(--space-4);
+}
+
+.chip {
+  border: 1px solid hsl(var(--border-subtle));
+  border-radius: var(--radius-pill);
+  background: hsl(var(--surface-raised));
+  padding: 0.25rem 0.6rem;
+}
+
+.model-meta {
+  color: hsl(var(--text-tertiary));
+  font-size: var(--text-xs);
+  margin-top: var(--space-1);
+}
+
+@keyframes record-ring-pulse {
+  50% { transform: scale(1.12); opacity: 0.55; }
+}
+
+@keyframes record-ring-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes level-breathe {
+  50% { transform: scaleY(1.9); }
+}
+
+@keyframes check-pop {
+  0% { transform: scale(0.6); }
+  100% { transform: scale(1); }
 }

@@ -40,6 +40,17 @@ impl LevelMeter {
     }
 }
 
+/// The meter for this process's own recording session. The GUI reads it for
+/// its live level bars; a session started by a compositor shortcut lives in
+/// another process and this meter stays parked at zero.
+static PROCESS_METER: std::sync::LazyLock<LevelMeter> =
+    std::sync::LazyLock::new(LevelMeter::new);
+
+#[must_use]
+pub fn process_meter() -> LevelMeter {
+    PROCESS_METER.clone()
+}
+
 /// Publish a fixture's per-chunk RMS at real-time cadence, so HUD demos and
 /// CI screenshots show the WAV's actual loudness instead of a synthetic wave.
 pub fn play_fixture_meter(

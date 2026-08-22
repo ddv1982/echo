@@ -24,8 +24,26 @@
   align-items: center;
 }
 
+.brand-lockup {
+  gap: var(--space-3);
+}
+
 .brand-lockup h1 {
   font-size: var(--text-md);
+}
+
+.brand-mark {
+  width: 1.4rem;
+  height: 1.4rem;
+  flex: 0 0 auto;
+}
+
+.brand-stop-from {
+  stop-color: hsl(var(--brand-from));
+}
+
+.brand-stop-to {
+  stop-color: hsl(var(--brand-to));
 }
 
 .topbar-actions {

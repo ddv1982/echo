@@ -16,12 +16,13 @@ import {
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   addDictionaryEntry,
+  cancelDownload,
   copyText,
+  downloadModel,
   getAppStatus,
   getDictionary,
   getHistory,
-  cancelDownload,
-  downloadModel,
+  getRecordingLevel,
   getSettings,
   listInputDevices,
   listLanguages,
@@ -33,6 +34,7 @@ import {
   testInputDevice,
   toggleRecording,
 } from './tauri'
+import { deriveStats, groupByDay } from './stats'
 import type {
   AppStatus,
   DictionaryItem,
@@ -67,6 +69,7 @@ const initialStatus: AppStatus = {
   lastError: null,
   lastRun: null,
   languageWarning: null,
+  recordingInProcess: false,
 }
 
 const navigation: Array<{ id: View; label: string; icon: typeof Home }> = [
@@ -175,6 +178,7 @@ function App() {
     <div className="app-shell">
       <header className="topbar">
         <div className="brand-lockup">
+          <BrandMark />
           <h1>Echo</h1>
         </div>
         <div className="topbar-actions">
@@ -250,6 +254,47 @@ function App() {
   )
 }
 
+/// The phase-1 mark, inline so the window, the launcher, and the tray agree.
+/// The gradient stops read CSS variables so the bars keep contrast in both
+/// themes.
+function BrandMark() {
+  return (
+    <svg viewBox="0 0 1024 1024" className="brand-mark" aria-hidden="true">
+      <defs>
+        <linearGradient id="brand-gradient" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" className="brand-stop-from" />
+          <stop offset="1" className="brand-stop-to" />
+        </linearGradient>
+      </defs>
+      <g fill="url(#brand-gradient)">
+        <rect x="176" y="380" width="96" height="200" rx="48" />
+        <rect x="320" y="290" width="96" height="380" rx="48" />
+        <rect x="464" y="180" width="96" height="600" rx="48" />
+        <rect x="608" y="290" width="96" height="380" rx="48" />
+        <rect x="752" y="380" width="96" height="200" rx="48" />
+        <circle cx="512" cy="856" r="48" />
+      </g>
+    </svg>
+  )
+}
+
+/// The mark reduced to its bars, for empty states, in the theme's tertiary
+/// text color.
+function BarsMotif() {
+  return (
+    <svg viewBox="0 0 1024 1024" className="bars-motif" aria-hidden="true">
+      <g fill="currentColor">
+        <rect x="176" y="380" width="96" height="200" rx="48" />
+        <rect x="320" y="290" width="96" height="380" rx="48" />
+        <rect x="464" y="180" width="96" height="600" rx="48" />
+        <rect x="608" y="290" width="96" height="380" rx="48" />
+        <rect x="752" y="380" width="96" height="200" rx="48" />
+        <circle cx="512" cy="856" r="48" />
+      </g>
+    </svg>
+  )
+}
+
 function StatusPill({ status }: { status: AppStatus }) {
   const tone = status.recording
     ? 'recording'
@@ -279,47 +324,53 @@ function HomeView({
   onToggleRecording: () => Promise<void>
   onOpenSettings: () => void
 }) {
-  const readout = status.recording ? 'Listening' : status.phase === 'Transcribing' ? 'Transcribing' : 'Ready'
+  const heroState = status.recording
+    ? 'recording'
+    : status.phase === 'Transcribing'
+      ? 'transcribing'
+      : 'idle'
   const stateCopy = status.recording
     ? ['Listening…', 'Speak naturally, then press the shortcut again.']
     : status.phase === 'Transcribing'
       ? ['Transcribing locally…', `${status.engineName} is turning your recording into text.`]
       : ['Ready when you are', 'Your audio stays on this machine.']
-  const attention = [
-    !status.microphoneReady ? 'microphone' : null,
-    !status.engineReady ? 'speech engine' : null,
-    !status.injectionReady ? 'text insertion' : null,
-  ].filter((item): item is string => item !== null)
   return (
     <div className="view-stack">
-      <section className="record-panel" data-recording={status.recording}>
-        <div className="readout">
-          <span>{readout}</span>
-          {status.recording ? (
-            <span className="readout-timer">{recordingSeconds}s / {status.maxRecordSeconds}s</span>
-          ) : null}
-        </div>
-        <h2>{stateCopy[0]}</h2>
-        <p>{stateCopy[1]}</p>
-        <div className="record-actions">
-          <button className="primary-button" type="button" onClick={() => void onToggleRecording()}>
-            {status.recording ? <Waves size={18} /> : <Mic size={18} />}
-            {status.recording ? 'Stop & transcribe' : 'Start recording'}
+      <section className="record-hero" data-state={heroState}>
+        <div className="hero-glow" aria-hidden="true" />
+        <div className="hero-main">
+          <button
+            className="record-orb"
+            type="button"
+            onClick={() => void onToggleRecording()}
+            aria-label={status.recording ? 'Stop and transcribe' : 'Start recording'}
+          >
+            <span className="record-ring" aria-hidden="true" />
+            {status.recording ? <Waves size={26} /> : <Mic size={26} />}
           </button>
-          <div className="shortcut-hint">
-            <kbd>{status.shortcut}</kbd>
-            <span>works from any app</span>
+          <div className="hero-copy">
+            <div className="readout">
+              <span>{status.recording ? 'Listening' : status.phase === 'Transcribing' ? 'Transcribing' : 'Ready'}</span>
+              {status.recording ? (
+                <span className="readout-timer">
+                  {formatDuration(recordingSeconds)} / {formatDuration(status.maxRecordSeconds)}
+                </span>
+              ) : null}
+            </div>
+            <h2>{stateCopy[0]}</h2>
+            <p>{stateCopy[1]}</p>
+            {status.recording ? <LevelBars live={status.recordingInProcess} /> : null}
+            <div className="record-actions">
+              <div className="shortcut-hint">
+                <kbd>{status.shortcut}</kbd>
+                <span>works from any app</span>
+              </div>
+            </div>
           </div>
         </div>
       </section>
 
-      {attention.length > 0 ? (
-        <div className="attention-strip" role="status">
-          <CircleAlert size={16} aria-hidden="true" />
-          <span>Needs setup: {attention.join(', ')}.</span>
-          <button type="button" onClick={onOpenSettings}>Open Settings</button>
-        </div>
-      ) : null}
+      <SetupChecklist status={status} onOpenSettings={onOpenSettings} />
 
       {status.languageWarning ? (
         <div className="attention-strip" role="status">
@@ -329,13 +380,18 @@ function HomeView({
         </div>
       ) : null}
 
+      <StatsStrip history={history} />
+
       <div className="home-grid">
         <section className="panel last-transcript">
           <SectionHeading title="Last transcript" subtitle="Most recently inserted text" />
           {status.lastTranscript ? (
             <blockquote>{status.lastTranscript}</blockquote>
           ) : (
-            <div className="empty-state compact"><span>Your next transcript will appear here.</span></div>
+            <div className="empty-state compact">
+              <BarsMotif />
+              <span>Your next transcript will appear here.</span>
+            </div>
           )}
         </section>
         <section className="panel recent-panel">
@@ -347,11 +403,109 @@ function HomeView({
                 <span>{formatTime(item.startedAt)}</span>
               </div>
             ))}
-            {history.length === 0 ? <div className="empty-state compact">No history yet.</div> : null}
+            {history.length === 0 ? (
+              <div className="empty-state compact">
+                <BarsMotif />
+                <span>No history yet.</span>
+              </div>
+            ) : null}
           </div>
         </section>
       </div>
     </div>
+  )
+}
+
+const LEVEL_BAR_COUNT = 14
+
+function LevelBars({ live }: { live: boolean }) {
+  const [levels, setLevels] = useState<number[]>(() => Array(LEVEL_BAR_COUNT).fill(0))
+  useEffect(() => {
+    if (!live) return
+    const timer = window.setInterval(() => {
+      void getRecordingLevel().then((level) => {
+        setLevels((previous) => [...previous.slice(1), level])
+      })
+    }, 60)
+    return () => window.clearInterval(timer)
+  }, [live])
+  return (
+    <div className="level-bars" data-live={live} aria-hidden="true">
+      {levels.map((level, index) => (
+        <span
+          key={index}
+          className="level-bar"
+          style={live ? { height: `${15 + Math.sqrt(Math.min(1, level * 3)) * 85}%` } : undefined}
+        />
+      ))}
+    </div>
+  )
+}
+
+function StatsStrip({ history }: { history: HistoryItem[] }) {
+  const stats = useMemo(() => deriveStats(history, new Date()), [history])
+  if (history.length === 0) return null
+  return (
+    <section className="stats-strip" aria-label="Usage">
+      <div className="stat">
+        <strong>{stats.words.toLocaleString()}</strong>
+        <span>words dictated</span>
+      </div>
+      <div className="stat">
+        <strong>{stats.sessionsThisWeek}</strong>
+        <span>sessions this week</span>
+      </div>
+      <div className="stat">
+        <strong>{stats.dayStreak}</strong>
+        <span>day streak</span>
+      </div>
+    </section>
+  )
+}
+
+function SetupChecklist({
+  status,
+  onOpenSettings,
+}: {
+  status: AppStatus
+  onOpenSettings: () => void
+}) {
+  const [bound, setBound] = useState(() => localStorage.getItem('echo-shortcut-bound') === '1')
+  const items = [
+    { key: 'mic', done: status.microphoneReady, label: 'Microphone ready' },
+    { key: 'engine', done: status.engineReady, label: 'Speech engine and model installed' },
+    { key: 'shortcut', done: bound, label: 'Shortcut bound' },
+  ]
+  if (items.every((item) => item.done)) return null
+  return (
+    <section className="panel checklist" aria-label="Finish setup">
+      <SectionHeading title="Finish setup" subtitle="The first-run job is one successful dictation." />
+      {items.map((item) => (
+        <div className="checklist-item" data-done={item.done} key={item.key}>
+          <span className="checklist-check" aria-hidden="true">
+            {item.done ? <Check size={13} /> : null}
+          </span>
+          <span className="checklist-label">{item.label}</span>
+          {!item.done && item.key === 'shortcut' ? (
+            <button
+              type="button"
+              className="compact-button"
+              onClick={() => {
+                localStorage.setItem('echo-shortcut-bound', '1')
+                setBound(true)
+              }}
+            >
+              I bound it
+            </button>
+          ) : null}
+          {!item.done && item.key !== 'shortcut' ? (
+            <button type="button" className="compact-button" onClick={onOpenSettings}>
+              Open Settings
+            </button>
+          ) : null}
+        </div>
+      ))}
+    </section>
   )
 }
 
@@ -375,6 +529,7 @@ function HistoryView({ items }: { items: HistoryItem[] }) {
     const needle = query.trim().toLocaleLowerCase()
     return needle ? items.filter((item) => item.text.toLocaleLowerCase().includes(needle)) : items
   }, [items, query])
+  const groups = useMemo(() => groupByDay(filtered, new Date()), [filtered])
   return (
     <div className="view-stack">
       <ViewHeader title="History" subtitle="Every successful local transcription, newest first." />
@@ -383,12 +538,21 @@ function HistoryView({ items }: { items: HistoryItem[] }) {
         <span className="sr-only">Search history</span>
         <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search transcripts…" />
       </label>
-      <section className="panel transcript-list" aria-live="polite">
-        {filtered.map((item) => <TranscriptRow key={item.id} item={item} />)}
-        {filtered.length === 0 ? (
-          <div className="empty-state"><strong>No matching transcripts</strong><span>Try a different search.</span></div>
-        ) : null}
-      </section>
+      {groups.map((group) => (
+        <section className="panel transcript-list" aria-live="polite" key={group.label}>
+          <h3 className="day-header">{group.label}</h3>
+          {group.items.map((item) => <TranscriptRow key={item.id} item={item} />)}
+        </section>
+      ))}
+      {filtered.length === 0 ? (
+        <section className="panel transcript-list">
+          <div className="empty-state">
+            <BarsMotif />
+            <strong>{items.length === 0 ? 'No transcripts yet' : 'No matching transcripts'}</strong>
+            <span>{items.length === 0 ? 'Dictate once and it lands here.' : 'Try a different search.'}</span>
+          </div>
+        </section>
+      ) : null}
     </div>
   )
 }
@@ -459,7 +623,7 @@ function DictionaryView({
             <button className="icon-button danger-button" type="button" onClick={() => void onRemove(item)} aria-label={`Remove ${item.written}`}><Trash2 size={16} /></button>
           </div>
         ))}
-        {items.length === 0 ? <div className="empty-state"><strong>Your dictionary is empty</strong><span>Add a phrase above to make transcription more personal.</span></div> : null}
+        {items.length === 0 ? <div className="empty-state"><BarsMotif /><strong>Your dictionary is empty</strong><span>Add a phrase above to make transcription more personal.</span></div> : null}
       </section>
     </div>
   )
@@ -689,10 +853,13 @@ function SettingsView({
                 </div>
               ))}
             {settings.engine.effective === 'whisper' && inventory ? (
-              <label className="setting-row">
+              <div className="setting-row">
                 <div>
                   <strong>Model</strong>
                   <span>{overrideHint(settings.whisperModel.source, 'ECHO_WHISPER_MODEL', 'Auto runs the best installed model.')}</span>
+                  {selectedModelMeta(inventory.whisper, settings.whisperModel.effective) ? (
+                    <span className="model-meta">{selectedModelMeta(inventory.whisper, settings.whisperModel.effective)}</span>
+                  ) : null}
                 </div>
                 <select
                   aria-label="Model"
@@ -705,7 +872,7 @@ function SettingsView({
                     <option key={option.value} value={option.value}>{option.label}</option>
                   ))}
                 </select>
-              </label>
+              </div>
             ) : null}
             {languages ? (
               <LanguageRow
@@ -889,6 +1056,17 @@ function SettingsView({
   )
 }
 
+function selectedModelMeta(models: WhisperModelInfo[], current: string) {
+  const model = models.find((candidate) => candidate.name === current)
+  if (!model) return null
+  return [
+    model.family,
+    model.multilingual ? 'multilingual' : 'English-only',
+    model.quantisation ?? 'full precision',
+    formatSize(model.sizeBytes),
+  ].join(' · ')
+}
+
 function modelOptions(models: WhisperModelInfo[], current: string) {
   const options = models.map((model) => ({
     value: model.name,
@@ -1049,7 +1227,7 @@ function LanguageRow({
           </optgroup>
         </select>
         {settings.language.effective === 'auto' && detected ? (
-          <span className="status-note" data-tone={lowConfidence ? 'attention' : 'ok'}>
+          <span className="status-note chip" data-tone={lowConfidence ? 'attention' : 'ok'}>
             <span
               className="status-dot"
               data-tone={lowConfidence ? 'attention' : 'ok'}
@@ -1184,6 +1362,11 @@ function SettingLine({ label, value, tone }: { label: string; value: string; ton
       ) : null}
     </div>
   )
+}
+
+function formatDuration(seconds: number) {
+  const minutes = Math.floor(seconds / 60)
+  return `${minutes}:${String(seconds % 60).padStart(2, '0')}`
 }
 
 function formatTime(timestamp: number) {

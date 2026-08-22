@@ -1,6 +1,7 @@
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use echo_core::{
@@ -11,6 +12,32 @@ use crate::audio::{self, AudioCapture, CancellationToken};
 use crate::hotkey::{self, HoldKey, HotkeyEvent, HotkeySource};
 use crate::inject::LinuxInjector;
 use crate::status;
+
+/// Set while this process holds a recording session, so the GUI can tell its
+/// own record button's sessions (live meter) from a compositor shortcut's
+/// (the meter lives in that process).
+static RECORDING_IN_PROCESS: AtomicBool = AtomicBool::new(false);
+
+#[must_use]
+pub fn recording_in_process() -> bool {
+    RECORDING_IN_PROCESS.load(Ordering::Relaxed)
+}
+
+struct InProcessSession;
+
+impl InProcessSession {
+    fn start() -> Self {
+        RECORDING_IN_PROCESS.store(true, Ordering::Relaxed);
+        Self
+    }
+}
+
+impl Drop for InProcessSession {
+    fn drop(&mut self) {
+        RECORDING_IN_PROCESS.store(false, Ordering::Relaxed);
+        audio::process_meter().publish(0.0);
+    }
+}
 
 /// What ends a recording: the timer, the toggle stop file, or the hold key
 /// coming back up.
@@ -89,7 +116,8 @@ fn run_record(mut stop: StopWhen) -> i32 {
     let _ = status::write_status(session.state(), None, None);
     // The HUD lives until after injection: the longest wait in the session
     // (transcription) gets an indicator, and the outcome gets a state.
-    let meter = audio::LevelMeter::new();
+    let _in_process = InProcessSession::start();
+    let meter = audio::process_meter();
     let hud = crate::ui::hud::RecordingHud::start(meter.clone());
     let capture = match capture_pcm(&mut stop, &meter) {
         Ok(capture) => capture,

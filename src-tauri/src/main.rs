@@ -39,6 +39,7 @@ struct AppStatus {
     last_error: Option<String>,
     last_run: Option<LastRun>,
     language_warning: Option<String>,
+    recording_in_process: bool,
 }
 
 /// What the last transcription actually ran, observed from the engine's own
@@ -181,6 +182,7 @@ fn get_app_status() -> AppStatus {
             language: row.detail.language.clone(),
             language_probability: row.detail.language_probability,
         }));
+    let recording_in_process = status.state == "Recording" && echo::rec::recording_in_process();
     AppStatus {
         recording: status.state == "Recording",
         phase: status.state,
@@ -199,6 +201,7 @@ fn get_app_status() -> AppStatus {
         last_error: status.error,
         last_run,
         language_warning: echo::stt::language_warning(),
+        recording_in_process,
     }
 }
 
@@ -253,6 +256,17 @@ fn remove_dictionary_entry(spoken: String, written: String) -> Result<bool, Stri
 #[tauri::command]
 fn toggle_recording() -> Result<(), String> {
     start_recording_thread()
+}
+
+/// Live microphone RMS when this process holds the recording session (the
+/// GUI's own record button), 0 otherwise.
+#[tauri::command]
+fn get_recording_level() -> f32 {
+    if echo::rec::recording_in_process() {
+        echo::audio::process_meter().level()
+    } else {
+        0.0
+    }
 }
 
 #[tauri::command]
@@ -845,6 +859,7 @@ fn run_desktop() {
             add_dictionary_entry,
             remove_dictionary_entry,
             toggle_recording,
+            get_recording_level,
             copy_text,
             get_settings,
             set_settings,
