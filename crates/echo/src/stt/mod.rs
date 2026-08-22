@@ -10,7 +10,7 @@ pub use whisper::WhisperEngine;
 
 use std::path::PathBuf;
 
-use echo_core::{Config, Engine, EngineChoice, Pcm16kMono, SAMPLE_RATE_HZ};
+use echo_core::{Config, Engine, EngineChoice, LanguageChoice, Pcm16kMono, SAMPLE_RATE_HZ};
 
 use crate::settings::file_config;
 
@@ -31,6 +31,24 @@ fn chosen_engine(env: Option<&str>, file: &Config) -> EngineChoice {
 
 fn chosen_engine_now() -> EngineChoice {
     chosen_engine(std::env::var("ECHO_ENGINE").ok().as_deref(), &file_config())
+}
+
+/// The language Echo transcribes in: `ECHO_LANGUAGE` wins over the config
+/// file, and with neither set the choice is pinned English, matching what
+/// Whisper did before Echo had a language concept. Invalid values fall
+/// through to the next source rather than failing the session.
+#[must_use]
+pub fn resolved_language(env: Option<&str>, file: &Config) -> LanguageChoice {
+    echo_core::resolve(
+        env.and_then(LanguageChoice::parse),
+        file.language,
+        LanguageChoice::default(),
+    )
+}
+
+#[must_use]
+pub fn language_now() -> LanguageChoice {
+    resolved_language(std::env::var("ECHO_LANGUAGE").ok().as_deref(), &file_config())
 }
 
 fn pick_engine(choice: EngineChoice) -> Option<PickedEngine> {

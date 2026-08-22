@@ -234,7 +234,7 @@ impl ModelInventory {
 /// there is no `.en` turbo, and `-tdrz` tinydiarize builds are ignored because
 /// Echo has no diarization path. Unrecognized filenames are ignored, not
 /// guessed at.
-fn parse_whisper_filename(
+pub(crate) fn parse_whisper_filename(
     file_name: &str,
 ) -> Option<(String, WhisperFamily, bool, Option<String>)> {
     let stem = file_name

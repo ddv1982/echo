@@ -4,6 +4,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::cleanup::CleanupMode;
+use crate::language::LanguageChoice;
 use crate::paths::{config_path, set_aside_corrupt, write_atomic};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,6 +45,8 @@ pub struct Config {
     pub record_seconds: Option<u32>,
     #[serde(default)]
     pub microphone: Option<String>,
+    #[serde(default)]
+    pub language: Option<LanguageChoice>,
 }
 
 impl Config {
@@ -115,6 +118,7 @@ mod tests {
             hold_key: Some("RightCtrl".into()),
             record_seconds: Some(8),
             microphone: Some("USB Mic".into()),
+            language: Some(LanguageChoice::Auto),
         };
         original.save_to(&path).unwrap();
         assert_eq!(Config::load_from(&path).unwrap(), original);
@@ -132,6 +136,7 @@ mod tests {
         assert_eq!(loaded.hold_key, None);
         assert_eq!(loaded.record_seconds, None);
         assert_eq!(loaded.microphone, None);
+        assert_eq!(loaded.language, None);
     }
 
     #[test]

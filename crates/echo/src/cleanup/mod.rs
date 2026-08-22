@@ -41,8 +41,19 @@ pub fn from_env() -> Box<dyn Cleanup> {
     from_mode(cleanup_mode_now())
 }
 
-pub fn apply(raw: &str, dict: &Dictionary) -> Rewrite {
-    from_env()
+/// Clean a transcript. `english` gates the English-specific rules (filler
+/// dropping, ASCII punctuation) so they never corrupt another language's
+/// output; the dictionary always runs. Off and local modes are unaffected.
+pub fn apply(raw: &str, dict: &Dictionary, english: bool) -> Rewrite {
+    apply_mode(cleanup_mode_now(), raw, dict, english)
+}
+
+fn apply_mode(mode: CleanupMode, raw: &str, dict: &Dictionary, english: bool) -> Rewrite {
+    let mode = match (mode, english) {
+        (CleanupMode::Rules, false) => CleanupMode::Off,
+        (mode, _) => mode,
+    };
+    from_mode(mode)
         .apply(raw, dict)
         .unwrap_or_else(|_| dict.rewrite(raw))
 }
@@ -67,6 +78,32 @@ mod tests {
             CleanupMode::Rules => assert_eq!(rewrite.text, "Hello."),
             CleanupMode::LocalModel { .. } => {}
         }
+    }
+
+    #[test]
+    fn rules_gate_off_for_non_english() {
+        let dict = Dictionary::empty();
+        // A Japanese string already ending in 。 gains no ASCII period, and
+        // no filler stripping runs, when the session language is not English.
+        let rewrite = apply_mode(CleanupMode::Rules, "これはテストです。", &dict, false);
+        assert_eq!(rewrite.text, "これはテストです。");
+        let rewrite = apply_mode(CleanupMode::Rules, "um hello", &dict, false);
+        assert_eq!(rewrite.text, "um hello");
+        let rewrite = apply_mode(CleanupMode::Rules, "um hello", &dict, true);
+        assert_eq!(rewrite.text, "Hello.");
+        // Off and local modes do not change with the gate.
+        let rewrite = apply_mode(CleanupMode::Off, "um hello", &dict, false);
+        assert_eq!(rewrite.text, "um hello");
+    }
+
+    #[test]
+    fn dictionary_still_runs_when_rules_are_gated_off() {
+        let dir = std::env::temp_dir().join(format!("echo-clean-gate-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let mut dict = Dictionary::load_from(dir.join("dictionary.json")).unwrap();
+        dict.add("button", "Button").unwrap();
+        let rewrite = apply_mode(CleanupMode::Rules, "move the button", &dict, false);
+        assert_eq!(rewrite.text, "move the Button");
     }
 
     #[test]
