@@ -74,6 +74,7 @@ const initialStatus: AppStatus = {
   currentExe: '',
   firstPathHit: null,
   staleInstalls: [],
+  holdListener: 'unavailable',
 }
 
 const navigation: Array<{ id: View; label: string; icon: typeof Home }> = [
@@ -503,6 +504,78 @@ function StaleInstallWarning({ status }: { status: AppStatus }) {
   )
 }
 
+/// The shortcut row with its verified-setup test. Echo never registers the
+/// binding; the compositor owns it. The test watches the status file for a
+/// session starting while the listener window is open, which proves the
+/// binding, the spawn, and the binary path in one press.
+function ShortcutRow({ status }: { status: AppStatus }) {
+  const [verifiedAt, setVerifiedAt] = useState<number | null>(() => {
+    const raw = localStorage.getItem('echo-shortcut-verified-at')
+    return raw ? Number(raw) : null
+  })
+  const [phase, setPhase] = useState<'idle' | 'listening' | 'timed-out'>('idle')
+  const baseline = useRef('Idle')
+
+  useEffect(() => {
+    if (phase !== 'listening') return
+    if (status.phase !== baseline.current && status.phase !== 'Idle') {
+      const now = Math.floor(Date.now() / 1000)
+      localStorage.setItem('echo-shortcut-verified-at', String(now))
+      setVerifiedAt(now)
+      setPhase('idle')
+    }
+  }, [phase, status])
+
+  const start = () => {
+    baseline.current = status.phase
+    setPhase('listening')
+    window.setTimeout(() => {
+      setPhase((current) => (current === 'listening' ? 'timed-out' : current))
+    }, 10_000)
+  }
+
+  return (
+    <div className="setting-row">
+      <div>
+        <strong>Suggested shortcut</strong>
+        <span>
+          Bind <kbd>{status.shortcut}</kbd> to <code>echo-desktop rec --toggle</code> in your
+          desktop&apos;s keyboard settings; Echo does not register it itself.
+        </span>
+      </div>
+      <div className="setting-actions">
+        {phase === 'listening' ? (
+          <span className="status-note" data-tone="ok">
+            <span className="status-dot" data-tone="ok" aria-hidden="true" />
+            Listening… press your shortcut
+          </span>
+        ) : (
+          <button
+            type="button"
+            className="compact-button"
+            disabled={status.recording}
+            onClick={start}
+          >
+            Test shortcut
+          </button>
+        )}
+        {phase === 'timed-out' ? (
+          <span className="status-note" data-tone="attention">
+            <span className="status-dot" data-tone="attention" aria-hidden="true" />
+            No keypress seen — check the binding
+          </span>
+        ) : null}
+        {phase === 'idle' && verifiedAt != null ? (
+          <span className="status-note" data-tone="ok">
+            <span className="status-dot" data-tone="ok" aria-hidden="true" />
+            Verified {new Date(verifiedAt * 1000).toLocaleDateString()}
+          </span>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
 function StatsStrip({ history }: { history: HistoryItem[] }) {
   const stats = useMemo(() => deriveStats(history, new Date()), [history])
   if (history.length === 0) return null
@@ -531,11 +604,12 @@ function SetupChecklist({
   status: AppStatus
   onOpenSettings: () => void
 }) {
-  const [bound, setBound] = useState(() => localStorage.getItem('echo-shortcut-bound') === '1')
+  // Verified, not asserted: only a passing shortcut test completes this.
+  const [verified] = useState(() => localStorage.getItem('echo-shortcut-verified-at') !== null)
   const items = [
     { key: 'mic', done: status.microphoneReady, label: 'Microphone ready' },
     { key: 'engine', done: status.engineReady, label: 'Speech engine and model installed' },
-    { key: 'shortcut', done: bound, label: 'Shortcut bound' },
+    { key: 'shortcut', done: verified, label: verified ? 'Shortcut verified' : 'Shortcut bound' },
   ]
   if (items.every((item) => item.done)) return null
   return (
@@ -547,19 +621,7 @@ function SetupChecklist({
             {item.done ? <Check size={13} /> : null}
           </span>
           <span className="checklist-label">{item.label}</span>
-          {!item.done && item.key === 'shortcut' ? (
-            <button
-              type="button"
-              className="compact-button"
-              onClick={() => {
-                localStorage.setItem('echo-shortcut-bound', '1')
-                setBound(true)
-              }}
-            >
-              I bound it
-            </button>
-          ) : null}
-          {!item.done && item.key !== 'shortcut' ? (
+          {!item.done ? (
             <button type="button" className="compact-button" onClick={onOpenSettings}>
               Open Settings
             </button>
@@ -690,12 +752,11 @@ function DictionaryView({
   )
 }
 
-const ENGINE_OPTIONS = [
-  { value: 'auto', label: 'Auto' },
-  { value: 'whisper', label: 'Whisper' },
-  { value: 'parakeet', label: 'Parakeet' },
-  { value: 'fake', label: 'Fake' },
-] as const
+const ENGINE_LABELS: Record<string, string> = {
+  whisper: 'Whisper',
+  parakeet: 'Parakeet',
+  fake: 'Fake',
+}
 
 const CLEANUP_OPTIONS = [
   { value: 'off', label: 'Off' },
@@ -807,22 +868,18 @@ function SettingsView({
     .sort((left, right) => left - right)
     .map((secs) => ({ value: String(secs), label: `${secs} seconds` }))
 
+  const whisperRuns =
+    settings != null &&
+    (settings.engine.effective === 'whisper' ||
+      (settings.engine.effective === 'auto' &&
+        (inventory?.engines.some((engine) => engine.id === 'whisper' && engine.available) ??
+          false)))
+
   return (
     <div className="view-stack">
       <ViewHeader title="Settings" subtitle="Change how Echo records and transcribes, on this machine." />
-      <section className="panel settings-section">
-        <SectionHeading title="Appearance" subtitle="Follow the system or choose a fixed theme." />
-        <div className="setting-row">
-          <div><strong>Theme</strong><span>Applied to the Echo window only.</span></div>
-          <div className="segmented-control" role="group" aria-label="Application theme">
-            {(['system', 'light', 'dark'] as ThemeMode[]).map((mode) => (
-              <button type="button" key={mode} data-active={theme === mode} onClick={() => onThemeChange(mode)}>{capitalize(mode)}</button>
-            ))}
-          </div>
-        </div>
-      </section>
-      <section className="panel settings-section">
-        <SectionHeading title="Audio" subtitle="Input stays on this machine." />
+      <section className="panel settings-section" aria-label="General">
+        <SectionHeading title="General" subtitle="The few decisions that matter." />
         {settings ? (
           <div className="setting-row">
             <div>
@@ -879,9 +936,169 @@ function SettingsView({
         ) : (
           <SettingLine label="Microphone" value={status.microphoneReady ? 'Default input available' : 'No default input'} tone={status.microphoneReady ? 'ok' : 'attention'} />
         )}
+        {settings && languages ? (
+          <LanguageRow
+            languages={languages}
+            settings={settings}
+            status={status}
+            onChange={(value) => void patch('language', value)}
+          />
+        ) : null}
+        {status.languageWarning ? (
+          <div className="setting-row" role="status">
+            <span className="status-note" data-tone="attention">
+              <span className="status-dot" data-tone="attention" aria-hidden="true" />
+              {status.languageWarning}
+            </span>
+            {offers
+              .filter((offer) => offer.id === 'small' && !offer.installed)
+              .map((offer) => (
+                <OfferAction
+                  key={offer.id}
+                  offer={offer}
+                  progress={downloads[offer.id]}
+                  onDownload={() => void downloadModel(offer.id)}
+                  onCancel={() => void cancelDownload(offer.id)}
+                />
+              ))}
+          </div>
+        ) : null}
+        {settings && whisperRuns && inventory ? (
+          <div className="setting-row">
+            <div>
+              <strong>Model quality</strong>
+              <span>{overrideHintPlain(settings.whisperModel.source, 'Auto runs the best installed model.')}</span>
+              {selectedModelMeta(inventory.whisper, settings.whisperModel.effective) ? (
+                <span className="model-meta">{selectedModelMeta(inventory.whisper, settings.whisperModel.effective)}</span>
+              ) : null}
+            </div>
+            <select
+              aria-label="Model quality"
+              value={settings.whisperModel.effective}
+              disabled={settings.whisperModel.source === 'env'}
+              onChange={(event) => void patch('whisperModel', event.target.value || null)}
+            >
+              <option value="">Auto · best installed</option>
+              {modelOptions(inventory.whisper, settings.whisperModel.effective).map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </div>
+        ) : null}
+        {inventory && inventory.vad.length === 0
+          ? offers
+              .filter((offer) => offer.id === 'silero-vad' && !offer.installed)
+              .map((offer) => (
+                <div className="setting-row" key={offer.id}>
+                  <div>
+                    <strong>Silence detection</strong>
+                    <span>
+                      Trims non-speech before transcription. {formatSize(offer.sizeBytes)} · {offer.url}
+                    </span>
+                  </div>
+                  <OfferAction
+                    offer={offer}
+                    progress={downloads[offer.id]}
+                    onDownload={() => void downloadModel(offer.id)}
+                    onCancel={() => void cancelDownload(offer.id)}
+                  />
+                </div>
+              ))
+          : null}
+        {offers.filter(
+          (offer) =>
+            offer.id !== 'silero-vad' &&
+            !(status.languageWarning && offer.id === 'small') &&
+            (!offer.installed || downloads[offer.id]),
+        ).length > 0 ? (
+          <>
+            <div className="setting-row">
+              <div>
+                <strong>Get a model</strong>
+                <span>Downloaded over HTTPS from huggingface.co and verified against the published SHA-1.</span>
+              </div>
+            </div>
+            {offers
+              .filter(
+                (offer) =>
+                  offer.id !== 'silero-vad' &&
+                  !(status.languageWarning && offer.id === 'small') &&
+                  (!offer.installed || downloads[offer.id]),
+              )
+              .map((offer) => (
+                <div className="setting-row" key={offer.id}>
+                  <div>
+                    <strong>{offer.label}</strong>
+                    <span>
+                      {formatSize(offer.sizeBytes)}
+                      {offer.runtimeMb != null ? ` · ~${offer.runtimeMb} MB memory` : ''}
+                      {offer.multilingual ? ' · multilingual' : ''}
+                    </span>
+                    <span className="offer-url">{offer.url}</span>
+                  </div>
+                  <OfferAction
+                    offer={offer}
+                    progress={downloads[offer.id]}
+                    onDownload={() => void downloadModel(offer.id)}
+                    onCancel={() => void cancelDownload(offer.id)}
+                  />
+                </div>
+              ))}
+          </>
+        ) : null}
+        {settings ? (
+          <div className="setting-row">
+            <div>
+              <strong>Push-to-talk key</strong>
+              <span>
+                {overrideHintPlain(
+                  settings.holdKey.source,
+                  'Hold to dictate from anywhere.',
+                )}
+              </span>
+            </div>
+            <div className="setting-actions">
+              <select
+                aria-label="Push-to-talk key"
+                value={settings.holdKey.effective}
+                disabled={settings.holdKey.source === 'env'}
+                onChange={(event) => void patch('holdKey', event.target.value)}
+              >
+                {holdKeyOptions(settings.holdKey.effective).map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+              {status.holdListener === 'active' ? (
+                <span className="status-note" data-tone="ok">
+                  <span className="status-dot" data-tone="ok" aria-hidden="true" />
+                  Active
+                </span>
+              ) : status.holdListener === 'needs-permission' ? (
+                <span className="status-note" data-tone="attention">
+                  <span className="status-dot" data-tone="attention" aria-hidden="true" />
+                  Needs input group: sudo usermod -aG input $USER
+                </span>
+              ) : (
+                <span className="status-note" data-tone="attention">
+                  <span className="status-dot" data-tone="attention" aria-hidden="true" />
+                  Not available here
+                </span>
+              )}
+            </div>
+          </div>
+        ) : null}
+        <ShortcutRow status={status} />
+        <div className="setting-row">
+          <div><strong>Theme</strong><span>Applied to the Echo window only.</span></div>
+          <div className="segmented-control" role="group" aria-label="Application theme">
+            {(['system', 'light', 'dark'] as ThemeMode[]).map((mode) => (
+              <button type="button" key={mode} data-active={theme === mode} onClick={() => onThemeChange(mode)}>{capitalize(mode)}</button>
+            ))}
+          </div>
+        </div>
       </section>
-      <section className="panel settings-section">
-        <SectionHeading title="Transcription" subtitle="No recorded audio leaves this machine." />
+      <details className="panel settings-section advanced-section">
+        <summary>Advanced</summary>
         {settings ? (
           <>
             <div className="setting-row">
@@ -890,17 +1107,24 @@ function SettingsView({
                 <span>{overrideHint(settings.engine.source, 'ECHO_ENGINE', 'Which local engine transcribes recordings.')}</span>
               </div>
               <div className="segmented-control" role="group" aria-label="Speech engine">
-                {ENGINE_OPTIONS.map((option) => (
-                  <button
-                    type="button"
-                    key={option.value}
-                    data-active={settings.engine.effective === option.value}
-                    disabled={settings.engine.source === 'env'}
-                    onClick={() => void patch('engine', option.value)}
-                  >
-                    {option.label}
-                  </button>
-                ))}
+                {[{ value: 'auto', label: 'Auto' }]
+                  .concat(
+                    (inventory?.engines ?? []).map((engine) => ({
+                      value: engine.id,
+                      label: ENGINE_LABELS[engine.id] ?? engine.id,
+                    })),
+                  )
+                  .map((option) => (
+                    <button
+                      type="button"
+                      key={option.value}
+                      data-active={settings.engine.effective === option.value}
+                      disabled={settings.engine.source === 'env'}
+                      onClick={() => void patch('engine', option.value)}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
               </div>
             </div>
             {inventory?.engines
@@ -913,119 +1137,45 @@ function SettingsView({
                   </span>
                 </div>
               ))}
-            {settings.engine.effective === 'whisper' && inventory ? (
-              <div className="setting-row">
-                <div>
-                  <strong>Model</strong>
-                  <span>{overrideHint(settings.whisperModel.source, 'ECHO_WHISPER_MODEL', 'Auto runs the best installed model.')}</span>
-                  {selectedModelMeta(inventory.whisper, settings.whisperModel.effective) ? (
-                    <span className="model-meta">{selectedModelMeta(inventory.whisper, settings.whisperModel.effective)}</span>
-                  ) : null}
-                </div>
-                <select
-                  aria-label="Model"
-                  value={settings.whisperModel.effective}
-                  disabled={settings.whisperModel.source === 'env'}
-                  onChange={(event) => void patch('whisperModel', event.target.value || null)}
-                >
-                  <option value="">Auto · best installed</option>
-                  {modelOptions(inventory.whisper, settings.whisperModel.effective).map((option) => (
-                    <option key={option.value} value={option.value}>{option.label}</option>
-                  ))}
-                </select>
+            <SettingToggle
+              label="Recording HUD"
+              description="Show the recording capsule while you dictate."
+              value={settings.hud.effective}
+              source={settings.hud.source}
+              envName="ECHO_HUD"
+              onChange={(value) => void patch('hud', value)}
+            />
+            <SettingSelect
+              label="Recording length"
+              description={`Timed recordings from the command line. Toggle recording still caps at ${status.maxRecordSeconds} seconds.`}
+              value={String(settings.recordSeconds.effective)}
+              options={recordSecondOptions}
+              source={settings.recordSeconds.source}
+              envName="ECHO_RECORD_SECONDS"
+              onChange={(value) => void patch('recordSeconds', Number(value))}
+            />
+            <div className="setting-row">
+              <div>
+                <strong>Cleanup</strong>
+                <span>{overrideHint(settings.cleanup.source, 'ECHO_CLEANUP', 'Tidy transcripts: drop um and uh, capitalize, punctuate.')}</span>
               </div>
-            ) : null}
-            {languages ? (
-              <LanguageRow
-                languages={languages}
-                settings={settings}
-                status={status}
-                onChange={(value) => void patch('language', value)}
-              />
-            ) : null}
-            {status.languageWarning ? (
-              <div className="setting-row" role="status">
-                <span className="status-note" data-tone="attention">
-                  <span className="status-dot" data-tone="attention" aria-hidden="true" />
-                  {status.languageWarning}
-                </span>
-                {offers
-                  .filter((offer) => offer.id === 'small' && !offer.installed)
-                  .map((offer) => (
-                    <OfferAction
-                      key={offer.id}
-                      offer={offer}
-                      progress={downloads[offer.id]}
-                      onDownload={() => void downloadModel(offer.id)}
-                      onCancel={() => void cancelDownload(offer.id)}
-                    />
-                  ))}
+              <div className="segmented-control" role="group" aria-label="Cleanup">
+                {CLEANUP_OPTIONS.map((option) => (
+                  <button
+                    type="button"
+                    key={option.value}
+                    data-active={settings.cleanup.effective === option.value}
+                    disabled={settings.cleanup.source === 'env'}
+                    onClick={() => void patch('cleanup', option.value)}
+                  >
+                    {option.label}
+                  </button>
+                ))}
               </div>
-            ) : null}
-            {inventory && inventory.vad.length === 0
-              ? offers
-                  .filter((offer) => offer.id === 'silero-vad' && !offer.installed)
-                  .map((offer) => (
-                    <div className="setting-row" key={offer.id}>
-                      <div>
-                        <strong>Silence detection</strong>
-                        <span>
-                          VAD trims non-speech before transcription. {offer.filename} ·{' '}
-                          {formatSize(offer.sizeBytes)}
-                        </span>
-                      </div>
-                      <OfferAction
-                        offer={offer}
-                        progress={downloads[offer.id]}
-                        onDownload={() => void downloadModel(offer.id)}
-                        onCancel={() => void cancelDownload(offer.id)}
-                      />
-                    </div>
-                  ))
-              : null}
-            {offers.filter(
-              (offer) =>
-                offer.id !== 'silero-vad' &&
-                !(status.languageWarning && offer.id === 'small') &&
-                (!offer.installed || downloads[offer.id]),
-            ).length > 0 ? (
-              <>
-                <div className="setting-row">
-                  <div>
-                    <strong>Get a model</strong>
-                    <span>Downloaded over HTTPS from huggingface.co and verified against the published SHA-1.</span>
-                  </div>
-                </div>
-                {offers
-                  .filter(
-                    (offer) =>
-                      offer.id !== 'silero-vad' &&
-                      !(status.languageWarning && offer.id === 'small') &&
-                      (!offer.installed || downloads[offer.id]),
-                  )
-                  .map((offer) => (
-                    <div className="setting-row" key={offer.id}>
-                      <div>
-                        <strong>{offer.label}</strong>
-                        <span>
-                          {offer.filename} · {formatSize(offer.sizeBytes)}
-                          {offer.runtimeMb != null ? ` · ~${offer.runtimeMb} MB memory` : ''}
-                          {offer.multilingual ? ' · multilingual' : ''}
-                        </span>
-                        <span className="offer-url">{offer.url}</span>
-                      </div>
-                      <OfferAction
-                        offer={offer}
-                        progress={downloads[offer.id]}
-                        onDownload={() => void downloadModel(offer.id)}
-                        onCancel={() => void cancelDownload(offer.id)}
-                      />
-                    </div>
-                  ))}
-              </>
-            ) : null}
+            </div>
           </>
         ) : null}
+        <SettingLine label="Text insertion" value={status.injectionName} tone={status.injectionReady ? 'ok' : 'attention'} />
         <SettingLine label="Resolved engine" value={status.engineName} tone={status.engineReady ? 'ok' : 'attention'} />
         {status.lastError ? (
           <div className="setting-line">
@@ -1050,69 +1200,10 @@ function SettingsView({
             <SettingLine label="Version" value={status.version} />
           </>
         ) : null}
-      </section>
-      <section className="panel settings-section">
-        <SectionHeading title="Shortcut and recording" subtitle="Bind the suggested shortcut in your desktop's keyboard settings; Echo does not register it itself." />
-        <SettingLine label="Suggested shortcut" value={`${status.shortcut} · press once to start, again to stop`} />
-        {settings ? (
-          <>
-            <SettingToggle
-              label="Recording HUD"
-              description="Echo pulse capsule on X11 sessions."
-              value={settings.hud.effective}
-              source={settings.hud.source}
-              envName="ECHO_HUD"
-              onChange={(value) => void patch('hud', value)}
-            />
-            <SettingSelect
-              label="Hold key"
-              description="Used by rec --hold. Combos belong on a desktop shortcut."
-              value={settings.holdKey.effective}
-              options={holdKeyOptions(settings.holdKey.effective)}
-              source={settings.holdKey.source}
-              envName="ECHO_HOLD_KEY"
-              onChange={(value) => void patch('holdKey', value)}
-            />
-            <SettingSelect
-              label="Timed recording"
-              description={`Used by rec --once. Toggle recording still caps at ${status.maxRecordSeconds} seconds.`}
-              value={String(settings.recordSeconds.effective)}
-              options={recordSecondOptions}
-              source={settings.recordSeconds.source}
-              envName="ECHO_RECORD_SECONDS"
-              onChange={(value) => void patch('recordSeconds', Number(value))}
-            />
-          </>
+        {status.settingsPath ? (
+          <p className="settings-path">Saved at <code>{status.settingsPath}</code></p>
         ) : null}
-      </section>
-      <section className="panel settings-section">
-        <SectionHeading title="Text" subtitle="What Echo writes after transcription." />
-        {settings ? (
-          <div className="setting-row">
-            <div>
-              <strong>Cleanup</strong>
-              <span>{overrideHint(settings.cleanup.source, 'ECHO_CLEANUP', status.cleanupName)}</span>
-            </div>
-            <div className="segmented-control" role="group" aria-label="Cleanup">
-              {CLEANUP_OPTIONS.map((option) => (
-                <button
-                  type="button"
-                  key={option.value}
-                  data-active={settings.cleanup.effective === option.value}
-                  disabled={settings.cleanup.source === 'env'}
-                  onClick={() => void patch('cleanup', option.value)}
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
-          </div>
-        ) : null}
-        <SettingLine label="Text insertion" value={status.injectionName} tone={status.injectionReady ? 'ok' : 'attention'} />
-      </section>
-      {status.settingsPath ? (
-        <p className="settings-path">Saved at <code>{status.settingsPath}</code></p>
-      ) : null}
+      </details>
     </div>
   )
 }
@@ -1252,6 +1343,8 @@ function LanguageRow({
     : null
   const probability = status.lastRun?.languageProbability ?? null
   const lowConfidence = probability != null && probability < 0.5
+  // A confident detection earns the fast path back: one click pins it.
+  const confident = probability != null && probability >= 0.8
   return (
     <label className="setting-row">
       <div>
@@ -1303,6 +1396,15 @@ function LanguageRow({
               .join(' · ')}
           </span>
         ) : null}
+        {settings.language.effective === 'auto' && detected && confident ? (
+          <button
+            type="button"
+            className="compact-button"
+            onClick={() => onChange(detected)}
+          >
+            Pin {detectedOption ? capitalize(detectedOption.englishName) : detected} for speed
+          </button>
+        ) : null}
       </div>
     </label>
   )
@@ -1331,6 +1433,11 @@ function holdKeyOptions(current: string) {
 
 function overrideHint(source: SettingSource, envName: string, fallback: string) {
   return source === 'env' ? envName : fallback
+}
+
+/// General-surface rows name no environment variables; Advanced rows do.
+function overrideHintPlain(source: SettingSource, fallback: string) {
+  return source === 'env' ? 'Set by environment' : fallback
 }
 
 function SettingSelect({

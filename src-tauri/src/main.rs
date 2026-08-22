@@ -43,6 +43,7 @@ struct AppStatus {
     current_exe: String,
     first_path_hit: Option<String>,
     stale_installs: Vec<String>,
+    hold_listener: String,
 }
 
 /// What the last transcription actually ran, observed from the engine's own
@@ -231,6 +232,7 @@ fn get_app_status() -> AppStatus {
         current_exe: health.current_exe,
         first_path_hit: health.first_path_hit,
         stale_installs: health.stale_installs,
+        hold_listener: hold_listener_state().to_string(),
     }
 }
 
@@ -617,9 +619,20 @@ fn test_input_device(name: Option<String>) -> Result<f32, String> {
 }
 
 fn read_settings() -> Result<Settings, String> {
+    // The picker's default must match what the recorder would do: auto when
+    // the resolved model is multilingual, pinned English otherwise.
+    let language_default = match echo::stt::resolved_language(
+        None,
+        &echo_core::Config::default(),
+        echo::stt::resolved_model_multilingual(),
+    ) {
+        echo_core::LanguageChoice::Auto => "auto",
+        _ => "en",
+    };
     Ok(settings_from(
         &process_settings_env(),
         &echo::settings::file_config(),
+        language_default,
     ))
 }
 
@@ -627,6 +640,7 @@ fn write_settings(settings: Settings) -> Result<Settings, String> {
     config_from_values(&settings)?.save()?;
     echo::settings::reload();
     health_invalidate();
+    reconcile_hold_listener();
     read_settings()
 }
 
@@ -643,7 +657,7 @@ fn process_settings_env() -> SettingsEnv {
     }
 }
 
-fn settings_from(env: &SettingsEnv, file: &echo_core::Config) -> Settings {
+fn settings_from(env: &SettingsEnv, file: &echo_core::Config, language_default: &str) -> Settings {
     let env_cleanup = env
         .cleanup
         .as_deref()
@@ -691,7 +705,7 @@ fn settings_from(env: &SettingsEnv, file: &echo_core::Config) -> Settings {
                 .and_then(echo_core::LanguageChoice::parse)
                 .map(|choice| choice.as_str().to_string()),
             file.language.map(|choice| choice.as_str().to_string()),
-            "en".to_string(),
+            language_default.to_string(),
         ),
     }
 }
@@ -812,6 +826,77 @@ fn start_recording_thread() -> Result<(), String> {
         .map_err(|err| err.to_string())
 }
 
+struct HoldListenerHandle {
+    key: String,
+    cancel: echo::audio::CancellationToken,
+}
+
+static HOLD_LISTENER: Mutex<Option<HoldListenerHandle>> = Mutex::new(None);
+
+/// What the hold-key row reports: the listener runs when evdev is readable,
+/// needs the input group when the devices exist but are unreadable, and is
+/// unavailable where /dev/input does not exist at all.
+fn hold_listener_state() -> &'static str {
+    if !std::path::Path::new("/dev/input").exists() {
+        return "unavailable";
+    }
+    match echo::hotkey::readable_event_nodes() {
+        Ok(nodes) if !nodes.is_empty() => "active",
+        _ => "needs-permission",
+    }
+}
+
+/// Start, stop, or rekey the hold listener to match the current setting.
+/// Idempotent: a matching listener is left alone. Group membership changes
+/// need a re-login, which restarts the app, so no polling is needed.
+fn reconcile_hold_listener() {
+    let mut guard = HOLD_LISTENER.lock().expect("hold listener lock");
+    let want_key = if hold_listener_state() == "active" {
+        echo::hotkey::hold_key().ok().map(|spec| spec.name)
+    } else {
+        None
+    };
+    let running_key = guard.as_ref().map(|handle| handle.key.clone());
+    if running_key == want_key {
+        return;
+    }
+    if let Some(handle) = guard.take() {
+        handle.cancel.cancel();
+    }
+    let Some(key) = want_key else {
+        return;
+    };
+    let (spec, devices) = match (echo::hotkey::hold_key(), echo::hotkey::readable_event_nodes()) {
+        (Ok(spec), Ok(devices)) if !devices.is_empty() => (spec, devices),
+        _ => return,
+    };
+    let mut hold = match echo::hotkey::HoldKey::open(&devices, spec.code) {
+        Ok(hold) => hold,
+        Err(_) => return,
+    };
+    let cancel = echo::audio::CancellationToken::new();
+    let thread_cancel = cancel.clone();
+    let spawned = std::thread::Builder::new()
+        .name("echo-hold-listener".to_string())
+        .spawn(move || {
+            let mut driver = echo::hotkey::HoldDriver::new();
+            let _ = echo::hotkey::run_hold_listener(&mut hold, &thread_cancel, move |edge| {
+                if driver
+                    .on_edge(edge, echo::rec::session_active())
+                    .is_some()
+                {
+                    let _ = start_recording_thread();
+                }
+            });
+        });
+    match spawned {
+        Ok(_) => {
+            *guard = Some(HoldListenerHandle { key, cancel });
+        }
+        Err(err) => eprintln!("hold listener: {err}"),
+    }
+}
+
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -858,6 +943,9 @@ fn try_cli(args: &[String]) -> Option<i32> {
 }
 
 fn rec(args: &[String]) -> i32 {
+    // Bare CLI process: failures must reach the user where they are looking,
+    // which is not the journal. The GUI's in-process sessions leave this off.
+    echo::notify::enable_failure_notifications();
     match args {
         [arg] if arg == "--once" => echo::rec::run_rec_once(),
         [arg] if arg == "--toggle" => echo::rec::run_rec_toggle(),
@@ -954,6 +1042,7 @@ fn run_desktop() {
                 }
             };
             app.manage(AtomicBool::new(tray_ready));
+            reconcile_hold_listener();
             if let Ok(path) = std::env::current_exe().and_then(|path| path.canonicalize()) {
                 if let Ok(identity) = echo::upgrade::file_identity(&path) {
                     app.manage(UpgradeWatch { path, identity });
@@ -1021,7 +1110,7 @@ mod settings_tests {
             engine: Some(EngineChoice::Fake),
             ..Config::default()
         };
-        let settings = settings_from(&env, &file);
+        let settings = settings_from(&env, &file, "en");
         assert_eq!(settings.engine.value.as_deref(), Some("fake"));
         assert_eq!(settings.engine.effective, "whisper");
         assert_eq!(settings.engine.source, SettingSource::Env);
@@ -1077,7 +1166,7 @@ mod settings_tests {
             .save_to(&path)
             .unwrap();
         let loaded = Config::load_from(&path).unwrap();
-        let got = settings_from(&SettingsEnv::default(), &loaded);
+        let got = settings_from(&SettingsEnv::default(), &loaded, "en");
         assert_eq!(got.engine.value.as_deref(), Some("parakeet"));
         assert_eq!(got.engine.effective, "parakeet");
         assert_eq!(got.engine.source, SettingSource::File);
@@ -1101,7 +1190,7 @@ mod settings_tests {
 
     #[test]
     fn language_defaults_to_english_and_env_wins() {
-        let settings = settings_from(&SettingsEnv::default(), &Config::default());
+        let settings = settings_from(&SettingsEnv::default(), &Config::default(), "en");
         assert_eq!(settings.language.value, None);
         assert_eq!(settings.language.effective, "en");
         assert_eq!(settings.language.source, SettingSource::Default);
@@ -1116,7 +1205,7 @@ mod settings_tests {
             )),
             ..Config::default()
         };
-        let settings = settings_from(&env, &file);
+        let settings = settings_from(&env, &file, "en");
         assert_eq!(settings.language.value.as_deref(), Some("de"));
         assert_eq!(settings.language.effective, "auto");
         assert_eq!(settings.language.source, SettingSource::Env);
@@ -1125,7 +1214,7 @@ mod settings_tests {
             language: Some("klingon".into()),
             ..SettingsEnv::default()
         };
-        let settings = settings_from(&invalid, &file);
+        let settings = settings_from(&invalid, &file, "en");
         assert_eq!(settings.language.effective, "de");
         assert_eq!(settings.language.source, SettingSource::File);
     }
@@ -1140,7 +1229,7 @@ mod settings_tests {
             record_seconds: Some(12),
             ..Config::default()
         };
-        let settings = settings_from(&env, &file);
+        let settings = settings_from(&env, &file, "en");
         assert_eq!(settings.record_seconds.value, Some(12));
         assert_eq!(
             settings.record_seconds.effective,
@@ -1160,7 +1249,7 @@ mod settings_tests {
                 hud: Some(false),
                 ..Config::default()
             };
-            let settings = settings_from(&env, &file);
+            let settings = settings_from(&env, &file, "en");
             assert_eq!(settings.hud.value, Some(false), "token {token}");
             assert!(settings.hud.effective, "token {token}");
             assert_eq!(settings.hud.source, SettingSource::Env, "token {token}");
@@ -1182,7 +1271,7 @@ mod settings_tests {
                 hud: Some(token.into()),
                 ..SettingsEnv::default()
             };
-            let settings = settings_from(&env, &enabled);
+            let settings = settings_from(&env, &enabled, "en");
             assert!(!settings.hud.effective, "token {token}");
             assert_eq!(settings.hud.source, SettingSource::Env, "token {token}");
         }
@@ -1190,11 +1279,11 @@ mod settings_tests {
             hud: Some("maybe".into()),
             ..SettingsEnv::default()
         };
-        assert!(!settings_from(&unknown, &disabled).hud.effective);
+        assert!(!settings_from(&unknown, &disabled, "en").hud.effective);
         assert_eq!(
-            settings_from(&unknown, &disabled).hud.source,
+            settings_from(&unknown, &disabled, "en").hud.source,
             SettingSource::File
         );
-        assert!(settings_from(&unknown, &enabled).hud.effective);
+        assert!(settings_from(&unknown, &enabled, "en").hud.effective);
     }
 }

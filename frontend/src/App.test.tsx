@@ -25,6 +25,7 @@ describe('Echo desktop shell', () => {
   beforeEach(async () => {
     resetPreviewSettings()
     localStorage.removeItem('echo-shortcut-bound')
+    localStorage.removeItem('echo-shortcut-verified-at')
     const actual = await vi.importActual<typeof import('./tauri')>('./tauri')
     vi.mocked(setSettings).mockReset()
     vi.mocked(setSettings).mockImplementation((settings) => actual.setSettings(settings))
@@ -58,13 +59,13 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Fake' }))
-    expect(await screen.findByText('Fake test engine', { selector: '.setting-line span' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Fake' })).toHaveAttribute('data-active', 'true')
-    expect((await getSettings()).engine).toEqual({ value: 'fake', effective: 'fake', source: 'file' })
+    fireEvent.click(await screen.findByText('Advanced'))
+    fireEvent.click(within(await screen.findByRole('group', { name: 'Cleanup' })).getByRole('button', { name: 'Off' }))
+    expect(within(await screen.findByRole('group', { name: 'Cleanup' })).getByRole('button', { name: 'Off' })).toHaveAttribute('data-active', 'true')
+    expect((await getSettings()).cleanup).toEqual({ value: 'off', effective: 'off', source: 'file' })
 
-    fireEvent.change(screen.getByLabelText('Hold key'), { target: { value: 'RightShift' } })
-    await waitFor(() => expect(screen.getByLabelText('Hold key')).toHaveValue('RightShift'))
+    fireEvent.change(screen.getByLabelText('Push-to-talk key'), { target: { value: 'RightShift' } })
+    await waitFor(() => expect(screen.getByLabelText('Push-to-talk key')).toHaveValue('RightShift'))
     expect((await getSettings()).holdKey).toEqual({
       value: 'RightShift',
       effective: 'RightShift',
@@ -76,17 +77,17 @@ describe('Echo desktop shell', () => {
     const defaults = await getSettings()
     seedPreviewSettings({
       ...defaults,
-      engine: { value: null, effective: 'fake', source: 'env' },
+      cleanup: { value: null, effective: 'off', source: 'env' },
     })
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    const fake = await screen.findByRole('button', { name: 'Fake' })
-    expect(fake).toBeDisabled()
-    expect(fake).toHaveAttribute('data-active', 'true')
-    expect(screen.getByText('ECHO_ENGINE')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Whisper' }))
-    expect((await getSettings()).engine.effective).toBe('fake')
+    const off = within(await screen.findByRole('group', { name: 'Cleanup' })).getByRole('button', { name: 'Off' })
+    expect(off).toBeDisabled()
+    expect(off).toHaveAttribute('data-active', 'true')
+    expect(screen.getByText('ECHO_CLEANUP')).toBeInTheDocument()
+    fireEvent.click(within(await screen.findByRole('group', { name: 'Cleanup' })).getByRole('button', { name: 'Rules' }))
+    expect((await getSettings()).cleanup.effective).toBe('off')
   })
 
   it('persists two rapid settings writes', async () => {
@@ -112,14 +113,15 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Fake' }))
+    fireEvent.click(await screen.findByText('Advanced'))
+    fireEvent.click(within(await screen.findByRole('group', { name: 'Cleanup' })).getByRole('button', { name: 'Off' }))
     await firstWriteStarted
-    fireEvent.change(screen.getByLabelText('Hold key'), { target: { value: 'RightShift' } })
+    fireEvent.change(screen.getByLabelText('Push-to-talk key'), { target: { value: 'RightShift' } })
     releaseFirst()
 
     await waitFor(async () => {
       const stored = await getSettings()
-      expect(stored.engine).toEqual({ value: 'fake', effective: 'fake', source: 'file' })
+      expect(stored.cleanup).toEqual({ value: 'off', effective: 'off', source: 'file' })
       expect(stored.holdKey).toEqual({
         value: 'RightShift',
         effective: 'RightShift',
@@ -133,9 +135,11 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Fake' }))
+    fireEvent.click(await screen.findByText('Advanced'))
+    const cleanup = await screen.findByRole('group', { name: 'Cleanup' })
+    fireEvent.click(within(cleanup).getByRole('button', { name: 'Off' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('could not write settings')
-    expect(screen.getByRole('button', { name: 'Fake' })).toHaveAttribute('data-active', 'false')
+    expect(within(cleanup).getByRole('button', { name: 'Off' })).toHaveAttribute('data-active', 'false')
   })
 
   it('lists preview microphones and persists a named choice', async () => {
@@ -186,17 +190,35 @@ describe('Echo desktop shell', () => {
     expect(await screen.findByText('Unavailable')).toBeInTheDocument()
   })
 
-  it('shows the model picker only when the engine is Whisper', async () => {
-    const defaults = await getSettings()
-    seedPreviewSettings({
-      ...defaults,
-      engine: { value: 'whisper', effective: 'whisper', source: 'file' },
+  it('hides the Fake engine from the selector by default', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await screen.findByRole('button', { name: 'Whisper' })
+    expect(screen.queryByRole('button', { name: 'Fake' })).not.toBeInTheDocument()
+  })
+
+  it('shows the Fake engine when the availability payload includes it', async () => {
+    const { listModels } = await import('./tauri')
+    const inventory = await listModels()
+    const { seedPreviewInventory } = await import('./tauri')
+    seedPreviewInventory({
+      ...inventory,
+      engines: [...inventory.engines, { id: 'fake', available: true, reason: null }],
     })
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(await screen.findByRole('button', { name: 'Fake' })).toBeInTheDocument()
+  })
 
-    const picker = await screen.findByLabelText('Model')
+  it('shows the model picker while Whisper runs, and hides it for Parakeet', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+
+    // Default fixture: engine auto with Whisper available, so the picker shows.
+    const picker = await screen.findByLabelText('Model quality')
     expect(screen.getByRole('option', { name: 'Auto · best installed' })).toBeInTheDocument()
     expect(
       screen.getByRole('option', { name: 'small · multilingual · full precision · 466 MiB' }),
@@ -214,8 +236,33 @@ describe('Echo desktop shell', () => {
       })
     })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Parakeet' }))
-    await waitFor(() => expect(screen.queryByLabelText('Model')).not.toBeInTheDocument())
+    // The engine override lives in Advanced.
+    fireEvent.click(await screen.findByText('Advanced'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Parakeet' }))
+    await waitFor(() => expect(screen.queryByLabelText('Model quality')).not.toBeInTheDocument())
+  })
+
+  it('pins the General surface and keeps Advanced collapsed until asked', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+
+    // General: the four decisions that matter, plus shortcut and theme.
+    await screen.findByLabelText('Microphone')
+    await screen.findByLabelText('Language')
+    await screen.findByLabelText('Model quality')
+    await screen.findByLabelText('Push-to-talk key')
+    expect(screen.getByRole('group', { name: 'Application theme' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Test shortcut' })).toBeInTheDocument()
+
+    // Advanced is collapsed by default and expands on click. A details
+    // element keeps its children in the DOM; the open attribute is the state.
+    const advanced = document.querySelector('.advanced-section')!
+    expect(advanced).not.toHaveAttribute('open')
+    fireEvent.click(await screen.findByText('Advanced'))
+    expect(advanced).toHaveAttribute('open')
+    expect(await screen.findByRole('group', { name: 'Speech engine' })).toBeInTheDocument()
+    expect(screen.getByText('Resolved engine')).toBeInTheDocument()
   })
 
   it('marks an unavailable engine with its reason', async () => {
@@ -307,11 +354,57 @@ describe('Echo desktop shell', () => {
   })
 
   it('hides the detected-language chip when a language is pinned', async () => {
+    const defaults = await getSettings()
+    seedPreviewSettings({
+      ...defaults,
+      language: { value: 'en', effective: 'en', source: 'file' },
+    })
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     await screen.findByLabelText('Language')
     expect(screen.queryByText('de · German · p=0.96')).not.toBeInTheDocument()
+  })
+
+  it('offers to pin a confidently detected language, and pins it', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    // Default fixture: auto active, last run detected German at p=0.96.
+    const pin = await screen.findByRole('button', { name: 'Pin German for speed' })
+    fireEvent.click(pin)
+    await waitFor(async () => {
+      expect((await getSettings()).language).toEqual({
+        value: 'de',
+        effective: 'de',
+        source: 'file',
+      })
+    })
+  })
+
+  it('keeps the pin suggestion silent on low confidence', async () => {
+    const defaults = await getSettings()
+    seedPreviewSettings({
+      ...defaults,
+      language: { value: 'auto', effective: 'auto', source: 'file' },
+    })
+    seedPreviewStatus({
+      lastRun: {
+        engine: 'whisper-small',
+        binary: null,
+        modelPath: null,
+        multilingual: true,
+        vad: false,
+        inferMs: 900,
+        language: 'nl',
+        languageProbability: 0.31,
+      },
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await screen.findByText('nl · p=0.31')
+    expect(screen.queryByRole('button', { name: /Pin .* for speed/ })).not.toBeInTheDocument()
   })
 
   it('renders low detection confidence differently', async () => {
@@ -397,7 +490,7 @@ describe('Echo desktop shell', () => {
 
     // The installed offer renders no download button; uninstalled ones do.
     expect(await screen.findByText('Balanced, multilingual')).toBeInTheDocument()
-    expect(screen.getByText(/ggml-small\.bin · 465 MiB · ~852 MB memory · multilingual/)).toBeInTheDocument()
+    expect(screen.getByText(/465 MiB · ~852 MB memory · multilingual/)).toBeInTheDocument()
     expect(screen.getByText('https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin')).toBeInTheDocument()
     expect(screen.queryByText('Fast, English')).not.toBeInTheDocument()
 
@@ -442,8 +535,12 @@ describe('Echo desktop shell', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     const warning = await screen.findAllByText(/ggml-base\.en\.bin is English-only/)
     const warningRow = warning[0].closest('.setting-row')!
-    // The fix is a click, right at the point of failure.
-    fireEvent.click(within(warningRow as HTMLElement).getByRole('button', { name: 'Download' }))
+    // The fix is a click, right at the point of failure. The button renders
+    // once the async offer fetch resolves, later than the status-driven
+    // warning text, so the lookup must wait for it.
+    fireEvent.click(
+      await within(warningRow as HTMLElement).findByRole('button', { name: 'Download' }),
+    )
     expect(
       await within(warningRow as HTMLElement).findByRole('progressbar', {
         name: 'Downloading ggml-small.bin',
@@ -458,7 +555,7 @@ describe('Echo desktop shell', () => {
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     expect(await screen.findByText('Silence detection')).toBeInTheDocument()
-    expect(screen.getByText(/ggml-silero-v6\.2\.0\.bin · 864 KiB/)).toBeInTheDocument()
+    expect(screen.getByText(/864 KiB/)).toBeInTheDocument()
   })
 
   it('shows usage stats derived from history', async () => {
@@ -472,18 +569,47 @@ describe('Echo desktop shell', () => {
     expect(within(strip).getByText('day streak')).toBeInTheDocument()
   })
 
-  it('completes the setup checklist, shortcut by manual dismissal', async () => {
-    localStorage.removeItem('echo-shortcut-bound')
+  it('verifies the shortcut through a real session flip, never by assertion', async () => {
+    localStorage.removeItem('echo-shortcut-verified-at')
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     // Mic and engine are ready in the fixture; only the shortcut remains open.
     const checklist = await screen.findByLabelText('Finish setup')
     expect(within(checklist).getByText('Shortcut bound')).toBeInTheDocument()
-    const micItem = within(checklist).getByText('Microphone ready').closest('.checklist-item')
-    expect(micItem).toHaveAttribute('data-done', 'true')
-    fireEvent.click(within(checklist).getByRole('button', { name: 'I bound it' }))
+    expect(within(checklist).queryByRole('button', { name: 'I bound it' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Test shortcut' }))
+    expect(await screen.findByText('Listening… press your shortcut')).toBeInTheDocument()
+
+    // The compositor binding spawns rec --toggle; the status poll sees it.
+    seedPreviewStatus({ phase: 'Recording', recording: true, recordingInProcess: false })
+    await waitFor(() => expect(localStorage.getItem('echo-shortcut-verified-at')).not.toBeNull())
+    expect(await screen.findByText(/Verified/)).toBeInTheDocument()
+
+    seedPreviewStatus({ phase: 'Idle', recording: false, recordingInProcess: false })
+    fireEvent.click(screen.getByRole('button', { name: 'Home' }))
+    // Everything is green, so the checklist has done its job and is gone.
     await waitFor(() => expect(screen.queryByLabelText('Finish setup')).not.toBeInTheDocument())
-    expect(localStorage.getItem('echo-shortcut-bound')).toBe('1')
+  })
+
+  it('leaves the shortcut unverified when no keypress arrives', async () => {
+    localStorage.removeItem('echo-shortcut-verified-at')
+    // shouldAdvanceTime keeps the app's status poll and waitFor working
+    // while the 10 s listener window is jumped over.
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      render(<App />)
+      await screen.findByRole('button', { name: 'Start recording' })
+      fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Test shortcut' }))
+      expect(await screen.findByText('Listening… press your shortcut')).toBeInTheDocument()
+      await vi.advanceTimersByTimeAsync(10_100)
+      expect(await screen.findByText('No keypress seen — check the binding')).toBeInTheDocument()
+      expect(localStorage.getItem('echo-shortcut-verified-at')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('lists the microphone step when the mic is not ready', async () => {
@@ -515,6 +641,25 @@ describe('Echo desktop shell', () => {
       )
       expect(heights.some((height) => height && height !== '15%')).toBe(true)
     })
+  })
+
+  it('shows the hold listener state, with the fix when permission is absent', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await screen.findByLabelText('Push-to-talk key')
+    expect(screen.getByText('Active')).toBeInTheDocument()
+  })
+
+  it('explains the input-group fix when evdev is unreadable', async () => {
+    seedPreviewStatus({ holdListener: 'needs-permission' })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await screen.findByLabelText('Push-to-talk key')
+    expect(
+      screen.getByText('Needs input group: sudo usermod -aG input $USER'),
+    ).toBeInTheDocument()
   })
 
   it('warns when a stale install shadows the running binary', async () => {

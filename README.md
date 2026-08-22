@@ -67,7 +67,7 @@ Compositor shortcuts and hold-to-talk use subcommands on the same binary:
 
 `echo-desktop rec --toggle` is intended for compositor shortcuts on Wayland. The first invocation starts recording; invoke it again to stop, transcribe, and insert at the focused cursor. It stops automatically after 60 seconds if the second invocation never arrives.
 
-`echo-desktop rec --hold` waits for the hold key, records while it is down, and inserts on release, looping until you press Ctrl+C. The default key is Right Ctrl; set `ECHO_HOLD_KEY` to change it (for example `ECHO_HOLD_KEY=RightShift`). It reads keys from `/dev/input`, so add yourself to the input group first: `sudo usermod -aG input $USER`, then log out and back in. Without that access it exits with a hint and you should use the toggle instead.
+Hold-to-talk works from the desktop app with no terminal: while Echo is running, the hold key listener watches `/dev/input` and records while the key is down. The default key is Right Ctrl; change it in Settings or with `ECHO_HOLD_KEY` (for example `ECHO_HOLD_KEY=RightShift`). It reads keys from `/dev/input`, so add yourself to the input group first: `sudo usermod -aG input $USER`, then log out and back in; the Settings row says when that access is missing. `echo-desktop rec --hold` runs the same machinery as a terminal loop until Ctrl+C, for setups where the desktop app is not running.
 
 While recording, Echo shows a click-through capsule near the bottom of the screen with live microphone levels; it stays up through transcription and ends on a Done or Failed state. It never takes keyboard focus. The capsule is X11-only; on a Wayland session without XWayland there is no HUD, and the desktop app is the recording indicator. Set `ECHO_HUD=off` to disable it.
 
@@ -81,16 +81,13 @@ Install `echo-desktop`, then open **Settings → Keyboard → View and Customize
 
 Press the shortcut once to start recording and again to stop. GNOME keeps focus in the current application, so Echo inserts the transcript at its active cursor.
 
-Models live under `$XDG_CACHE_HOME/echo` (normally `~/.cache/echo`) or `ECHO_MODEL_DIR`. Echo does not download models or engine binaries. For real transcription, configure either:
+Models live under `$XDG_CACHE_HOME/echo` (normally `~/.cache/echo`) or `ECHO_MODEL_DIR`. Settings → Get a model downloads curated Whisper and VAD models over HTTPS with SHA-1 verification; a model you drop into the directory yourself is picked up the same way. Engine binaries are not downloaded: put `whisper-cli` (or `whisper-cpp`/`whisper`) on `PATH` for Whisper, or `sherpa-onnx-offline` (or `sherpa-onnx`) plus the `parakeet-tdt-0.6b-v3/` model files for Parakeet. `ECHO_ENGINE` forces an engine; the default is Auto, the first installed real engine.
 
-- Whisper: put `whisper-cli`, `whisper-cpp`, or `whisper` on `PATH`; put `ggml-base.en.bin`, `base.en.bin`, or `ggml-base.en.gguf` in the model directory; and set `ECHO_ENGINE=whisper`.
-- Parakeet: put `sherpa-onnx-offline` or `sherpa-onnx` on `PATH`; put `tokens.txt`, the encoder, decoder, and joiner ONNX files in `parakeet-tdt-0.6b-v3/` below the model directory; and set `ECHO_ENGINE=parakeet`.
-
-If the selected engine or its model is missing, recording ends with `EngineMissing`. With no `ECHO_ENGINE` setting, Echo picks the first installed real engine (Parakeet, then Whisper) and fails with `EngineMissing` when neither is installed. The deterministic fake engine runs only when you set `ECHO_ENGINE=fake`; it transcribes any non-silent audio as `claude code` and exists for smoke tests.
+If the selected engine or its model is missing, recording ends with `EngineMissing`. Auto picks the first installed real engine (Parakeet, then Whisper) and fails with `EngineMissing` when neither is installed. The deterministic fake engine runs only when you set `ECHO_ENGINE=fake`; it transcribes any non-silent audio as `claude code` and exists for smoke tests, so it stays out of the Settings selector unless `ECHO_SHOW_FAKE=1` is set.
 
 With no `ECHO_WHISPER_MODEL` setting, Whisper runs the best installed model: multilingual over `.en`, then the larger family. Pin one with `ECHO_WHISPER_MODEL=small` or the `whisper_model` config key.
 
-Echo transcribes in English by default. Set `ECHO_LANGUAGE=de` (or the `language` config key) to pin any of the 100 languages whisper.cpp supports, or `ECHO_LANGUAGE=auto` to detect the language at the cost of one extra encoder pass. An English-only (`.en`) model combined with a non-English language or `auto` is refused before recording, because whisper-cli would silently transcribe English and exit 0. Parakeet identifies its 25 supported languages automatically and reports none.
+With a multilingual model, Echo detects the language automatically. Set `ECHO_LANGUAGE=de` (or the `language` config key) to pin any of the 100 languages whisper.cpp supports; pinning skips detection's extra encoder pass, and after a confident auto-detection Settings offers to pin the detected language in one click. An English-only (`.en`) model pins English, the only thing it can do, and combining one with a non-English language or `auto` is refused before recording, because whisper-cli would silently transcribe English and exit 0. Parakeet identifies its 25 supported languages automatically and reports none.
 
 Dictionary and history live under `$XDG_DATA_HOME/echo`, or `$HOME/.local/share/echo`. Tests override that with `ECHO_DATA_DIR`. Use the desktop app's History and Dictionary views to browse and edit them.
 
