@@ -93,6 +93,9 @@ jobs:
       - name: Install pinned Tauri CLI
         run: cargo install tauri-cli --version "=$TAURI_CLI_VERSION" --locked
 
+      - name: Remove stale bundle outputs
+        run: rm -rf target/release/bundle
+
       - name: Bundle deb and rpm
         run: cargo tauri build --ci --bundles deb,rpm
 
@@ -181,6 +184,9 @@ jobs:
 
       - name: Install pinned Tauri CLI
         run: cargo install tauri-cli --version "=$TAURI_CLI_VERSION" --locked
+
+      - name: Remove stale bundle outputs
+        run: rm -rf target/release/bundle
 
       - name: Bundle AppImage
         run: cargo tauri build --ci --bundles appimage --verbose --config src-tauri/tauri.appimage.conf.json

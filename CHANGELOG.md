@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.4.1
+
+Release delivery hotfix for `v0.4.0`. The Linux shortcut and recording HUD improvements are unchanged; this release makes their packages reproducible, verified, and safely published.
+
+- Tauri frontend hooks now declare their working directory explicitly, so local builds and GitHub package builds resolve the same frontend instead of escaping the checkout.
+- Pull requests and the exact merged `main` commit build real Debian and RPM packages before a tag can be created; tags must match the workspace version, include changelog notes, and point to `main`.
+- Release publishing now runs with isolated write permission only after exactly one `.deb` and one `.rpm` pass embedded-version checks and all required artifacts are available.
+- The AppImage now launches its bundled `echo-desktop` binary instead of looking for `/usr/bin/echo-desktop`, and every AppImage must execute and report the expected version before upload.
+- Official GitHub actions and the Tauri CLI are pinned to known versions, concurrent stale builds are cancelled, and the maintainer release runbook documents preparation, publication, verification, and failure recovery.
+
 ## v0.4.0
 
 Linux shortcuts are now configurable, source-aware, and resilient across modern Wayland, X11, and older GNOME sessions.
