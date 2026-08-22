@@ -1,11 +1,22 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="Echo">
-  <rect width="1024" height="1024" rx="220" fill="#1c1c1c"/>
-  <g fill="#f3efe6">
-    <rect x="262" y="430" width="72" height="164" rx="36"/>
-    <rect x="370" y="350" width="72" height="324" rx="36"/>
-    <rect x="478" y="246" width="72" height="532" rx="36"/>
-    <rect x="586" y="350" width="72" height="324" rx="36"/>
-    <rect x="694" y="430" width="72" height="164" rx="36"/>
-    <circle cx="512" cy="830" r="36"/>
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#282828"/>
+      <stop offset="1" stop-color="#121212"/>
+    </linearGradient>
+    <linearGradient id="bars" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f8f1de"/>
+      <stop offset="1" stop-color="#e2a23a"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="220" fill="url(#tile)"/>
+  <rect x="4" y="4" width="1016" height="1016" rx="216" fill="none" stroke="#ffffff" stroke-opacity="0.10" stroke-width="8"/>
+  <g fill="url(#bars)">
+    <rect x="176" y="380" width="96" height="200" rx="48"/>
+    <rect x="320" y="290" width="96" height="380" rx="48"/>
+    <rect x="464" y="180" width="96" height="600" rx="48"/>
+    <rect x="608" y="290" width="96" height="380" rx="48"/>
+    <rect x="752" y="380" width="96" height="200" rx="48"/>
+    <circle cx="512" cy="856" r="48"/>
   </g>
 </svg>
