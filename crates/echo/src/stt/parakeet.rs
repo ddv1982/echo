@@ -3,11 +3,11 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Instant;
 
-use echo_core::{strip_nonspeech, Engine, EngineError, EngineId, Pcm16kMono, Transcript};
+use echo_core::{strip_nonspeech, Engine, EngineError, EngineId, Pcm16kMono, RunDetail, Transcript};
 
 use super::cache::ModelCache;
 use super::write_temp_wav;
-use crate::which::on_path;
+use crate::which::path_of;
 
 pub struct ParakeetEngine {
     cache: ModelCache,
@@ -43,10 +43,10 @@ impl ParakeetEngine {
         self.cache.parakeet_root()
     }
 
-    fn binary() -> Option<&'static str> {
+    pub(crate) fn binary() -> Option<PathBuf> {
         ["sherpa-onnx-offline", "sherpa-onnx"]
             .into_iter()
-            .find(|name| on_path(name))
+            .find_map(path_of)
     }
 }
 
@@ -67,7 +67,7 @@ impl Engine for ParakeetEngine {
         let joiner = first_existing(&root, &["joiner.int8.onnx", "joiner.onnx"])
             .ok_or(EngineError::Missing)?;
         let tokens = root.join("tokens.txt");
-        let status = Command::new(bin)
+        let status = Command::new(&bin)
             .arg(format!("--encoder={}", encoder.display()))
             .arg(format!("--decoder={}", decoder.display()))
             .arg(format!("--joiner={}", joiner.display()))
@@ -88,6 +88,10 @@ impl Engine for ParakeetEngine {
             language: None,
             audio_ms: pcm.duration_ms(),
             infer_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            detail: RunDetail {
+                binary: Some(bin.to_string_lossy().into_owned()),
+                ..RunDetail::default()
+            },
         })
     }
 }

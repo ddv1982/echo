@@ -81,32 +81,32 @@ pub fn run_rec_hold() -> i32 {
 fn run_record(mut stop: StopWhen) -> i32 {
     let mut session = Session::new();
     log_state(&session);
-    let _ = status::write_status(session.state(), None);
+    let _ = status::write_status(session.state(), None, None);
     if matches!(HotkeySource::detect(), HotkeySource::Cli) {
         eprintln!("{}", hotkey::evdev_permission_hint());
     }
     apply_edge(&mut session, HotkeyEvent::Down);
-    let _ = status::write_status(session.state(), None);
+    let _ = status::write_status(session.state(), None, None);
     let recording_hud = crate::ui::hud::RecordingHud::start();
     let capture = match capture_pcm(&mut stop) {
         Ok(capture) => capture,
         Err(reason) => {
             let _ = session.fail(reason);
             log_state(&session);
-            let _ = status::write_status(session.state(), None);
+            let _ = status::write_status(session.state(), None, None);
             return 1;
         }
     };
     drop(recording_hud);
     apply_edge(&mut session, HotkeyEvent::Up);
-    let _ = status::write_status(session.state(), None);
+    let _ = status::write_status(session.state(), None, None);
 
     let engine = match crate::stt::resolve_engine() {
         Some(engine) => engine,
         None => {
             let _ = session.fail(FailReason::EngineMissing);
             log_state(&session);
-            let _ = status::write_status(session.state(), None);
+            let _ = status::write_status(session.state(), None, None);
             eprintln!(
                 "no speech engine installed. install whisper-cli plus a ggml model or \
                  sherpa-onnx plus the parakeet model (see README), or set ECHO_ENGINE=fake \
@@ -118,13 +118,17 @@ fn run_record(mut stop: StopWhen) -> i32 {
     let transcript = match engine.transcribe(&capture.pcm) {
         Ok(t) => t,
         Err(err) => {
-            let reason = match err {
-                echo_core::EngineError::Missing => FailReason::EngineMissing,
-                echo_core::EngineError::Infer(_) => FailReason::EngineError,
+            let (reason, detail) = match &err {
+                echo_core::EngineError::Missing => (FailReason::EngineMissing, None),
+                // The engine's stderr says exactly what went wrong; keep it
+                // visible in the status file for the desktop app to show.
+                echo_core::EngineError::Infer(message) => {
+                    (FailReason::EngineError, Some(message.as_str()))
+                }
             };
             let _ = session.fail(reason);
             log_state(&session);
-            let _ = status::write_status(session.state(), None);
+            let _ = status::write_status(session.state(), None, detail);
             return 1;
         }
     };
@@ -174,14 +178,15 @@ fn run_record(mut stop: StopWhen) -> i32 {
             started_at,
             infer_ms: transcript.infer_ms,
             inject,
+            detail: transcript.detail.clone(),
         });
     }
     if failed {
         // Leave the Failed state visible; the next session overwrites it.
-        let _ = status::write_status(session.state(), None);
+        let _ = status::write_status(session.state(), None, None);
         return 1;
     }
-    let _ = status::write_status(session.state(), Some(&rewrite.text));
+    let _ = status::write_status(session.state(), Some(&rewrite.text), None);
     0
 }
 

@@ -4,14 +4,14 @@ use std::process::Command;
 use std::time::Instant;
 
 use echo_core::{
-    strip_nonspeech, Config, Engine, EngineError, EngineId, Pcm16kMono, Transcript,
+    strip_nonspeech, Config, Engine, EngineError, EngineId, Pcm16kMono, RunDetail, Transcript,
 };
 use serde::Deserialize;
 
 use super::cache::{ModelCache, ModelInventory};
 use super::write_temp_wav;
 use crate::settings::file_config;
-use crate::which::on_path;
+use crate::which::path_of;
 
 /// The model Echo runs: `ECHO_WHISPER_MODEL` wins over the config file, and
 /// with neither set the best installed model runs instead of a hardcoded
@@ -89,10 +89,10 @@ impl WhisperEngine {
             .find(|path| path.is_file())
     }
 
-    fn binary() -> Option<&'static str> {
+    pub(crate) fn binary() -> Option<PathBuf> {
         ["whisper-cli", "whisper-cpp", "whisper"]
             .into_iter()
-            .find(|name| on_path(name))
+            .find_map(path_of)
     }
 }
 
@@ -109,16 +109,19 @@ impl Engine for WhisperEngine {
         let started = Instant::now();
         let wav = write_temp_wav(pcm).map_err(EngineError::Infer)?;
         let vad = self.cache.vad_model();
-        let mut status = Command::new(bin)
+        let first = Command::new(&bin)
             .args(whisper_args(&model, &wav, vad.as_deref()))
             .output()
             .map_err(|err| EngineError::Infer(err.to_string()))?;
-        if !status.status.success() && vad.is_some() {
-            status = Command::new(bin)
+        let (status, vad_active) = if !first.status.success() && vad.is_some() {
+            let retry = Command::new(&bin)
                 .args(whisper_args(&model, &wav, None))
                 .output()
                 .map_err(|err| EngineError::Infer(err.to_string()))?;
-        }
+            (retry, false)
+        } else {
+            (first, vad.is_some())
+        };
         let _ = fs::remove_file(&wav);
         let parsed = finish_whisper(
             status.status.success(),
@@ -133,6 +136,12 @@ impl Engine for WhisperEngine {
             language: parsed.language,
             audio_ms: pcm.duration_ms(),
             infer_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            detail: RunDetail {
+                binary: Some(bin.to_string_lossy().into_owned()),
+                model_path: Some(model.to_string_lossy().into_owned()),
+                multilingual: Some(parsed.multilingual),
+                vad: Some(vad_active),
+            },
         })
     }
 }
@@ -165,7 +174,6 @@ struct WhisperParse {
     text: String,
     language: Option<String>,
     model: String,
-    #[allow(dead_code)]
     multilingual: bool,
 }
 

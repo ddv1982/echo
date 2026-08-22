@@ -106,6 +106,57 @@ fn parakeet_summary() -> (String, bool) {
     }
 }
 
+/// Whether an engine can run right now, with the reason when it cannot. The
+/// picker marks unavailable engines rather than hiding them, because "needs
+/// sherpa-onnx-offline on PATH" is actionable and a missing row is not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EngineAvailability {
+    pub id: &'static str,
+    pub available: bool,
+    pub reason: Option<String>,
+}
+
+#[must_use]
+pub fn engine_availability() -> Vec<EngineAvailability> {
+    let cache = ModelCache::from_env();
+    let whisper_reason = match (
+        WhisperEngine::binary().is_some(),
+        cache.inventory().whisper.is_empty(),
+    ) {
+        (true, false) => None,
+        (false, _) => Some("whisper-cli is not on PATH".to_string()),
+        (true, true) => Some(format!("no Whisper models in {}", cache.dir().display())),
+    };
+    let parakeet_reason = match (
+        ParakeetEngine::binary().is_some(),
+        cache.parakeet_root().is_some(),
+    ) {
+        (true, true) => None,
+        (false, _) => Some("sherpa-onnx-offline is not on PATH".to_string()),
+        (true, false) => Some(format!(
+            "the parakeet-tdt-0.6b-v3 model files in {} are incomplete",
+            cache.dir().display()
+        )),
+    };
+    vec![
+        EngineAvailability {
+            id: "whisper",
+            available: whisper_reason.is_none(),
+            reason: whisper_reason,
+        },
+        EngineAvailability {
+            id: "parakeet",
+            available: parakeet_reason.is_none(),
+            reason: parakeet_reason,
+        },
+        EngineAvailability {
+            id: "fake",
+            available: true,
+            reason: None,
+        },
+    ]
+}
+
 fn write_temp_wav(pcm: &Pcm16kMono) -> Result<PathBuf, String> {
     let path =
         std::env::temp_dir().join(format!("echo-stt-{}-{}.wav", std::process::id(), pcm.len()));

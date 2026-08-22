@@ -22,6 +22,7 @@ import {
   getHistory,
   getSettings,
   listInputDevices,
+  listModels,
   removeDictionaryEntry,
   setSettings,
   testInputDevice,
@@ -31,11 +32,13 @@ import type {
   AppStatus,
   DictionaryItem,
   HistoryItem,
+  ModelInventory,
   SettingSource,
   Settings as AppSettings,
   ThemeMode,
   View,
   InputDevice,
+  WhisperModelInfo,
 } from './types'
 
 const initialStatus: AppStatus = {
@@ -52,6 +55,9 @@ const initialStatus: AppStatus = {
   hudEnabled: true,
   maxRecordSeconds: 60,
   settingsPath: '',
+  version: '',
+  lastError: null,
+  lastRun: null,
 }
 
 const navigation: Array<{ id: View; label: string; icon: typeof Home }> = [
@@ -483,15 +489,19 @@ function SettingsView({
   const settingsRef = useRef<AppSettings | null>(null)
   const writeChainRef = useRef(Promise.resolve())
   const [devices, setDevices] = useState<InputDevice[]>([])
+  const [inventory, setInventory] = useState<ModelInventory | null>(null)
   const [micMeter, setMicMeter] = useState<number | 'unavailable' | null>(null)
   const [testingMic, setTestingMic] = useState(false)
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      void Promise.all([getSettings(), listInputDevices()]).then(([next, listed]) => {
-        setLocalSettings(next)
-        setDevices(listed)
-      })
+      void Promise.all([getSettings(), listInputDevices(), listModels()]).then(
+        ([next, listed, models]) => {
+          setLocalSettings(next)
+          setDevices(listed)
+          setInventory(models)
+        },
+      )
     }, 0)
     return () => window.clearTimeout(timer)
   }, [])
@@ -603,27 +613,81 @@ function SettingsView({
       <section className="panel settings-section">
         <SectionHeading title="Transcription" subtitle="No recorded audio leaves this machine." />
         {settings ? (
-          <div className="setting-row">
-            <div>
-              <strong>Speech engine</strong>
-              <span>{overrideHint(settings.engine.source, 'ECHO_ENGINE', 'Which local engine transcribes recordings.')}</span>
+          <>
+            <div className="setting-row">
+              <div>
+                <strong>Speech engine</strong>
+                <span>{overrideHint(settings.engine.source, 'ECHO_ENGINE', 'Which local engine transcribes recordings.')}</span>
+              </div>
+              <div className="segmented-control" role="group" aria-label="Speech engine">
+                {ENGINE_OPTIONS.map((option) => (
+                  <button
+                    type="button"
+                    key={option.value}
+                    data-active={settings.engine.effective === option.value}
+                    disabled={settings.engine.source === 'env'}
+                    onClick={() => void patch('engine', option.value)}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
             </div>
-            <div className="segmented-control" role="group" aria-label="Speech engine">
-              {ENGINE_OPTIONS.map((option) => (
-                <button
-                  type="button"
-                  key={option.value}
-                  data-active={settings.engine.effective === option.value}
-                  disabled={settings.engine.source === 'env'}
-                  onClick={() => void patch('engine', option.value)}
-                >
-                  {option.label}
-                </button>
+            {inventory?.engines
+              .filter((engine) => !engine.available && engine.id !== 'fake')
+              .map((engine) => (
+                <div className="setting-row" key={engine.id}>
+                  <span className="status-note" data-tone="attention">
+                    <span className="status-dot" data-tone="attention" aria-hidden="true" />
+                    {engine.id === 'parakeet' ? 'Parakeet' : 'Whisper'}: {engine.reason}
+                  </span>
+                </div>
               ))}
-            </div>
-          </div>
+            {settings.engine.effective === 'whisper' && inventory ? (
+              <label className="setting-row">
+                <div>
+                  <strong>Model</strong>
+                  <span>{overrideHint(settings.whisperModel.source, 'ECHO_WHISPER_MODEL', 'Auto runs the best installed model.')}</span>
+                </div>
+                <select
+                  aria-label="Model"
+                  value={settings.whisperModel.effective}
+                  disabled={settings.whisperModel.source === 'env'}
+                  onChange={(event) => void patch('whisperModel', event.target.value || null)}
+                >
+                  <option value="">Auto · best installed</option>
+                  {modelOptions(inventory.whisper, settings.whisperModel.effective).map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+          </>
         ) : null}
         <SettingLine label="Resolved engine" value={status.engineName} tone={status.engineReady ? 'ok' : 'attention'} />
+        {status.lastError ? (
+          <div className="setting-line">
+            <div><strong>Last failure</strong><span>{status.lastError}</span></div>
+            <span className="status-note" data-tone="attention">
+              <span className="status-dot" data-tone="attention" aria-hidden="true" />
+              Failed
+            </span>
+          </div>
+        ) : null}
+        {status.lastRun ? (
+          <>
+            <SettingLine label="Last run" value={`${status.lastRun.engine} · ${status.lastRun.inferMs} ms`} />
+            {status.lastRun.modelPath ? <SettingLine label="Model file" value={status.lastRun.modelPath} /> : null}
+            {status.lastRun.binary ? <SettingLine label="Binary" value={status.lastRun.binary} /> : null}
+            {status.lastRun.multilingual != null ? (
+              <SettingLine label="Multilingual" value={status.lastRun.multilingual ? 'Yes' : 'No'} />
+            ) : null}
+            {status.lastRun.vad != null ? (
+              <SettingLine label="VAD" value={status.lastRun.vad ? 'On' : 'Off'} />
+            ) : null}
+            <SettingLine label="Version" value={status.version} />
+          </>
+        ) : null}
       </section>
       <section className="panel settings-section">
         <SectionHeading title="Shortcut and recording" subtitle="Bind the suggested shortcut in your desktop's keyboard settings; Echo does not register it itself." />
@@ -689,6 +753,28 @@ function SettingsView({
       ) : null}
     </div>
   )
+}
+
+function modelOptions(models: WhisperModelInfo[], current: string) {
+  const options = models.map((model) => ({
+    value: model.name,
+    label: [
+      model.name,
+      model.multilingual ? 'multilingual' : 'English-only',
+      model.quantisation ?? 'full precision',
+      formatSize(model.sizeBytes),
+    ].join(' · '),
+  }))
+  if (current && !models.some((model) => model.name === current)) {
+    options.push({ value: current, label: `${current} · not on disk` })
+  }
+  return options
+}
+
+function formatSize(bytes: number) {
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GiB`
+  if (bytes >= 1024 * 1024) return `${Math.round(bytes / (1024 * 1024))} MiB`
+  return `${Math.round(bytes / 1024)} KiB`
 }
 
 function microphoneOptions(devices: InputDevice[], current: string) {

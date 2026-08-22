@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::engine::RunDetail;
 use crate::inject::InjectReport;
 use crate::paths::{history_path, set_aside_corrupt, write_atomic};
 use crate::types::EngineId;
@@ -18,6 +19,10 @@ pub struct HistoryRow {
     pub started_at: u64,
     pub infer_ms: u64,
     pub inject: InjectReport,
+    /// What the engine reported about the run. Absent on rows written before
+    /// the field existed.
+    #[serde(default)]
+    pub detail: RunDetail,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -103,6 +108,7 @@ mod tests {
                 inject: InjectReport::Typed {
                     backend: InjectBackend::Xdotool,
                 },
+                detail: RunDetail::default(),
             })
             .unwrap();
         let reloaded = History::load_from(&path).unwrap();
@@ -135,6 +141,7 @@ mod tests {
                 started_at: 1,
                 infer_ms: 2,
                 inject: InjectReport::ClipboardOnly,
+                detail: RunDetail::default(),
             })
             .unwrap();
         assert_eq!(History::load_from(&path).unwrap().rows().len(), 1);
