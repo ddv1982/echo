@@ -1,4 +1,21 @@
+use serde::{Deserialize, Serialize};
+
 use crate::types::{EngineId, Pcm16kMono};
+
+/// What actually ran on a transcription, observed from the engine rather than
+/// requested in configuration. Every field is optional: Parakeet has no model
+/// file or multilingual flag to report, and the fake engine has nothing at all.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct RunDetail {
+    #[serde(default)]
+    pub binary: Option<String>,
+    #[serde(default)]
+    pub model_path: Option<String>,
+    #[serde(default)]
+    pub multilingual: Option<bool>,
+    #[serde(default)]
+    pub vad: Option<bool>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Transcript {
@@ -7,6 +24,7 @@ pub struct Transcript {
     pub language: Option<String>,
     pub audio_ms: u64,
     pub infer_ms: u64,
+    pub detail: RunDetail,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

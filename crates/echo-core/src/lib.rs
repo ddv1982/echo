@@ -12,7 +12,7 @@ mod types;
 pub use cleanup::{Cleanup, CleanupError, CleanupMode, OffCleanup, RulesCleanup};
 pub use config::{resolve, Config, EngineChoice};
 pub use dictionary::{DictEntry, DictHit, Dictionary, Rewrite};
-pub use engine::{Engine, EngineError, Transcript};
+pub use engine::{Engine, EngineError, RunDetail, Transcript};
 pub use history::{History, HistoryRow};
 pub use inject::{FocusTarget, InjectBackend, InjectReport, Injector};
 pub use nonspeech::strip_nonspeech;

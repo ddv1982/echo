@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use echo_core::{Engine, EngineError, EngineId, Pcm16kMono, Transcript};
+use echo_core::{Engine, EngineError, EngineId, Pcm16kMono, RunDetail, Transcript};
 
 /// Deterministic stand-in. Silence is empty. Non-silent PCM yields `spoken`.
 pub struct FakeEngine {
@@ -44,6 +44,7 @@ impl Engine for FakeEngine {
             language: None,
             audio_ms: pcm.duration_ms(),
             infer_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            detail: RunDetail::default(),
         })
     }
 }

@@ -33,6 +33,23 @@ struct AppStatus {
     hud_enabled: bool,
     max_record_seconds: u64,
     settings_path: String,
+    version: String,
+    last_error: Option<String>,
+    last_run: Option<LastRun>,
+}
+
+/// What the last transcription actually ran, observed from the engine's own
+/// output and persisted on the history row. Distinct from the settings
+/// fields: one is a request, the other is an observation.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LastRun {
+    engine: String,
+    binary: Option<String>,
+    model_path: Option<String>,
+    multilingual: Option<bool>,
+    vad: Option<bool>,
+    infer_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,6 +162,16 @@ impl From<&DictEntry> for DictionaryItem {
 fn get_app_status() -> AppStatus {
     let status = echo::status::read();
     let health = health_snapshot();
+    let last_run = History::load()
+        .ok()
+        .and_then(|history| history.rows().last().map(|row| LastRun {
+            engine: row.engine.to_string(),
+            binary: row.detail.binary.clone(),
+            model_path: row.detail.model_path.clone(),
+            multilingual: row.detail.multilingual,
+            vad: row.detail.vad,
+            infer_ms: row.infer_ms,
+        }));
     AppStatus {
         recording: status.state == "Recording",
         phase: status.state,
@@ -159,6 +186,9 @@ fn get_app_status() -> AppStatus {
         hud_enabled: echo::ui::hud::enabled(),
         max_record_seconds: echo::rec::MAX_RECORD_SECONDS,
         settings_path: echo_core::config_path().to_string_lossy().into_owned(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        last_error: status.error,
+        last_run,
     }
 }
 
@@ -223,6 +253,70 @@ fn copy_text(text: String) -> Result<(), String> {
 #[tauri::command]
 fn get_settings() -> Result<Settings, String> {
     read_settings()
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WhisperModelDto {
+    name: String,
+    path: String,
+    family: String,
+    multilingual: bool,
+    quantisation: Option<String>,
+    size_bytes: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EngineAvailabilityDto {
+    id: String,
+    available: bool,
+    reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelInventoryDto {
+    whisper: Vec<WhisperModelDto>,
+    vad: Vec<String>,
+    parakeet: Option<String>,
+    engines: Vec<EngineAvailabilityDto>,
+}
+
+#[tauri::command]
+fn list_models() -> Result<ModelInventoryDto, String> {
+    let cache = echo::stt::ModelCache::from_env();
+    let inventory = cache.inventory();
+    Ok(ModelInventoryDto {
+        whisper: inventory
+            .whisper
+            .iter()
+            .map(|model| WhisperModelDto {
+                name: model.name.clone(),
+                path: model.path.to_string_lossy().into_owned(),
+                family: model.family.label().to_string(),
+                multilingual: model.multilingual,
+                quantisation: model.quantisation.clone(),
+                size_bytes: model.size_bytes,
+            })
+            .collect(),
+        vad: inventory
+            .vad
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect(),
+        parakeet: inventory
+            .parakeet
+            .map(|path| path.to_string_lossy().into_owned()),
+        engines: echo::stt::engine_availability()
+            .into_iter()
+            .map(|engine| EngineAvailabilityDto {
+                id: engine.id.to_string(),
+                available: engine.available,
+                reason: engine.reason,
+            })
+            .collect(),
+    })
 }
 
 #[tauri::command]
@@ -301,7 +395,7 @@ fn settings_from(env: &SettingsEnv, file: &echo_core::Config) -> Settings {
         whisper_model: setting_field(
             env.whisper_model.clone().filter(|name| !name.is_empty()),
             file.whisper_model.clone(),
-            "base.en".to_string(),
+            String::new(),
         ),
         cleanup: setting_field(
             env_cleanup,
@@ -553,6 +647,7 @@ fn run_desktop() {
             copy_text,
             get_settings,
             set_settings,
+            list_models,
             list_input_devices,
             test_input_device,
         ])

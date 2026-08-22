@@ -1,6 +1,13 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import App from './App'
-import { getSettings, resetPreviewSettings, seedPreviewMicTestError, seedPreviewSettings, setSettings } from './tauri'
+import {
+  getSettings,
+  resetPreviewSettings,
+  seedPreviewMicTestError,
+  seedPreviewSettings,
+  seedPreviewStatus,
+  setSettings,
+} from './tauri'
 
 vi.mock('./tauri', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./tauri')>()
@@ -172,5 +179,68 @@ describe('Echo desktop shell', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Test' }))
     expect(await screen.findByText('Unavailable')).toBeInTheDocument()
+  })
+
+  it('shows the model picker only when the engine is Whisper', async () => {
+    const defaults = await getSettings()
+    seedPreviewSettings({
+      ...defaults,
+      engine: { value: 'whisper', effective: 'whisper', source: 'file' },
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+
+    const picker = await screen.findByLabelText('Model')
+    expect(screen.getByRole('option', { name: 'Auto · best installed' })).toBeInTheDocument()
+    expect(
+      screen.getByRole('option', { name: 'small · multilingual · full precision · 466 MiB' }),
+    ).toBeInTheDocument()
+    expect(
+      screen.getByRole('option', { name: 'large-v3-turbo-q8_0 · multilingual · q8_0 · 834 MiB' }),
+    ).toBeInTheDocument()
+
+    fireEvent.change(picker, { target: { value: 'small' } })
+    await waitFor(async () => {
+      expect((await getSettings()).whisperModel).toEqual({
+        value: 'small',
+        effective: 'small',
+        source: 'file',
+      })
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Parakeet' }))
+    await waitFor(() => expect(screen.queryByLabelText('Model')).not.toBeInTheDocument())
+  })
+
+  it('marks an unavailable engine with its reason', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(
+      await screen.findByText('Parakeet: sherpa-onnx-offline is not on PATH'),
+    ).toBeInTheDocument()
+  })
+
+  it('renders the last-run readout from the fixture', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(await screen.findByText('whisper-small · 1038 ms')).toBeInTheDocument()
+    expect(screen.getByText('/home/user/.cache/echo/ggml-small.bin')).toBeInTheDocument()
+    expect(screen.getByText('/usr/local/bin/whisper-cli')).toBeInTheDocument()
+    expect(screen.getByText('Yes')).toBeInTheDocument()
+    expect(screen.getByText('0.1.0')).toBeInTheDocument()
+  })
+
+  it('surfaces engine stderr on failure', async () => {
+    seedPreviewStatus({
+      phase: 'Failed speech engine failed',
+      lastError: 'whisper-cli: ggml_init failed',
+    })
+    render(<App />)
+    await screen.findByText('Failed speech engine failed')
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(await screen.findByText('whisper-cli: ggml_init failed')).toBeInTheDocument()
   })
 })

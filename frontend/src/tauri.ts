@@ -1,5 +1,13 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { AppStatus, DictionaryItem, HistoryItem, InputDevice, SettingField, Settings } from './types'
+import type {
+  AppStatus,
+  DictionaryItem,
+  HistoryItem,
+  InputDevice,
+  ModelInventory,
+  SettingField,
+  Settings,
+} from './types'
 
 declare global {
   interface Window {
@@ -13,7 +21,7 @@ function richPreviewStatus(): AppStatus {
     lastTranscript: 'This is a test. This is a test.',
     recording: false,
     microphoneReady: true,
-    engineName: 'Whisper · base.en',
+    engineName: 'Whisper · small · VAD on',
     engineReady: true,
     injectionName: 'ydotool · Wayland',
     injectionReady: true,
@@ -22,6 +30,16 @@ function richPreviewStatus(): AppStatus {
     hudEnabled: true,
     maxRecordSeconds: 60,
     settingsPath: '/tmp/echo-preview/config.json',
+    version: '0.1.0',
+    lastError: null,
+    lastRun: {
+      engine: 'whisper-small',
+      binary: '/usr/local/bin/whisper-cli',
+      modelPath: '/home/user/.cache/echo/ggml-small.bin',
+      multilingual: true,
+      vad: true,
+      inferMs: 1038,
+    },
   }
 }
 
@@ -34,7 +52,7 @@ const previewHistory: HistoryItem[] = [
     id: '1787310400-11',
     text: 'This is a test. This is a test.',
     raw: 'This is a test. This is a test.',
-    engine: 'whisper-base.en',
+    engine: 'whisper-small',
     startedAt: 1787310400,
     inferMs: 998,
     injection: 'Typed · Ydotool',
@@ -43,7 +61,7 @@ const previewHistory: HistoryItem[] = [
     id: '1787310373-9',
     text: 'Open the project settings and update the release notes.',
     raw: 'open the project settings and update the release notes',
-    engine: 'whisper-base.en',
+    engine: 'whisper-small',
     startedAt: 1787310373,
     inferMs: 1038,
     injection: 'Typed · Ydotool',
@@ -52,12 +70,48 @@ const previewHistory: HistoryItem[] = [
     id: '1787310126-8',
     text: 'Claude Code.',
     raw: 'claude code',
-    engine: 'whisper-base.en',
+    engine: 'whisper-base.en-q5_1',
     startedAt: 1787310126,
     inferMs: 944,
     injection: 'Typed · Ydotool',
   },
 ]
+
+const previewInventory: ModelInventory = {
+  whisper: [
+    {
+      name: 'base.en-q5_1',
+      path: '/home/user/.cache/echo/ggml-base.en-q5_1.bin',
+      family: 'base',
+      multilingual: false,
+      quantisation: 'q5_1',
+      sizeBytes: 59_768_832,
+    },
+    {
+      name: 'small',
+      path: '/home/user/.cache/echo/ggml-small.bin',
+      family: 'small',
+      multilingual: true,
+      quantisation: null,
+      sizeBytes: 488_636_416,
+    },
+    {
+      name: 'large-v3-turbo-q8_0',
+      path: '/home/user/.cache/echo/ggml-large-v3-turbo-q8_0.bin',
+      family: 'large-v3-turbo',
+      multilingual: true,
+      quantisation: 'q8_0',
+      sizeBytes: 874_610_688,
+    },
+  ],
+  vad: ['/home/user/.cache/echo/ggml-silero-v6.2.0.bin'],
+  parakeet: null,
+  engines: [
+    { id: 'whisper', available: true, reason: null },
+    { id: 'parakeet', available: false, reason: 'sherpa-onnx-offline is not on PATH' },
+    { id: 'fake', available: true, reason: null },
+  ],
+}
 
 let previewDictionary: DictionaryItem[] = [
   { spoken: 'clawed code', written: 'Claude Code', createdAt: 1787310000 },
@@ -130,6 +184,15 @@ export function getSettings(): Promise<Settings> {
   return Promise.resolve(preview ? { ...previewSettings } : defaultPreviewSettings())
 }
 
+export function listModels(): Promise<ModelInventory> {
+  if (isTauri()) return invoke('list_models')
+  return Promise.resolve(
+    preview
+      ? { ...previewInventory }
+      : { whisper: [], vad: [], parakeet: null, engines: [] },
+  )
+}
+
 export function setSettings(settings: Settings): Promise<Settings> {
   if (isTauri()) return invoke('set_settings', { settings })
   const next = projectPreviewSettings(settings)
@@ -149,6 +212,10 @@ export function seedPreviewSettings(settings: Settings) {
 
 export function seedPreviewMicTestError(message: string) {
   previewMicTestError = message
+}
+
+export function seedPreviewStatus(status: Partial<AppStatus>) {
+  previewStatus = { ...previewStatus, ...status }
 }
 
 export function resetPreviewSettings() {
@@ -177,7 +244,7 @@ export function testInputDevice(name: string | null): Promise<number> {
 function defaultPreviewSettings(): Settings {
   return projectPreviewSettings({
     engine: { value: null, effective: 'auto', source: 'default' },
-    whisperModel: { value: null, effective: 'base.en', source: 'default' },
+    whisperModel: { value: null, effective: '', source: 'default' },
     cleanup: { value: null, effective: 'rules', source: 'default' },
     hud: { value: null, effective: true, source: 'default' },
     holdKey: { value: null, effective: 'RightCtrl', source: 'default' },
@@ -193,7 +260,7 @@ function projectPreviewSettings(settings: Settings): Settings {
       : Math.min(60, Math.max(1, settings.recordSeconds.value))
   return {
     engine: previewField(settings.engine.value, 'auto'),
-    whisperModel: previewField(settings.whisperModel.value, 'base.en'),
+    whisperModel: previewField(settings.whisperModel.value, ''),
     cleanup: previewField(settings.cleanup.value, 'rules'),
     hud: previewField(settings.hud.value, true),
     holdKey: previewField(settings.holdKey.value, 'RightCtrl'),
@@ -213,7 +280,7 @@ function previewField<T>(value: T | null, fallback: T): SettingField<T> {
 function applyPreviewStatus(settings: Settings) {
   const engineNames: Record<string, string> = {
     auto: 'Auto · first installed engine',
-    whisper: 'Whisper · base.en',
+    whisper: 'Whisper · small · VAD on',
     parakeet: 'Parakeet · tdt-0.6b-v3',
     fake: 'Fake test engine',
   }
@@ -245,5 +312,8 @@ function initialPreviewStatus(): AppStatus {
     hudEnabled: true,
     maxRecordSeconds: 60,
     settingsPath: '/tmp/echo-preview/config.json',
+    version: '0.1.0',
+    lastError: null,
+    lastRun: null,
   }
 }

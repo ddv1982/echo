@@ -8,6 +8,9 @@ use echo_core::{status_path, write_atomic, SessionState};
 pub struct Status {
     pub state: String,
     pub last: Option<String>,
+    /// Engine stderr from a failed session, so the desktop app can show what
+    /// the engine actually said instead of "speech engine failed".
+    pub error: Option<String>,
 }
 
 impl Status {
@@ -16,6 +19,7 @@ impl Status {
         Self {
             state: "Idle".to_string(),
             last: None,
+            error: None,
         }
     }
 }
@@ -34,11 +38,11 @@ pub fn state_name(state: SessionState) -> String {
 
 /// Persist the session state for other processes. The file carries the
 /// writer's pid so readers can spot a session whose process died.
-pub fn write_status(state: SessionState, last: Option<&str>) -> Result<(), String> {
-    write_atomic(&status_path(), render(state, last).as_bytes())
+pub fn write_status(state: SessionState, last: Option<&str>, error: Option<&str>) -> Result<(), String> {
+    write_atomic(&status_path(), render(state, last, error).as_bytes())
 }
 
-fn render(state: SessionState, last: Option<&str>) -> String {
+fn render(state: SessionState, last: Option<&str>, error: Option<&str>) -> String {
     let mut body = format!("state={}\npid={}\n", state_name(state), std::process::id());
     if let Some(text) = last {
         // The file is line-oriented; collapse newlines so a multiline
@@ -46,6 +50,12 @@ fn render(state: SessionState, last: Option<&str>) -> String {
         let text = text.replace(['\r', '\n'], " ");
         body.push_str("last=");
         body.push_str(text.trim());
+        body.push('\n');
+    }
+    if let Some(detail) = error {
+        let detail = detail.replace(['\r', '\n'], " ");
+        body.push_str("error=");
+        body.push_str(detail.trim());
         body.push('\n');
     }
     body
@@ -73,14 +83,18 @@ fn parse(raw: &str, alive: impl Fn(&str) -> bool) -> Status {
     let last = field("last=")
         .filter(|text| !text.trim().is_empty())
         .map(str::to_string);
+    let error = field("error=")
+        .filter(|text| !text.trim().is_empty())
+        .map(str::to_string);
     let active = state != "Idle" && !state.starts_with("Failed");
     if active && !field("pid=").map(alive).unwrap_or(false) {
         return Status {
             state: "Idle".to_string(),
             last,
+            error,
         };
     }
-    Status { state, last }
+    Status { state, last, error }
 }
 
 fn pid_alive(pid: &str) -> bool {
@@ -127,11 +141,28 @@ mod tests {
 
     #[test]
     fn multiline_transcript_stays_on_the_last_line() {
-        let body = render(SessionState::Idle, Some("first line.\r\nsecond line."));
+        let body = render(SessionState::Idle, Some("first line.\r\nsecond line."), None);
         let status = parse(&body, |_| false);
         assert_eq!(status.state, "Idle");
         assert_eq!(status.last.as_deref(), Some("first line.  second line."));
         // No unparsed stray lines besides state, pid, and last.
         assert_eq!(body.lines().count(), 3);
+    }
+
+    #[test]
+    fn engine_error_detail_survives_a_failed_state() {
+        let body = render(
+            SessionState::Failed {
+                reason: echo_core::FailReason::EngineError,
+            },
+            None,
+            Some("whisper-cli: failed to load model\nggml_init failed"),
+        );
+        let status = parse(&body, |_| false);
+        assert_eq!(status.state, "Failed speech engine failed");
+        assert_eq!(
+            status.error.as_deref(),
+            Some("whisper-cli: failed to load model ggml_init failed")
+        );
     }
 }

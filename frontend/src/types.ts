@@ -37,6 +37,40 @@ export interface AppStatus {
   hudEnabled: boolean
   maxRecordSeconds: number
   settingsPath: string
+  version: string
+  lastError: string | null
+  lastRun: LastRun | null
+}
+
+export interface LastRun {
+  engine: string
+  binary: string | null
+  modelPath: string | null
+  multilingual: boolean | null
+  vad: boolean | null
+  inferMs: number
+}
+
+export interface WhisperModelInfo {
+  name: string
+  path: string
+  family: string
+  multilingual: boolean
+  quantisation: string | null
+  sizeBytes: number
+}
+
+export interface EngineAvailability {
+  id: string
+  available: boolean
+  reason: string | null
+}
+
+export interface ModelInventory {
+  whisper: WhisperModelInfo[]
+  vad: string[]
+  parakeet: string | null
+  engines: EngineAvailability[]
 }
 
 export interface HistoryItem {
