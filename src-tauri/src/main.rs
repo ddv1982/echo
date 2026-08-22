@@ -1,17 +1,19 @@
 use std::env;
+use std::collections::HashMap;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use echo::audio::AudioCapture;
 use echo::inject::{Pasteboard, SysClipboard};
+use echo::stt::fetch::{self, DownloadStage};
 use echo_core::{DictEntry, Dictionary, History};
 use serde::{Deserialize, Serialize};
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{Manager, WindowEvent};
+use tauri::{Emitter, Manager, WindowEvent};
 
 /// Keyboard binding the README recommends. Echo never registers it; the
 /// desktop environment owns global shortcuts.
@@ -281,6 +283,117 @@ struct LanguageOptionsDto {
     /// The English-only model's filename when mode is "english".
     model: Option<String>,
     options: Vec<LanguageOptionDto>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelOfferDto {
+    id: String,
+    label: String,
+    filename: String,
+    url: String,
+    size_bytes: u64,
+    runtime_mb: Option<u32>,
+    multilingual: bool,
+    installed: bool,
+}
+
+#[tauri::command]
+fn list_model_offers() -> Vec<ModelOfferDto> {
+    let cache = echo::stt::ModelCache::from_env();
+    fetch::OFFERS
+        .iter()
+        .map(|offer| ModelOfferDto {
+            id: offer.id.to_string(),
+            label: offer.label.to_string(),
+            filename: offer.filename.to_string(),
+            url: offer.url.to_string(),
+            size_bytes: offer.size_bytes,
+            runtime_mb: offer.runtime_mb,
+            multilingual: offer.multilingual,
+            installed: cache.path(offer.filename).is_file(),
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DownloadProgressDto {
+    id: String,
+    received: u64,
+    total: u64,
+    /// "downloading", "verifying", "done", "failed", or "cancelled".
+    stage: String,
+    error: Option<String>,
+}
+
+static DOWNLOADS: Mutex<Option<HashMap<String, Arc<AtomicBool>>>> = Mutex::new(None);
+
+#[tauri::command]
+fn download_model(id: String, app: tauri::AppHandle) -> Result<(), String> {
+    let offer = fetch::offer(&id).ok_or_else(|| format!("unknown model offer {id}"))?;
+    let cancel = Arc::new(AtomicBool::new(false));
+    DOWNLOADS
+        .lock()
+        .expect("downloads lock")
+        .get_or_insert_with(HashMap::new)
+        .insert(id.clone(), cancel.clone());
+    std::thread::Builder::new()
+        .name(format!("echo-download-{id}"))
+        .spawn(move || {
+            let dir = echo::stt::ModelCache::from_env().dir().to_path_buf();
+            let emit = |stage: &str, received: u64, total: u64, error: Option<String>| {
+                let _ = app.emit(
+                    "model-download-progress",
+                    DownloadProgressDto {
+                        id: id.clone(),
+                        received,
+                        total,
+                        stage: stage.to_string(),
+                        error,
+                    },
+                );
+            };
+            let result = fetch::download(
+                offer,
+                &dir,
+                |progress| {
+                    let stage = match progress.stage {
+                        DownloadStage::Downloading => "downloading",
+                        DownloadStage::Verifying => "verifying",
+                        DownloadStage::Done => "done",
+                    };
+                    emit(stage, progress.received, progress.total, None);
+                },
+                &cancel,
+            );
+            match result {
+                Ok(_) => emit("done", offer.size_bytes, offer.size_bytes, None),
+                Err(fetch::FetchError::Cancelled) => emit("cancelled", 0, offer.size_bytes, None),
+                Err(err) => emit("failed", 0, offer.size_bytes, Some(err.to_string())),
+            }
+            DOWNLOADS
+                .lock()
+                .expect("downloads lock")
+                .as_mut()
+                .map(|active| active.remove(&id));
+        })
+        .map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn cancel_download(id: String) -> bool {
+    DOWNLOADS
+        .lock()
+        .expect("downloads lock")
+        .as_ref()
+        .and_then(|active| active.get(&id))
+        .map(|cancel| {
+            cancel.store(true, Ordering::Relaxed);
+            true
+        })
+        .unwrap_or(false)
 }
 
 #[tauri::command]
@@ -737,6 +850,9 @@ fn run_desktop() {
             set_settings,
             list_models,
             list_languages,
+            list_model_offers,
+            download_model,
+            cancel_download,
             list_input_devices,
             test_input_device,
         ])

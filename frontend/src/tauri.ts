@@ -1,11 +1,14 @@
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import type {
   AppStatus,
   DictionaryItem,
+  DownloadProgress,
   HistoryItem,
   InputDevice,
   LanguageOptions,
   ModelInventory,
+  ModelOffer,
   SettingField,
   Settings,
 } from './types'
@@ -108,7 +111,7 @@ const previewInventory: ModelInventory = {
       sizeBytes: 874_610_688,
     },
   ],
-  vad: ['/home/user/.cache/echo/ggml-silero-v6.2.0.bin'],
+  vad: [],
   parakeet: null,
   engines: [
     { id: 'whisper', available: true, reason: null },
@@ -225,6 +228,113 @@ export function seedPreviewLanguages(languages: LanguageOptions) {
   previewLanguages = languages
 }
 
+function defaultPreviewOffers(): ModelOffer[] {
+  return [
+    {
+      id: 'base-en-q5_1',
+      label: 'Fast, English',
+      filename: 'ggml-base.en-q5_1.bin',
+      url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q5_1.bin',
+      sizeBytes: 59_721_011,
+      runtimeMb: 388,
+      multilingual: false,
+      installed: true,
+    },
+    {
+      id: 'small',
+      label: 'Balanced, multilingual',
+      filename: 'ggml-small.bin',
+      url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin',
+      sizeBytes: 487_601_967,
+      runtimeMb: 852,
+      multilingual: true,
+      installed: false,
+    },
+    {
+      id: 'large-v3-turbo-q5_0',
+      label: 'Best, multilingual',
+      filename: 'ggml-large-v3-turbo-q5_0.bin',
+      url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin',
+      sizeBytes: 574_041_195,
+      runtimeMb: null,
+      multilingual: true,
+      installed: false,
+    },
+    {
+      id: 'silero-vad',
+      label: 'Silence detection',
+      filename: 'ggml-silero-v6.2.0.bin',
+      url: 'https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin',
+      sizeBytes: 885_098,
+      runtimeMb: null,
+      multilingual: false,
+      installed: false,
+    },
+  ]
+}
+
+let previewOffers: ModelOffer[] = defaultPreviewOffers()
+
+const previewDownloadListeners = new Set<(progress: DownloadProgress) => void>()
+const previewDownloadTimers = new Map<string, Array<ReturnType<typeof setTimeout>>>()
+
+export function listModelOffers(): Promise<ModelOffer[]> {
+  if (isTauri()) return invoke('list_model_offers')
+  return Promise.resolve(preview ? previewOffers.map((offer) => ({ ...offer })) : [])
+}
+
+export function downloadModel(id: string): Promise<void> {
+  if (isTauri()) return invoke('download_model', { id })
+  if (!preview) return Promise.resolve()
+  const offer = previewOffers.find((candidate) => candidate.id === id)
+  if (!offer) return Promise.reject(new Error(`unknown model offer ${id}`))
+  const emit = (stage: DownloadProgress['stage'], received: number, error: string | null = null) => {
+    const progress: DownloadProgress = { id, received, total: offer.sizeBytes, stage, error }
+    previewDownloadListeners.forEach((listener) => listener(progress))
+  }
+  emit('downloading', 0)
+  const midway = setTimeout(() => emit('downloading', Math.floor(offer.sizeBytes / 2)), 150)
+  const verifying = setTimeout(() => emit('verifying', offer.sizeBytes), 300)
+  const done = setTimeout(() => {
+    previewOffers = previewOffers.map((candidate) =>
+      candidate.id === id ? { ...candidate, installed: true } : candidate,
+    )
+    emit('done', offer.sizeBytes)
+  }, 450)
+  previewDownloadTimers.set(id, [midway, verifying, done])
+  return Promise.resolve()
+}
+
+export function cancelDownload(id: string): Promise<boolean> {
+  if (isTauri()) return invoke('cancel_download', { id })
+  if (preview) {
+    const timers = previewDownloadTimers.get(id)
+    if (timers) {
+      timers.forEach(clearTimeout)
+      previewDownloadTimers.delete(id)
+      previewDownloadListeners.forEach((listener) =>
+        listener({ id, received: 0, total: 0, stage: 'cancelled', error: null }),
+      )
+      return Promise.resolve(true)
+    }
+  }
+  return Promise.resolve(false)
+}
+
+export function onDownloadProgress(
+  handler: (progress: DownloadProgress) => void,
+): Promise<() => void> {
+  if (isTauri()) {
+    return listen<DownloadProgress>('model-download-progress', (event) => handler(event.payload))
+  }
+  previewDownloadListeners.add(handler)
+  return Promise.resolve(() => previewDownloadListeners.delete(handler))
+}
+
+export function seedPreviewOffers(offers: ModelOffer[]) {
+  previewOffers = offers
+}
+
 export function setSettings(settings: Settings): Promise<Settings> {
   if (isTauri()) return invoke('set_settings', { settings })
   const next = projectPreviewSettings(settings)
@@ -255,6 +365,9 @@ export function resetPreviewSettings() {
   previewStatus = richPreviewStatus()
   previewMicTestError = null
   previewLanguages = defaultPreviewLanguages()
+  previewOffers = defaultPreviewOffers()
+  previewDownloadTimers.forEach((timers) => timers.forEach(clearTimeout))
+  previewDownloadTimers.clear()
 }
 
 const previewDevices: InputDevice[] = [

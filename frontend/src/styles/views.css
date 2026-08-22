@@ -515,3 +515,25 @@
   .dictionary-row button { grid-column: 2; grid-row: 1 / span 2; }
   .setting-row { align-items: flex-start; flex-direction: column; }
 }
+
+.offer-url {
+  color: hsl(var(--text-tertiary));
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+
+.download-track {
+  width: 9rem;
+  height: 0.375rem;
+  border-radius: var(--radius-pill);
+  background: hsl(var(--surface-raised));
+  overflow: hidden;
+}
+
+.download-fill {
+  height: 100%;
+  border-radius: var(--radius-pill);
+  background: hsl(var(--accent));
+  transition: width var(--duration-fast) var(--ease-out);
+}

@@ -1,9 +1,10 @@
 mod cache;
 mod fake;
+pub mod fetch;
 mod parakeet;
 mod whisper;
 
-pub use cache::ModelCache;
+pub use cache::{InstalledModel, ModelCache, ModelInventory, WhisperFamily};
 pub use fake::FakeEngine;
 pub use parakeet::ParakeetEngine;
 pub use whisper::WhisperEngine;

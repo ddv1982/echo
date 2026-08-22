@@ -89,6 +89,25 @@ export interface LanguageOptions {
   options: LanguageOption[]
 }
 
+export interface ModelOffer {
+  id: string
+  label: string
+  filename: string
+  url: string
+  sizeBytes: number
+  runtimeMb: number | null
+  multilingual: boolean
+  installed: boolean
+}
+
+export interface DownloadProgress {
+  id: string
+  received: number
+  total: number
+  stage: 'downloading' | 'verifying' | 'done' | 'failed' | 'cancelled'
+  error: string | null
+}
+
 export interface HistoryItem {
   id: string
   text: string
