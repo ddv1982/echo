@@ -4,6 +4,8 @@ mod dictionary;
 mod engine;
 mod history;
 mod inject;
+mod language;
+mod language_table;
 mod nonspeech;
 mod paths;
 mod session;
@@ -14,6 +16,7 @@ pub use config::{resolve, Config, EngineChoice};
 pub use dictionary::{DictEntry, DictHit, Dictionary, Rewrite};
 pub use engine::{Engine, EngineError, RunDetail, Transcript};
 pub use history::{History, HistoryRow};
+pub use language::{Language, LanguageChoice, PARAKEET_LANGUAGES};
 pub use inject::{FocusTarget, InjectBackend, InjectReport, Injector};
 pub use nonspeech::strip_nonspeech;
 pub use paths::{
