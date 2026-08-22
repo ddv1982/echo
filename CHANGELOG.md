@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.2.0-alpha.1
+
+Corrected release of the identity, language, model, HUD, and UI work first published as `v0.1.0-alpha.2`.
+
+- Package metadata now reports version `0.2.0`, so Debian and RPM installers recognize this build as newer than `v0.1.0-alpha.1`.
+- The in-app transparency panel now reports `0.2.0`.
+- Includes the redesigned app and tray icons, Whisper model and language controls, guided downloads, real-level recording HUD, and desktop UI redesign from `v0.1.0-alpha.2`.
+
 ## v0.1.0-alpha.2
 
 Second Linux alpha of Echo. A redesigned icon, Whisper model and language choice, guided model downloads, a truthful recording HUD, and a polished desktop window.

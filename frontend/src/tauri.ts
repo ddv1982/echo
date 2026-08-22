@@ -34,7 +34,7 @@ function richPreviewStatus(): AppStatus {
     hudEnabled: true,
     maxRecordSeconds: 60,
     settingsPath: '/tmp/echo-preview/config.json',
-    version: '0.1.0',
+    version: '0.2.0',
     lastError: null,
     lastRun: {
       engine: 'whisper-small',
@@ -477,7 +477,7 @@ function initialPreviewStatus(): AppStatus {
     hudEnabled: true,
     maxRecordSeconds: 60,
     settingsPath: '/tmp/echo-preview/config.json',
-    version: '0.1.0',
+    version: '0.2.0',
     lastError: null,
     lastRun: null,
     languageWarning: null,
