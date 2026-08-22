@@ -88,6 +88,10 @@ Models live under `$XDG_CACHE_HOME/echo` (normally `~/.cache/echo`) or `ECHO_MOD
 
 If the selected engine or its model is missing, recording ends with `EngineMissing`. With no `ECHO_ENGINE` setting, Echo picks the first installed real engine (Parakeet, then Whisper) and fails with `EngineMissing` when neither is installed. The deterministic fake engine runs only when you set `ECHO_ENGINE=fake`; it transcribes any non-silent audio as `claude code` and exists for smoke tests.
 
+With no `ECHO_WHISPER_MODEL` setting, Whisper runs the best installed model: multilingual over `.en`, then the larger family. Pin one with `ECHO_WHISPER_MODEL=small` or the `whisper_model` config key.
+
+Echo transcribes in English by default. Set `ECHO_LANGUAGE=de` (or the `language` config key) to pin any of the 100 languages whisper.cpp supports, or `ECHO_LANGUAGE=auto` to detect the language at the cost of one extra encoder pass. An English-only (`.en`) model combined with a non-English language or `auto` is refused before recording, because whisper-cli would silently transcribe English and exit 0. Parakeet identifies its 25 supported languages automatically and reports none.
+
 Dictionary and history live under `$XDG_DATA_HOME/echo`, or `$HOME/.local/share/echo`. Tests override that with `ECHO_DATA_DIR`. Use the desktop app's History and Dictionary views to browse and edit them.
 
 Cleanup defaults to rules mode. It drops standalone um and uh, then capitalizes and adds ending punctuation. Set `ECHO_CLEANUP=off` to skip that pass. `ECHO_CLEANUP=local:binary` runs a stdin/stdout program on `PATH`.

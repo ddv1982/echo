@@ -137,7 +137,12 @@ fn run_record(mut stop: StopWhen) -> i32 {
         log_state(&session);
     }
     let dict = Dictionary::load().unwrap_or_else(|_| Dictionary::empty());
-    let rewrite = crate::cleanup::apply(&transcript.raw, &dict);
+    let language = crate::stt::language_now();
+    let rewrite = crate::cleanup::apply(
+        &transcript.raw,
+        &dict,
+        language.permits_english_rules(transcript.language.as_deref()),
+    );
     if session.begin_injecting().is_ok() {
         log_state(&session);
     }

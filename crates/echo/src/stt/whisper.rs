@@ -4,11 +4,12 @@ use std::process::Command;
 use std::time::Instant;
 
 use echo_core::{
-    strip_nonspeech, Config, Engine, EngineError, EngineId, Pcm16kMono, RunDetail, Transcript,
+    strip_nonspeech, Config, Engine, EngineError, EngineId, Language, LanguageChoice, Pcm16kMono,
+    RunDetail, Transcript,
 };
 use serde::Deserialize;
 
-use super::cache::{ModelCache, ModelInventory};
+use super::cache::{parse_whisper_filename, ModelCache, ModelInventory};
 use super::write_temp_wav;
 use crate::settings::file_config;
 use crate::which::path_of;
@@ -30,6 +31,7 @@ fn resolved_whisper_model(
 pub struct WhisperEngine {
     cache: ModelCache,
     model: Option<String>,
+    language: LanguageChoice,
 }
 
 impl Default for WhisperEngine {
@@ -42,12 +44,19 @@ impl WhisperEngine {
     #[must_use]
     pub fn new() -> Self {
         let cache = ModelCache::from_env();
+        let file = file_config();
         let model = resolved_whisper_model(
             std::env::var("ECHO_WHISPER_MODEL").ok(),
-            &file_config(),
+            &file,
             &cache.inventory(),
         );
-        Self { cache, model }
+        let language =
+            super::resolved_language(std::env::var("ECHO_LANGUAGE").ok().as_deref(), &file);
+        Self {
+            cache,
+            model,
+            language,
+        }
     }
 
     #[must_use]
@@ -55,7 +64,14 @@ impl WhisperEngine {
         Self {
             cache,
             model: Some(model.into()),
+            language: LanguageChoice::default(),
         }
+    }
+
+    #[must_use]
+    pub fn with_language(mut self, language: LanguageChoice) -> Self {
+        self.language = language;
+        self
     }
 
     /// True when both the runner binary and a model file are installed.
@@ -71,10 +87,17 @@ impl WhisperEngine {
     }
 
     fn model_file(&self) -> Option<PathBuf> {
+        self.selected_model().map(|(path, _)| path)
+    }
+
+    /// The model file plus its filename-derived multilingual flag. The flag
+    /// is a pre-flight guess used to refuse impossible language choices; the
+    /// authoritative value is `model.multilingual` in the engine's JSON.
+    fn selected_model(&self) -> Option<(PathBuf, bool)> {
         let model = self.model.as_deref()?;
         let inventory = self.cache.inventory();
         if let Some(installed) = inventory.whisper.iter().find(|m| m.name == model) {
-            return Some(installed.path.clone());
+            return Some((installed.path.clone(), installed.multilingual));
         }
         // A configured name outside the GGML convention still resolves, so a
         // fine-tuned file the scanner ignores remains usable when pinned.
@@ -87,6 +110,15 @@ impl WhisperEngine {
             .into_iter()
             .map(|name| self.cache.path(&name))
             .find(|path| path.is_file())
+            .map(|path| {
+                let multilingual = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .and_then(parse_whisper_filename)
+                    .map(|(_, _, multilingual, _)| multilingual)
+                    .unwrap_or(true);
+                (path, multilingual)
+            })
     }
 
     pub(crate) fn binary() -> Option<PathBuf> {
@@ -104,18 +136,19 @@ impl Engine for WhisperEngine {
     }
 
     fn transcribe(&self, pcm: &Pcm16kMono) -> Result<Transcript, EngineError> {
-        let model = self.model_file().ok_or(EngineError::Missing)?;
+        let (model, multilingual) = self.selected_model().ok_or(EngineError::Missing)?;
+        refuse_impossible_language(&model, multilingual, self.language)?;
         let bin = Self::binary().ok_or(EngineError::Missing)?;
         let started = Instant::now();
         let wav = write_temp_wav(pcm).map_err(EngineError::Infer)?;
         let vad = self.cache.vad_model();
         let first = Command::new(&bin)
-            .args(whisper_args(&model, &wav, vad.as_deref()))
+            .args(whisper_args(&model, &wav, vad.as_deref(), self.language))
             .output()
             .map_err(|err| EngineError::Infer(err.to_string()))?;
         let (status, vad_active) = if !first.status.success() && vad.is_some() {
             let retry = Command::new(&bin)
-                .args(whisper_args(&model, &wav, None))
+                .args(whisper_args(&model, &wav, None, self.language))
                 .output()
                 .map_err(|err| EngineError::Infer(err.to_string()))?;
             (retry, false)
@@ -146,7 +179,40 @@ impl Engine for WhisperEngine {
     }
 }
 
-fn whisper_args(model: &Path, wav: &Path, vad: Option<&Path>) -> Vec<String> {
+/// Refuse before spawning when the model cannot honour the language choice.
+/// Measured upstream: an `.en` model given `-l de` prints a warning, resets
+/// to English, transcribes English, and exits 0, so passing the flag through
+/// would return confident English text for German speech. `-dl` bypasses that
+/// guard through an upstream bug and is never invoked.
+fn refuse_impossible_language(
+    model: &Path,
+    multilingual: bool,
+    choice: LanguageChoice,
+) -> Result<(), EngineError> {
+    if multilingual {
+        return Ok(());
+    }
+    let wants = match choice {
+        LanguageChoice::Pinned(Language::ENGLISH) => return Ok(()),
+        LanguageChoice::Pinned(language) => language.english_name().to_string(),
+        LanguageChoice::Auto => "automatic language detection".to_string(),
+    };
+    let name = model
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "The selected model".to_string());
+    Err(EngineError::Infer(format!(
+        "{name} is an English-only model and cannot do {wants}. \
+         Choose a multilingual model or set the language to English."
+    )))
+}
+
+fn whisper_args(
+    model: &Path,
+    wav: &Path,
+    vad: Option<&Path>,
+    language: LanguageChoice,
+) -> Vec<String> {
     let mut args = vec![
         "-m".into(),
         model.to_string_lossy().into_owned(),
@@ -156,6 +222,11 @@ fn whisper_args(model: &Path, wav: &Path, vad: Option<&Path>) -> Vec<String> {
         "-oj".into(),
         "-of".into(),
         "-".into(),
+        "-l".into(),
+        match language {
+            LanguageChoice::Auto => "auto".to_string(),
+            LanguageChoice::Pinned(language) => language.code().to_string(),
+        },
     ];
     if let Some(vad) = vad {
         args.push("--vad".into());
@@ -262,6 +333,7 @@ mod tests {
             Path::new("model.bin"),
             Path::new("in.wav"),
             cache.vad_model().as_deref(),
+            LanguageChoice::default(),
         )
     }
 
@@ -286,11 +358,21 @@ mod tests {
     #[test]
     fn whisper_args_include_vad_flags_only_when_model_is_some() {
         let vad = Path::new("ggml-silero-v6.2.0.bin");
-        let with_vad = whisper_args(Path::new("model.bin"), Path::new("in.wav"), Some(vad));
+        let with_vad = whisper_args(
+            Path::new("model.bin"),
+            Path::new("in.wav"),
+            Some(vad),
+            LanguageChoice::default(),
+        );
         assert!(with_vad.iter().any(|arg| arg == "--vad"));
         assert_eq!(vm_path(&with_vad), Some("ggml-silero-v6.2.0.bin"));
 
-        let without_vad = whisper_args(Path::new("model.bin"), Path::new("in.wav"), None);
+        let without_vad = whisper_args(
+            Path::new("model.bin"),
+            Path::new("in.wav"),
+            None,
+            LanguageChoice::default(),
+        );
         assert!(without_vad.iter().all(|arg| arg != "--vad" && arg != "-vm"));
     }
 
@@ -373,6 +455,95 @@ mod tests {
         );
         let missing = WhisperEngine::with_cache(ModelCache::at(&dir), "large-v3");
         assert_eq!(missing.model_file(), None);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn language_arg(args: &[String]) -> Option<&str> {
+        args.windows(2)
+            .find(|pair| pair[0] == "-l")
+            .map(|pair| pair[1].as_str())
+    }
+
+    #[test]
+    fn pinned_language_yields_dash_l_code() {
+        let german = LanguageChoice::Pinned(Language::from_code("de").unwrap());
+        let args = whisper_args(
+            Path::new("model.bin"),
+            Path::new("in.wav"),
+            None,
+            german,
+        );
+        assert_eq!(language_arg(&args), Some("de"));
+    }
+
+    #[test]
+    fn auto_language_yields_dash_l_auto() {
+        let args = whisper_args(
+            Path::new("model.bin"),
+            Path::new("in.wav"),
+            None,
+            LanguageChoice::Auto,
+        );
+        assert_eq!(language_arg(&args), Some("auto"));
+    }
+
+    #[test]
+    fn args_never_contain_dl_or_a_translate_task() {
+        // `-dl` bypasses the multilingual guard through an upstream bug, and
+        // turbo models are not trained for translation and would silently
+        // return the original language. Neither may ever be constructed.
+        for choice in [
+            LanguageChoice::Auto,
+            LanguageChoice::Pinned(Language::ENGLISH),
+            LanguageChoice::Pinned(Language::from_code("de").unwrap()),
+        ] {
+            let args = whisper_args(Path::new("m.bin"), Path::new("in.wav"), None, choice);
+            assert!(!args.iter().any(|arg| arg == "-dl"), "{args:?}");
+            assert!(!args.iter().any(|arg| arg == "--task"), "{args:?}");
+        }
+        let source = include_str!("whisper.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap_or(source);
+        assert!(!production.contains(concat!("--", "task")));
+        assert!(!production.contains(concat!("\"-d", "l\"")));
+    }
+
+    #[test]
+    fn english_only_model_refuses_non_english_before_spawning() {
+        let dir = std::env::temp_dir().join(format!("echo-refuse-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("ggml-base.en.bin"), []).unwrap();
+        let pcm = Pcm16kMono::from_samples(vec![0; 16]);
+
+        let german = LanguageChoice::Pinned(Language::from_code("de").unwrap());
+        let engine = WhisperEngine::with_cache(ModelCache::at(&dir), "base.en").with_language(german);
+        // The refusal must fire even with no whisper binary on PATH.
+        match engine.transcribe(&pcm) {
+            Err(EngineError::Infer(message)) => {
+                assert!(message.contains("ggml-base.en.bin"), "msg={message}");
+                assert!(message.contains("german"), "msg={message}");
+            }
+            other => panic!("expected refusal, got {other:?}"),
+        }
+
+        let auto = WhisperEngine::with_cache(ModelCache::at(&dir), "base.en")
+            .with_language(LanguageChoice::Auto);
+        match auto.transcribe(&pcm) {
+            Err(EngineError::Infer(message)) => {
+                assert!(message.contains("automatic language detection"), "msg={message}")
+            }
+            other => panic!("expected refusal, got {other:?}"),
+        }
+
+        // Pinned English on an .en model is the one combination that runs;
+        // with no binary installed it reaches Missing instead of a refusal.
+        let english = WhisperEngine::with_cache(ModelCache::at(&dir), "base.en");
+        assert_eq!(english.transcribe(&pcm), Err(EngineError::Missing));
+
+        // A multilingual model takes any pinned language.
+        fs::write(dir.join("ggml-small.bin"), []).unwrap();
+        let multi = WhisperEngine::with_cache(ModelCache::at(&dir), "small").with_language(german);
+        assert_eq!(multi.transcribe(&pcm), Err(EngineError::Missing));
         let _ = fs::remove_dir_all(&dir);
     }
 
