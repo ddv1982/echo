@@ -51,6 +51,55 @@ pub fn language_now() -> LanguageChoice {
     resolved_language(std::env::var("ECHO_LANGUAGE").ok().as_deref(), &file_config())
 }
 
+/// What the resolved engine can do about language, for the picker. With no
+/// engine installed the full Whisper list shows, since that is the engine a
+/// user is about to set up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LanguageSupport {
+    WhisperMultilingual,
+    WhisperEnglishOnly { model: String },
+    Parakeet,
+}
+
+#[must_use]
+pub fn language_support() -> LanguageSupport {
+    match pick_engine(chosen_engine_now()) {
+        Some(PickedEngine::Whisper) => {
+            let engine = WhisperEngine::new();
+            match engine.selected_model() {
+                Some((path, false)) => LanguageSupport::WhisperEnglishOnly {
+                    model: path
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                },
+                Some((_, true)) | None => LanguageSupport::WhisperMultilingual,
+            }
+        }
+        Some(PickedEngine::Parakeet) => LanguageSupport::Parakeet,
+        Some(PickedEngine::Fake) | None => LanguageSupport::WhisperMultilingual,
+    }
+}
+
+/// The mismatch the picker must show before recording: an English-only model
+/// combined with a non-English or automatic language. The recorder refuses
+/// the same combination; this message names the model and the fix first.
+#[must_use]
+pub fn language_warning() -> Option<String> {
+    let LanguageSupport::WhisperEnglishOnly { model } = language_support() else {
+        return None;
+    };
+    let wants = match language_now() {
+        LanguageChoice::Pinned(echo_core::Language::ENGLISH) => return None,
+        LanguageChoice::Pinned(language) => language.english_name().to_string(),
+        LanguageChoice::Auto => "automatic detection".to_string(),
+    };
+    Some(format!(
+        "{model} is English-only but the language is set to {wants}. \
+         Choose a multilingual model or set the language to English."
+    ))
+}
+
 fn pick_engine(choice: EngineChoice) -> Option<PickedEngine> {
     match choice {
         EngineChoice::Whisper => Some(PickedEngine::Whisper),

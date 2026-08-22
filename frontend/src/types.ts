@@ -16,6 +16,7 @@ export interface Settings {
   holdKey: SettingField<string>
   recordSeconds: SettingField<number>
   microphone: SettingField<string>
+  language: SettingField<string>
 }
 
 export interface InputDevice {
@@ -40,6 +41,7 @@ export interface AppStatus {
   version: string
   lastError: string | null
   lastRun: LastRun | null
+  languageWarning: string | null
 }
 
 export interface LastRun {
@@ -49,6 +51,8 @@ export interface LastRun {
   multilingual: boolean | null
   vad: boolean | null
   inferMs: number
+  language: string | null
+  languageProbability: number | null
 }
 
 export interface WhisperModelInfo {
@@ -71,6 +75,18 @@ export interface ModelInventory {
   vad: string[]
   parakeet: string | null
   engines: EngineAvailability[]
+}
+
+export interface LanguageOption {
+  code: string
+  englishName: string
+  group: string
+}
+
+export interface LanguageOptions {
+  mode: 'multilingual' | 'english' | 'parakeet'
+  model: string | null
+  options: LanguageOption[]
 }
 
 export interface HistoryItem {

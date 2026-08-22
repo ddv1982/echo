@@ -5,7 +5,7 @@ use crate::types::{EngineId, Pcm16kMono};
 /// What actually ran on a transcription, observed from the engine rather than
 /// requested in configuration. Every field is optional: Parakeet has no model
 /// file or multilingual flag to report, and the fake engine has nothing at all.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct RunDetail {
     #[serde(default)]
     pub binary: Option<String>,
@@ -15,9 +15,15 @@ pub struct RunDetail {
     pub multilingual: Option<bool>,
     #[serde(default)]
     pub vad: Option<bool>,
+    /// The detected or pinned language the engine reported, with the
+    /// detection probability when whisper.cpp ran auto-detection.
+    #[serde(default)]
+    pub language: Option<String>,
+    #[serde(default)]
+    pub language_probability: Option<f32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Transcript {
     pub raw: String,
     pub engine: EngineId,

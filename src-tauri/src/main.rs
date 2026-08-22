@@ -36,6 +36,7 @@ struct AppStatus {
     version: String,
     last_error: Option<String>,
     last_run: Option<LastRun>,
+    language_warning: Option<String>,
 }
 
 /// What the last transcription actually ran, observed from the engine's own
@@ -50,6 +51,8 @@ struct LastRun {
     multilingual: Option<bool>,
     vad: Option<bool>,
     infer_ms: u64,
+    language: Option<String>,
+    language_probability: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,6 +80,7 @@ struct Settings {
     hold_key: SettingField<String>,
     record_seconds: SettingField<u32>,
     microphone: SettingField<String>,
+    language: SettingField<String>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -88,6 +92,7 @@ struct SettingsEnv {
     hold_key: Option<String>,
     record_seconds: Option<String>,
     microphone: Option<String>,
+    language: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -171,6 +176,8 @@ fn get_app_status() -> AppStatus {
             multilingual: row.detail.multilingual,
             vad: row.detail.vad,
             infer_ms: row.infer_ms,
+            language: row.detail.language.clone(),
+            language_probability: row.detail.language_probability,
         }));
     AppStatus {
         recording: status.state == "Recording",
@@ -189,6 +196,7 @@ fn get_app_status() -> AppStatus {
         version: env!("CARGO_PKG_VERSION").to_string(),
         last_error: status.error,
         last_run,
+        language_warning: echo::stt::language_warning(),
     }
 }
 
@@ -253,6 +261,70 @@ fn copy_text(text: String) -> Result<(), String> {
 #[tauri::command]
 fn get_settings() -> Result<Settings, String> {
     read_settings()
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LanguageOptionDto {
+    code: String,
+    english_name: String,
+    group: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LanguageOptionsDto {
+    /// "multilingual" offers Auto plus all 100 languages, "english" is an
+    /// English-only Whisper model, "parakeet" is a fixed 25-language
+    /// automatic capability with no picker.
+    mode: String,
+    /// The English-only model's filename when mode is "english".
+    model: Option<String>,
+    options: Vec<LanguageOptionDto>,
+}
+
+#[tauri::command]
+fn list_languages() -> LanguageOptionsDto {
+    match echo::stt::language_support() {
+        echo::stt::LanguageSupport::WhisperMultilingual => LanguageOptionsDto {
+            mode: "multilingual".to_string(),
+            model: None,
+            options: echo_core::Language::all()
+                .map(|language| LanguageOptionDto {
+                    code: language.code().to_string(),
+                    english_name: language.english_name().to_string(),
+                    group: if ["en", "de", "es", "fr"].contains(&language.code()) {
+                        "common"
+                    } else {
+                        "all"
+                    }
+                    .to_string(),
+                })
+                .collect(),
+        },
+        echo::stt::LanguageSupport::WhisperEnglishOnly { model } => LanguageOptionsDto {
+            mode: "english".to_string(),
+            model: Some(model),
+            options: vec![LanguageOptionDto {
+                code: "en".to_string(),
+                english_name: "english".to_string(),
+                group: "common".to_string(),
+            }],
+        },
+        echo::stt::LanguageSupport::Parakeet => LanguageOptionsDto {
+            mode: "parakeet".to_string(),
+            model: None,
+            options: echo_core::PARAKEET_LANGUAGES
+                .iter()
+                .filter_map(|code| echo_core::Language::from_code(code))
+                .map(|language| LanguageOptionDto {
+                    code: language.code().to_string(),
+                    english_name: language.english_name().to_string(),
+                    group: "all".to_string(),
+                })
+                .collect(),
+        },
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -374,6 +446,7 @@ fn process_settings_env() -> SettingsEnv {
         hold_key: env::var("ECHO_HOLD_KEY").ok(),
         record_seconds: env::var("ECHO_RECORD_SECONDS").ok(),
         microphone: env::var("ECHO_MICROPHONE").ok(),
+        language: env::var("ECHO_LANGUAGE").ok(),
     }
 }
 
@@ -419,6 +492,14 @@ fn settings_from(env: &SettingsEnv, file: &echo_core::Config) -> Settings {
             file.microphone.clone(),
             String::new(),
         ),
+        language: setting_field(
+            env.language
+                .as_deref()
+                .and_then(echo_core::LanguageChoice::parse)
+                .map(|choice| choice.as_str().to_string()),
+            file.language.map(|choice| choice.as_str().to_string()),
+            "en".to_string(),
+        ),
     }
 }
 
@@ -443,6 +524,13 @@ fn config_from_values(settings: &Settings) -> Result<echo_core::Config, String> 
         .value
         .map(|secs| secs.clamp(1, echo::rec::MAX_RECORD_SECONDS as u32));
     config.microphone = nonempty(settings.microphone.value.clone());
+    config.language = match settings.language.value.as_deref() {
+        None => None,
+        Some(raw) => Some(
+            echo_core::LanguageChoice::parse(raw)
+                .ok_or_else(|| format!("unknown language {raw}"))?,
+        ),
+    };
     Ok(config)
 }
 
@@ -648,6 +736,7 @@ fn run_desktop() {
             get_settings,
             set_settings,
             list_models,
+            list_languages,
             list_input_devices,
             test_input_device,
         ])
@@ -728,6 +817,11 @@ mod settings_tests {
                 effective: String::new(),
                 source: SettingSource::Default,
             },
+            language: SettingField {
+                value: Some("de".into()),
+                effective: "en".into(),
+                source: SettingSource::Default,
+            },
         };
         config_from_values(&incoming)
             .unwrap()
@@ -751,6 +845,40 @@ mod settings_tests {
         assert_eq!(got.microphone.value.as_deref(), Some("USB Mic"));
         assert_eq!(got.microphone.effective, "USB Mic");
         assert_eq!(got.microphone.source, SettingSource::File);
+        assert_eq!(got.language.value.as_deref(), Some("de"));
+        assert_eq!(got.language.effective, "de");
+        assert_eq!(got.language.source, SettingSource::File);
+    }
+
+    #[test]
+    fn language_defaults_to_english_and_env_wins() {
+        let settings = settings_from(&SettingsEnv::default(), &Config::default());
+        assert_eq!(settings.language.value, None);
+        assert_eq!(settings.language.effective, "en");
+        assert_eq!(settings.language.source, SettingSource::Default);
+
+        let env = SettingsEnv {
+            language: Some("auto".into()),
+            ..SettingsEnv::default()
+        };
+        let file = Config {
+            language: Some(echo_core::LanguageChoice::Pinned(
+                echo_core::Language::from_code("de").unwrap(),
+            )),
+            ..Config::default()
+        };
+        let settings = settings_from(&env, &file);
+        assert_eq!(settings.language.value.as_deref(), Some("de"));
+        assert_eq!(settings.language.effective, "auto");
+        assert_eq!(settings.language.source, SettingSource::Env);
+
+        let invalid = SettingsEnv {
+            language: Some("klingon".into()),
+            ..SettingsEnv::default()
+        };
+        let settings = settings_from(&invalid, &file);
+        assert_eq!(settings.language.effective, "de");
+        assert_eq!(settings.language.source, SettingSource::File);
     }
 
     #[test]
