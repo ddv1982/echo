@@ -860,7 +860,10 @@ fn run_desktop() {
             };
             let current = echo::upgrade::file_identity(&watch.path).ok();
             match echo::upgrade::second_launch_decision(watch.identity, current) {
-                echo::upgrade::SecondLaunch::Focus => show_main_window(app),
+                echo::upgrade::SecondLaunch::Focus => {
+                    eprintln!("echo-desktop: second launch; focusing the running window");
+                    show_main_window(app);
+                }
                 echo::upgrade::SecondLaunch::Restart => {
                     // The binary was replaced since this process started.
                     // Hand over to the on-disk build and exit; a failed spawn
