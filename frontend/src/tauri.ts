@@ -4,6 +4,7 @@ import type {
   DictionaryItem,
   HistoryItem,
   InputDevice,
+  LanguageOptions,
   ModelInventory,
   SettingField,
   Settings,
@@ -39,7 +40,10 @@ function richPreviewStatus(): AppStatus {
       multilingual: true,
       vad: true,
       inferMs: 1038,
+      language: 'de',
+      languageProbability: 0.96,
     },
+    languageWarning: null,
   }
 }
 
@@ -193,6 +197,34 @@ export function listModels(): Promise<ModelInventory> {
   )
 }
 
+function defaultPreviewLanguages(): LanguageOptions {
+  return {
+    mode: 'multilingual',
+    model: null,
+    options: [
+      { code: 'en', englishName: 'english', group: 'common' },
+      { code: 'de', englishName: 'german', group: 'common' },
+      { code: 'es', englishName: 'spanish', group: 'common' },
+      { code: 'fr', englishName: 'french', group: 'common' },
+      { code: 'ja', englishName: 'japanese', group: 'all' },
+      { code: 'sv', englishName: 'swedish', group: 'all' },
+    ],
+  }
+}
+
+let previewLanguages: LanguageOptions = defaultPreviewLanguages()
+
+export function listLanguages(): Promise<LanguageOptions> {
+  if (isTauri()) return invoke('list_languages')
+  return Promise.resolve(
+    preview ? { ...previewLanguages } : { mode: 'multilingual', model: null, options: [] },
+  )
+}
+
+export function seedPreviewLanguages(languages: LanguageOptions) {
+  previewLanguages = languages
+}
+
 export function setSettings(settings: Settings): Promise<Settings> {
   if (isTauri()) return invoke('set_settings', { settings })
   const next = projectPreviewSettings(settings)
@@ -222,6 +254,7 @@ export function resetPreviewSettings() {
   previewSettings = defaultPreviewSettings()
   previewStatus = richPreviewStatus()
   previewMicTestError = null
+  previewLanguages = defaultPreviewLanguages()
 }
 
 const previewDevices: InputDevice[] = [
@@ -250,6 +283,7 @@ function defaultPreviewSettings(): Settings {
     holdKey: { value: null, effective: 'RightCtrl', source: 'default' },
     recordSeconds: { value: null, effective: 3, source: 'default' },
     microphone: { value: null, effective: '', source: 'default' },
+    language: { value: null, effective: 'en', source: 'default' },
   })
 }
 
@@ -266,6 +300,7 @@ function projectPreviewSettings(settings: Settings): Settings {
     holdKey: previewField(settings.holdKey.value, 'RightCtrl'),
     recordSeconds: previewField(recordValue, 3),
     microphone: previewField(settings.microphone.value, ''),
+    language: previewField(settings.language.value, 'en'),
   }
 }
 
@@ -315,5 +350,6 @@ function initialPreviewStatus(): AppStatus {
     version: '0.1.0',
     lastError: null,
     lastRun: null,
+    languageWarning: null,
   }
 }

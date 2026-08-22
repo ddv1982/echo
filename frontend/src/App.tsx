@@ -22,6 +22,7 @@ import {
   getHistory,
   getSettings,
   listInputDevices,
+  listLanguages,
   listModels,
   removeDictionaryEntry,
   setSettings,
@@ -32,6 +33,7 @@ import type {
   AppStatus,
   DictionaryItem,
   HistoryItem,
+  LanguageOptions,
   ModelInventory,
   SettingSource,
   Settings as AppSettings,
@@ -58,6 +60,7 @@ const initialStatus: AppStatus = {
   version: '',
   lastError: null,
   lastRun: null,
+  languageWarning: null,
 }
 
 const navigation: Array<{ id: View; label: string; icon: typeof Home }> = [
@@ -312,6 +315,14 @@ function HomeView({
         </div>
       ) : null}
 
+      {status.languageWarning ? (
+        <div className="attention-strip" role="status">
+          <CircleAlert size={16} aria-hidden="true" />
+          <span>{status.languageWarning}</span>
+          <button type="button" onClick={onOpenSettings}>Open Settings</button>
+        </div>
+      ) : null}
+
       <div className="home-grid">
         <section className="panel last-transcript">
           <SectionHeading title="Last transcript" subtitle="Most recently inserted text" />
@@ -490,16 +501,18 @@ function SettingsView({
   const writeChainRef = useRef(Promise.resolve())
   const [devices, setDevices] = useState<InputDevice[]>([])
   const [inventory, setInventory] = useState<ModelInventory | null>(null)
+  const [languages, setLanguages] = useState<LanguageOptions | null>(null)
   const [micMeter, setMicMeter] = useState<number | 'unavailable' | null>(null)
   const [testingMic, setTestingMic] = useState(false)
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      void Promise.all([getSettings(), listInputDevices(), listModels()]).then(
-        ([next, listed, models]) => {
+      void Promise.all([getSettings(), listInputDevices(), listModels(), listLanguages()]).then(
+        ([next, listed, models, languageOptions]) => {
           setLocalSettings(next)
           setDevices(listed)
           setInventory(models)
+          setLanguages(languageOptions)
         },
       )
     }, 0)
@@ -662,6 +675,22 @@ function SettingsView({
                 </select>
               </label>
             ) : null}
+            {languages ? (
+              <LanguageRow
+                languages={languages}
+                settings={settings}
+                status={status}
+                onChange={(value) => void patch('language', value)}
+              />
+            ) : null}
+            {status.languageWarning ? (
+              <div className="setting-row" role="status">
+                <span className="status-note" data-tone="attention">
+                  <span className="status-dot" data-tone="attention" aria-hidden="true" />
+                  {status.languageWarning}
+                </span>
+              </div>
+            ) : null}
           </>
         ) : null}
         <SettingLine label="Resolved engine" value={status.engineName} tone={status.engineReady ? 'ok' : 'attention'} />
@@ -775,6 +804,101 @@ function formatSize(bytes: number) {
   if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GiB`
   if (bytes >= 1024 * 1024) return `${Math.round(bytes / (1024 * 1024))} MiB`
   return `${Math.round(bytes / 1024)} KiB`
+}
+
+const COMMON_LANGUAGE_ORDER = ['en', 'de', 'es', 'fr']
+
+function LanguageRow({
+  languages,
+  settings,
+  status,
+  onChange,
+}: {
+  languages: LanguageOptions
+  settings: AppSettings
+  status: AppStatus
+  onChange: (value: string) => void
+}) {
+  if (languages.mode === 'parakeet') {
+    return (
+      <SettingLine
+        label="Language"
+        value={`Automatic across ${languages.options.length} languages · not reported`}
+      />
+    )
+  }
+  if (languages.mode === 'english') {
+    return <SettingLine label="Language" value="English" />
+  }
+  const detected = status.lastRun?.language ?? null
+  const common = [
+    ...COMMON_LANGUAGE_ORDER.flatMap((code) =>
+      languages.options.filter((option) => option.code === code),
+    ),
+    ...(detected && !COMMON_LANGUAGE_ORDER.includes(detected)
+      ? languages.options.filter((option) => option.code === detected)
+      : []),
+  ]
+  const all = [...languages.options].sort((a, b) => a.englishName.localeCompare(b.englishName))
+  const detectedOption = detected
+    ? languages.options.find((option) => option.code === detected)
+    : null
+  const probability = status.lastRun?.languageProbability ?? null
+  const lowConfidence = probability != null && probability < 0.5
+  return (
+    <label className="setting-row">
+      <div>
+        <strong>Language</strong>
+        <span>
+          {overrideHint(
+            settings.language.source,
+            'ECHO_LANGUAGE',
+            'Pin a language, or let Whisper detect it.',
+          )}
+        </span>
+      </div>
+      <div className="setting-actions">
+        <select
+          aria-label="Language"
+          value={settings.language.effective}
+          disabled={settings.language.source === 'env'}
+          onChange={(event) => onChange(event.target.value)}
+        >
+          <option value="auto">Auto · detect language</option>
+          <optgroup label="Common">
+            {common.map((option) => (
+              <option key={option.code} value={option.code}>
+                {capitalize(option.englishName)}
+              </option>
+            ))}
+          </optgroup>
+          <optgroup label="All languages">
+            {all.map((option) => (
+              <option key={option.code} value={option.code}>
+                {capitalize(option.englishName)}
+              </option>
+            ))}
+          </optgroup>
+        </select>
+        {settings.language.effective === 'auto' && detected ? (
+          <span className="status-note" data-tone={lowConfidence ? 'attention' : 'ok'}>
+            <span
+              className="status-dot"
+              data-tone={lowConfidence ? 'attention' : 'ok'}
+              aria-hidden="true"
+            />
+            {[
+              detected,
+              detectedOption ? capitalize(detectedOption.englishName) : null,
+              probability != null ? `p=${probability.toFixed(2)}` : null,
+            ]
+              .filter(Boolean)
+              .join(' · ')}
+          </span>
+        ) : null}
+      </div>
+    </label>
+  )
 }
 
 function microphoneOptions(devices: InputDevice[], current: string) {

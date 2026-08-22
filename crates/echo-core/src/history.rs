@@ -10,7 +10,7 @@ use crate::types::EngineId;
 
 const HISTORY_CAP: usize = 2000;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HistoryRow {
     pub id: String,
     pub text: String,

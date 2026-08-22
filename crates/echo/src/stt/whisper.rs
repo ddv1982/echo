@@ -93,7 +93,7 @@ impl WhisperEngine {
     /// The model file plus its filename-derived multilingual flag. The flag
     /// is a pre-flight guess used to refuse impossible language choices; the
     /// authoritative value is `model.multilingual` in the engine's JSON.
-    fn selected_model(&self) -> Option<(PathBuf, bool)> {
+    pub(crate) fn selected_model(&self) -> Option<(PathBuf, bool)> {
         let model = self.model.as_deref()?;
         let inventory = self.cache.inventory();
         if let Some(installed) = inventory.whisper.iter().find(|m| m.name == model) {
@@ -166,7 +166,7 @@ impl Engine for WhisperEngine {
             engine: EngineId::Whisper {
                 model: parsed.model,
             },
-            language: parsed.language,
+            language: parsed.language.clone(),
             audio_ms: pcm.duration_ms(),
             infer_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
             detail: RunDetail {
@@ -174,6 +174,8 @@ impl Engine for WhisperEngine {
                 model_path: Some(model.to_string_lossy().into_owned()),
                 multilingual: Some(parsed.multilingual),
                 vad: Some(vad_active),
+                language: parsed.language.clone(),
+                language_probability: parsed.language_probability,
             },
         })
     }
@@ -240,12 +242,13 @@ fn raw_text(text: &str) -> String {
     strip_nonspeech(text.trim()).to_string()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct WhisperParse {
     text: String,
     language: Option<String>,
     model: String,
     multilingual: bool,
+    language_probability: Option<f32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -278,7 +281,20 @@ fn finish_whisper(success: bool, stdout: &[u8], stderr: &str) -> Result<WhisperP
     if !success {
         return Err(EngineError::Infer(stderr.to_string()));
     }
-    parse_whisper_stdout(stdout)
+    let mut parsed = parse_whisper_stdout(stdout)?;
+    parsed.language_probability = parse_detection_probability(stderr);
+    Ok(parsed)
+}
+
+/// whisper.cpp prints `auto-detected language: de (p = 0.973123)` on stderr
+/// when detection runs; the JSON carries only the code, no probability.
+fn parse_detection_probability(stderr: &str) -> Option<f32> {
+    let line = stderr
+        .lines()
+        .find(|line| line.contains("auto-detected language:"))?;
+    let after = line.split("p = ").nth(1)?;
+    let end = after.find(')')?;
+    after[..end].trim().parse().ok()
 }
 
 fn parse_whisper_stdout(stdout: &[u8]) -> Result<WhisperParse, EngineError> {
@@ -306,6 +322,7 @@ fn parse_whisper_json(raw: &str) -> Result<WhisperParse, EngineError> {
         language,
         model: output.model.model_type,
         multilingual: output.model.multilingual,
+        language_probability: None,
     })
 }
 
@@ -580,6 +597,20 @@ mod tests {
         assert!(parsed.text.is_empty());
         assert_eq!(parsed.language, None);
         assert!(!parsed.multilingual);
+    }
+
+    #[test]
+    fn detection_probability_comes_from_stderr() {
+        let stderr = "whisper_full: auto-detected language: de (p = 0.958162)\nmore noise";
+        assert_eq!(
+            parse_detection_probability(stderr),
+            Some(0.958_162)
+        );
+        assert_eq!(parse_detection_probability("no detection here"), None);
+        let parsed = finish_whisper(true, fixture("multilingual.json").as_bytes(), stderr)
+            .expect("valid fixture");
+        assert_eq!(parsed.language.as_deref(), Some("de"));
+        assert_eq!(parsed.language_probability, Some(0.958_162));
     }
 
     #[test]

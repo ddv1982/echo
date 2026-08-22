@@ -1,8 +1,9 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import App from './App'
 import {
   getSettings,
   resetPreviewSettings,
+  seedPreviewLanguages,
   seedPreviewMicTestError,
   seedPreviewSettings,
   seedPreviewStatus,
@@ -242,5 +243,146 @@ describe('Echo desktop shell', () => {
     await screen.findByText('Failed speech engine failed')
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     expect(await screen.findByText('whisper-cli: ggml_init failed')).toBeInTheDocument()
+  })
+
+  it('offers Auto first, then a common group, then the alphabetical list', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    const picker = await screen.findByLabelText('Language')
+    const auto = screen.getByRole('option', { name: 'Auto · detect language' })
+    expect(auto).toBeInTheDocument()
+    // The common group keeps its fixed order; the full list is alphabetical.
+    const common = within(screen.getByRole('group', { name: 'Common' }))
+    expect(common.getAllByRole('option').map((o) => o.textContent)).toEqual([
+      'English',
+      'German',
+      'Spanish',
+      'French',
+    ])
+    const all = within(screen.getByRole('group', { name: 'All languages' }))
+    const names = all.getAllByRole('option').map((o) => o.textContent)
+    expect(names).toEqual([...names].sort((a, b) => a!.localeCompare(b!)))
+
+    fireEvent.change(picker, { target: { value: 'de' } })
+    await waitFor(async () => {
+      expect((await getSettings()).language).toEqual({
+        value: 'de',
+        effective: 'de',
+        source: 'file',
+      })
+    })
+  })
+
+  it('renders every language a multilingual model offers', async () => {
+    const hundred = Array.from({ length: 100 }, (_, i) => ({
+      code: `l${i}`,
+      englishName: `language ${String(i).padStart(3, '0')}`,
+      group: i < 4 ? 'common' : 'all',
+    }))
+    seedPreviewLanguages({ mode: 'multilingual', model: null, options: hundred })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await screen.findByLabelText('Language')
+    const all = within(screen.getByRole('group', { name: 'All languages' }))
+    expect(all.getAllByRole('option')).toHaveLength(100)
+    expect(screen.getByRole('option', { name: 'Auto · detect language' })).toBeInTheDocument()
+  })
+
+  it('shows the detected-language chip only when Auto is active', async () => {
+    const defaults = await getSettings()
+    seedPreviewSettings({
+      ...defaults,
+      language: { value: 'auto', effective: 'auto', source: 'file' },
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(await screen.findByText('de · German · p=0.96')).toBeInTheDocument()
+  })
+
+  it('hides the detected-language chip when a language is pinned', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await screen.findByLabelText('Language')
+    expect(screen.queryByText('de · German · p=0.96')).not.toBeInTheDocument()
+  })
+
+  it('renders low detection confidence differently', async () => {
+    const defaults = await getSettings()
+    seedPreviewSettings({
+      ...defaults,
+      language: { value: 'auto', effective: 'auto', source: 'file' },
+    })
+    seedPreviewStatus({
+      lastRun: {
+        engine: 'whisper-small',
+        binary: null,
+        modelPath: null,
+        multilingual: true,
+        vad: false,
+        inferMs: 900,
+        language: 'nl',
+        languageProbability: 0.31,
+      },
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    const chip = await screen.findByText('nl · p=0.31')
+    expect(chip.closest('.status-note')).toHaveAttribute('data-tone', 'attention')
+  })
+
+  it('warns before recording when an English-only model meets a non-English choice', async () => {
+    const defaults = await getSettings()
+    seedPreviewSettings({
+      ...defaults,
+      engine: { value: 'whisper', effective: 'whisper', source: 'file' },
+      language: { value: 'de', effective: 'de', source: 'file' },
+    })
+    seedPreviewLanguages({ mode: 'english', model: 'ggml-base.en.bin', options: [
+      { code: 'en', englishName: 'english', group: 'common' },
+    ] })
+    seedPreviewStatus({
+      languageWarning:
+        'ggml-base.en.bin is English-only but the language is set to german. Choose a multilingual model or set the language to English.',
+    })
+    render(<App />)
+    // The warning is on Home before any recording happens.
+    expect(
+      await screen.findByText(/ggml-base\.en\.bin is English-only but the language is set to german/),
+    ).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(
+      await screen.findAllByText(/ggml-base\.en\.bin is English-only/),
+    ).not.toHaveLength(0)
+    // An English-only model offers no picker.
+    expect(screen.queryByLabelText('Language')).not.toBeInTheDocument()
+  })
+
+  it('reports Parakeet as automatic without a picker', async () => {
+    const defaults = await getSettings()
+    seedPreviewSettings({
+      ...defaults,
+      engine: { value: 'parakeet', effective: 'parakeet', source: 'file' },
+    })
+    seedPreviewLanguages({
+      mode: 'parakeet',
+      model: null,
+      options: Array.from({ length: 25 }, (_, i) => ({
+        code: `p${i}`,
+        englishName: `parakeet language ${i}`,
+        group: 'all',
+      })),
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(
+      await screen.findByText('Automatic across 25 languages · not reported'),
+    ).toBeInTheDocument()
+    expect(screen.queryByLabelText('Language')).not.toBeInTheDocument()
   })
 })
