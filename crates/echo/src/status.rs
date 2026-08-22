@@ -1,5 +1,7 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use echo_core::{status_path, write_atomic, SessionState};
 
@@ -38,7 +40,11 @@ pub fn state_name(state: SessionState) -> String {
 
 /// Persist the session state for other processes. The file carries the
 /// writer's pid so readers can spot a session whose process died.
-pub fn write_status(state: SessionState, last: Option<&str>, error: Option<&str>) -> Result<(), String> {
+pub fn write_status(
+    state: SessionState,
+    last: Option<&str>,
+    error: Option<&str>,
+) -> Result<(), String> {
     write_atomic(&status_path(), render(state, last, error).as_bytes())
 }
 
@@ -75,6 +81,39 @@ pub fn read() -> Status {
 #[must_use]
 pub fn summary() -> String {
     format!("Echo: {}", read().state)
+}
+
+fn shortcut_activation_path() -> PathBuf {
+    echo_core::data_dir().join("shortcut-activation")
+}
+
+/// Return the opaque token written by the last configured shortcut action.
+#[must_use]
+pub fn shortcut_activation() -> Option<String> {
+    fs::read_to_string(shortcut_activation_path())
+        .ok()
+        .filter(|token| !token.trim().is_empty())
+}
+
+/// Mark a successful action from a configured shortcut source. GUI and tray
+/// recording paths deliberately never call this.
+pub fn mark_shortcut_activation(source: &str) -> Result<(), String> {
+    write_shortcut_activation(&shortcut_activation_path(), source)
+}
+
+fn write_shortcut_activation(path: &Path, source: &str) -> Result<(), String> {
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let token = format!(
+        "{source}:{}:{}:{}:{}",
+        now.as_secs(),
+        now.subsec_nanos(),
+        std::process::id(),
+        SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    );
+    write_atomic(path, token.as_bytes())
 }
 
 fn parse(raw: &str, alive: impl Fn(&str) -> bool) -> Status {
@@ -141,7 +180,11 @@ mod tests {
 
     #[test]
     fn multiline_transcript_stays_on_the_last_line() {
-        let body = render(SessionState::Idle, Some("first line.\r\nsecond line."), None);
+        let body = render(
+            SessionState::Idle,
+            Some("first line.\r\nsecond line."),
+            None,
+        );
         let status = parse(&body, |_| false);
         assert_eq!(status.state, "Idle");
         assert_eq!(status.last.as_deref(), Some("first line.  second line."));
@@ -164,5 +207,18 @@ mod tests {
             status.error.as_deref(),
             Some("whisper-cli: failed to load model ggml_init failed")
         );
+    }
+
+    #[test]
+    fn shortcut_activation_tokens_are_explicit_and_monotonic() {
+        let dir = std::env::temp_dir().join(format!("echo-shortcut-token-{}", std::process::id()));
+        let path = dir.join("activation");
+        write_shortcut_activation(&path, "native-toggle").unwrap();
+        let first = fs::read_to_string(&path).unwrap();
+        write_shortcut_activation(&path, "native-toggle").unwrap();
+        let second = fs::read_to_string(&path).unwrap();
+        assert!(first.starts_with("native-toggle:"));
+        assert_ne!(first, second);
+        let _ = fs::remove_dir_all(dir);
     }
 }

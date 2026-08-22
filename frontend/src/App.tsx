@@ -31,6 +31,7 @@ import {
   onDownloadProgress,
   removeDictionaryEntry,
   removeStaleInstalls,
+  repairLegacyShortcut,
   setSettings,
   testInputDevice,
   toggleRecording,
@@ -75,6 +76,15 @@ const initialStatus: AppStatus = {
   firstPathHit: null,
   staleInstalls: [],
   holdListener: 'unavailable',
+  holdListenerError: null,
+  shortcutBackend: 'unsupported',
+  shortcutHealthy: false,
+  shortcutError: null,
+  requestedShortcut: 'Super+Alt+Space',
+  requestedHoldShortcut: 'RightCtrl',
+  effectiveHoldShortcut: null,
+  legacyShortcut: null,
+  shortcutActivation: null,
 }
 
 const navigation: Array<{ id: View; label: string; icon: typeof Home }> = [
@@ -212,7 +222,7 @@ function App() {
             })}
           </div>
           <div className="shortcut-card">
-            <span>Suggested shortcut</span>
+            <span>Toggle shortcut</span>
             <kbd>{status.shortcut}</kbd>
             <small>Bind it in your desktop settings. Press once to start, again to stop.</small>
           </div>
@@ -368,7 +378,11 @@ function HomeView({
             <div className="record-actions">
               <div className="shortcut-hint">
                 <kbd>{status.shortcut}</kbd>
-                <span>works from any app</span>
+                <span>
+                  {status.shortcutHealthy || status.legacyShortcut?.state === 'ready'
+                    ? 'works from any app'
+                    : 'setup required in Settings'}
+                </span>
               </div>
             </div>
           </div>
@@ -504,46 +518,168 @@ function StaleInstallWarning({ status }: { status: AppStatus }) {
   )
 }
 
-/// The shortcut row with its verified-setup test. Echo never registers the
-/// binding; the compositor owns it. The test watches the status file for a
-/// session starting while the listener window is open, which proves the
-/// binding, the spawn, and the binary path in one press.
-function ShortcutRow({ status }: { status: AppStatus }) {
-  const [verifiedAt, setVerifiedAt] = useState<number | null>(() => {
+/// Native backends register directly. Older GNOME sessions expose a separate,
+/// explicit repair action; status polling never mutates compositor settings.
+function shortcutVerificationIdentity(status: AppStatus): string | null {
+  if (status.legacyShortcut?.state === 'ready') {
+    return `gnome:${status.legacyShortcut.binding}:${status.legacyShortcut.command}`
+  }
+  return status.shortcutHealthy ? `${status.shortcutBackend}:${status.shortcut}` : null
+}
+
+function ShortcutRow({
+  status,
+  settings,
+  capturing,
+  pending,
+  onRecord,
+  onReset,
+  repairing,
+  onRepair,
+}: {
+  status: AppStatus
+  settings: AppSettings
+  capturing: boolean
+  pending: string[]
+  onRecord: () => void
+  onReset: () => void
+  repairing: boolean
+  onRepair: () => void
+}) {
+  const currentIdentity = shortcutVerificationIdentity(status)
+  const [verification, setVerification] = useState<{ at: number; identity: string } | null>(() => {
     const raw = localStorage.getItem('echo-shortcut-verified-at')
-    return raw ? Number(raw) : null
+    const identity = localStorage.getItem('echo-shortcut-verified-identity')
+    return raw && identity ? { at: Number(raw), identity } : null
   })
-  const [phase, setPhase] = useState<'idle' | 'listening' | 'timed-out'>('idle')
-  const baseline = useRef('Idle')
+  const [phase, setPhase] = useState<'idle' | 'arming' | 'listening' | 'timed-out'>('idle')
+  const attempt = useRef(0)
+  const pollTimer = useRef<number | null>(null)
+  const timeoutTimer = useRef<number | null>(null)
+  const completeVerification = (identity: string) => {
+    attempt.current += 1
+    if (pollTimer.current != null) window.clearTimeout(pollTimer.current)
+    if (timeoutTimer.current != null) window.clearTimeout(timeoutTimer.current)
+    const now = Math.floor(Date.now() / 1000)
+    localStorage.setItem('echo-shortcut-verified-at', String(now))
+    localStorage.setItem('echo-shortcut-verified-identity', identity)
+    setVerification({ at: now, identity })
+    setPhase('idle')
+  }
 
   useEffect(() => {
-    if (phase !== 'listening') return
-    if (status.phase !== baseline.current && status.phase !== 'Idle') {
-      const now = Math.floor(Date.now() / 1000)
-      localStorage.setItem('echo-shortcut-verified-at', String(now))
-      setVerifiedAt(now)
-      setPhase('idle')
+    return () => {
+      attempt.current += 1
+      if (pollTimer.current != null) window.clearTimeout(pollTimer.current)
+      if (timeoutTimer.current != null) window.clearTimeout(timeoutTimer.current)
     }
-  }, [phase, status])
+  }, [])
 
-  const start = () => {
-    baseline.current = status.phase
-    setPhase('listening')
-    window.setTimeout(() => {
-      setPhase((current) => (current === 'listening' ? 'timed-out' : current))
-    }, 10_000)
+  const start = async () => {
+    const attemptId = attempt.current + 1
+    attempt.current = attemptId
+    if (pollTimer.current != null) window.clearTimeout(pollTimer.current)
+    if (timeoutTimer.current != null) window.clearTimeout(timeoutTimer.current)
+    setPhase('arming')
+
+    try {
+      // Read directly from the backend so an activation waiting for the app's
+      // regular status poll becomes part of the baseline, not a false pass.
+      const baseline = (await getAppStatus()).shortcutActivation
+      if (attempt.current !== attemptId) return
+      setPhase('listening')
+
+      const poll = async () => {
+        const next = await getAppStatus()
+        if (attempt.current !== attemptId) return
+        if (next.shortcutActivation !== baseline) {
+          const identity = shortcutVerificationIdentity(next)
+          if (identity != null) {
+            completeVerification(identity)
+            return
+          }
+        }
+        pollTimer.current = window.setTimeout(() => void poll(), 100)
+      }
+      pollTimer.current = window.setTimeout(() => void poll(), 100)
+      timeoutTimer.current = window.setTimeout(() => {
+        if (attempt.current !== attemptId) return
+        attempt.current += 1
+        if (pollTimer.current != null) window.clearTimeout(pollTimer.current)
+        setPhase('timed-out')
+      }, 10_000)
+    } catch {
+      if (attempt.current === attemptId) setPhase('timed-out')
+    }
   }
+
+  const legacy = status.legacyShortcut
+  const setupReady = status.shortcutHealthy || legacy?.state === 'ready'
+  const repair = () => {
+    localStorage.removeItem('echo-shortcut-verified-at')
+    localStorage.removeItem('echo-shortcut-verified-identity')
+    setVerification(null)
+    onRepair()
+  }
+  const description = legacy
+    ? legacy.detail
+    : status.shortcutHealthy
+      ? `Active through ${status.shortcutBackend === 'x11' ? 'X11' : 'the desktop portal'}.`
+      : status.shortcutError ?? 'No native shortcut backend is available.'
 
   return (
     <div className="setting-row">
       <div>
-        <strong>Suggested shortcut</strong>
+        <strong>Toggle shortcut</strong>
         <span>
-          Bind <kbd>{status.shortcut}</kbd> to <code>echo-desktop rec --toggle</code> in your
-          desktop&apos;s keyboard settings; Echo does not register it itself.
+          {settings.toggleShortcut.source === 'env' ? (
+            'ECHO_TOGGLE_SHORTCUT'
+          ) : (
+            description
+          )}
         </span>
+        {legacy?.state === 'unsupported' ? (
+          <span>Bind <kbd>{settings.toggleShortcut.effective}</kbd> to <code>{legacy.command}</code> in your compositor settings.</span>
+        ) : null}
       </div>
       <div className="setting-actions">
+        <ShortcutRecorderControls
+          label="Toggle shortcut"
+          value={settings.toggleShortcut.effective}
+          locked={settings.toggleShortcut.source === 'env'}
+          capturing={capturing}
+          pending={pending}
+          onRecord={onRecord}
+          onReset={onReset}
+        />
+        {legacy?.state === 'missing' || legacy?.state === 'stale' ? (
+          <button type="button" className="compact-button" disabled={repairing} onClick={repair}>
+            {repairing
+              ? 'Updating…'
+              : legacy.state === 'missing'
+                ? 'Set up GNOME shortcut'
+                : 'Repair GNOME shortcut'}
+          </button>
+        ) : null}
+        {legacy ? (
+          <span
+            className="status-note"
+            data-tone={legacy.state === 'ready' ? 'ok' : 'attention'}
+          >
+            <span
+              className="status-dot"
+              data-tone={legacy.state === 'ready' ? 'ok' : 'attention'}
+              aria-hidden="true"
+            />
+            {legacy.state === 'ready'
+              ? 'GNOME shortcut ready'
+              : legacy.state === 'conflicting'
+                ? 'Resolve the conflict in GNOME Settings'
+                : legacy.state === 'unsupported'
+                  ? 'Manual setup required'
+                  : 'Action required'}
+          </span>
+        ) : null}
         {phase === 'listening' ? (
           <span className="status-note" data-tone="ok">
             <span className="status-dot" data-tone="ok" aria-hidden="true" />
@@ -553,7 +689,7 @@ function ShortcutRow({ status }: { status: AppStatus }) {
           <button
             type="button"
             className="compact-button"
-            disabled={status.recording}
+            disabled={status.recording || !setupReady}
             onClick={start}
           >
             Test shortcut
@@ -565,10 +701,10 @@ function ShortcutRow({ status }: { status: AppStatus }) {
             No keypress seen — check the binding
           </span>
         ) : null}
-        {phase === 'idle' && verifiedAt != null ? (
+        {phase === 'idle' && setupReady && verification?.identity === currentIdentity ? (
           <span className="status-note" data-tone="ok">
             <span className="status-dot" data-tone="ok" aria-hidden="true" />
-            Verified {new Date(verifiedAt * 1000).toLocaleDateString()}
+            Verified {new Date(verification.at * 1000).toLocaleDateString()}
           </span>
         ) : null}
       </div>
@@ -605,7 +741,10 @@ function SetupChecklist({
   onOpenSettings: () => void
 }) {
   // Verified, not asserted: only a passing shortcut test completes this.
-  const [verified] = useState(() => localStorage.getItem('echo-shortcut-verified-at') !== null)
+  const identity = shortcutVerificationIdentity(status)
+  const verified = identity != null
+    && localStorage.getItem('echo-shortcut-verified-at') !== null
+    && localStorage.getItem('echo-shortcut-verified-identity') === identity
   const items = [
     { key: 'mic', done: status.microphoneReady, label: 'Microphone ready' },
     { key: 'engine', done: status.engineReady, label: 'Speech engine and model installed' },
@@ -763,17 +902,8 @@ const CLEANUP_OPTIONS = [
   { value: 'rules', label: 'Rules' },
 ] as const
 
-const HOLD_KEY_OPTIONS = [
-  { value: 'RightCtrl', label: 'Right Ctrl' },
-  { value: 'LeftCtrl', label: 'Left Ctrl' },
-  { value: 'RightShift', label: 'Right Shift' },
-  { value: 'LeftShift', label: 'Left Shift' },
-  { value: 'Super', label: 'Super' },
-  { value: 'Alt', label: 'Alt' },
-  { value: 'Space', label: 'Space' },
-]
-
 const RECORD_SECOND_PRESETS = [3, 5, 10, 15, 30, 60]
+type ShortcutSetting = 'toggleShortcut' | 'holdKey'
 
 function SettingsView({
   status,
@@ -798,6 +928,12 @@ function SettingsView({
   const [downloads, setDownloads] = useState<Record<string, DownloadProgress>>({})
   const [micMeter, setMicMeter] = useState<number | 'unavailable' | null>(null)
   const [testingMic, setTestingMic] = useState(false)
+  const [repairingLegacyShortcut, setRepairingLegacyShortcut] = useState(false)
+  const [capturingShortcut, setCapturingShortcut] = useState<ShortcutSetting | null>(null)
+  const [pendingModifiers, setPendingModifiers] = useState<string[]>([])
+  const captureRef = useRef<ShortcutSetting | null>(null)
+  const modifierCodesRef = useRef(new Set<string>())
+  const modifierOnlyValidRef = useRef(true)
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -807,16 +943,18 @@ function SettingsView({
         listModels(),
         listLanguages(),
         listModelOffers(),
-      ]).then(([next, listed, models, languageOptions, modelOffers]) => {
-        setLocalSettings(next)
-        setDevices(listed)
-        setInventory(models)
-        setLanguages(languageOptions)
-        setOffers(modelOffers)
-      })
+      ])
+        .then(([next, listed, models, languageOptions, modelOffers]) => {
+          setLocalSettings(next)
+          setDevices(listed)
+          setInventory(models)
+          setLanguages(languageOptions)
+          setOffers(modelOffers)
+        })
+        .catch((reason: unknown) => onError(messageFrom(reason)))
     }, 0)
     return () => window.clearTimeout(timer)
-  }, [])
+  }, [onError])
 
   useEffect(() => {
     let unlisten: (() => void) | undefined
@@ -841,7 +979,7 @@ function SettingsView({
     settingsRef.current = settings
   }, [settings])
 
-  const commit = async (next: AppSettings) => {
+  const commit = useCallback(async (next: AppSettings) => {
     try {
       const written = await setSettings(next)
       settingsRef.current = written
@@ -850,9 +988,9 @@ function SettingsView({
     } catch (reason) {
       onError(messageFrom(reason))
     }
-  }
+  }, [onError, onStatusChange])
 
-  const patch = async <K extends keyof AppSettings>(key: K, value: AppSettings[K]['value']) => {
+  const patch = useCallback(async <K extends keyof AppSettings>(key: K, value: AppSettings[K]['value']) => {
     const queued = writeChainRef.current.then(async () => {
       const current = settingsRef.current
       if (!current) return
@@ -860,7 +998,91 @@ function SettingsView({
     })
     writeChainRef.current = queued
     await queued
+  }, [commit])
+
+  const repairLegacy = async () => {
+    setRepairingLegacyShortcut(true)
+    try {
+      await repairLegacyShortcut()
+      await onStatusChange()
+    } catch (reason) {
+      onError(messageFrom(reason))
+    } finally {
+      setRepairingLegacyShortcut(false)
+    }
   }
+
+  const cancelShortcutCapture = useCallback(() => {
+    captureRef.current = null
+    modifierCodesRef.current.clear()
+    modifierOnlyValidRef.current = true
+    setPendingModifiers([])
+    setCapturingShortcut(null)
+  }, [])
+
+  const startShortcutCapture = (key: ShortcutSetting) => {
+    captureRef.current = key
+    modifierCodesRef.current.clear()
+    modifierOnlyValidRef.current = true
+    setPendingModifiers([])
+    setCapturingShortcut(key)
+  }
+
+  useEffect(() => {
+    if (!capturingShortcut) return
+    const finish = (chord: string) => {
+      const field = captureRef.current
+      if (!field) return
+      captureRef.current = null
+      modifierCodesRef.current.clear()
+      modifierOnlyValidRef.current = true
+      setPendingModifiers([])
+      setCapturingShortcut(null)
+      void patch(field, chord)
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      event.preventDefault()
+      event.stopPropagation()
+      if (event.repeat || !captureRef.current) return
+      if (event.key === 'Escape' || event.code === 'Escape') {
+        cancelShortcutCapture()
+        return
+      }
+      if (modifierFromCode(event.code)) {
+        modifierCodesRef.current.add(event.code)
+        if (modifierCodesRef.current.size > 1) modifierOnlyValidRef.current = false
+        setPendingModifiers(canonicalModifiers(modifierCodesRef.current))
+        return
+      }
+      const terminal = terminalFromCode(event.code)
+      if (!terminal) return
+      if (captureRef.current === 'toggleShortcut' && modifierCodesRef.current.size === 0) return
+      finish([...canonicalModifiers(modifierCodesRef.current), terminal].join('+'))
+    }
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (!captureRef.current || !modifierFromCode(event.code)) return
+      event.preventDefault()
+      event.stopPropagation()
+      const codes = modifierCodesRef.current
+      if (
+        captureRef.current === 'holdKey' &&
+        modifierOnlyValidRef.current &&
+        codes.size === 1 &&
+        codes.has(event.code)
+      ) {
+        finish(singleModifierFromCode(event.code))
+        return
+      }
+      codes.delete(event.code)
+      setPendingModifiers(canonicalModifiers(codes))
+    }
+    window.addEventListener('keydown', onKeyDown, true)
+    window.addEventListener('keyup', onKeyUp, true)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true)
+      window.removeEventListener('keyup', onKeyUp, true)
+    }
+  }, [cancelShortcutCapture, capturingShortcut, patch])
 
   const recordSecondOptions = RECORD_SECOND_PRESETS
     .concat(settings ? [settings.recordSeconds.effective] : [])
@@ -874,6 +1096,20 @@ function SettingsView({
       (settings.engine.effective === 'auto' &&
         (inventory?.engines.some((engine) => engine.id === 'whisper' && engine.available) ??
           false)))
+
+  const toggleDiagnostic = status.shortcutHealthy
+    ? `${status.shortcutBackend === 'x11' ? 'X11' : 'Desktop portal'} active`
+    : status.legacyShortcut?.state === 'ready'
+      ? 'GNOME custom shortcut ready'
+      : `Registration unavailable: ${status.shortcutError ?? status.legacyShortcut?.detail ?? 'no supported backend'}`
+  const holdDiagnostic =
+    status.holdListener === 'native'
+      ? 'Native desktop shortcut active'
+      : status.holdListener === 'active'
+        ? 'Raw keyboard input active'
+        : status.holdListener === 'needs-permission'
+          ? `Raw keyboard input unavailable: ${status.holdListenerError ?? 'permission denied'}`
+          : `Listener unavailable: ${status.holdListenerError ?? 'no eligible backend'}`
 
   return (
     <div className="view-stack">
@@ -1049,45 +1285,64 @@ function SettingsView({
         {settings ? (
           <div className="setting-row">
             <div>
-              <strong>Push-to-talk key</strong>
+              <strong>Push-to-talk shortcut</strong>
               <span>
-                {overrideHintPlain(
+                {overrideHint(
                   settings.holdKey.source,
+                  'ECHO_HOLD_KEY',
                   'Hold to dictate from anywhere.',
                 )}
               </span>
+              {status.holdListener !== 'active' && status.holdListenerError ? (
+                <span>{status.holdListenerError}</span>
+              ) : null}
             </div>
             <div className="setting-actions">
-              <select
-                aria-label="Push-to-talk key"
+              <ShortcutRecorderControls
+                label="Push-to-talk shortcut"
                 value={settings.holdKey.effective}
-                disabled={settings.holdKey.source === 'env'}
-                onChange={(event) => void patch('holdKey', event.target.value)}
-              >
-                {holdKeyOptions(settings.holdKey.effective).map((option) => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
-                ))}
-              </select>
-              {status.holdListener === 'active' ? (
+                locked={settings.holdKey.source === 'env'}
+                capturing={capturingShortcut === 'holdKey'}
+                pending={capturingShortcut === 'holdKey' ? pendingModifiers : []}
+                onRecord={() => startShortcutCapture('holdKey')}
+                onReset={() => void patch('holdKey', null)}
+              />
+              {status.holdListener === 'native' ? (
                 <span className="status-note" data-tone="ok">
                   <span className="status-dot" data-tone="ok" aria-hidden="true" />
-                  Active
+                  Native shortcut active
+                </span>
+              ) : status.holdListener === 'active' ? (
+                <span className="status-note" data-tone="ok">
+                  <span className="status-dot" data-tone="ok" aria-hidden="true" />
+                  Raw input active
                 </span>
               ) : status.holdListener === 'needs-permission' ? (
                 <span className="status-note" data-tone="attention">
                   <span className="status-dot" data-tone="attention" aria-hidden="true" />
-                  Needs input group: sudo usermod -aG input $USER
+                  Raw input unavailable
                 </span>
               ) : (
                 <span className="status-note" data-tone="attention">
                   <span className="status-dot" data-tone="attention" aria-hidden="true" />
-                  Not available here
+                  Listener unavailable
                 </span>
               )}
             </div>
           </div>
         ) : null}
-        <ShortcutRow status={status} />
+        {settings ? (
+          <ShortcutRow
+            status={status}
+            settings={settings}
+            capturing={capturingShortcut === 'toggleShortcut'}
+            pending={capturingShortcut === 'toggleShortcut' ? pendingModifiers : []}
+            onRecord={() => startShortcutCapture('toggleShortcut')}
+            onReset={() => void patch('toggleShortcut', null)}
+            repairing={repairingLegacyShortcut}
+            onRepair={() => void repairLegacy()}
+          />
+        ) : null}
         <div className="setting-row">
           <div><strong>Theme</strong><span>Applied to the Echo window only.</span></div>
           <div className="segmented-control" role="group" aria-label="Application theme">
@@ -1177,6 +1432,16 @@ function SettingsView({
         ) : null}
         <SettingLine label="Text insertion" value={status.injectionName} tone={status.injectionReady ? 'ok' : 'attention'} />
         <SettingLine label="Resolved engine" value={status.engineName} tone={status.engineReady ? 'ok' : 'attention'} />
+        <SettingLine
+          label="Toggle shortcut backend"
+          value={toggleDiagnostic}
+          tone={status.shortcutHealthy || status.legacyShortcut?.state === 'ready' ? 'ok' : 'attention'}
+        />
+        <SettingLine
+          label="Push-to-talk backend"
+          value={holdDiagnostic}
+          tone={status.holdListener === 'native' || status.holdListener === 'active' ? 'ok' : 'attention'}
+        />
         {status.lastError ? (
           <div className="setting-line">
             <div><strong>Last failure</strong><span>{status.lastError}</span></div>
@@ -1426,9 +1691,88 @@ function microphoneHint(settings: AppSettings, devices: InputDevice[]) {
   return `${requested} is gone; using ${fallback}`
 }
 
-function holdKeyOptions(current: string) {
-  if (HOLD_KEY_OPTIONS.some((option) => option.value === current)) return HOLD_KEY_OPTIONS
-  return [...HOLD_KEY_OPTIONS, { value: current, label: current }]
+function ShortcutRecorderControls({
+  label,
+  value,
+  locked,
+  capturing,
+  pending,
+  onRecord,
+  onReset,
+}: {
+  label: string
+  value: string
+  locked: boolean
+  capturing: boolean
+  pending: string[]
+  onRecord: () => void
+  onReset: () => void
+}) {
+  return (
+    <div className="setting-actions" role="group" aria-label={label}>
+      <kbd aria-live="polite">
+        {capturing ? (pending.length > 0 ? `${pending.join('+')}+…` : 'Press keys…') : value}
+      </kbd>
+      <button
+        type="button"
+        className="compact-button"
+        disabled={locked || capturing}
+        onClick={onRecord}
+        aria-label={`Record ${label}`}
+      >
+        {capturing ? 'Recording…' : 'Record'}
+      </button>
+      <button
+        type="button"
+        className="compact-button"
+        disabled={locked || capturing}
+        onClick={onReset}
+        aria-label={`Reset ${label}`}
+      >
+        Reset
+      </button>
+    </div>
+  )
+}
+
+function modifierFromCode(code: string) {
+  if (code.startsWith('Meta')) return 'Super'
+  if (code.startsWith('Control')) return 'Ctrl'
+  if (code.startsWith('Alt')) return 'Alt'
+  if (code.startsWith('Shift')) return 'Shift'
+  return null
+}
+
+function canonicalModifiers(codes: Set<string>) {
+  const present = new Set<string>()
+  for (const code of codes) {
+    const modifier = modifierFromCode(code)
+    if (modifier) present.add(modifier)
+  }
+  return ['Super', 'Ctrl', 'Alt', 'Shift'].filter((name) => present.has(name))
+}
+
+function singleModifierFromCode(code: string) {
+  const side = code.endsWith('Right') ? 'Right' : 'Left'
+  if (code.startsWith('Control')) return `${side}Ctrl`
+  if (code.startsWith('Shift')) return `${side}Shift`
+  if (code.startsWith('Meta')) return side === 'Left' ? 'Super' : 'RightSuper'
+  if (code.startsWith('Alt')) return side === 'Left' ? 'Alt' : 'RightAlt'
+  return ''
+}
+
+function terminalFromCode(code: string) {
+  if (/^Key[A-Z]$/.test(code)) return code.slice(3)
+  if (/^Digit[0-9]$/.test(code)) return code.slice(5)
+  if (/^F(?:[1-9]|1[0-2])$/.test(code)) return code
+  const supported = new Set([
+    'Space', 'Enter', 'Tab', 'Backspace', 'Delete', 'Insert', 'Home', 'End',
+    'PageUp', 'PageDown', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+    'Minus', 'Equal', 'BracketLeft', 'BracketRight', 'Backslash', 'Semicolon',
+    'Quote', 'Backquote', 'Comma', 'Period', 'Slash', 'CapsLock', 'ContextMenu',
+  ])
+  if (!supported.has(code)) return null
+  return code === 'ContextMenu' ? 'Menu' : code
 }
 
 function overrideHint(source: SettingSource, envName: string, fallback: string) {

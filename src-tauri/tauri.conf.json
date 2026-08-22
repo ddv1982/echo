@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "build": {
-    "beforeDevCommand": "cd frontend && npm run dev",
-    "beforeBuildCommand": "cd frontend && npm run build",
+    "beforeDevCommand": "npm --prefix ../frontend run dev",
+    "beforeBuildCommand": "npm --prefix ../frontend run build",
     "devUrl": "http://127.0.0.1:5173",
     "frontendDist": "../frontend/dist"
   },
@@ -52,7 +52,7 @@
       }
     }
   },
-  "productName": "Echo",
+  "productName": "io.github.ddv1982.echo",
   "mainBinaryName": "echo-desktop",
   "identifier": "io.github.ddv1982.echo"
 }
