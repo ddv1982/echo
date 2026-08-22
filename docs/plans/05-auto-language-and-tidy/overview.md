@@ -1,8 +1,10 @@
-# Auto language by default, a tidy repo, and settings for humans
+# Auto language by default, working hotkeys, a tidy repo, and settings for humans
 
 ## Context
 
-Three requests from the user, each traced to code.
+Four requests from the user, each traced to code.
+
+**"The hotkeys for triggering recording aren't working correctly."** Verified against the released v0.3.0 binary and the code. The toggle mechanism itself works: `rec --toggle` start acquires `recording.lock` with a pid liveness check, the second invocation writes `recording.stop`, and the recorder finishes and transcribes (`crates/echo/src/rec.rs:316-352`). `rec` subcommands run in `try_cli` before the Tauri builder (`src-tauri/src/main.rs:823-829`), so the single-instance plugin cannot interfere, and the startup takeover spares cmdlines carrying `rec` (`crates/echo/src/upgrade.rs:122`). The core defect is silence: with no engine or no microphone, the session fails with the detail on stderr, which a compositor-spawned process writes to the journal; the status file is read by the desktop window only when it happens to be open; the HUD's failure flash is X11-only and brief. No notification facility exists anywhere in the tree. A user pressing the hotkey in another app sees nothing. The Settings "Hold key" row is a UX lie by omission: it only affects `rec --hold`, a terminal loop needing input-group access, yet a user who sets it expects global hold-to-talk. And shortcut binding is honor-system: the checklist item is a manual dismissal, and nothing verifies a binding exists.
 
 **"When I speak a different language it still makes it back into English."** A real defect with a named cause. With a multilingual model installed and no language configured, Echo passes `-l en` to whisper-cli. The resolution chain: `Config.language` is `None` (`crates/echo-core/src/config.rs:49`), `resolved_language` falls back to `LanguageChoice::default()` (`crates/echo/src/stt/mod.rs:42-48`), and that default is `Pinned(Language::ENGLISH)` (`crates/echo-core/src/language.rs:63-66`). `whisper_args` then emits `-l en` unconditionally (`crates/echo/src/stt/whisper.rs:212-236`). The settings IPC projects the same default into the UI as `"en"` (`src-tauri/src/main.rs:694`). This was a deliberate choice: plan 03 phase 17 pinned by default for latency and tail accuracy, with auto as an opt-in. The user has now explicitly asked for auto. The measured result of the current default, reproduced below, is that a Dutch speaker's words come back as confident English-sounding gibberish with exit 0 and no warning.
 
@@ -41,16 +43,23 @@ Two nuances the design must respect. Auto is not free: on tiny, the 4.8 s Dutch 
 
 **Apple's principles, applied to settings.** Sensible defaults so most people never open Settings; progressive disclosure (a simple surface, advanced behind a click); group by user intent, not implementation; plain language without jargon; no choices that do not change outcomes. The engine override is the clearest case: Auto already picks the right engine, so Whisper-versus-Parakeet is an implementation detail for nearly everyone.
 
+**Notifications and shortcut registration, researched.** [notify-rust](https://github.com/hoodie/notify-rust/) is a pure-Rust D-Bus client for `org.freedesktop.Notifications`; its default zbus backend shares the zbus 5 stack the single-instance plugin already brought in, so failure feedback adds no new D-Bus dependency and no binary. Shelling to `notify-send` is the rejected alternative: a separate binary that is not guaranteed installed, the same class of silent failure being fixed. For registration, the [GlobalShortcuts portal](https://flatpak.github.io/xdg-desktop-portal/#gdbus-org.freedesktop.portal.GlobalShortcuts) exists on GNOME 48+ ([release notes](https://release.gnome.org/48/developers/); rebinding broken until 48.8) and KDE Plasma 6.3+, but Ubuntu 24.04 LTS ships GNOME 46 and Zorin 17 ships GNOME 43, so the portal is absent for Echo's stated targets. [tauri-plugin-global-shortcut](https://github.com/tauri-apps/global-hotkey/pull/162) routes Wayland through the portal since late 2025 with an X11 default path, but its Wayland path is young: callbacks silently not firing on GNOME 48.7 ([plugins-workspace#3267](https://github.com/tauri-apps/plugins-workspace/issues/3267)) is the bug class this plan exists to eliminate. The call, argued in phase 4: registration is not shippable yet; a verified-setup flow closes the honor-system gap with no new dependencies.
+
 ## Scope
 
 **Included**
 
 - Auto language detection by default when the resolved model is multilingual, pinned English as the implicit choice for `.en` models, explicit pinning preserved, and a one-click "pin the detected language" suggestion after confident auto runs.
+- Desktop notifications for failed shortcut-spawned sessions, naming the failure and the fix, never failing the session.
+- Hold-to-talk that works without a terminal: the hold-key listener runs inside the desktop process, with the permission-absent path explained in place.
+- A verified shortcut setup flow that replaces the honor-system checklist item; in-app registration is researched and explicitly deferred with the trigger condition named.
 - The tidy-up inventory above: plan status headers, the Fake engine out of the shipping selector, the unreferenced tray rasters, the dead `Rewrite.hits`, and the README corrections.
 - A Settings redesign in two tiers: a short General surface (Microphone, Language, Model quality, Theme) and an Advanced disclosure (engine override, hold key, timed recording, cleanup, HUD toggle, the transparency readout, env overrides, config path). Same grayscale design language; this is IA and copy, not a re-theme.
 
 **Excluded**
 
+- In-app global shortcut registration via the portal or tauri-plugin-global-shortcut. Researched and deferred in phase 4 with the trigger condition named: Ubuntu 24.04 LTS (GNOME 46) and Zorin 17 (GNOME 43) have no GlobalShortcuts portal, and the plugin's Wayland path is immature where the portal exists.
+- A Done notification. Inserted text at the cursor is the feedback; a toast on every dictation is noise on the happy path.
 - Plan 03 phases 16 and 20 themselves. They stay open as named work; this plan only marks status.
 - A searchable language combobox, again. The grouped native select stays.
 - Translation (`--task translate`), diarization, non-English cleanup rules, Wayland HUD, Windows, macOS. Unchanged from plan 04.
@@ -87,9 +96,14 @@ The implementer must invoke these by name:
 
 ## Phases
 
+User-felt defects lead: the language fix is first, the hotkey work follows, tidy-up subtracts before the settings redesign restyles the complete control set.
+
 1. [Phase 1: auto by default](phase-1-auto-language.md)
-2. [Phase 2: tidy-up](phase-2-tidy-up.md)
-3. [Phase 3: settings for humans](phase-3-settings-ia.md)
+2. [Phase 2: failure feedback for shortcut sessions](phase-2-failure-feedback.md)
+3. [Phase 3: real hold-to-talk](phase-3-hold-to-talk.md)
+4. [Phase 4: trustworthy shortcut setup](phase-4-shortcut-setup.md)
+5. [Phase 5: tidy-up](phase-5-tidy-up.md)
+6. [Phase 6: settings for humans](phase-6-settings-ia.md)
 
 Verification detail per phase lives in [testing.md](testing.md).
 
@@ -113,5 +127,5 @@ CI runs this list plus the icon drift check, so a green PR is the project-level 
 
 - Branches follow `cursor/<descriptive-name>-8122`. One phase per PR, in order.
 - Do not carry compatibility shims between phases. When a phase replaces a pattern, delete the old one in the same diff.
-- Attach evidence to every PR. Phase 1 attaches the before/after transcript of a non-English fixture through `rec --once`. Phase 2's diffs are their own evidence. Phase 3 attaches screenshots at 920x680 in both themes.
+- Attach evidence to every PR. Phase 1 attaches the before/after transcript of a non-English fixture through `rec --once`. Phase 2 attaches the notification transcript under dbus-run-session. Phases 3 and 4 attach their control-surface transcripts. Phase 5's diffs are their own evidence. Phase 6 attaches screenshots at 920x680 in both themes.
 - The empirical matrix above is reproducible: whisper-cli from upstream master, `ggml-tiny-q5_1.bin`, espeak-ng fixtures resampled to 16 kHz mono.

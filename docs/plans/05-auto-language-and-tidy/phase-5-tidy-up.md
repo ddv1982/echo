@@ -1,10 +1,10 @@
-# Phase 2: tidy-up
+# Phase 5: tidy-up
 
 Back to [overview](overview.md).
 
 ## Goal
 
-Remove what the repo no longer needs, and mark what already shipped. Subtraction before addition: this lands before the settings redesign so phase 3 restyles a smaller surface.
+Remove what the repo no longer needs, and mark what already shipped. Subtraction before addition: this lands before the settings redesign so phase 6 restyles a smaller surface.
 
 ## Changes
 

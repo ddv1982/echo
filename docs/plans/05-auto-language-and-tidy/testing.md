@@ -23,8 +23,11 @@ CI runs this list plus the icon drift check (`cargo run -p xtask`, then `git dif
 | Phase | Static | Runtime |
 | --- | --- | --- |
 | 1. Auto by default | Resolution rule table tests (unset+multilingual → Auto, unset+.en → pinned English, configured wins, `.en`+German still refused); auto-detected Japanese gains no ASCII period | control-cli: Dutch fixture through `rec --once` with default config yields Dutch or a visibly low-confidence chip; `ECHO_LANGUAGE=nl` yields Dutch with no detection line; before/after transcripts on the PR |
-| 2. Tidy-up | Suite plus drift check over the reduced raster set; availability payload omits Fake by default and includes it under `ECHO_SHOW_FAKE` | control-ui: selector shows no Fake; `ECHO_SHOW_FAKE=1` brings it back; screenshots both themes |
-| 3. Settings IA | Component tests pin the tiers: General has exactly Microphone, Language, Model quality, Theme; Advanced collapsed by default; env-locked fields locked in Advanced | control-ui: both tiers at 920x680 in both themes; keyboard-only walkthrough including disclosure expand |
+| 2. Failure feedback | Reason-to-message mapping covers every FailReason; GUI-origin sessions do not notify | control-cli under dbus-run-session: engine-missing `rec --once` lands a notification naming the fix; GUI-origin failure sends none; transcript on the PR |
+| 3. Hold-to-talk | Synthetic evdev node: down starts, up stops, stray up is a no-op, foreign lock blocks a start; permission-absent path reports its reason | control-ui on hardware with evdev: hold the key in another app, release, text lands, no terminal; sandbox drives the synthetic node |
+| 4. Shortcut setup | Component tests: unverified by default, status flip during the listener window verifies and persists, timeout stays unverified | control-ui under Xvfb: external `rec --toggle` spawn flips the item to verified; no spawn leaves it unverified; both transcripts on the PR |
+| 5. Tidy-up | Suite plus drift check over the reduced raster set; availability payload omits Fake by default and includes it under `ECHO_SHOW_FAKE` | control-ui: selector shows no Fake; `ECHO_SHOW_FAKE=1` brings it back; screenshots both themes |
+| 6. Settings IA | Component tests pin the tiers: General has exactly Microphone, Language, Model quality, Theme; Advanced collapsed by default; env-locked fields locked in Advanced | control-ui: both tiers at 920x680 in both themes; keyboard-only walkthrough including disclosure expand |
 
 ## Surfaces with no control skill
 
