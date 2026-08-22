@@ -21,6 +21,7 @@ vi.mock('./tauri', async (importOriginal) => {
 describe('Echo desktop shell', () => {
   beforeEach(async () => {
     resetPreviewSettings()
+    localStorage.removeItem('echo-shortcut-bound')
     const actual = await vi.importActual<typeof import('./tauri')>('./tauri')
     vi.mocked(setSettings).mockReset()
     vi.mocked(setSettings).mockImplementation((settings) => actual.setSettings(settings))
@@ -37,7 +38,7 @@ describe('Echo desktop shell', () => {
     render(<App />)
     const start = await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(start)
-    expect(await screen.findByRole('button', { name: 'Stop & transcribe' })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Stop and transcribe' })).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Dictionary' }))
     fireEvent.change(screen.getByLabelText('What Whisper hears'), { target: { value: 'ray cast' } })
@@ -455,5 +456,82 @@ describe('Echo desktop shell', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     expect(await screen.findByText('Silence detection')).toBeInTheDocument()
     expect(screen.getByText(/ggml-silero-v6\.2\.0\.bin · 864 KiB/)).toBeInTheDocument()
+  })
+
+  it('shows usage stats derived from history', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    const strip = await screen.findByLabelText('Usage')
+    expect(within(strip).getByText('words dictated')).toBeInTheDocument()
+    // The three fixture rows carry 8 + 9 + 2 words.
+    expect(within(strip).getByText('19')).toBeInTheDocument()
+    expect(within(strip).getByText('sessions this week')).toBeInTheDocument()
+    expect(within(strip).getByText('day streak')).toBeInTheDocument()
+  })
+
+  it('completes the setup checklist, shortcut by manual dismissal', async () => {
+    localStorage.removeItem('echo-shortcut-bound')
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    // Mic and engine are ready in the fixture; only the shortcut remains open.
+    const checklist = await screen.findByLabelText('Finish setup')
+    expect(within(checklist).getByText('Shortcut bound')).toBeInTheDocument()
+    const micItem = within(checklist).getByText('Microphone ready').closest('.checklist-item')
+    expect(micItem).toHaveAttribute('data-done', 'true')
+    fireEvent.click(within(checklist).getByRole('button', { name: 'I bound it' }))
+    await waitFor(() => expect(screen.queryByLabelText('Finish setup')).not.toBeInTheDocument())
+    expect(localStorage.getItem('echo-shortcut-bound')).toBe('1')
+  })
+
+  it('lists the microphone step when the mic is not ready', async () => {
+    seedPreviewStatus({ microphoneReady: false })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    const checklist = await screen.findByLabelText('Finish setup')
+    expect(within(checklist).getByText('Microphone ready')).toBeInTheDocument()
+    expect(within(checklist).getByText('Speech engine and model installed')).toBeInTheDocument()
+  })
+
+  it('parks the level bars for out-of-process sessions and drives them live in-process', async () => {
+    seedPreviewStatus({ recording: true, recordingInProcess: false, phase: 'Recording' })
+    const { rerender } = render(<App />)
+    const parked = await screen.findByText('Listening…')
+    expect(parked).toBeInTheDocument()
+    const bars = document.querySelector('.level-bars')
+    expect(bars).toHaveAttribute('data-live', 'false')
+
+    seedPreviewStatus({ recording: true, recordingInProcess: true, phase: 'Recording' })
+    rerender(<App />)
+    await waitFor(() => {
+      expect(document.querySelector('.level-bars')).toHaveAttribute('data-live', 'true')
+    })
+    // Live bars get inline heights from the meter.
+    await waitFor(() => {
+      const heights = [...document.querySelectorAll('.level-bar')].map((bar) =>
+        (bar as HTMLElement).style.height,
+      )
+      expect(heights.some((height) => height && height !== '15%')).toBe(true)
+    })
+  })
+
+  it('groups history by day', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'History' }))
+    // The fixture rows are all from one fixed day; the header follows the
+    // Today / Yesterday / date rule relative to when the test runs.
+    const day = new Date(1787310400 * 1000)
+    day.setHours(0, 0, 0, 0)
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    const diffDays = Math.round((today.getTime() - day.getTime()) / 86_400_000)
+    const expected =
+      diffDays === 0
+        ? 'Today'
+        : diffDays === 1
+          ? 'Yesterday'
+          : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(day)
+    const headers = await screen.findAllByRole('heading', { level: 3 })
+    expect(headers.map((header) => header.textContent)).toContain(expected)
   })
 })

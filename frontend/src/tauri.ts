@@ -47,6 +47,7 @@ function richPreviewStatus(): AppStatus {
       languageProbability: 0.96,
     },
     languageWarning: null,
+    recordingInProcess: false,
   }
 }
 
@@ -170,15 +171,31 @@ export function toggleRecording(): Promise<void> {
   if (isTauri()) return invoke('toggle_recording')
   if (preview) {
     if (previewStatus.recording) {
-      previewStatus = { ...previewStatus, recording: false, phase: 'Transcribing' }
+      previewStatus = { ...previewStatus, recording: false, recordingInProcess: false, phase: 'Transcribing' }
       window.setTimeout(() => {
         previewStatus = { ...previewStatus, phase: 'Idle' }
       }, 900)
     } else {
-      previewStatus = { ...previewStatus, recording: true, phase: 'Recording' }
+      previewStatus = {
+        ...previewStatus,
+        recording: true,
+        recordingInProcess: true,
+        phase: 'Recording',
+      }
     }
   }
   return Promise.resolve()
+}
+
+export function getRecordingLevel(): Promise<number> {
+  if (isTauri()) return invoke('get_recording_level')
+  if (preview && previewStatus.recording && previewStatus.recordingInProcess) {
+    // A plausible speech-like level for the dev server and tests.
+    const t = Date.now() / 1000
+    const level = Math.max(0, 0.06 + 0.22 * Math.abs(Math.sin(t * 2.1) * Math.sin(t * 0.7)))
+    return Promise.resolve(level)
+  }
+  return Promise.resolve(0)
 }
 
 export function copyText(text: string): Promise<void> {
@@ -464,5 +481,6 @@ function initialPreviewStatus(): AppStatus {
     lastError: null,
     lastRun: null,
     languageWarning: null,
+    recordingInProcess: false,
   }
 }
