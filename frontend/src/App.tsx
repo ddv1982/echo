@@ -504,6 +504,78 @@ function StaleInstallWarning({ status }: { status: AppStatus }) {
   )
 }
 
+/// The shortcut row with its verified-setup test. Echo never registers the
+/// binding; the compositor owns it. The test watches the status file for a
+/// session starting while the listener window is open, which proves the
+/// binding, the spawn, and the binary path in one press.
+function ShortcutRow({ status }: { status: AppStatus }) {
+  const [verifiedAt, setVerifiedAt] = useState<number | null>(() => {
+    const raw = localStorage.getItem('echo-shortcut-verified-at')
+    return raw ? Number(raw) : null
+  })
+  const [phase, setPhase] = useState<'idle' | 'listening' | 'timed-out'>('idle')
+  const baseline = useRef('Idle')
+
+  useEffect(() => {
+    if (phase !== 'listening') return
+    if (status.phase !== baseline.current && status.phase !== 'Idle') {
+      const now = Math.floor(Date.now() / 1000)
+      localStorage.setItem('echo-shortcut-verified-at', String(now))
+      setVerifiedAt(now)
+      setPhase('idle')
+    }
+  }, [phase, status])
+
+  const start = () => {
+    baseline.current = status.phase
+    setPhase('listening')
+    window.setTimeout(() => {
+      setPhase((current) => (current === 'listening' ? 'timed-out' : current))
+    }, 10_000)
+  }
+
+  return (
+    <div className="setting-row">
+      <div>
+        <strong>Suggested shortcut</strong>
+        <span>
+          Bind <kbd>{status.shortcut}</kbd> to <code>echo-desktop rec --toggle</code> in your
+          desktop&apos;s keyboard settings; Echo does not register it itself.
+        </span>
+      </div>
+      <div className="setting-actions">
+        {phase === 'listening' ? (
+          <span className="status-note" data-tone="ok">
+            <span className="status-dot" data-tone="ok" aria-hidden="true" />
+            Listening… press your shortcut
+          </span>
+        ) : (
+          <button
+            type="button"
+            className="compact-button"
+            disabled={status.recording}
+            onClick={start}
+          >
+            Test shortcut
+          </button>
+        )}
+        {phase === 'timed-out' ? (
+          <span className="status-note" data-tone="attention">
+            <span className="status-dot" data-tone="attention" aria-hidden="true" />
+            No keypress seen — check the binding
+          </span>
+        ) : null}
+        {phase === 'idle' && verifiedAt != null ? (
+          <span className="status-note" data-tone="ok">
+            <span className="status-dot" data-tone="ok" aria-hidden="true" />
+            Verified {new Date(verifiedAt * 1000).toLocaleDateString()}
+          </span>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
 function StatsStrip({ history }: { history: HistoryItem[] }) {
   const stats = useMemo(() => deriveStats(history, new Date()), [history])
   if (history.length === 0) return null
@@ -532,11 +604,12 @@ function SetupChecklist({
   status: AppStatus
   onOpenSettings: () => void
 }) {
-  const [bound, setBound] = useState(() => localStorage.getItem('echo-shortcut-bound') === '1')
+  // Verified, not asserted: only a passing shortcut test completes this.
+  const [verified] = useState(() => localStorage.getItem('echo-shortcut-verified-at') !== null)
   const items = [
     { key: 'mic', done: status.microphoneReady, label: 'Microphone ready' },
     { key: 'engine', done: status.engineReady, label: 'Speech engine and model installed' },
-    { key: 'shortcut', done: bound, label: 'Shortcut bound' },
+    { key: 'shortcut', done: verified, label: verified ? 'Shortcut verified' : 'Shortcut bound' },
   ]
   if (items.every((item) => item.done)) return null
   return (
@@ -548,19 +621,7 @@ function SetupChecklist({
             {item.done ? <Check size={13} /> : null}
           </span>
           <span className="checklist-label">{item.label}</span>
-          {!item.done && item.key === 'shortcut' ? (
-            <button
-              type="button"
-              className="compact-button"
-              onClick={() => {
-                localStorage.setItem('echo-shortcut-bound', '1')
-                setBound(true)
-              }}
-            >
-              I bound it
-            </button>
-          ) : null}
-          {!item.done && item.key !== 'shortcut' ? (
+          {!item.done ? (
             <button type="button" className="compact-button" onClick={onOpenSettings}>
               Open Settings
             </button>
@@ -1054,7 +1115,7 @@ function SettingsView({
       </section>
       <section className="panel settings-section">
         <SectionHeading title="Shortcut and recording" subtitle="Bind the suggested shortcut in your desktop's keyboard settings; Echo does not register it itself." />
-        <SettingLine label="Suggested shortcut" value={`${status.shortcut} · press once to start, again to stop`} />
+        <ShortcutRow status={status} />
         {settings ? (
           <>
             <SettingToggle

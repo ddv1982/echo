@@ -25,6 +25,7 @@ describe('Echo desktop shell', () => {
   beforeEach(async () => {
     resetPreviewSettings()
     localStorage.removeItem('echo-shortcut-bound')
+    localStorage.removeItem('echo-shortcut-verified-at')
     const actual = await vi.importActual<typeof import('./tauri')>('./tauri')
     vi.mocked(setSettings).mockReset()
     vi.mocked(setSettings).mockImplementation((settings) => actual.setSettings(settings))
@@ -518,18 +519,47 @@ describe('Echo desktop shell', () => {
     expect(within(strip).getByText('day streak')).toBeInTheDocument()
   })
 
-  it('completes the setup checklist, shortcut by manual dismissal', async () => {
-    localStorage.removeItem('echo-shortcut-bound')
+  it('verifies the shortcut through a real session flip, never by assertion', async () => {
+    localStorage.removeItem('echo-shortcut-verified-at')
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     // Mic and engine are ready in the fixture; only the shortcut remains open.
     const checklist = await screen.findByLabelText('Finish setup')
     expect(within(checklist).getByText('Shortcut bound')).toBeInTheDocument()
-    const micItem = within(checklist).getByText('Microphone ready').closest('.checklist-item')
-    expect(micItem).toHaveAttribute('data-done', 'true')
-    fireEvent.click(within(checklist).getByRole('button', { name: 'I bound it' }))
+    expect(within(checklist).queryByRole('button', { name: 'I bound it' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Test shortcut' }))
+    expect(await screen.findByText('Listening… press your shortcut')).toBeInTheDocument()
+
+    // The compositor binding spawns rec --toggle; the status poll sees it.
+    seedPreviewStatus({ phase: 'Recording', recording: true, recordingInProcess: false })
+    await waitFor(() => expect(localStorage.getItem('echo-shortcut-verified-at')).not.toBeNull())
+    expect(await screen.findByText(/Verified/)).toBeInTheDocument()
+
+    seedPreviewStatus({ phase: 'Idle', recording: false, recordingInProcess: false })
+    fireEvent.click(screen.getByRole('button', { name: 'Home' }))
+    // Everything is green, so the checklist has done its job and is gone.
     await waitFor(() => expect(screen.queryByLabelText('Finish setup')).not.toBeInTheDocument())
-    expect(localStorage.getItem('echo-shortcut-bound')).toBe('1')
+  })
+
+  it('leaves the shortcut unverified when no keypress arrives', async () => {
+    localStorage.removeItem('echo-shortcut-verified-at')
+    // shouldAdvanceTime keeps the app's status poll and waitFor working
+    // while the 10 s listener window is jumped over.
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      render(<App />)
+      await screen.findByRole('button', { name: 'Start recording' })
+      fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Test shortcut' }))
+      expect(await screen.findByText('Listening… press your shortcut')).toBeInTheDocument()
+      await vi.advanceTimersByTimeAsync(10_100)
+      expect(await screen.findByText('No keypress seen — check the binding')).toBeInTheDocument()
+      expect(localStorage.getItem('echo-shortcut-verified-at')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('lists the microphone step when the mic is not ready', async () => {
