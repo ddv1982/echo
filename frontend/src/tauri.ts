@@ -293,14 +293,14 @@ export function downloadModel(id: string): Promise<void> {
     previewDownloadListeners.forEach((listener) => listener(progress))
   }
   emit('downloading', 0)
-  const midway = setTimeout(() => emit('downloading', Math.floor(offer.sizeBytes / 2)), 150)
-  const verifying = setTimeout(() => emit('verifying', offer.sizeBytes), 300)
+  const midway = setTimeout(() => emit('downloading', Math.floor(offer.sizeBytes / 2)), 300)
+  const verifying = setTimeout(() => emit('verifying', offer.sizeBytes), 700)
   const done = setTimeout(() => {
     previewOffers = previewOffers.map((candidate) =>
       candidate.id === id ? { ...candidate, installed: true } : candidate,
     )
     emit('done', offer.sizeBytes)
-  }, 450)
+  }, 1100)
   previewDownloadTimers.set(id, [midway, verifying, done])
   return Promise.resolve()
 }

@@ -1,11 +1,68 @@
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, SampleFormat, SizedSample};
 use echo_core::{Pcm16kMono, SAMPLE_RATE_HZ};
+
+/// The microphone's RMS level, shared between the capture callback and
+/// whoever renders it. f32 bits in one atomic; publishing is a few
+/// instructions per callback buffer and touches no lock.
+#[derive(Debug, Clone, Default)]
+pub struct LevelMeter {
+    bits: Arc<AtomicU32>,
+}
+
+impl LevelMeter {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn publish(&self, rms: f32) {
+        self.bits
+            .store(rms.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+    }
+
+    #[must_use]
+    pub fn level(&self) -> f32 {
+        f32::from_bits(self.bits.load(Ordering::Relaxed))
+    }
+
+    fn publish_samples(&self, samples: &[f32]) {
+        if samples.is_empty() {
+            return;
+        }
+        let sum_sq: f32 = samples.iter().map(|sample| sample * sample).sum();
+        self.publish((sum_sq / samples.len() as f32).sqrt());
+    }
+}
+
+/// Publish a fixture's per-chunk RMS at real-time cadence, so HUD demos and
+/// CI screenshots show the WAV's actual loudness instead of a synthetic wave.
+pub fn play_fixture_meter(
+    pcm: &Pcm16kMono,
+    meter: LevelMeter,
+    cancel: CancellationToken,
+) -> std::thread::JoinHandle<()> {
+    const CHUNK: usize = SAMPLE_RATE_HZ as usize / 33;
+    let samples: Vec<f32> = pcm
+        .samples()
+        .iter()
+        .map(|sample| *sample as f32 / f32::from(i16::MAX))
+        .collect();
+    std::thread::spawn(move || {
+        for chunk in samples.chunks(CHUNK) {
+            if cancel.is_cancelled() {
+                break;
+            }
+            meter.publish_samples(chunk);
+            std::thread::sleep(Duration::from_millis(30));
+        }
+    })
+}
 
 #[derive(Debug, Clone)]
 pub struct CancellationToken {
@@ -200,7 +257,7 @@ impl AudioCapture {
         })
     }
 
-    pub fn record(&self, max: Duration) -> Result<CaptureResult, AudioError> {
+    pub fn record(&self, max: Duration, meter: Option<&LevelMeter>) -> Result<CaptureResult, AudioError> {
         let config = self
             .device
             .default_input_config()
@@ -211,16 +268,16 @@ impl AudioCapture {
         let err_slot: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let stream = match config.sample_format() {
             SampleFormat::F32 => {
-                build_stream::<f32>(&self.device, &config.into(), &collected, &err_slot)?
+                build_stream::<f32>(&self.device, &config.into(), &collected, &err_slot, meter)?
             }
             SampleFormat::I16 => {
-                build_stream::<i16>(&self.device, &config.into(), &collected, &err_slot)?
+                build_stream::<i16>(&self.device, &config.into(), &collected, &err_slot, meter)?
             }
             SampleFormat::I32 => {
-                build_stream::<i32>(&self.device, &config.into(), &collected, &err_slot)?
+                build_stream::<i32>(&self.device, &config.into(), &collected, &err_slot, meter)?
             }
             SampleFormat::F64 => {
-                build_stream::<f64>(&self.device, &config.into(), &collected, &err_slot)?
+                build_stream::<f64>(&self.device, &config.into(), &collected, &err_slot, meter)?
             }
             other => {
                 return Err(AudioError::Stream(format!(
@@ -251,6 +308,7 @@ fn build_stream<T>(
     config: &cpal::StreamConfig,
     collected: &Arc<Mutex<Vec<f32>>>,
     err_slot: &Arc<Mutex<Option<String>>>,
+    meter: Option<&LevelMeter>,
 ) -> Result<cpal::Stream, AudioError>
 where
     T: Sample + SizedSample + Send + 'static,
@@ -258,12 +316,25 @@ where
 {
     let collected = Arc::clone(collected);
     let err_slot = Arc::clone(err_slot);
+    let meter = meter.cloned();
     device
         .build_input_stream(
             config,
             move |data: &[T], _| {
-                let mut buf = collected.lock().expect("pcm lock");
-                buf.extend(data.iter().map(|sample| sample.to_sample::<f32>()));
+                let mut sum_sq = 0.0f32;
+                {
+                    let mut buf = collected.lock().expect("pcm lock");
+                    for sample in data {
+                        let value = sample.to_sample::<f32>();
+                        sum_sq += value * value;
+                        buf.push(value);
+                    }
+                }
+                if let Some(meter) = &meter {
+                    if !data.is_empty() {
+                        meter.publish((sum_sq / data.len() as f32).sqrt());
+                    }
+                }
             },
             move |err| {
                 *err_slot.lock().expect("stream error lock") = Some(err.to_string());

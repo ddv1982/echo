@@ -87,17 +87,21 @@ fn run_record(mut stop: StopWhen) -> i32 {
     }
     apply_edge(&mut session, HotkeyEvent::Down);
     let _ = status::write_status(session.state(), None, None);
-    let recording_hud = crate::ui::hud::RecordingHud::start();
-    let capture = match capture_pcm(&mut stop) {
+    // The HUD lives until after injection: the longest wait in the session
+    // (transcription) gets an indicator, and the outcome gets a state.
+    let meter = audio::LevelMeter::new();
+    let hud = crate::ui::hud::RecordingHud::start(meter.clone());
+    let capture = match capture_pcm(&mut stop, &meter) {
         Ok(capture) => capture,
         Err(reason) => {
+            hud.set_state(crate::ui::hud::HudState::Failed);
             let _ = session.fail(reason);
             log_state(&session);
             let _ = status::write_status(session.state(), None, None);
             return 1;
         }
     };
-    drop(recording_hud);
+    hud.set_state(crate::ui::hud::HudState::Transcribing);
     apply_edge(&mut session, HotkeyEvent::Up);
     let _ = status::write_status(session.state(), None, None);
 
@@ -118,6 +122,7 @@ fn run_record(mut stop: StopWhen) -> i32 {
     let transcript = match engine.transcribe(&capture.pcm) {
         Ok(t) => t,
         Err(err) => {
+            hud.set_state(crate::ui::hud::HudState::Failed);
             let (reason, detail) = match &err {
                 echo_core::EngineError::Missing => (FailReason::EngineMissing, None),
                 // The engine's stderr says exactly what went wrong; keep it
@@ -162,9 +167,11 @@ fn run_record(mut stop: StopWhen) -> i32 {
             InjectReport::Failed { reason } => *reason,
             _ => FailReason::InjectUnconfirmed,
         };
+        hud.set_state(crate::ui::hud::HudState::Failed);
         let _ = session.fail(reason);
         log_state(&session);
     } else if session.complete_inject().is_ok() {
+        hud.set_state(crate::ui::hud::HudState::Done);
         log_state(&session);
     }
 
@@ -213,23 +220,30 @@ fn apply_edge(session: &mut Session, event: HotkeyEvent) {
     }
 }
 
-fn capture_pcm(stop: &mut StopWhen) -> Result<audio::CaptureResult, FailReason> {
-    capture_from(fixture_path(), stop)
+fn capture_pcm(stop: &mut StopWhen, meter: &audio::LevelMeter) -> Result<audio::CaptureResult, FailReason> {
+    capture_from(fixture_path(), stop, meter)
 }
 
 fn capture_from(
     fixture: Option<PathBuf>,
     stop: &mut StopWhen,
+    meter: &audio::LevelMeter,
 ) -> Result<audio::CaptureResult, FailReason> {
     if let Some(path) = fixture {
-        return audio::load_wav(&path).map_err(|_| FailReason::EngineError);
+        let capture = audio::load_wav(&path).map_err(|_| FailReason::EngineError)?;
+        // Publish the fixture's loudness at real-time cadence so the HUD's
+        // bars are truthful in demos and CI screenshots.
+        let player =
+            audio::play_fixture_meter(&capture.pcm, meter.clone(), CancellationToken::new());
+        let _ = player.join();
+        return Ok(capture);
     }
     let capture = AudioCapture::open_default().map_err(|err| match err {
         audio::AudioError::NoDevice => FailReason::NoInputDevice,
         _ => FailReason::CaptureFailed,
     })?;
     let result = match stop {
-        StopWhen::Timer => capture.record(recording_duration()),
+        StopWhen::Timer => capture.record(recording_duration(), Some(meter)),
         StopWhen::ToggleFile(toggle) => {
             let cancel = capture.cancel.clone();
             let stop_path = &toggle.stop_path;
@@ -240,7 +254,7 @@ fn capture_from(
                     }
                     cancel.cancel();
                 });
-                let result = capture.record(Duration::from_secs(MAX_RECORD_SECONDS));
+                let result = capture.record(Duration::from_secs(MAX_RECORD_SECONDS), Some(meter));
                 capture.cancel.cancel();
                 result
             })
@@ -252,7 +266,7 @@ fn capture_from(
                     let _ = hold.wait(HotkeyEvent::Up, &cancel);
                     cancel.cancel();
                 });
-                let result = capture.record(Duration::from_secs(MAX_RECORD_SECONDS));
+                let result = capture.record(Duration::from_secs(MAX_RECORD_SECONDS), Some(meter));
                 capture.cancel.cancel();
                 result
             })
@@ -377,9 +391,29 @@ mod tests {
     fn fixture_returns_wav_without_opening_host() {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude_code.wav");
         let mut stop = StopWhen::Timer;
-        let capture = capture_from(Some(path), &mut stop).expect("fixture wav");
+        let capture = capture_from(Some(path), &mut stop, &audio::LevelMeter::new())
+            .expect("fixture wav");
         assert!(capture.pcm.duration_ms() >= 300);
         assert!(capture.peak_rms > 0.05);
+    }
+
+    #[test]
+    fn fixture_publishes_its_loudness_to_the_meter() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude_code.wav");
+        let mut stop = StopWhen::Timer;
+        let meter = audio::LevelMeter::new();
+        let probe = meter.clone();
+        let peak = std::thread::spawn(move || {
+            let mut peak = 0.0f32;
+            for _ in 0..400 {
+                peak = peak.max(probe.level());
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            peak
+        });
+        let _ = capture_from(Some(path), &mut stop, &meter).expect("fixture wav");
+        let peak = peak.join().expect("probe thread");
+        assert!(peak > 0.01, "fixture playback moved the meter: {peak}");
     }
 
     #[test]

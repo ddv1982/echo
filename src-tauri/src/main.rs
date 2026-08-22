@@ -531,7 +531,7 @@ fn list_input_devices() -> Result<Vec<InputDeviceDto>, String> {
 fn test_input_device(name: Option<String>) -> Result<f32, String> {
     let capture = echo::audio::AudioCapture::open(name.as_deref()).map_err(|err| err.to_string())?;
     let result = capture
-        .record(std::time::Duration::from_secs(1))
+        .record(std::time::Duration::from_secs(1), None)
         .map_err(|err| err.to_string())?;
     Ok(result.peak_rms)
 }
