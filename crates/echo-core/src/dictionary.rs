@@ -14,15 +14,8 @@ pub struct DictEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DictHit {
-    pub entry: DictEntry,
-    pub span: (usize, usize),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rewrite {
     pub text: String,
-    pub hits: Vec<DictHit>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -112,13 +105,12 @@ impl Dictionary {
         if text.is_empty() {
             return Rewrite {
                 text: String::new(),
-                hits: Vec::new(),
             };
         }
         let hay = text.to_ascii_lowercase();
         let mut taken = vec![false; text.len()];
-        let mut hits = Vec::new();
-        let mut ranked = self.entries.clone();
+        let mut hits: Vec<(usize, usize, &str)> = Vec::new();
+        let mut ranked: Vec<&DictEntry> = self.entries.iter().collect();
         ranked.sort_by(|a, b| {
             b.spoken
                 .chars()
@@ -146,30 +138,25 @@ impl Dictionary {
                 for flag in &mut taken[start..end] {
                     *flag = true;
                 }
-                hits.push(DictHit {
-                    entry: entry.clone(),
-                    span: (start, end),
-                });
+                hits.push((start, end, entry.written.as_str()));
                 from = end;
             }
         }
-        hits.sort_by_key(|hit| hit.span.0);
+        hits.sort_by_key(|hit| hit.0);
         Rewrite {
             text: apply_hits(text, &hits),
-            hits,
         }
     }
 }
 
-fn apply_hits(text: &str, hits: &[DictHit]) -> String {
+fn apply_hits(text: &str, hits: &[(usize, usize, &str)]) -> String {
     let mut out = String::new();
     let mut cursor = 0;
-    for hit in hits {
-        let (start, end) = hit.span;
-        if start >= cursor {
-            out.push_str(&text[cursor..start]);
-            out.push_str(&hit.entry.written);
-            cursor = end;
+    for (start, end, written) in hits {
+        if *start >= cursor {
+            out.push_str(&text[cursor..*start]);
+            out.push_str(written);
+            cursor = *end;
         }
     }
     out.push_str(&text[cursor..]);
@@ -218,7 +205,6 @@ mod tests {
         let d = dict(&[("clawed code", "Claude Code")]);
         let rewrite = d.rewrite("open clawed code please");
         assert_eq!(rewrite.text, "open Claude Code please");
-        assert_eq!(rewrite.hits.len(), 1);
     }
 
     #[test]
@@ -226,7 +212,6 @@ mod tests {
         let d = dict(&[("clawed code", "Claude Code")]);
         let rewrite = d.rewrite("open the editor");
         assert_eq!(rewrite.text, "open the editor");
-        assert!(rewrite.hits.is_empty());
     }
 
     #[test]
@@ -234,7 +219,6 @@ mod tests {
         let d = dict(&[("code", "CODE"), ("clawed code", "Claude Code")]);
         let rewrite = d.rewrite("clawed code and more code");
         assert_eq!(rewrite.text, "Claude Code and more CODE");
-        assert_eq!(rewrite.hits.len(), 2);
     }
 
     #[test]
@@ -249,7 +233,6 @@ mod tests {
         let d = dict(&[("code", "CODE")]);
         let rewrite = d.rewrite("");
         assert_eq!(rewrite.text, "");
-        assert!(rewrite.hits.is_empty());
     }
 
     #[test]

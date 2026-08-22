@@ -177,7 +177,6 @@ mod tests {
             .apply("um so can we uh move the button", &dict)
             .unwrap();
         assert_eq!(rewrite.text, "So can we move the Button.");
-        assert_eq!(rewrite.hits.len(), 1);
     }
 
     #[test]

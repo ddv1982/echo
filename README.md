@@ -81,12 +81,9 @@ Install `echo-desktop`, then open **Settings → Keyboard → View and Customize
 
 Press the shortcut once to start recording and again to stop. GNOME keeps focus in the current application, so Echo inserts the transcript at its active cursor.
 
-Models live under `$XDG_CACHE_HOME/echo` (normally `~/.cache/echo`) or `ECHO_MODEL_DIR`. Echo does not download models or engine binaries. For real transcription, configure either:
+Models live under `$XDG_CACHE_HOME/echo` (normally `~/.cache/echo`) or `ECHO_MODEL_DIR`. Settings → Get a model downloads curated Whisper and VAD models over HTTPS with SHA-1 verification; a model you drop into the directory yourself is picked up the same way. Engine binaries are not downloaded: put `whisper-cli` (or `whisper-cpp`/`whisper`) on `PATH` for Whisper, or `sherpa-onnx-offline` (or `sherpa-onnx`) plus the `parakeet-tdt-0.6b-v3/` model files for Parakeet. `ECHO_ENGINE` forces an engine; the default is Auto, the first installed real engine.
 
-- Whisper: put `whisper-cli`, `whisper-cpp`, or `whisper` on `PATH`; put `ggml-base.en.bin`, `base.en.bin`, or `ggml-base.en.gguf` in the model directory; and set `ECHO_ENGINE=whisper`.
-- Parakeet: put `sherpa-onnx-offline` or `sherpa-onnx` on `PATH`; put `tokens.txt`, the encoder, decoder, and joiner ONNX files in `parakeet-tdt-0.6b-v3/` below the model directory; and set `ECHO_ENGINE=parakeet`.
-
-If the selected engine or its model is missing, recording ends with `EngineMissing`. With no `ECHO_ENGINE` setting, Echo picks the first installed real engine (Parakeet, then Whisper) and fails with `EngineMissing` when neither is installed. The deterministic fake engine runs only when you set `ECHO_ENGINE=fake`; it transcribes any non-silent audio as `claude code` and exists for smoke tests.
+If the selected engine or its model is missing, recording ends with `EngineMissing`. Auto picks the first installed real engine (Parakeet, then Whisper) and fails with `EngineMissing` when neither is installed. The deterministic fake engine runs only when you set `ECHO_ENGINE=fake`; it transcribes any non-silent audio as `claude code` and exists for smoke tests, so it stays out of the Settings selector unless `ECHO_SHOW_FAKE=1` is set.
 
 With no `ECHO_WHISPER_MODEL` setting, Whisper runs the best installed model: multilingual over `.en`, then the larger family. Pin one with `ECHO_WHISPER_MODEL=small` or the `whisper_model` config key.
 

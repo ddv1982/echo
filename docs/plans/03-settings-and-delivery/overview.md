@@ -1,4 +1,6 @@
 # Settings and delivery: a configurable, multilingual, shippable Echo
+**Status: shipped in v0.2.0-alpha.1, except phases 16 (the sherpa-onnx stdout parse fix) and 20 (the parakeet-cli bakeoff), which remain valid and open.** Everything else landed; this document is the audit trail.
+
 
 ## Context
 

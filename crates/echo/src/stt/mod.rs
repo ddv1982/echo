@@ -209,6 +209,10 @@ pub struct EngineAvailability {
     pub reason: Option<String>,
 }
 
+fn show_fake_engine(show_fake_env: Option<&str>, engine_env: Option<&str>) -> bool {
+    show_fake_env.is_some_and(|value| matches!(value, "1" | "true" | "on")) || engine_env == Some("fake")
+}
+
 #[must_use]
 pub fn engine_availability() -> Vec<EngineAvailability> {
     let cache = ModelCache::from_env();
@@ -231,7 +235,7 @@ pub fn engine_availability() -> Vec<EngineAvailability> {
             cache.dir().display()
         )),
     };
-    vec![
+    let mut engines = vec![
         EngineAvailability {
             id: "whisper",
             available: whisper_reason.is_none(),
@@ -242,12 +246,21 @@ pub fn engine_availability() -> Vec<EngineAvailability> {
             available: parakeet_reason.is_none(),
             reason: parakeet_reason,
         },
-        EngineAvailability {
+    ];
+    // The fake engine is a smoke-test tool, not a user choice. It joins the
+    // shipping selector only when explicitly asked for.
+    let show_fake = show_fake_engine(
+        std::env::var("ECHO_SHOW_FAKE").ok().as_deref(),
+        std::env::var("ECHO_ENGINE").ok().as_deref(),
+    );
+    if show_fake {
+        engines.push(EngineAvailability {
             id: "fake",
             available: true,
             reason: None,
-        },
-    ]
+        });
+    }
+    engines
 }
 
 fn write_temp_wav(pcm: &Pcm16kMono) -> Result<PathBuf, String> {
@@ -272,6 +285,16 @@ fn write_temp_wav(pcm: &Pcm16kMono) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fake_engine_is_hidden_unless_asked_for() {
+        assert!(!show_fake_engine(None, None));
+        assert!(!show_fake_engine(Some("0"), None));
+        assert!(!show_fake_engine(None, Some("whisper")));
+        assert!(show_fake_engine(Some("1"), None));
+        assert!(show_fake_engine(Some("true"), None));
+        assert!(show_fake_engine(None, Some("fake")));
+    }
 
     #[test]
     fn language_resolution_is_model_aware() {

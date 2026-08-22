@@ -752,12 +752,11 @@ function DictionaryView({
   )
 }
 
-const ENGINE_OPTIONS = [
-  { value: 'auto', label: 'Auto' },
-  { value: 'whisper', label: 'Whisper' },
-  { value: 'parakeet', label: 'Parakeet' },
-  { value: 'fake', label: 'Fake' },
-] as const
+const ENGINE_LABELS: Record<string, string> = {
+  whisper: 'Whisper',
+  parakeet: 'Parakeet',
+  fake: 'Fake',
+}
 
 const CLEANUP_OPTIONS = [
   { value: 'off', label: 'Off' },
@@ -952,17 +951,24 @@ function SettingsView({
                 <span>{overrideHint(settings.engine.source, 'ECHO_ENGINE', 'Which local engine transcribes recordings.')}</span>
               </div>
               <div className="segmented-control" role="group" aria-label="Speech engine">
-                {ENGINE_OPTIONS.map((option) => (
-                  <button
-                    type="button"
-                    key={option.value}
-                    data-active={settings.engine.effective === option.value}
-                    disabled={settings.engine.source === 'env'}
-                    onClick={() => void patch('engine', option.value)}
-                  >
-                    {option.label}
-                  </button>
-                ))}
+                {[{ value: 'auto', label: 'Auto' }]
+                  .concat(
+                    (inventory?.engines ?? []).map((engine) => ({
+                      value: engine.id,
+                      label: ENGINE_LABELS[engine.id] ?? engine.id,
+                    })),
+                  )
+                  .map((option) => (
+                    <button
+                      type="button"
+                      key={option.value}
+                      data-active={settings.engine.effective === option.value}
+                      disabled={settings.engine.source === 'env'}
+                      onClick={() => void patch('engine', option.value)}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
               </div>
             </div>
             {inventory?.engines

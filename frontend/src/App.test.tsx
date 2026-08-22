@@ -59,10 +59,9 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Fake' }))
-    expect(await screen.findByText('Fake test engine', { selector: '.setting-line span' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Fake' })).toHaveAttribute('data-active', 'true')
-    expect((await getSettings()).engine).toEqual({ value: 'fake', effective: 'fake', source: 'file' })
+    fireEvent.click(within(await screen.findByRole('group', { name: 'Cleanup' })).getByRole('button', { name: 'Off' }))
+    expect(within(await screen.findByRole('group', { name: 'Cleanup' })).getByRole('button', { name: 'Off' })).toHaveAttribute('data-active', 'true')
+    expect((await getSettings()).cleanup).toEqual({ value: 'off', effective: 'off', source: 'file' })
 
     fireEvent.change(screen.getByLabelText('Hold key'), { target: { value: 'RightShift' } })
     await waitFor(() => expect(screen.getByLabelText('Hold key')).toHaveValue('RightShift'))
@@ -77,17 +76,17 @@ describe('Echo desktop shell', () => {
     const defaults = await getSettings()
     seedPreviewSettings({
       ...defaults,
-      engine: { value: null, effective: 'fake', source: 'env' },
+      cleanup: { value: null, effective: 'off', source: 'env' },
     })
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    const fake = await screen.findByRole('button', { name: 'Fake' })
-    expect(fake).toBeDisabled()
-    expect(fake).toHaveAttribute('data-active', 'true')
-    expect(screen.getByText('ECHO_ENGINE')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Whisper' }))
-    expect((await getSettings()).engine.effective).toBe('fake')
+    const off = within(await screen.findByRole('group', { name: 'Cleanup' })).getByRole('button', { name: 'Off' })
+    expect(off).toBeDisabled()
+    expect(off).toHaveAttribute('data-active', 'true')
+    expect(screen.getByText('ECHO_CLEANUP')).toBeInTheDocument()
+    fireEvent.click(within(await screen.findByRole('group', { name: 'Cleanup' })).getByRole('button', { name: 'Rules' }))
+    expect((await getSettings()).cleanup.effective).toBe('off')
   })
 
   it('persists two rapid settings writes', async () => {
@@ -113,14 +112,14 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Fake' }))
+    fireEvent.click(within(await screen.findByRole('group', { name: 'Cleanup' })).getByRole('button', { name: 'Off' }))
     await firstWriteStarted
     fireEvent.change(screen.getByLabelText('Hold key'), { target: { value: 'RightShift' } })
     releaseFirst()
 
     await waitFor(async () => {
       const stored = await getSettings()
-      expect(stored.engine).toEqual({ value: 'fake', effective: 'fake', source: 'file' })
+      expect(stored.cleanup).toEqual({ value: 'off', effective: 'off', source: 'file' })
       expect(stored.holdKey).toEqual({
         value: 'RightShift',
         effective: 'RightShift',
@@ -134,9 +133,10 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Fake' }))
+    const cleanup = await screen.findByRole('group', { name: 'Cleanup' })
+    fireEvent.click(within(cleanup).getByRole('button', { name: 'Off' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('could not write settings')
-    expect(screen.getByRole('button', { name: 'Fake' })).toHaveAttribute('data-active', 'false')
+    expect(within(cleanup).getByRole('button', { name: 'Off' })).toHaveAttribute('data-active', 'false')
   })
 
   it('lists preview microphones and persists a named choice', async () => {
@@ -185,6 +185,28 @@ describe('Echo desktop shell', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Test' }))
     expect(await screen.findByText('Unavailable')).toBeInTheDocument()
+  })
+
+  it('hides the Fake engine from the selector by default', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await screen.findByRole('button', { name: 'Whisper' })
+    expect(screen.queryByRole('button', { name: 'Fake' })).not.toBeInTheDocument()
+  })
+
+  it('shows the Fake engine when the availability payload includes it', async () => {
+    const { listModels } = await import('./tauri')
+    const inventory = await listModels()
+    const { seedPreviewInventory } = await import('./tauri')
+    seedPreviewInventory({
+      ...inventory,
+      engines: [...inventory.engines, { id: 'fake', available: true, reason: null }],
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(await screen.findByRole('button', { name: 'Fake' })).toBeInTheDocument()
   })
 
   it('shows the model picker only when the engine is Whisper', async () => {

@@ -89,7 +89,10 @@ const previewHistory: HistoryItem[] = [
   },
 ]
 
-const previewInventory: ModelInventory = {
+let previewInventory: ModelInventory = defaultPreviewInventory()
+
+function defaultPreviewInventory(): ModelInventory {
+  return {
   whisper: [
     {
       name: 'base.en-q5_1',
@@ -121,8 +124,12 @@ const previewInventory: ModelInventory = {
   engines: [
     { id: 'whisper', available: true, reason: null },
     { id: 'parakeet', available: false, reason: 'sherpa-onnx-offline is not on PATH' },
-    { id: 'fake', available: true, reason: null },
   ],
+  }
+}
+
+export function seedPreviewInventory(inventory: ModelInventory) {
+  previewInventory = inventory
 }
 
 let previewDictionary: DictionaryItem[] = [
@@ -407,6 +414,7 @@ export function resetPreviewSettings() {
   previewMicTestError = null
   previewRemoveStaleError = null
   previewLanguages = defaultPreviewLanguages()
+  previewInventory = defaultPreviewInventory()
   previewOffers = defaultPreviewOffers()
   previewDownloadTimers.forEach((timers) => timers.forEach(clearTimeout))
   previewDownloadTimers.clear()

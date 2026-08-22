@@ -1,4 +1,6 @@
 # Identity and polish: a better mark, every Whisper model, 100 languages, a HUD worth watching
+**Status: shipped in v0.2.0-alpha.1.** Every phase landed; this document is the audit trail, not open work.
+
 
 ## Context
 
