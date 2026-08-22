@@ -232,7 +232,7 @@ describe('Echo desktop shell', () => {
     expect(screen.getByText('/home/user/.cache/echo/ggml-small.bin')).toBeInTheDocument()
     expect(screen.getByText('/usr/local/bin/whisper-cli')).toBeInTheDocument()
     expect(screen.getByText('Yes')).toBeInTheDocument()
-    expect(screen.getByText('0.2.0')).toBeInTheDocument()
+    expect(screen.getByText(__APP_VERSION__)).toBeInTheDocument()
   })
 
   it('surfaces engine stderr on failure', async () => {
