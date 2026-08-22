@@ -303,6 +303,43 @@ fn copy_text(text: String) -> Result<(), String> {
     SysClipboard.set(&text)
 }
 
+/// Remove the copies the stale-install scan classifies as stale right now.
+/// The webview cannot name paths; the backend re-runs the scan and deletes
+/// only what it classified, plus the known user-local leftovers once a stale
+/// binary is gone.
+#[tauri::command]
+fn remove_stale_installs() -> Result<Vec<String>, String> {
+    let current = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.canonicalize().ok())
+        .ok_or("cannot resolve the running executable")?;
+    let path_var = env::var("PATH").unwrap_or_default();
+    let home = env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
+    let report = echo::upgrade::remove_stale_installs(&current, &path_var, &home);
+    health_invalidate();
+    if report.remaining.is_empty() {
+        Ok(report
+            .removed
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect())
+    } else {
+        let removed = report
+            .removed
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let remaining = report
+            .remaining
+            .iter()
+            .map(|(path, err)| format!("{}: {err}", path.display()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        Err(format!("removed {removed}; still present: {remaining}"))
+    }
+}
+
 #[tauri::command]
 fn get_settings() -> Result<Settings, String> {
     read_settings()
@@ -941,6 +978,7 @@ fn run_desktop() {
             toggle_recording,
             get_recording_level,
             copy_text,
+            remove_stale_installs,
             get_settings,
             set_settings,
             list_models,

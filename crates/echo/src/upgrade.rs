@@ -207,6 +207,61 @@ pub fn terminate_old_echo_processes() {
     }
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RemovalReport {
+    pub removed: Vec<std::path::PathBuf>,
+    pub remaining: Vec<(std::path::PathBuf, String)>,
+}
+
+/// Delete the copies the scan classifies as stale right now, and only those.
+/// When a stale binary was actually removed, also remove the known user-local
+/// leftovers of a source install: the desktop entry and the hicolor icons.
+/// Nothing here touches the running binary or needs privileges.
+#[must_use]
+pub fn remove_stale_installs(
+    current: &Path,
+    path_var: &str,
+    home: &Path,
+) -> RemovalReport {
+    let mut report = RemovalReport::default();
+    let Ok(current_id) = file_identity(current) else {
+        return report;
+    };
+    let installs = path_installs(path_var);
+    for path in stale_installs(&installs, current_id) {
+        remove_one(&path, &mut report);
+    }
+    if report.removed.is_empty() {
+        return report;
+    }
+    for leftover in user_local_leftovers(home) {
+        if leftover.exists() {
+            remove_one(&leftover, &mut report);
+        }
+    }
+    report
+}
+
+fn remove_one(path: &Path, report: &mut RemovalReport) {
+    match std::fs::remove_file(path) {
+        Ok(()) => report.removed.push(path.to_path_buf()),
+        Err(err) => report.remaining.push((path.to_path_buf(), err.to_string())),
+    }
+}
+
+fn user_local_leftovers(home: &Path) -> Vec<std::path::PathBuf> {
+    let share = home.join(".local").join("share");
+    let mut paths = vec![
+        share.join("applications/Echo.desktop"),
+        share.join("icons/hicolor/scalable/apps/echo-desktop.svg"),
+        share.join("icons/hicolor/symbolic/apps/echo-desktop-symbolic.svg"),
+    ];
+    for size in [32, 128, 256, 512] {
+        paths.push(share.join(format!("icons/hicolor/{size}x{size}/apps/echo-desktop.png")));
+    }
+    paths
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,6 +404,52 @@ mod tests {
             classify_process(&demo, 200, 1000),
             ProcessDisposition::Keep
         );
+    }
+
+    #[test]
+    fn removal_deletes_stale_copies_and_user_local_leftovers() {
+        let root = std::env::temp_dir().join(format!("echo-remove-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let bin_dir = root.join("bin");
+        let home = root.join("home");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        let current = root.join("current");
+        std::fs::write(&current, b"new").unwrap();
+        let stale = bin_dir.join("echo-desktop");
+        std::fs::write(&stale, b"old").unwrap();
+        let entry = home.join(".local/share/applications/Echo.desktop");
+        std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        std::fs::write(&entry, b"[Desktop Entry]").unwrap();
+        let icon = home.join(".local/share/icons/hicolor/scalable/apps/echo-desktop.svg");
+        std::fs::create_dir_all(icon.parent().unwrap()).unwrap();
+        std::fs::write(&icon, b"<svg/>").unwrap();
+
+        let report = remove_stale_installs(&current, &bin_dir.to_string_lossy(), &home);
+        assert!(report.remaining.is_empty());
+        assert!(!stale.exists(), "stale binary removed");
+        assert!(!entry.exists(), "user-local desktop entry removed");
+        assert!(!icon.exists(), "user-local icon removed");
+        assert!(current.exists(), "the running binary is never touched");
+        assert_eq!(report.removed.len(), 3);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn removal_without_a_stale_binary_leaves_leftovers_alone() {
+        let root = std::env::temp_dir().join(format!("echo-remove-none-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let home = root.join("home");
+        let entry = home.join(".local/share/applications/Echo.desktop");
+        std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        std::fs::write(&entry, b"[Desktop Entry]").unwrap();
+        let current = root.join("current");
+        std::fs::write(&current, b"new").unwrap();
+
+        let report = remove_stale_installs(&current, "", &home);
+        assert!(report.removed.is_empty());
+        assert!(entry.exists(), "leftovers stay when no stale binary was removed");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -30,6 +30,7 @@ import {
   listModels,
   onDownloadProgress,
   removeDictionaryEntry,
+  removeStaleInstalls,
   setSettings,
   testInputDevice,
   toggleRecording,
@@ -449,8 +450,12 @@ function LevelBars({ live }: { live: boolean }) {
 
 /// Warn when the running binary is not what a bare `echo-desktop` launch
 /// runs: a stale copy (commonly ~/.local/bin from a source install) shadows
-/// the packaged one, and upgrades never reach the user.
+/// the packaged one, and upgrades never reach the user. The button removes
+/// them in place; the backend re-scans and never takes paths from the
+/// webview.
 function StaleInstallWarning({ status }: { status: AppStatus }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const shadowed =
     status.staleInstalls.length > 0 ||
     (status.firstPathHit != null && status.firstPathHit !== status.currentExe)
@@ -461,8 +466,19 @@ function StaleInstallWarning({ status }: { status: AppStatus }) {
         ? [status.firstPathHit]
         : []
   if (paths.length === 0) return null
+  const remove = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      await removeStaleInstalls()
+    } catch (reason) {
+      setError(messageFrom(reason))
+    } finally {
+      setBusy(false)
+    }
+  }
   return (
-    <div className="attention-strip" role="alert">
+    <div className="attention-strip stale-install-card" role="alert">
       <CircleAlert size={16} aria-hidden="true" />
       <span>
         {paths.length === 1
@@ -474,8 +490,15 @@ function StaleInstallWarning({ status }: { status: AppStatus }) {
             <code>{path}</code>
           </span>
         ))}
-        . Remove with <code>rm -f {paths.join(' ')}</code> and relaunch.
+        .{' '}
+        <small>
+          Or from a terminal: <code>rm -f {paths.join(' ')}</code>, then relaunch.
+        </small>
+        {error ? <span className="stale-install-error">{error}</span> : null}
       </span>
+      <button type="button" className="compact-button" disabled={busy} onClick={() => void remove()}>
+        {busy ? 'Removing…' : 'Remove old copies'}
+      </button>
     </div>
   )
 }

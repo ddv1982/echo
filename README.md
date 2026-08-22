@@ -126,7 +126,9 @@ gtk-update-icon-cache ~/.local/share/icons/hicolor
 
 ## Upgrading from a source install
 
-The manual install above puts `echo-desktop` in `~/.local/bin`, which precedes `/usr/bin` in PATH on Ubuntu and GNOME. If you later install the `.deb`, the stale source build keeps winning, and the desktop entry keeps launching it. Remove the source install when you switch to the package:
+The manual install above puts `echo-desktop` in `~/.local/bin`, which precedes `/usr/bin` in PATH on Ubuntu and GNOME. If you later install the `.deb`, the stale source build keeps winning, and the desktop entry keeps launching it. Remove the source install when you switch to the package.
+
+The easy way: Echo's Home view warns when another `echo-desktop` on PATH shadows the running one, and the warning's **Remove old copies** button deletes the stale binaries and the user-local leftovers for you. The manual equivalent:
 
 ```sh
 rm ~/.local/bin/echo-desktop
@@ -140,7 +142,7 @@ update-desktop-database ~/.local/share/applications
 gtk-update-icon-cache ~/.local/share/icons/hicolor
 ```
 
-Echo also helps from inside: the Home view warns when another `echo-desktop` on PATH shadows the running one, and a second launch of a packaged build that replaced the binary restarts into the new build instead of opening a duplicate tray. Confirm what is running with `echo-desktop --version` or the version readout in Settings.
+A second launch of a packaged build that replaced the binary restarts into the new build instead of opening a duplicate tray, and a new build terminates pre-0.3.0 processes at startup. Confirm what is running with `echo-desktop --version` or the version readout in Settings.
 
 The brand colors, declared for Flathub metainfo when packaging catches up: light `#f8f1de`, dark `#1c1c1c`. The mark's bars run a cream-to-amber gradient (`#f8f1de` into `#e2a23a`) on a dark tile (`#282828` into `#121212`), and the tray glyph is the same mark reduced to three dual-tone bars so it reads on light and dark panels alike.
 

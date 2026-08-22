@@ -206,6 +206,26 @@ export function copyText(text: string): Promise<void> {
   return navigator.clipboard.writeText(text)
 }
 
+let previewRemoveStaleError: string | null = null
+
+export function seedPreviewRemoveStaleError(message: string) {
+  previewRemoveStaleError = message
+}
+
+export function removeStaleInstalls(): Promise<string[]> {
+  if (isTauri()) return invoke('remove_stale_installs')
+  if (previewRemoveStaleError) return Promise.reject(new Error(previewRemoveStaleError))
+  const removed = previewStatus.staleInstalls
+  if (preview) {
+    previewStatus = {
+      ...previewStatus,
+      staleInstalls: [],
+      firstPathHit: previewStatus.currentExe || previewStatus.firstPathHit,
+    }
+  }
+  return Promise.resolve(removed)
+}
+
 export function getSettings(): Promise<Settings> {
   if (isTauri()) return invoke('get_settings')
   return Promise.resolve(preview ? { ...previewSettings } : defaultPreviewSettings())
@@ -384,6 +404,7 @@ export function resetPreviewSettings() {
   previewSettings = defaultPreviewSettings()
   previewStatus = richPreviewStatus()
   previewMicTestError = null
+  previewRemoveStaleError = null
   previewLanguages = defaultPreviewLanguages()
   previewOffers = defaultPreviewOffers()
   previewDownloadTimers.forEach((timers) => timers.forEach(clearTimeout))

@@ -766,3 +766,23 @@
   0% { transform: scale(0.6); }
   100% { transform: scale(1); }
 }
+
+.stale-install-card {
+  align-items: flex-start;
+}
+
+.stale-install-card > span {
+  flex: 1;
+}
+
+.stale-install-card small {
+  display: block;
+  color: hsl(var(--text-tertiary));
+  margin-top: var(--space-1);
+}
+
+.stale-install-error {
+  display: block;
+  color: hsl(var(--danger));
+  margin-top: var(--space-1);
+}
