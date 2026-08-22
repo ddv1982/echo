@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -60,9 +60,9 @@ jobs:
     env:
       ARTIFACT_STEM: ${{ github.ref_type == 'tag' && format('echo-{0}-linux', github.ref_name) || format('echo-nightly-{0}-linux', github.sha) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -120,7 +120,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ env.ARTIFACT_STEM }}
           path: |
@@ -128,7 +128,7 @@ jobs:
             target/release/bundle/rpm/*.rpm
           if-no-files-found: error
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ env.ARTIFACT_STEM }}-bin
           path: target/release/echo-desktop
@@ -147,9 +147,9 @@ jobs:
       # linuxdeploy's bundled strip rejects .relr.dyn on current glibc.
       NO_STRIP: "true"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -185,7 +185,7 @@ jobs:
       - name: Bundle AppImage
         run: cargo tauri build --ci --bundles appimage --verbose
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ env.ARTIFACT_STEM }}-appimage
           path: |
@@ -202,14 +202,14 @@ jobs:
     env:
       ARTIFACT_STEM: echo-${{ github.ref_name }}-linux
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ env.ARTIFACT_STEM }}
           path: release-assets/packages
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ env.ARTIFACT_STEM }}-bin
           path: release-assets/bin
