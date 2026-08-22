@@ -29,6 +29,9 @@ jobs:
             printf 'bump workspace.package.version for each alpha so package managers see an upgrade\n'
             exit 1
           fi
+          # A missing changelog section fails here, in seconds, not after
+          # the ten-minute build.
+          python3 scripts/changelog-notes.py "$RELEASE_TAG" > release-notes.md
 
       - uses: actions/setup-node@v4
         with:
@@ -67,6 +70,24 @@ jobs:
         working-directory: src-tauri
         run: cargo tauri build --bundles deb,rpm
 
+      - name: Assert package metadata matches the workspace version
+        run: |
+          sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y rpm
+          package_version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          deb=$(ls target/release/bundle/deb/*.deb src-tauri/target/release/bundle/deb/*.deb 2>/dev/null | head -1)
+          rpm_pkg=$(ls target/release/bundle/rpm/*.rpm src-tauri/target/release/bundle/rpm/*.rpm 2>/dev/null | head -1)
+          test -n "$deb" && test -n "$rpm_pkg" || { echo 'expected one deb and one rpm bundle'; exit 1; }
+          deb_version=$(dpkg-deb -f "$deb" Version)
+          rpm_version=$(rpm -qp --queryformat '%{VERSION}' "$rpm_pkg")
+          if [ "$deb_version" != "$package_version" ]; then
+            printf 'deb Version %s does not match workspace version %s\n' "$deb_version" "$package_version"
+            exit 1
+          fi
+          if [ "$rpm_version" != "$package_version" ]; then
+            printf 'rpm VERSION %s does not match workspace version %s\n' "$rpm_version" "$package_version"
+            exit 1
+          fi
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ARTIFACT_STEM }}
@@ -87,7 +108,8 @@ jobs:
 
       - name: Extract release notes
         if: github.ref_type == 'tag'
-        run: python3 scripts/changelog-notes.py "${{ github.ref_name }}" > release-notes.md
+        # Extracted in the validate step already; regenerate defensively.
+        run: test -s release-notes.md || python3 scripts/changelog-notes.py "${{ github.ref_name }}" > release-notes.md
 
       - name: Attach GitHub Release
         if: github.ref_type == 'tag'
