@@ -107,6 +107,8 @@ mkdir -p ~/.local/share/applications
 cp packaging/Echo.desktop ~/.local/share/applications/Echo.desktop
 mkdir -p ~/.local/share/icons/hicolor/scalable/apps
 cp assets/icons/echo-app.svg ~/.local/share/icons/hicolor/scalable/apps/echo-desktop.svg
+mkdir -p ~/.local/share/icons/hicolor/symbolic/apps
+cp assets/icons/echo-symbolic.svg ~/.local/share/icons/hicolor/symbolic/apps/echo-desktop-symbolic.svg
 for size in 32 128 256 512; do
   mkdir -p ~/.local/share/icons/hicolor/${size}x${size}/apps
   cp "src-tauri/icons/${size}x${size}.png" \
@@ -117,6 +119,8 @@ gtk-update-icon-cache ~/.local/share/icons/hicolor
 ```
 
 `packaging/Echo.desktop` runs `echo-desktop` and sets `Icon=echo-desktop`.
+
+The brand colors, declared for Flathub metainfo when packaging catches up: light `#f8f1de`, dark `#1c1c1c`. The mark's bars run a cream-to-amber gradient (`#f8f1de` into `#e2a23a`) on a dark tile (`#282828` into `#121212`), and the tray glyph is the same mark reduced to three dual-tone bars so it reads on light and dark panels alike.
 
 ## Inject
 

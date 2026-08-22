@@ -260,8 +260,27 @@ mod tests {
         }
     }
 
+    /// Minimum distance between the tray glyph's mean relative luminance and
+    /// the panel it sits on. Panels cannot be probed for brightness, so the
+    /// glyph is composited over the two extremes a panel can be: pure white
+    /// and pure black. A near-white glyph on clear ground fails on white.
+    const TRAY_MIN_LUMINANCE_CONTRAST: f64 = 0.30;
+
+    fn channel_luminance(v: u8) -> f64 {
+        let c = f64::from(v) / 255.0;
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    fn relative_luminance(r: u8, g: u8, b: u8) -> f64 {
+        0.2126 * channel_luminance(r) + 0.7152 * channel_luminance(g) + 0.0722 * channel_luminance(b)
+    }
+
     #[test]
-    fn tray_rasters_are_three_bars_on_clear_ground() {
+    fn tray_rasters_contrast_with_light_and_dark_panels() {
         for img in load_all() {
             if img.master != Master::Tray {
                 continue;
@@ -270,14 +289,29 @@ mod tests {
             for (x, y) in [(0, 0), (max, 0), (0, max), (max, max)] {
                 assert_eq!(alpha_at(&img, x, y), 0, "{} corner {x},{y}", img.dest);
             }
-            let opaque = img.pixels.chunks(4).filter(|px| px[3] >= 128).count();
-            let min = (img.width as usize * 3) / 2;
-            let max_px = (img.width as usize * img.height as usize) / 2;
-            assert!(
-                opaque >= min && opaque <= max_px,
-                "{} opaque {opaque} not in {min}..={max_px}",
-                img.dest
-            );
+            for bg in [0u8, 255] {
+                let mut sum = 0.0;
+                let mut count = 0usize;
+                for px in img.pixels.chunks(4) {
+                    if px[3] < 128 {
+                        continue;
+                    }
+                    let a = f64::from(px[3]) / 255.0;
+                    let over = |c: u8| {
+                        (f64::from(c) * a + f64::from(bg) * (1.0 - a)).round() as u8
+                    };
+                    sum += relative_luminance(over(px[0]), over(px[1]), over(px[2]));
+                    count += 1;
+                }
+                assert!(count > 0, "{} has no glyph pixels", img.dest);
+                let glyph = sum / count as f64;
+                let panel = relative_luminance(bg, bg, bg);
+                assert!(
+                    (glyph - panel).abs() >= TRAY_MIN_LUMINANCE_CONTRAST,
+                    "{} glyph luminance {glyph:.3} vs panel {panel:.3} below {TRAY_MIN_LUMINANCE_CONTRAST}",
+                    img.dest
+                );
+            }
         }
     }
 }
