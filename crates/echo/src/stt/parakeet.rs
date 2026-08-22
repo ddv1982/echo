@@ -40,14 +40,7 @@ impl ParakeetEngine {
     }
 
     fn model_root(&self) -> Option<PathBuf> {
-        let nested = self.cache.path("parakeet-tdt-0.6b-v3");
-        if tokens_present(&nested) {
-            return Some(nested);
-        }
-        if tokens_present(self.cache.dir()) {
-            return Some(self.cache.dir().to_path_buf());
-        }
-        None
+        self.cache.parakeet_root()
     }
 
     fn binary() -> Option<&'static str> {
@@ -55,10 +48,6 @@ impl ParakeetEngine {
             .into_iter()
             .find(|name| on_path(name))
     }
-}
-
-fn tokens_present(dir: &Path) -> bool {
-    dir.join("tokens.txt").is_file()
 }
 
 impl Engine for ParakeetEngine {
