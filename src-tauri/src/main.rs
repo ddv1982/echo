@@ -617,9 +617,20 @@ fn test_input_device(name: Option<String>) -> Result<f32, String> {
 }
 
 fn read_settings() -> Result<Settings, String> {
+    // The picker's default must match what the recorder would do: auto when
+    // the resolved model is multilingual, pinned English otherwise.
+    let language_default = match echo::stt::resolved_language(
+        None,
+        &echo_core::Config::default(),
+        echo::stt::resolved_model_multilingual(),
+    ) {
+        echo_core::LanguageChoice::Auto => "auto",
+        _ => "en",
+    };
     Ok(settings_from(
         &process_settings_env(),
         &echo::settings::file_config(),
+        language_default,
     ))
 }
 
@@ -643,7 +654,7 @@ fn process_settings_env() -> SettingsEnv {
     }
 }
 
-fn settings_from(env: &SettingsEnv, file: &echo_core::Config) -> Settings {
+fn settings_from(env: &SettingsEnv, file: &echo_core::Config, language_default: &str) -> Settings {
     let env_cleanup = env
         .cleanup
         .as_deref()
@@ -691,7 +702,7 @@ fn settings_from(env: &SettingsEnv, file: &echo_core::Config) -> Settings {
                 .and_then(echo_core::LanguageChoice::parse)
                 .map(|choice| choice.as_str().to_string()),
             file.language.map(|choice| choice.as_str().to_string()),
-            "en".to_string(),
+            language_default.to_string(),
         ),
     }
 }
@@ -1021,7 +1032,7 @@ mod settings_tests {
             engine: Some(EngineChoice::Fake),
             ..Config::default()
         };
-        let settings = settings_from(&env, &file);
+        let settings = settings_from(&env, &file, "en");
         assert_eq!(settings.engine.value.as_deref(), Some("fake"));
         assert_eq!(settings.engine.effective, "whisper");
         assert_eq!(settings.engine.source, SettingSource::Env);
@@ -1077,7 +1088,7 @@ mod settings_tests {
             .save_to(&path)
             .unwrap();
         let loaded = Config::load_from(&path).unwrap();
-        let got = settings_from(&SettingsEnv::default(), &loaded);
+        let got = settings_from(&SettingsEnv::default(), &loaded, "en");
         assert_eq!(got.engine.value.as_deref(), Some("parakeet"));
         assert_eq!(got.engine.effective, "parakeet");
         assert_eq!(got.engine.source, SettingSource::File);
@@ -1101,7 +1112,7 @@ mod settings_tests {
 
     #[test]
     fn language_defaults_to_english_and_env_wins() {
-        let settings = settings_from(&SettingsEnv::default(), &Config::default());
+        let settings = settings_from(&SettingsEnv::default(), &Config::default(), "en");
         assert_eq!(settings.language.value, None);
         assert_eq!(settings.language.effective, "en");
         assert_eq!(settings.language.source, SettingSource::Default);
@@ -1116,7 +1127,7 @@ mod settings_tests {
             )),
             ..Config::default()
         };
-        let settings = settings_from(&env, &file);
+        let settings = settings_from(&env, &file, "en");
         assert_eq!(settings.language.value.as_deref(), Some("de"));
         assert_eq!(settings.language.effective, "auto");
         assert_eq!(settings.language.source, SettingSource::Env);
@@ -1125,7 +1136,7 @@ mod settings_tests {
             language: Some("klingon".into()),
             ..SettingsEnv::default()
         };
-        let settings = settings_from(&invalid, &file);
+        let settings = settings_from(&invalid, &file, "en");
         assert_eq!(settings.language.effective, "de");
         assert_eq!(settings.language.source, SettingSource::File);
     }
@@ -1140,7 +1151,7 @@ mod settings_tests {
             record_seconds: Some(12),
             ..Config::default()
         };
-        let settings = settings_from(&env, &file);
+        let settings = settings_from(&env, &file, "en");
         assert_eq!(settings.record_seconds.value, Some(12));
         assert_eq!(
             settings.record_seconds.effective,
@@ -1160,7 +1171,7 @@ mod settings_tests {
                 hud: Some(false),
                 ..Config::default()
             };
-            let settings = settings_from(&env, &file);
+            let settings = settings_from(&env, &file, "en");
             assert_eq!(settings.hud.value, Some(false), "token {token}");
             assert!(settings.hud.effective, "token {token}");
             assert_eq!(settings.hud.source, SettingSource::Env, "token {token}");
@@ -1182,7 +1193,7 @@ mod settings_tests {
                 hud: Some(token.into()),
                 ..SettingsEnv::default()
             };
-            let settings = settings_from(&env, &enabled);
+            let settings = settings_from(&env, &enabled, "en");
             assert!(!settings.hud.effective, "token {token}");
             assert_eq!(settings.hud.source, SettingSource::Env, "token {token}");
         }
@@ -1190,11 +1201,11 @@ mod settings_tests {
             hud: Some("maybe".into()),
             ..SettingsEnv::default()
         };
-        assert!(!settings_from(&unknown, &disabled).hud.effective);
+        assert!(!settings_from(&unknown, &disabled, "en").hud.effective);
         assert_eq!(
-            settings_from(&unknown, &disabled).hud.source,
+            settings_from(&unknown, &disabled, "en").hud.source,
             SettingSource::File
         );
-        assert!(settings_from(&unknown, &enabled).hud.effective);
+        assert!(settings_from(&unknown, &enabled, "en").hud.effective);
     }
 }

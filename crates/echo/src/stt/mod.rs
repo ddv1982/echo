@@ -35,21 +35,46 @@ fn chosen_engine_now() -> EngineChoice {
 }
 
 /// The language Echo transcribes in: `ECHO_LANGUAGE` wins over the config
-/// file, and with neither set the choice is pinned English, matching what
-/// Whisper did before Echo had a language concept. Invalid values fall
-/// through to the next source rather than failing the session.
+/// file; with neither set, a multilingual model gets automatic detection and
+/// an English-only model gets pinned English, the only thing it can do.
+/// Invalid values fall through to the next source rather than failing the
+/// session. `model_multilingual` is the resolved model's filename-derived
+/// flag; `None` means no model or no Whisper engine resolved.
 #[must_use]
-pub fn resolved_language(env: Option<&str>, file: &Config) -> LanguageChoice {
+pub fn resolved_language(
+    env: Option<&str>,
+    file: &Config,
+    model_multilingual: Option<bool>,
+) -> LanguageChoice {
     echo_core::resolve(
         env.and_then(LanguageChoice::parse),
         file.language,
-        LanguageChoice::default(),
+        match model_multilingual {
+            Some(true) => LanguageChoice::Auto,
+            _ => LanguageChoice::default(),
+        },
     )
+}
+
+/// The resolved Whisper model's filename-derived multilingual flag, `None`
+/// when Whisper is not the resolved engine or no model is installed.
+#[must_use]
+pub fn resolved_model_multilingual() -> Option<bool> {
+    match pick_engine(chosen_engine_now()) {
+        Some(PickedEngine::Whisper) => WhisperEngine::new()
+            .selected_model()
+            .map(|(_, multilingual)| multilingual),
+        _ => None,
+    }
 }
 
 #[must_use]
 pub fn language_now() -> LanguageChoice {
-    resolved_language(std::env::var("ECHO_LANGUAGE").ok().as_deref(), &file_config())
+    resolved_language(
+        std::env::var("ECHO_LANGUAGE").ok().as_deref(),
+        &file_config(),
+        resolved_model_multilingual(),
+    )
 }
 
 /// What the resolved engine can do about language, for the picker. With no
@@ -247,6 +272,50 @@ fn write_temp_wav(pcm: &Pcm16kMono) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn language_resolution_is_model_aware() {
+        let file = Config::default();
+        // Unset: multilingual model gets Auto, .en and no-model pin English.
+        assert_eq!(
+            resolved_language(None, &file, Some(true)),
+            LanguageChoice::Auto
+        );
+        assert_eq!(
+            resolved_language(None, &file, Some(false)),
+            LanguageChoice::Pinned(echo_core::Language::ENGLISH)
+        );
+        assert_eq!(
+            resolved_language(None, &file, None),
+            LanguageChoice::Pinned(echo_core::Language::ENGLISH)
+        );
+        // Configured wins over the model-aware default, both directions.
+        let german = Config {
+            language: Some(LanguageChoice::Pinned(echo_core::Language::from_code("de").unwrap())),
+            ..Config::default()
+        };
+        assert_eq!(
+            resolved_language(None, &german, Some(true)),
+            german.language.unwrap()
+        );
+        let auto = Config {
+            language: Some(LanguageChoice::Auto),
+            ..Config::default()
+        };
+        assert_eq!(
+            resolved_language(None, &auto, Some(false)),
+            LanguageChoice::Auto
+        );
+        // Env wins over everything, and invalid env falls through.
+        assert_eq!(
+            resolved_language(Some("fr"), &german, Some(true)),
+            LanguageChoice::Pinned(echo_core::Language::from_code("fr").unwrap())
+        );
+        assert_eq!(
+            resolved_language(Some("klingon"), &german, Some(true)),
+            german.language.unwrap()
+        );
+    }
 
     #[test]
     fn resolve_engine_and_summary_agree() {

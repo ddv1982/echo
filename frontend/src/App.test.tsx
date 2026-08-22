@@ -307,11 +307,57 @@ describe('Echo desktop shell', () => {
   })
 
   it('hides the detected-language chip when a language is pinned', async () => {
+    const defaults = await getSettings()
+    seedPreviewSettings({
+      ...defaults,
+      language: { value: 'en', effective: 'en', source: 'file' },
+    })
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     await screen.findByLabelText('Language')
     expect(screen.queryByText('de · German · p=0.96')).not.toBeInTheDocument()
+  })
+
+  it('offers to pin a confidently detected language, and pins it', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    // Default fixture: auto active, last run detected German at p=0.96.
+    const pin = await screen.findByRole('button', { name: 'Pin German for speed' })
+    fireEvent.click(pin)
+    await waitFor(async () => {
+      expect((await getSettings()).language).toEqual({
+        value: 'de',
+        effective: 'de',
+        source: 'file',
+      })
+    })
+  })
+
+  it('keeps the pin suggestion silent on low confidence', async () => {
+    const defaults = await getSettings()
+    seedPreviewSettings({
+      ...defaults,
+      language: { value: 'auto', effective: 'auto', source: 'file' },
+    })
+    seedPreviewStatus({
+      lastRun: {
+        engine: 'whisper-small',
+        binary: null,
+        modelPath: null,
+        multilingual: true,
+        vad: false,
+        inferMs: 900,
+        language: 'nl',
+        languageProbability: 0.31,
+      },
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await screen.findByText('nl · p=0.31')
+    expect(screen.queryByRole('button', { name: /Pin .* for speed/ })).not.toBeInTheDocument()
   })
 
   it('renders low detection confidence differently', async () => {

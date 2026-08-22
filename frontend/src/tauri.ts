@@ -437,7 +437,7 @@ function defaultPreviewSettings(): Settings {
     holdKey: { value: null, effective: 'RightCtrl', source: 'default' },
     recordSeconds: { value: null, effective: 3, source: 'default' },
     microphone: { value: null, effective: '', source: 'default' },
-    language: { value: null, effective: 'en', source: 'default' },
+    language: { value: null, effective: 'auto', source: 'default' },
   })
 }
 
@@ -454,7 +454,7 @@ function projectPreviewSettings(settings: Settings): Settings {
     holdKey: previewField(settings.holdKey.value, 'RightCtrl'),
     recordSeconds: previewField(recordValue, 3),
     microphone: previewField(settings.microphone.value, ''),
-    language: previewField(settings.language.value, 'en'),
+    language: previewField(settings.language.value, 'auto'),
   }
 }
 

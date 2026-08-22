@@ -1252,6 +1252,8 @@ function LanguageRow({
     : null
   const probability = status.lastRun?.languageProbability ?? null
   const lowConfidence = probability != null && probability < 0.5
+  // A confident detection earns the fast path back: one click pins it.
+  const confident = probability != null && probability >= 0.8
   return (
     <label className="setting-row">
       <div>
@@ -1302,6 +1304,15 @@ function LanguageRow({
               .filter(Boolean)
               .join(' · ')}
           </span>
+        ) : null}
+        {settings.language.effective === 'auto' && detected && confident ? (
+          <button
+            type="button"
+            className="compact-button"
+            onClick={() => onChange(detected)}
+          >
+            Pin {detectedOption ? capitalize(detectedOption.englishName) : detected} for speed
+          </button>
         ) : null}
       </div>
     </label>
