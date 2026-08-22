@@ -18,6 +18,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Validate release version
+        if: github.ref_type == 'tag'
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          package_version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          if [ "$RELEASE_TAG" != "v$package_version" ] && [ "$RELEASE_TAG" != "v$package_version-alpha.1" ]; then
+            printf 'tag %s does not identify package version %s\n' "$RELEASE_TAG" "$package_version"
+            printf 'bump workspace.package.version for each alpha so package managers see an upgrade\n'
+            exit 1
+          fi
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
