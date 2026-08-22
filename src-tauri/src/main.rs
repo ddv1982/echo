@@ -40,6 +40,9 @@ struct AppStatus {
     last_run: Option<LastRun>,
     language_warning: Option<String>,
     recording_in_process: bool,
+    current_exe: String,
+    first_path_hit: Option<String>,
+    stale_installs: Vec<String>,
 }
 
 /// What the last transcription actually ran, observed from the engine's own
@@ -105,6 +108,9 @@ struct Health {
     engine_ready: bool,
     injection_name: String,
     injection_ready: bool,
+    current_exe: String,
+    first_path_hit: Option<String>,
+    stale_installs: Vec<String>,
 }
 
 static HEALTH: Mutex<Option<(Instant, Health)>> = Mutex::new(None);
@@ -121,12 +127,32 @@ fn health_snapshot() -> Health {
     }
     let (engine_name, engine_ready) = echo::stt::engine_summary();
     let (injection_name, injection_ready) = echo::inject::detection_summary();
+    let current_exe = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.canonicalize().ok());
+    let installs = echo::upgrade::path_installs(&env::var("PATH").unwrap_or_default());
+    let first_path_hit = installs.first().map(|(path, _)| path.to_string_lossy().into_owned());
+    let stale_installs = current_exe
+        .as_ref()
+        .and_then(|path| echo::upgrade::file_identity(path).ok())
+        .map(|current| {
+            echo::upgrade::stale_installs(&installs, current)
+                .iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
     let health = Health {
         microphone_ready: AudioCapture::open_default().is_ok(),
         engine_name,
         engine_ready,
         injection_name,
         injection_ready,
+        current_exe: current_exe
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        first_path_hit,
+        stale_installs,
     };
     *cache = Some((Instant::now(), health.clone()));
     health
@@ -202,6 +228,9 @@ fn get_app_status() -> AppStatus {
         last_run,
         language_warning: echo::stt::language_warning(),
         recording_in_process,
+        current_exe: health.current_exe,
+        first_path_hit: health.first_path_hit,
+        stale_installs: health.stale_installs,
     }
 }
 

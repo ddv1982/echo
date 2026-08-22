@@ -514,6 +514,26 @@ describe('Echo desktop shell', () => {
     })
   })
 
+  it('warns when a stale install shadows the running binary', async () => {
+    seedPreviewStatus({
+      currentExe: '/usr/bin/echo-desktop',
+      firstPathHit: '/home/user/.local/bin/echo-desktop',
+      staleInstalls: ['/home/user/.local/bin/echo-desktop'],
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    const warning = await screen.findByRole('alert')
+    expect(warning).toHaveTextContent('/home/user/.local/bin/echo-desktop')
+    expect(warning).toHaveTextContent('rm -f /home/user/.local/bin/echo-desktop')
+  })
+
+  it('shows no stale-install warning when PATH is clean', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    await screen.findByLabelText('Finish setup')
+    expect(screen.queryByText(/shadows this one/)).not.toBeInTheDocument()
+  })
+
   it('groups history by day', async () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })

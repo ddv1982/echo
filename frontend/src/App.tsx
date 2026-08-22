@@ -70,6 +70,9 @@ const initialStatus: AppStatus = {
   lastRun: null,
   languageWarning: null,
   recordingInProcess: false,
+  currentExe: '',
+  firstPathHit: null,
+  staleInstalls: [],
 }
 
 const navigation: Array<{ id: View; label: string; icon: typeof Home }> = [
@@ -370,6 +373,8 @@ function HomeView({
         </div>
       </section>
 
+      <StaleInstallWarning status={status} />
+
       <SetupChecklist status={status} onOpenSettings={onOpenSettings} />
 
       {status.languageWarning ? (
@@ -438,6 +443,39 @@ function LevelBars({ live }: { live: boolean }) {
           style={live ? { height: `${15 + Math.sqrt(Math.min(1, level * 3)) * 85}%` } : undefined}
         />
       ))}
+    </div>
+  )
+}
+
+/// Warn when the running binary is not what a bare `echo-desktop` launch
+/// runs: a stale copy (commonly ~/.local/bin from a source install) shadows
+/// the packaged one, and upgrades never reach the user.
+function StaleInstallWarning({ status }: { status: AppStatus }) {
+  const shadowed =
+    status.staleInstalls.length > 0 ||
+    (status.firstPathHit != null && status.firstPathHit !== status.currentExe)
+  const paths =
+    status.staleInstalls.length > 0
+      ? status.staleInstalls
+      : shadowed && status.firstPathHit
+        ? [status.firstPathHit]
+        : []
+  if (paths.length === 0) return null
+  return (
+    <div className="attention-strip" role="alert">
+      <CircleAlert size={16} aria-hidden="true" />
+      <span>
+        {paths.length === 1
+          ? 'Another echo-desktop shadows this one: '
+          : 'Other echo-desktop copies shadow this one: '}
+        {paths.map((path, index) => (
+          <span key={path}>
+            {index > 0 ? ', ' : ''}
+            <code>{path}</code>
+          </span>
+        ))}
+        . Remove with <code>rm -f {paths.join(' ')}</code> and relaunch.
+      </span>
     </div>
   )
 }

@@ -48,6 +48,9 @@ function richPreviewStatus(): AppStatus {
     },
     languageWarning: null,
     recordingInProcess: false,
+    currentExe: '/usr/bin/echo-desktop',
+    firstPathHit: '/usr/bin/echo-desktop',
+    staleInstalls: [],
   }
 }
 
@@ -482,5 +485,8 @@ function initialPreviewStatus(): AppStatus {
     lastRun: null,
     languageWarning: null,
     recordingInProcess: false,
+    currentExe: '',
+    firstPathHit: null,
+    staleInstalls: [],
   }
 }

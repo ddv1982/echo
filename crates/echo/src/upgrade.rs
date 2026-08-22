@@ -41,6 +41,41 @@ pub fn second_launch_decision(
     }
 }
 
+/// Every `echo-desktop` reachable through `path_var` (a PATH-style list),
+/// canonicalized and deduplicated by file identity, in PATH order.
+#[must_use]
+pub fn path_installs(path_var: &str) -> Vec<(std::path::PathBuf, FileIdentity)> {
+    let mut installs: Vec<(std::path::PathBuf, FileIdentity)> = Vec::new();
+    for dir in std::env::split_paths(path_var) {
+        let candidate = dir.join("echo-desktop");
+        let Ok(canonical) = candidate.canonicalize() else {
+            continue;
+        };
+        let Ok(identity) = file_identity(&canonical) else {
+            continue;
+        };
+        if !installs.iter().any(|(_, id)| *id == identity) {
+            installs.push((canonical, identity));
+        }
+    }
+    installs
+}
+
+/// Copies on PATH whose identity differs from the running binary: stale
+/// installs that shadow or confuse. The first PATH hit decides what a
+/// bare `echo-desktop` launch runs.
+#[must_use]
+pub fn stale_installs(
+    installs: &[(std::path::PathBuf, FileIdentity)],
+    current: FileIdentity,
+) -> Vec<std::path::PathBuf> {
+    installs
+        .iter()
+        .filter(|(_, identity)| *identity != current)
+        .map(|(path, _)| path.clone())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,5 +124,44 @@ mod tests {
         let after = file_identity(&path).unwrap();
         assert_ne!(before, after, "replace-on-upgrade must change identity");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn path_scan_finds_installs_in_path_order_and_stale_ones_differ() {
+        let root = std::env::temp_dir().join(format!("echo-path-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let early = root.join("local-bin");
+        let late = root.join("usr-bin");
+        std::fs::create_dir_all(&early).unwrap();
+        std::fs::create_dir_all(&late).unwrap();
+        std::fs::write(early.join("echo-desktop"), b"stale").unwrap();
+        std::fs::write(late.join("echo-desktop"), b"current").unwrap();
+        std::fs::write(late.join("not-echo"), b"other").unwrap();
+        let path_var = format!("{}:{}", early.display(), late.display());
+
+        let installs = path_installs(&path_var);
+        assert_eq!(installs.len(), 2, "only echo-desktop files, once each");
+        assert!(installs[0].0.starts_with(&early), "PATH order preserved");
+
+        let current = file_identity(&late.join("echo-desktop")).unwrap();
+        let stale = stale_installs(&installs, current);
+        assert_eq!(stale.len(), 1);
+        assert!(stale[0].starts_with(&early));
+        assert!(stale_installs(&installs[1..], current).is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn path_scan_dedupes_symlinked_dirs() {
+        let root = std::env::temp_dir().join(format!("echo-path-dedup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let real = root.join("bin");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("echo-desktop"), b"one").unwrap();
+        let alias = root.join("alias");
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        let path_var = format!("{}:{}", real.display(), alias.display());
+        assert_eq!(path_installs(&path_var).len(), 1);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
