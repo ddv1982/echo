@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.3.0-alpha.1
+
+Third Linux alpha of Echo. Upgrades now reach you, and Echo tells you when they cannot.
+
+- One version source: the workspace `Cargo.toml` drives the frontend, the packages, and the changelog gate. `echo-desktop --version` prints it.
+- The release workflow validates the changelog before building and asserts the `.deb` and `.rpm` metadata match the workspace version, so an uninstallable build cannot be published.
+- Echo runs as a single instance. A second launch focuses the window; if the binary on disk changed since the running process started, Echo restarts into the new build, so installing an upgrade and clicking the launcher is enough. Echo builds from before the single-instance gate are terminated at startup, with recorders mid-dictation left alone.
+- Home warns when another `echo-desktop` on PATH shadows the running one, and the warning's Remove old copies button deletes them in place, including the user-local desktop entry and icons. The packaged desktop entry launches `/usr/bin/echo-desktop` by absolute path.
+
 ## v0.2.0-alpha.1
 
 Corrected release of the identity, language, model, HUD, and UI work first published as `v0.1.0-alpha.2`.

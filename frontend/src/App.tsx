@@ -30,6 +30,7 @@ import {
   listModels,
   onDownloadProgress,
   removeDictionaryEntry,
+  removeStaleInstalls,
   setSettings,
   testInputDevice,
   toggleRecording,
@@ -70,6 +71,9 @@ const initialStatus: AppStatus = {
   lastRun: null,
   languageWarning: null,
   recordingInProcess: false,
+  currentExe: '',
+  firstPathHit: null,
+  staleInstalls: [],
 }
 
 const navigation: Array<{ id: View; label: string; icon: typeof Home }> = [
@@ -370,6 +374,8 @@ function HomeView({
         </div>
       </section>
 
+      <StaleInstallWarning status={status} />
+
       <SetupChecklist status={status} onOpenSettings={onOpenSettings} />
 
       {status.languageWarning ? (
@@ -438,6 +444,61 @@ function LevelBars({ live }: { live: boolean }) {
           style={live ? { height: `${15 + Math.sqrt(Math.min(1, level * 3)) * 85}%` } : undefined}
         />
       ))}
+    </div>
+  )
+}
+
+/// Warn when the running binary is not what a bare `echo-desktop` launch
+/// runs: a stale copy (commonly ~/.local/bin from a source install) shadows
+/// the packaged one, and upgrades never reach the user. The button removes
+/// them in place; the backend re-scans and never takes paths from the
+/// webview.
+function StaleInstallWarning({ status }: { status: AppStatus }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const shadowed =
+    status.staleInstalls.length > 0 ||
+    (status.firstPathHit != null && status.firstPathHit !== status.currentExe)
+  const paths =
+    status.staleInstalls.length > 0
+      ? status.staleInstalls
+      : shadowed && status.firstPathHit
+        ? [status.firstPathHit]
+        : []
+  if (paths.length === 0) return null
+  const remove = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      await removeStaleInstalls()
+    } catch (reason) {
+      setError(messageFrom(reason))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <div className="attention-strip stale-install-card" role="alert">
+      <CircleAlert size={16} aria-hidden="true" />
+      <span>
+        {paths.length === 1
+          ? 'Another echo-desktop shadows this one: '
+          : 'Other echo-desktop copies shadow this one: '}
+        {paths.map((path, index) => (
+          <span key={path}>
+            {index > 0 ? ', ' : ''}
+            <code>{path}</code>
+          </span>
+        ))}
+        .{' '}
+        <small>
+          Or from a terminal: <code>rm -f {paths.join(' ')}</code>, then relaunch.
+        </small>
+        {error ? <span className="stale-install-error">{error}</span> : null}
+      </span>
+      <button type="button" className="compact-button" disabled={busy} onClick={() => void remove()}>
+        {busy ? 'Removing…' : 'Remove old copies'}
+      </button>
     </div>
   )
 }

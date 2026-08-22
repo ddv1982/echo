@@ -42,7 +42,15 @@
     ],
     "shortDescription": "Local hold-to-talk dictation",
     "longDescription": "Echo records speech, transcribes it locally, cleans it up, and inserts it at the active cursor.",
-    "category": "Utility"
+    "category": "Utility",
+    "linux": {
+      "deb": {
+        "desktopTemplate": "templates/Echo.desktop"
+      },
+      "rpm": {
+        "desktopTemplate": "templates/Echo.desktop"
+      }
+    }
   },
   "productName": "Echo",
   "mainBinaryName": "echo-desktop",

@@ -2,9 +2,11 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import App from './App'
 import {
   getSettings,
+  removeStaleInstalls,
   resetPreviewSettings,
   seedPreviewLanguages,
   seedPreviewMicTestError,
+  seedPreviewRemoveStaleError,
   seedPreviewSettings,
   seedPreviewStatus,
   setSettings,
@@ -15,6 +17,7 @@ vi.mock('./tauri', async (importOriginal) => {
   return {
     ...actual,
     setSettings: vi.fn((settings) => actual.setSettings(settings)),
+    removeStaleInstalls: vi.fn(() => actual.removeStaleInstalls()),
   }
 })
 
@@ -232,7 +235,7 @@ describe('Echo desktop shell', () => {
     expect(screen.getByText('/home/user/.cache/echo/ggml-small.bin')).toBeInTheDocument()
     expect(screen.getByText('/usr/local/bin/whisper-cli')).toBeInTheDocument()
     expect(screen.getByText('Yes')).toBeInTheDocument()
-    expect(screen.getByText('0.2.0')).toBeInTheDocument()
+    expect(screen.getByText(__APP_VERSION__)).toBeInTheDocument()
   })
 
   it('surfaces engine stderr on failure', async () => {
@@ -512,6 +515,59 @@ describe('Echo desktop shell', () => {
       )
       expect(heights.some((height) => height && height !== '15%')).toBe(true)
     })
+  })
+
+  it('warns when a stale install shadows the running binary', async () => {
+    seedPreviewStatus({
+      currentExe: '/usr/bin/echo-desktop',
+      firstPathHit: '/home/user/.local/bin/echo-desktop',
+      staleInstalls: ['/home/user/.local/bin/echo-desktop'],
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    const warning = await screen.findByRole('alert')
+    expect(warning).toHaveTextContent('/home/user/.local/bin/echo-desktop')
+    expect(warning).toHaveTextContent('rm -f /home/user/.local/bin/echo-desktop')
+  })
+
+  it('shows no stale-install warning when PATH is clean', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    await screen.findByLabelText('Finish setup')
+    expect(screen.queryByText(/shadows this one/)).not.toBeInTheDocument()
+  })
+
+  it('removes stale copies in one click and the warning resolves', async () => {
+    seedPreviewStatus({
+      currentExe: '/usr/bin/echo-desktop',
+      firstPathHit: '/home/user/.local/bin/echo-desktop',
+      staleInstalls: ['/home/user/.local/bin/echo-desktop'],
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    const warning = await screen.findByRole('alert')
+    expect(warning).toHaveTextContent('/home/user/.local/bin/echo-desktop')
+    // The manual command stays visible as secondary text.
+    expect(warning).toHaveTextContent('rm -f /home/user/.local/bin/echo-desktop')
+
+    fireEvent.click(within(warning).getByRole('button', { name: 'Remove old copies' }))
+    expect(vi.mocked(removeStaleInstalls)).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+  })
+
+  it('surfaces a removal failure and keeps the warning', async () => {
+    seedPreviewStatus({
+      currentExe: '/usr/bin/echo-desktop',
+      firstPathHit: '/home/user/.local/bin/echo-desktop',
+      staleInstalls: ['/home/user/.local/bin/echo-desktop'],
+    })
+    seedPreviewRemoveStaleError('permission denied')
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    const warning = await screen.findByRole('alert')
+    fireEvent.click(within(warning).getByRole('button', { name: 'Remove old copies' }))
+    expect(await screen.findByText('permission denied')).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toBeInTheDocument()
   })
 
   it('groups history by day', async () => {

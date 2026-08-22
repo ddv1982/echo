@@ -43,6 +43,9 @@ export interface AppStatus {
   lastRun: LastRun | null
   languageWarning: string | null
   recordingInProcess: boolean
+  currentExe: string
+  firstPathHit: string | null
+  staleInstalls: string[]
 }
 
 export interface LastRun {

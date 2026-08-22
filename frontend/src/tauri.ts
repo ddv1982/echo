@@ -34,7 +34,7 @@ function richPreviewStatus(): AppStatus {
     hudEnabled: true,
     maxRecordSeconds: 60,
     settingsPath: '/tmp/echo-preview/config.json',
-    version: '0.2.0',
+    version: __APP_VERSION__,
     lastError: null,
     lastRun: {
       engine: 'whisper-small',
@@ -48,6 +48,9 @@ function richPreviewStatus(): AppStatus {
     },
     languageWarning: null,
     recordingInProcess: false,
+    currentExe: '/usr/bin/echo-desktop',
+    firstPathHit: '/usr/bin/echo-desktop',
+    staleInstalls: [],
   }
 }
 
@@ -201,6 +204,26 @@ export function getRecordingLevel(): Promise<number> {
 export function copyText(text: string): Promise<void> {
   if (isTauri()) return invoke('copy_text', { text })
   return navigator.clipboard.writeText(text)
+}
+
+let previewRemoveStaleError: string | null = null
+
+export function seedPreviewRemoveStaleError(message: string) {
+  previewRemoveStaleError = message
+}
+
+export function removeStaleInstalls(): Promise<string[]> {
+  if (isTauri()) return invoke('remove_stale_installs')
+  if (previewRemoveStaleError) return Promise.reject(new Error(previewRemoveStaleError))
+  const removed = previewStatus.staleInstalls
+  if (preview) {
+    previewStatus = {
+      ...previewStatus,
+      staleInstalls: [],
+      firstPathHit: previewStatus.currentExe || previewStatus.firstPathHit,
+    }
+  }
+  return Promise.resolve(removed)
 }
 
 export function getSettings(): Promise<Settings> {
@@ -381,6 +404,7 @@ export function resetPreviewSettings() {
   previewSettings = defaultPreviewSettings()
   previewStatus = richPreviewStatus()
   previewMicTestError = null
+  previewRemoveStaleError = null
   previewLanguages = defaultPreviewLanguages()
   previewOffers = defaultPreviewOffers()
   previewDownloadTimers.forEach((timers) => timers.forEach(clearTimeout))
@@ -477,10 +501,13 @@ function initialPreviewStatus(): AppStatus {
     hudEnabled: true,
     maxRecordSeconds: 60,
     settingsPath: '/tmp/echo-preview/config.json',
-    version: '0.2.0',
+    version: __APP_VERSION__,
     lastError: null,
     lastRun: null,
     languageWarning: null,
     recordingInProcess: false,
+    currentExe: '',
+    firstPathHit: null,
+    staleInstalls: [],
   }
 }

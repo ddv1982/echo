@@ -65,4 +65,6 @@ jobs:
       - name: Check changelog notes
         run: |
           python3 scripts/changelog-notes.py --self-test
-          python3 scripts/changelog-notes.py v0.2.0-alpha.1 > /dev/null
+          package_version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          python3 scripts/changelog-notes.py "v$package_version-alpha.1" > /dev/null \
+            || python3 scripts/changelog-notes.py "v$package_version" > /dev/null

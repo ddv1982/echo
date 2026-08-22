@@ -40,6 +40,9 @@ struct AppStatus {
     last_run: Option<LastRun>,
     language_warning: Option<String>,
     recording_in_process: bool,
+    current_exe: String,
+    first_path_hit: Option<String>,
+    stale_installs: Vec<String>,
 }
 
 /// What the last transcription actually ran, observed from the engine's own
@@ -105,6 +108,9 @@ struct Health {
     engine_ready: bool,
     injection_name: String,
     injection_ready: bool,
+    current_exe: String,
+    first_path_hit: Option<String>,
+    stale_installs: Vec<String>,
 }
 
 static HEALTH: Mutex<Option<(Instant, Health)>> = Mutex::new(None);
@@ -121,12 +127,32 @@ fn health_snapshot() -> Health {
     }
     let (engine_name, engine_ready) = echo::stt::engine_summary();
     let (injection_name, injection_ready) = echo::inject::detection_summary();
+    let current_exe = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.canonicalize().ok());
+    let installs = echo::upgrade::path_installs(&env::var("PATH").unwrap_or_default());
+    let first_path_hit = installs.first().map(|(path, _)| path.to_string_lossy().into_owned());
+    let stale_installs = current_exe
+        .as_ref()
+        .and_then(|path| echo::upgrade::file_identity(path).ok())
+        .map(|current| {
+            echo::upgrade::stale_installs(&installs, current)
+                .iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
     let health = Health {
         microphone_ready: AudioCapture::open_default().is_ok(),
         engine_name,
         engine_ready,
         injection_name,
         injection_ready,
+        current_exe: current_exe
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        first_path_hit,
+        stale_installs,
     };
     *cache = Some((Instant::now(), health.clone()));
     health
@@ -202,6 +228,9 @@ fn get_app_status() -> AppStatus {
         last_run,
         language_warning: echo::stt::language_warning(),
         recording_in_process,
+        current_exe: health.current_exe,
+        first_path_hit: health.first_path_hit,
+        stale_installs: health.stale_installs,
     }
 }
 
@@ -272,6 +301,43 @@ fn get_recording_level() -> f32 {
 #[tauri::command]
 fn copy_text(text: String) -> Result<(), String> {
     SysClipboard.set(&text)
+}
+
+/// Remove the copies the stale-install scan classifies as stale right now.
+/// The webview cannot name paths; the backend re-runs the scan and deletes
+/// only what it classified, plus the known user-local leftovers once a stale
+/// binary is gone.
+#[tauri::command]
+fn remove_stale_installs() -> Result<Vec<String>, String> {
+    let current = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.canonicalize().ok())
+        .ok_or("cannot resolve the running executable")?;
+    let path_var = env::var("PATH").unwrap_or_default();
+    let home = env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
+    let report = echo::upgrade::remove_stale_installs(&current, &path_var, &home);
+    health_invalidate();
+    if report.remaining.is_empty() {
+        Ok(report
+            .removed
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect())
+    } else {
+        let removed = report
+            .removed
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let remaining = report
+            .remaining
+            .iter()
+            .map(|(path, err)| format!("{}: {err}", path.display()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        Err(format!("removed {removed}; still present: {remaining}"))
+    }
 }
 
 #[tauri::command]
@@ -775,6 +841,10 @@ fn try_cli(args: &[String]) -> Option<i32> {
                 1
             }
         }),
+        Some("--version" | "-V") => {
+            println!("echo-desktop {}", env!("CARGO_PKG_VERSION"));
+            Some(0)
+        }
         Some("--help" | "-h") => {
             print_cli_usage();
             Some(0)
@@ -805,13 +875,55 @@ fn print_cli_usage() {
     eprintln!("       echo-desktop rec --toggle");
     eprintln!("       echo-desktop rec --hold");
     eprintln!("       echo-desktop --hud-demo");
+    eprintln!("       echo-desktop --version");
+}
+
+/// The path and file identity this process was loaded from, recorded at
+/// startup so a second launch can tell "same binary" from "replaced by a
+/// package upgrade".
+struct UpgradeWatch {
+    path: std::path::PathBuf,
+    identity: echo::upgrade::FileIdentity,
 }
 
 fn run_desktop() {
     let mut context = tauri::generate_context!();
     context.config_mut().app.tray_icon = None;
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            let Some(watch) = app.try_state::<UpgradeWatch>() else {
+                show_main_window(app);
+                return;
+            };
+            let current = echo::upgrade::file_identity(&watch.path).ok();
+            match echo::upgrade::second_launch_decision(watch.identity, current) {
+                echo::upgrade::SecondLaunch::Focus => {
+                    eprintln!("echo-desktop: second launch; focusing the running window");
+                    show_main_window(app);
+                }
+                echo::upgrade::SecondLaunch::Restart => {
+                    // The binary was replaced since this process started.
+                    // Hand over to the on-disk build and exit; a failed spawn
+                    // falls back to focusing, so an upgrade can never loop.
+                    match std::process::Command::new(&watch.path).spawn() {
+                        Ok(_) => {
+                            eprintln!("echo-desktop: binary changed on disk; restarting into the new build");
+                            app.exit(0);
+                        }
+                        Err(err) => {
+                            eprintln!("echo-desktop: restart spawn failed: {err}");
+                            show_main_window(app);
+                        }
+                    }
+                }
+            }
+        }))
         .setup(|app| {
+            // Old Echo processes predate the single-instance gate; without a
+            // takeover, a new launch coexists with them and the upgrade looks
+            // like it never happened. Runs after the gate admitted us, before
+            // the tray is built.
+            echo::upgrade::terminate_old_echo_processes();
             let open = MenuItem::with_id(app, "open", "Open Echo", true, None::<&str>)?;
             let record =
                 MenuItem::with_id(app, "record", "Start / stop recording", true, None::<&str>)?;
@@ -842,6 +954,11 @@ fn run_desktop() {
                 }
             };
             app.manage(AtomicBool::new(tray_ready));
+            if let Ok(path) = std::env::current_exe().and_then(|path| path.canonicalize()) {
+                if let Ok(identity) = echo::upgrade::file_identity(&path) {
+                    app.manage(UpgradeWatch { path, identity });
+                }
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -861,6 +978,7 @@ fn run_desktop() {
             toggle_recording,
             get_recording_level,
             copy_text,
+            remove_stale_installs,
             get_settings,
             set_settings,
             list_models,

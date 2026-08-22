@@ -15,6 +15,7 @@ echo = { path = "../crates/echo" }
 echo-core = { path = "../crates/echo-core" }
 serde = { version = "1", features = ["derive"] }
 tauri = { version = "2.11.5", features = ["tray-icon", "image-png"] }
+tauri-plugin-single-instance = "2.4.3"
 
 [features]
 default = ["custom-protocol"]
