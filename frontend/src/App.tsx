@@ -20,10 +20,14 @@ import {
   getAppStatus,
   getDictionary,
   getHistory,
+  cancelDownload,
+  downloadModel,
   getSettings,
   listInputDevices,
   listLanguages,
+  listModelOffers,
   listModels,
+  onDownloadProgress,
   removeDictionaryEntry,
   setSettings,
   testInputDevice,
@@ -32,9 +36,11 @@ import {
 import type {
   AppStatus,
   DictionaryItem,
+  DownloadProgress,
   HistoryItem,
   LanguageOptions,
   ModelInventory,
+  ModelOffer,
   SettingSource,
   Settings as AppSettings,
   ThemeMode,
@@ -502,21 +508,47 @@ function SettingsView({
   const [devices, setDevices] = useState<InputDevice[]>([])
   const [inventory, setInventory] = useState<ModelInventory | null>(null)
   const [languages, setLanguages] = useState<LanguageOptions | null>(null)
+  const [offers, setOffers] = useState<ModelOffer[]>([])
+  const [downloads, setDownloads] = useState<Record<string, DownloadProgress>>({})
   const [micMeter, setMicMeter] = useState<number | 'unavailable' | null>(null)
   const [testingMic, setTestingMic] = useState(false)
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      void Promise.all([getSettings(), listInputDevices(), listModels(), listLanguages()]).then(
-        ([next, listed, models, languageOptions]) => {
-          setLocalSettings(next)
-          setDevices(listed)
-          setInventory(models)
-          setLanguages(languageOptions)
-        },
-      )
+      void Promise.all([
+        getSettings(),
+        listInputDevices(),
+        listModels(),
+        listLanguages(),
+        listModelOffers(),
+      ]).then(([next, listed, models, languageOptions, modelOffers]) => {
+        setLocalSettings(next)
+        setDevices(listed)
+        setInventory(models)
+        setLanguages(languageOptions)
+        setOffers(modelOffers)
+      })
     }, 0)
     return () => window.clearTimeout(timer)
+  }, [])
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined
+    const timer = window.setTimeout(() => {
+      void onDownloadProgress((progress) => {
+        setDownloads((previous) => ({ ...previous, [progress.id]: progress }))
+        if (progress.stage === 'done') {
+          void listModelOffers().then(setOffers)
+          void listModels().then(setInventory)
+        }
+      }).then((fn) => {
+        unlisten = fn
+      })
+    }, 0)
+    return () => {
+      window.clearTimeout(timer)
+      unlisten?.()
+    }
   }, [])
 
   useEffect(() => {
@@ -689,7 +721,80 @@ function SettingsView({
                   <span className="status-dot" data-tone="attention" aria-hidden="true" />
                   {status.languageWarning}
                 </span>
+                {offers
+                  .filter((offer) => offer.id === 'small' && !offer.installed)
+                  .map((offer) => (
+                    <OfferAction
+                      key={offer.id}
+                      offer={offer}
+                      progress={downloads[offer.id]}
+                      onDownload={() => void downloadModel(offer.id)}
+                      onCancel={() => void cancelDownload(offer.id)}
+                    />
+                  ))}
               </div>
+            ) : null}
+            {inventory && inventory.vad.length === 0
+              ? offers
+                  .filter((offer) => offer.id === 'silero-vad' && !offer.installed)
+                  .map((offer) => (
+                    <div className="setting-row" key={offer.id}>
+                      <div>
+                        <strong>Silence detection</strong>
+                        <span>
+                          VAD trims non-speech before transcription. {offer.filename} ·{' '}
+                          {formatSize(offer.sizeBytes)}
+                        </span>
+                      </div>
+                      <OfferAction
+                        offer={offer}
+                        progress={downloads[offer.id]}
+                        onDownload={() => void downloadModel(offer.id)}
+                        onCancel={() => void cancelDownload(offer.id)}
+                      />
+                    </div>
+                  ))
+              : null}
+            {offers.filter(
+              (offer) =>
+                offer.id !== 'silero-vad' &&
+                !(status.languageWarning && offer.id === 'small') &&
+                (!offer.installed || downloads[offer.id]),
+            ).length > 0 ? (
+              <>
+                <div className="setting-row">
+                  <div>
+                    <strong>Get a model</strong>
+                    <span>Downloaded over HTTPS from huggingface.co and verified against the published SHA-1.</span>
+                  </div>
+                </div>
+                {offers
+                  .filter(
+                    (offer) =>
+                      offer.id !== 'silero-vad' &&
+                      !(status.languageWarning && offer.id === 'small') &&
+                      (!offer.installed || downloads[offer.id]),
+                  )
+                  .map((offer) => (
+                    <div className="setting-row" key={offer.id}>
+                      <div>
+                        <strong>{offer.label}</strong>
+                        <span>
+                          {offer.filename} · {formatSize(offer.sizeBytes)}
+                          {offer.runtimeMb != null ? ` · ~${offer.runtimeMb} MB memory` : ''}
+                          {offer.multilingual ? ' · multilingual' : ''}
+                        </span>
+                        <span className="offer-url">{offer.url}</span>
+                      </div>
+                      <OfferAction
+                        offer={offer}
+                        progress={downloads[offer.id]}
+                        onDownload={() => void downloadModel(offer.id)}
+                        onCancel={() => void cancelDownload(offer.id)}
+                      />
+                    </div>
+                  ))}
+              </>
             ) : null}
           </>
         ) : null}
@@ -804,6 +909,69 @@ function formatSize(bytes: number) {
   if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GiB`
   if (bytes >= 1024 * 1024) return `${Math.round(bytes / (1024 * 1024))} MiB`
   return `${Math.round(bytes / 1024)} KiB`
+}
+
+function OfferAction({
+  offer,
+  progress,
+  onDownload,
+  onCancel,
+}: {
+  offer: ModelOffer
+  progress: DownloadProgress | undefined
+  onDownload: () => void
+  onCancel: () => void
+}) {
+  if (!progress || progress.stage === 'cancelled') {
+    return (
+      <button type="button" className="compact-button" onClick={onDownload}>
+        Download
+      </button>
+    )
+  }
+  if (progress.stage === 'failed') {
+    return (
+      <div className="setting-actions">
+        <span className="status-note" data-tone="attention">
+          <span className="status-dot" data-tone="attention" aria-hidden="true" />
+          {progress.error ?? 'Download failed'}
+        </span>
+        <button type="button" className="compact-button" onClick={onDownload}>
+          Retry
+        </button>
+      </div>
+    )
+  }
+  if (progress.stage === 'done') {
+    return (
+      <span className="status-note" data-tone="ok">
+        <span className="status-dot" data-tone="ok" aria-hidden="true" />
+        Installed
+      </span>
+    )
+  }
+  const percent =
+    progress.total > 0 ? Math.min(100, Math.floor((progress.received / progress.total) * 100)) : 0
+  return (
+    <div className="setting-actions">
+      <div
+        className="download-track"
+        role="progressbar"
+        aria-valuenow={percent}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-label={`Downloading ${offer.filename}`}
+      >
+        <div className="download-fill" style={{ width: `${percent}%` }} />
+      </div>
+      <span className="status-note">
+        {progress.stage === 'verifying' ? 'Verifying…' : `${percent}%`}
+      </span>
+      <button type="button" className="compact-button" onClick={onCancel}>
+        Cancel
+      </button>
+    </div>
+  )
 }
 
 const COMMON_LANGUAGE_ORDER = ['en', 'de', 'es', 'fr']

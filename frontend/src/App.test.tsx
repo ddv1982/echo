@@ -385,4 +385,75 @@ describe('Echo desktop shell', () => {
     ).toBeInTheDocument()
     expect(screen.queryByLabelText('Language')).not.toBeInTheDocument()
   })
+
+  it('lists uninstalled offers with size and URL, and downloads one', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+
+    // The installed offer renders no download button; uninstalled ones do.
+    expect(await screen.findByText('Balanced, multilingual')).toBeInTheDocument()
+    expect(screen.getByText(/ggml-small\.bin · 465 MiB · ~852 MB memory · multilingual/)).toBeInTheDocument()
+    expect(screen.getByText('https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin')).toBeInTheDocument()
+    expect(screen.queryByText('Fast, English')).not.toBeInTheDocument()
+
+    const row = screen.getByText('Balanced, multilingual').closest('.setting-row')!
+    const button = within(row as HTMLElement).getByRole('button', { name: 'Download' })
+    fireEvent.click(button)
+    expect(
+      await within(row as HTMLElement).findByRole('progressbar', {
+        name: 'Downloading ggml-small.bin',
+      }),
+    ).toBeInTheDocument()
+    expect(await within(row as HTMLElement).findByText('Verifying…')).toBeInTheDocument()
+    expect(await within(row as HTMLElement).findByText('Installed')).toBeInTheDocument()
+  })
+
+  it('cancels a download midway', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    const row = (await screen.findByText('Best, multilingual')).closest('.setting-row')!
+    fireEvent.click(within(row as HTMLElement).getByRole('button', { name: 'Download' }))
+    await within(row as HTMLElement).findByRole('progressbar')
+    fireEvent.click(within(row as HTMLElement).getByRole('button', { name: 'Cancel' }))
+    expect(
+      await within(row as HTMLElement).findByRole('button', { name: 'Download' }),
+    ).toBeInTheDocument()
+  })
+
+  it('offers a multilingual model at the language incompatibility warning', async () => {
+    const defaults = await getSettings()
+    seedPreviewSettings({
+      ...defaults,
+      engine: { value: 'whisper', effective: 'whisper', source: 'file' },
+      language: { value: 'de', effective: 'de', source: 'file' },
+    })
+    seedPreviewStatus({
+      languageWarning:
+        'ggml-base.en.bin is English-only but the language is set to german. Choose a multilingual model or set the language to English.',
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    const warning = await screen.findAllByText(/ggml-base\.en\.bin is English-only/)
+    const warningRow = warning[0].closest('.setting-row')!
+    // The fix is a click, right at the point of failure.
+    fireEvent.click(within(warningRow as HTMLElement).getByRole('button', { name: 'Download' }))
+    expect(
+      await within(warningRow as HTMLElement).findByRole('progressbar', {
+        name: 'Downloading ggml-small.bin',
+      }),
+    ).toBeInTheDocument()
+    // And the offer is not duplicated in the general list while the warning shows.
+    expect(screen.queryByText('Balanced, multilingual')).not.toBeInTheDocument()
+  })
+
+  it('offers the VAD model where VAD is reported unavailable', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(await screen.findByText('Silence detection')).toBeInTheDocument()
+    expect(screen.getByText(/ggml-silero-v6\.2\.0\.bin · 864 KiB/)).toBeInTheDocument()
+  })
 })
