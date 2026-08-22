@@ -202,6 +202,67 @@ impl HoldKey {
     }
 }
 
+/// What the listener should do after a hold-key edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HoldAction {
+    Start,
+    Stop,
+}
+
+/// Decides hold-key edges into session actions. Starts only when no session
+/// is active anywhere (the toggle lock serializes processes; a key-down must
+/// never truncate someone else's recording), and stops only sessions it
+/// started, so a stray key-up is a no-op.
+#[derive(Debug, Default)]
+pub struct HoldDriver {
+    started_by_us: bool,
+}
+
+impl HoldDriver {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn on_edge(&mut self, edge: HotkeyEvent, session_active: bool) -> Option<HoldAction> {
+        match edge {
+            HotkeyEvent::Down if !self.started_by_us && !session_active => {
+                self.started_by_us = true;
+                Some(HoldAction::Start)
+            }
+            HotkeyEvent::Up if self.started_by_us => {
+                self.started_by_us = false;
+                Some(HoldAction::Stop)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// The hold-key listener loop: wait for down, report, wait for up, report,
+/// until cancelled. Events for the other edge arriving mid-wait are consumed
+/// and ignored, which is what keeps autorepeat harmless.
+pub fn run_hold_listener(
+    hold: &mut HoldKey,
+    cancel: &CancellationToken,
+    mut on_edge: impl FnMut(HotkeyEvent),
+) -> io::Result<()> {
+    loop {
+        if cancel.is_cancelled() {
+            return Ok(());
+        }
+        if !hold.wait(HotkeyEvent::Down, cancel)? {
+            return Ok(());
+        }
+        on_edge(HotkeyEvent::Down);
+        if !hold.wait(HotkeyEvent::Up, cancel)? {
+            return Ok(());
+        }
+        on_edge(HotkeyEvent::Up);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,5 +378,56 @@ mod tests {
         cancel.cancel();
         // Wants Up but the stream only has Down; only the cancel ends the wait.
         assert!(!hold.wait(HotkeyEvent::Up, &cancel).unwrap());
+    }
+
+    #[test]
+    fn driver_starts_only_when_free_and_stops_only_its_own() {
+        let mut driver = HoldDriver::new();
+        assert_eq!(
+            driver.on_edge(HotkeyEvent::Down, false),
+            Some(HoldAction::Start)
+        );
+        // A second down while our session runs does nothing.
+        assert_eq!(driver.on_edge(HotkeyEvent::Down, true), None);
+        assert_eq!(
+            driver.on_edge(HotkeyEvent::Up, true),
+            Some(HoldAction::Stop)
+        );
+        // A stray up starts nothing and stops nothing.
+        assert_eq!(driver.on_edge(HotkeyEvent::Up, false), None);
+        // A down while another process holds the lock is ignored.
+        assert_eq!(driver.on_edge(HotkeyEvent::Down, true), None);
+        assert_eq!(driver.on_edge(HotkeyEvent::Up, true), None);
+    }
+
+    #[test]
+    fn listener_reports_edges_from_a_fixture_stream() {
+        let dir = std::env::temp_dir().join(format!("echo-holdlisten-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("events");
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&event_bytes(EV_KEY, 97, 1)); // down
+        raw.extend_from_slice(&event_bytes(EV_KEY, 97, 0)); // up
+        fs::write(&path, raw).unwrap();
+
+        let spec = parse_hold_key("RightCtrl").unwrap();
+        let mut hold = HoldKey::open(&[path], spec.code).unwrap();
+        let cancel = CancellationToken::new();
+        let listener_cancel = cancel.clone();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_writer = seen.clone();
+        let thread = std::thread::spawn(move || {
+            let _ = run_hold_listener(&mut hold, &listener_cancel, move |edge| {
+                seen_writer.lock().expect("seen lock").push(edge);
+            });
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        cancel.cancel();
+        let _ = thread.join();
+        assert_eq!(
+            *seen.lock().expect("seen lock"),
+            vec![HotkeyEvent::Down, HotkeyEvent::Up]
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -563,6 +563,25 @@ describe('Echo desktop shell', () => {
     })
   })
 
+  it('shows the hold listener state, with the fix when permission is absent', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await screen.findByLabelText('Hold key')
+    expect(screen.getByText('Active')).toBeInTheDocument()
+  })
+
+  it('explains the input-group fix when evdev is unreadable', async () => {
+    seedPreviewStatus({ holdListener: 'needs-permission' })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await screen.findByLabelText('Hold key')
+    expect(
+      screen.getByText('Needs input group: sudo usermod -aG input $USER'),
+    ).toBeInTheDocument()
+  })
+
   it('warns when a stale install shadows the running binary', async () => {
     seedPreviewStatus({
       currentExe: '/usr/bin/echo-desktop',

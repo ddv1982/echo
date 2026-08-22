@@ -43,6 +43,7 @@ struct AppStatus {
     current_exe: String,
     first_path_hit: Option<String>,
     stale_installs: Vec<String>,
+    hold_listener: String,
 }
 
 /// What the last transcription actually ran, observed from the engine's own
@@ -231,6 +232,7 @@ fn get_app_status() -> AppStatus {
         current_exe: health.current_exe,
         first_path_hit: health.first_path_hit,
         stale_installs: health.stale_installs,
+        hold_listener: hold_listener_state().to_string(),
     }
 }
 
@@ -638,6 +640,7 @@ fn write_settings(settings: Settings) -> Result<Settings, String> {
     config_from_values(&settings)?.save()?;
     echo::settings::reload();
     health_invalidate();
+    reconcile_hold_listener();
     read_settings()
 }
 
@@ -823,6 +826,77 @@ fn start_recording_thread() -> Result<(), String> {
         .map_err(|err| err.to_string())
 }
 
+struct HoldListenerHandle {
+    key: String,
+    cancel: echo::audio::CancellationToken,
+}
+
+static HOLD_LISTENER: Mutex<Option<HoldListenerHandle>> = Mutex::new(None);
+
+/// What the hold-key row reports: the listener runs when evdev is readable,
+/// needs the input group when the devices exist but are unreadable, and is
+/// unavailable where /dev/input does not exist at all.
+fn hold_listener_state() -> &'static str {
+    if !std::path::Path::new("/dev/input").exists() {
+        return "unavailable";
+    }
+    match echo::hotkey::readable_event_nodes() {
+        Ok(nodes) if !nodes.is_empty() => "active",
+        _ => "needs-permission",
+    }
+}
+
+/// Start, stop, or rekey the hold listener to match the current setting.
+/// Idempotent: a matching listener is left alone. Group membership changes
+/// need a re-login, which restarts the app, so no polling is needed.
+fn reconcile_hold_listener() {
+    let mut guard = HOLD_LISTENER.lock().expect("hold listener lock");
+    let want_key = if hold_listener_state() == "active" {
+        echo::hotkey::hold_key().ok().map(|spec| spec.name)
+    } else {
+        None
+    };
+    let running_key = guard.as_ref().map(|handle| handle.key.clone());
+    if running_key == want_key {
+        return;
+    }
+    if let Some(handle) = guard.take() {
+        handle.cancel.cancel();
+    }
+    let Some(key) = want_key else {
+        return;
+    };
+    let (spec, devices) = match (echo::hotkey::hold_key(), echo::hotkey::readable_event_nodes()) {
+        (Ok(spec), Ok(devices)) if !devices.is_empty() => (spec, devices),
+        _ => return,
+    };
+    let mut hold = match echo::hotkey::HoldKey::open(&devices, spec.code) {
+        Ok(hold) => hold,
+        Err(_) => return,
+    };
+    let cancel = echo::audio::CancellationToken::new();
+    let thread_cancel = cancel.clone();
+    let spawned = std::thread::Builder::new()
+        .name("echo-hold-listener".to_string())
+        .spawn(move || {
+            let mut driver = echo::hotkey::HoldDriver::new();
+            let _ = echo::hotkey::run_hold_listener(&mut hold, &thread_cancel, move |edge| {
+                if driver
+                    .on_edge(edge, echo::rec::session_active())
+                    .is_some()
+                {
+                    let _ = start_recording_thread();
+                }
+            });
+        });
+    match spawned {
+        Ok(_) => {
+            *guard = Some(HoldListenerHandle { key, cancel });
+        }
+        Err(err) => eprintln!("hold listener: {err}"),
+    }
+}
+
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -968,6 +1042,7 @@ fn run_desktop() {
                 }
             };
             app.manage(AtomicBool::new(tray_ready));
+            reconcile_hold_listener();
             if let Ok(path) = std::env::current_exe().and_then(|path| path.canonicalize()) {
                 if let Ok(identity) = echo::upgrade::file_identity(&path) {
                     app.manage(UpgradeWatch { path, identity });

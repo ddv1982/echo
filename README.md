@@ -67,7 +67,7 @@ Compositor shortcuts and hold-to-talk use subcommands on the same binary:
 
 `echo-desktop rec --toggle` is intended for compositor shortcuts on Wayland. The first invocation starts recording; invoke it again to stop, transcribe, and insert at the focused cursor. It stops automatically after 60 seconds if the second invocation never arrives.
 
-`echo-desktop rec --hold` waits for the hold key, records while it is down, and inserts on release, looping until you press Ctrl+C. The default key is Right Ctrl; set `ECHO_HOLD_KEY` to change it (for example `ECHO_HOLD_KEY=RightShift`). It reads keys from `/dev/input`, so add yourself to the input group first: `sudo usermod -aG input $USER`, then log out and back in. Without that access it exits with a hint and you should use the toggle instead.
+Hold-to-talk works from the desktop app with no terminal: while Echo is running, the hold key listener watches `/dev/input` and records while the key is down. The default key is Right Ctrl; change it in Settings or with `ECHO_HOLD_KEY` (for example `ECHO_HOLD_KEY=RightShift`). It reads keys from `/dev/input`, so add yourself to the input group first: `sudo usermod -aG input $USER`, then log out and back in; the Settings row says when that access is missing. `echo-desktop rec --hold` runs the same machinery as a terminal loop until Ctrl+C, for setups where the desktop app is not running.
 
 While recording, Echo shows a click-through capsule near the bottom of the screen with live microphone levels; it stays up through transcription and ends on a Done or Failed state. It never takes keyboard focus. The capsule is X11-only; on a Wayland session without XWayland there is no HUD, and the desktop app is the recording indicator. Set `ECHO_HUD=off` to disable it.
 

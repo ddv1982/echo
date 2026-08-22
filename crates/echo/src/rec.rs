@@ -262,6 +262,9 @@ fn capture_from(
     meter: &audio::LevelMeter,
 ) -> Result<audio::CaptureResult, FailReason> {
     if let Some(path) = fixture {
+        // With ECHO_AUDIO_FIXTURE set, capture returns before consulting
+        // StopWhen: toggle and hold semantics do not hold under fixtures.
+        // Fine for tests; do not mistake a fixture run for a real toggle.
         let capture = audio::load_wav(&path).map_err(|_| FailReason::EngineError)?;
         // Publish the fixture's loudness at real-time cadence so the HUD's
         // bars are truthful in demos and CI screenshots.
@@ -368,6 +371,14 @@ fn lock_owner_is_alive(path: &Path) -> bool {
         .and_then(|raw| raw.trim().parse::<u32>().ok())
         .map(|pid| PathBuf::from("/proc").join(pid.to_string()).exists())
         .unwrap_or(false)
+}
+
+/// True while any process holds an active recording session. The hold-key
+/// listener consults this before starting so a key-down never truncates
+/// someone else's recording.
+#[must_use]
+pub fn session_active() -> bool {
+    lock_owner_is_alive(&echo_core::data_dir().join("recording.lock"))
 }
 
 /// Ceiling for any recording, in seconds.

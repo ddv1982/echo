@@ -51,6 +51,7 @@ function richPreviewStatus(): AppStatus {
     currentExe: '/usr/bin/echo-desktop',
     firstPathHit: '/usr/bin/echo-desktop',
     staleInstalls: [],
+    holdListener: 'active',
   }
 }
 
@@ -509,5 +510,6 @@ function initialPreviewStatus(): AppStatus {
     currentExe: '',
     firstPathHit: null,
     staleInstalls: [],
+    holdListener: 'unavailable',
   }
 }

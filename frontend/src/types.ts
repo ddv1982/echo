@@ -46,6 +46,7 @@ export interface AppStatus {
   currentExe: string
   firstPathHit: string | null
   staleInstalls: string[]
+  holdListener: 'active' | 'needs-permission' | 'unavailable'
 }
 
 export interface LastRun {

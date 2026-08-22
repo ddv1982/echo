@@ -74,6 +74,7 @@ const initialStatus: AppStatus = {
   currentExe: '',
   firstPathHit: null,
   staleInstalls: [],
+  holdListener: 'unavailable',
 }
 
 const navigation: Array<{ id: View; label: string; icon: typeof Home }> = [
@@ -1064,15 +1065,46 @@ function SettingsView({
               envName="ECHO_HUD"
               onChange={(value) => void patch('hud', value)}
             />
-            <SettingSelect
-              label="Hold key"
-              description="Used by rec --hold. Combos belong on a desktop shortcut."
-              value={settings.holdKey.effective}
-              options={holdKeyOptions(settings.holdKey.effective)}
-              source={settings.holdKey.source}
-              envName="ECHO_HOLD_KEY"
-              onChange={(value) => void patch('holdKey', value)}
-            />
+            <div className="setting-row">
+              <div>
+                <strong>Hold key</strong>
+                <span>
+                  {overrideHint(
+                    settings.holdKey.source,
+                    'ECHO_HOLD_KEY',
+                    'Hold to dictate from anywhere. Combos belong on a desktop shortcut.',
+                  )}
+                </span>
+              </div>
+              <div className="setting-actions">
+                <select
+                  aria-label="Hold key"
+                  value={settings.holdKey.effective}
+                  disabled={settings.holdKey.source === 'env'}
+                  onChange={(event) => void patch('holdKey', event.target.value)}
+                >
+                  {holdKeyOptions(settings.holdKey.effective).map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+                {status.holdListener === 'active' ? (
+                  <span className="status-note" data-tone="ok">
+                    <span className="status-dot" data-tone="ok" aria-hidden="true" />
+                    Active
+                  </span>
+                ) : status.holdListener === 'needs-permission' ? (
+                  <span className="status-note" data-tone="attention">
+                    <span className="status-dot" data-tone="attention" aria-hidden="true" />
+                    Needs input group: sudo usermod -aG input $USER
+                  </span>
+                ) : (
+                  <span className="status-note" data-tone="attention">
+                    <span className="status-dot" data-tone="attention" aria-hidden="true" />
+                    Not available here
+                  </span>
+                )}
+              </div>
+            </div>
             <SettingSelect
               label="Timed recording"
               description={`Used by rec --once. Toggle recording still caps at ${status.maxRecordSeconds} seconds.`}
