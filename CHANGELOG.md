@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.4.2
+
+Publication-path hotfix for the fully verified `v0.4.1` artifacts. The application changes and package contents remain the same.
+
+- Release-candidate checks now download the staged Debian, RPM, and binary artifacts on every pull request and `main` build, then verify the exact directory layout consumed by the publisher.
+- The GitHub Release publisher follows the artifact service's preserved `deb/` and `rpm/` subdirectories, preventing a valid tagged build from failing at its final attachment step.
+- The failed `v0.4.1` tag run remains visible as an audit record; `v0.4.2` is the first release published entirely by the hardened workflow.
+
 ## v0.4.1
 
 Release delivery hotfix for `v0.4.0`. The Linux shortcut and recording HUD improvements are unchanged; this release makes their packages reproducible, verified, and safely published.

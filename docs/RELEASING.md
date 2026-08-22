@@ -11,6 +11,7 @@ Protect `main` and require these pull-request checks before merging:
 - `check / check`
 - `release / release-policy`
 - `release / linux-packages`
+- `release / release-assets`
 
 `release / appimage` remains best effort and must not be required. The tagged
 release does not attach an AppImage until that job has proved reliable enough
@@ -39,9 +40,10 @@ git push origin vX.Y.Z
 The tag workflow checks that the tag is on `main`, matches the workspace
 version, and has release notes. It then builds with the pinned Tauri CLI,
 requires exactly one Debian package and one RPM, verifies their embedded
-versions, and uploads those artifacts plus `echo-desktop`. A separate job with
-release-write permission creates the GitHub Release only after all required
-artifacts are available.
+versions, and uploads those artifacts plus `echo-desktop`. A release-candidate
+job downloads the artifacts and verifies the exact directory layout consumed
+by the publisher. A separate job with release-write permission creates the
+GitHub Release only after all required artifacts are available.
 
 ## Verify
 

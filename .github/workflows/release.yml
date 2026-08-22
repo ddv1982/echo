@@ -213,9 +213,41 @@ jobs:
             target/release/bundle/appimage/*.AppImage
           if-no-files-found: error
 
+  release-assets:
+    needs: linux-packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ARTIFACT_STEM: ${{ github.ref_type == 'tag' && format('echo-{0}-linux', github.ref_name) || format('echo-nightly-{0}-linux', github.sha) }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ env.ARTIFACT_STEM }}
+          path: release-assets/packages
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ env.ARTIFACT_STEM }}-bin
+          path: release-assets/bin
+
+      - name: Validate staged release asset layout
+        run: |
+          shopt -s nullglob
+          deb_packages=(release-assets/packages/deb/*.deb)
+          rpm_packages=(release-assets/packages/rpm/*.rpm)
+          binary_count=0
+          if [ -f release-assets/bin/echo-desktop ]; then
+            binary_count=1
+          fi
+          if [ "${#deb_packages[@]}" -ne 1 ] || [ "${#rpm_packages[@]}" -ne 1 ] || [ "$binary_count" -ne 1 ]; then
+            printf 'expected one staged deb, rpm, and binary; found %s, %s, and %s\n' \
+              "${#deb_packages[@]}" "${#rpm_packages[@]}" "$binary_count"
+            exit 1
+          fi
+
   github-release:
     if: github.ref_type == 'tag'
-    needs: linux-packages
+    needs: release-assets
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -239,12 +271,12 @@ jobs:
         run: python3 scripts/changelog-notes.py "${{ github.ref_name }}" > release-notes.md
 
       - name: Attach GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           body_path: release-notes.md
           files: |
-            release-assets/packages/*.deb
-            release-assets/packages/*.rpm
+            release-assets/packages/deb/*.deb
+            release-assets/packages/rpm/*.rpm
             release-assets/bin/echo-desktop
           prerelease: ${{ contains(github.ref_name, '-') }}
           fail_on_unmatched_files: true
