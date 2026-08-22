@@ -775,6 +775,10 @@ fn try_cli(args: &[String]) -> Option<i32> {
                 1
             }
         }),
+        Some("--version" | "-V") => {
+            println!("echo-desktop {}", env!("CARGO_PKG_VERSION"));
+            Some(0)
+        }
         Some("--help" | "-h") => {
             print_cli_usage();
             Some(0)
@@ -805,6 +809,7 @@ fn print_cli_usage() {
     eprintln!("       echo-desktop rec --toggle");
     eprintln!("       echo-desktop rec --hold");
     eprintln!("       echo-desktop --hud-demo");
+    eprintln!("       echo-desktop --version");
 }
 
 fn run_desktop() {
