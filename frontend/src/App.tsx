@@ -945,6 +945,7 @@ function SettingsView({
         listModelOffers(),
       ])
         .then(([next, listed, models, languageOptions, modelOffers]) => {
+          settingsRef.current = next
           setLocalSettings(next)
           setDevices(listed)
           setInventory(models)
