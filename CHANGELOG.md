@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.1.0-alpha.2
+
+Second Linux alpha of Echo. A redesigned icon, Whisper model and language choice, guided model downloads, a truthful recording HUD, and a polished desktop window.
+
+- New app icon, a matching dual-tone tray glyph with real alpha that reads on light and dark panels, and a GNOME symbolic icon, all regenerated from SVG masters.
+- Whisper model catalog and picker: Echo scans the model directory, shows family, size, quantization, and multilingual capability, and reports what actually ran, including binary path, model path, VAD state, and inference time.
+- Language selection across all 100 whisper.cpp languages plus auto-detect with a detected-language readout. Impossible combinations, like a non-English language on an English-only model, are refused before recording.
+- Guided model downloads from inside Settings: four curated offers with size, source URL, SHA-1 verification, progress, and cancel.
+- The recording HUD shows real microphone levels with broadcast-style smoothing, covers Recording, Transcribing, Done, and Failed states, and draws with per-pixel alpha when a compositor is present.
+- The desktop window gains a brand lockup, a record hero with live levels, usage stats, a setup checklist, and day-grouped history.
+
 ## v0.1.0-alpha.1
 
 First Linux alpha of Echo. Hold a key or press a toggle shortcut, speak, and cleaned text lands at the cursor. Audio stays on the machine.
