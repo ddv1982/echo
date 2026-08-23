@@ -426,6 +426,21 @@
   justify-content: flex-start;
 }
 
+.first-run-step,
+.speech-setup {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.first-run-step {
+  border-top: 1px solid hsl(var(--border-subtle));
+  padding-top: var(--space-4);
+}
+
+.component-row {
+  margin-top: 0;
+}
+
 .setting-row select:disabled {
   cursor: not-allowed;
   opacity: 0.55;

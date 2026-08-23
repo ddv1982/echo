@@ -187,24 +187,77 @@ export interface LanguageOptions {
   options: LanguageOption[]
 }
 
-export interface ModelOffer {
-  id: string
-  label: string
-  filename: string
-  url: string
-  sizeBytes: number
-  runtimeMb: number | null
-  multilingual: boolean
-  installed: boolean
+export type ComponentId =
+  | 'whisper-runtime'
+  | 'whisper-base-q5-1'
+  | 'whisper-small'
+  | 'whisper-large-v3-turbo-q5-0'
+  | 'silero-vad'
+  | 'sherpa-runtime'
+  | 'parakeet-tdt-06b-v3-int8'
+
+export type SetupPlanId =
+  | 'recommended'
+  | 'parakeet'
+  | 'whisper-base'
+  | 'whisper-small'
+  | 'whisper-large-v3-turbo'
+
+export type ManagedComponentState =
+  | { kind: 'absent'; resumableBytes: number }
+  | { kind: 'ready'; version: string; bytes: number; root: string }
+  | { kind: 'needs-repair'; reason: string; resumableBytes: number }
+  | { kind: 'unsupported'; reason: string }
+
+export interface InstallProgress {
+  operationId: string
+  component: ComponentId
+  phase: 'checking-disk' | 'downloading' | 'verifying' | 'extracting' | 'activating'
+  receivedBytes: number
+  totalBytes: number
+  resumedFromBytes: number
 }
 
-export interface DownloadProgress {
-  id: string
-  received: number
-  total: number
-  stage: 'downloading' | 'verifying' | 'done' | 'failed' | 'cancelled'
-  error: string | null
+export interface ComponentStatus {
+  id: ComponentId
+  label: string
+  managed: ManagedComponentState
+  external: Array<{ origin: 'system' | 'external'; path: string }>
+  activeOrigin: 'managed' | 'system' | 'external' | null
+  activity: InstallProgress | null
 }
+
+export interface SetupPlan {
+  id: SetupPlanId
+  label: string
+  components: ComponentId[]
+  satisfied: boolean
+  downloadBytes: number
+  requiredFreeBytes: number
+  availableBytes: number | null
+  diskReady: boolean
+  diskReason: string | null
+}
+
+export interface Readiness {
+  managedSupported: boolean
+  unsupportedReason: string | null
+  totalMemoryBytes: number | null
+  recommendedModel: ComponentId
+  components: ComponentStatus[]
+  plans: SetupPlan[]
+  microphoneReady: boolean
+  speechReady: boolean
+  hasSuccessfulDictation: boolean
+  firstRunComplete: boolean
+  activeOperation: string | null
+}
+
+export type SetupEvent =
+  | { kind: 'progress'; progress: InstallProgress }
+  | { kind: 'finished'; operationId: string }
+  | { kind: 'cancelled'; operationId: string }
+  | { kind: 'failed'; operationId: string; error: string }
 
 export interface HistoryItem {
   id: string

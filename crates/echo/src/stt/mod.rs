@@ -1,6 +1,5 @@
 mod cache;
 mod fake;
-pub mod fetch;
 mod parakeet;
 mod runtime;
 mod whisper;

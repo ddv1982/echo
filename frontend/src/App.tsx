@@ -16,40 +16,42 @@ import {
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   addDictionaryEntry,
-  cancelDownload,
+  cancelSetup,
   copyText,
-  downloadModel,
   getAppStatus,
   getDictionary,
   getHistory,
+  getReadiness,
   getRecordingLevel,
   getShortcutStatus,
   getSettings,
   getMicrophones,
   listLanguages,
-  listModelOffers,
   listModels,
-  onDownloadProgress,
+  onSetupEvent,
   removeDictionaryEntry,
   removeStaleInstalls,
   repairLegacyShortcut,
+  repairManaged,
   retryShortcut,
   setMicrophone,
   setSettings,
+  startSetup,
   testInputDevice,
   testMicrophoneFallback,
   toggleRecording,
+  verifyManaged,
+  removeManaged,
 } from './tauri'
 import { deriveStats, groupByDay } from './stats'
 import { presentShortcut } from './shortcut'
 import type {
   AppStatus,
   DictionaryItem,
-  DownloadProgress,
   HistoryItem,
   LanguageOptions,
   ModelInventory,
-  ModelOffer,
+  Readiness,
   MicrophoneSnapshot,
   MicrophoneTestResult,
   SettingSource,
@@ -714,27 +716,76 @@ function SetupChecklist({
   status: AppStatus
   onOpenSettings: () => void
 }) {
+  const [readiness, setReadiness] = useState<Readiness | null>(null)
+  const [microphones, setMicrophones] = useState<MicrophoneSnapshot | null>(null)
+  const [micTest, setMicTest] = useState<MicrophoneTestResult | null>(null)
+  const [testingMic, setTestingMic] = useState(false)
+  const [setupError, setSetupError] = useState<string | null>(null)
+  useEffect(() => {
+    let unlisten: (() => void) | undefined
+    void getReadiness().then(setReadiness).catch((reason: unknown) => setSetupError(messageFrom(reason)))
+    void getMicrophones().then(setMicrophones).catch((reason: unknown) => setSetupError(messageFrom(reason)))
+    void onSetupEvent((event) => {
+      if (event.kind === 'failed') setSetupError(event.error)
+      void getReadiness().then(setReadiness).catch((reason: unknown) => setSetupError(messageFrom(reason)))
+    }).then((next) => {
+      unlisten = next
+    }).catch((reason: unknown) => setSetupError(messageFrom(reason)))
+    return () => unlisten?.()
+  }, [])
   // Verified, not asserted: only a passing shortcut test completes this.
   const identity = presentShortcut(status.shortcut).verificationIdentity
   const verified = identity != null
     && localStorage.getItem('echo-shortcut-verified-at') !== null
     && localStorage.getItem('echo-shortcut-verified-identity') === identity
   const items = [
-    { key: 'mic', done: status.microphoneReady, label: 'Microphone ready' },
-    { key: 'engine', done: status.engineReady, label: 'Speech engine and model installed' },
+    { key: 'mic', done: readiness?.microphoneReady ?? status.microphoneReady, label: 'Microphone ready' },
+    { key: 'engine', done: readiness?.speechReady ?? status.engineReady, label: 'Speech engine and model installed' },
+    { key: 'dictation', done: readiness?.hasSuccessfulDictation ?? false, label: 'First dictation complete' },
     { key: 'shortcut', done: verified, label: verified ? 'Shortcut verified' : 'Shortcut bound' },
   ]
-  if (items.every((item) => item.done)) return null
+  if (readiness?.firstRunComplete && verified) return null
   return (
     <section className="panel checklist" aria-label="Finish setup">
       <SectionHeading title="Finish setup" subtitle="The first-run job is one successful dictation." />
+      {setupError ? <div role="alert" className="error-banner">{setupError}</div> : null}
+      {readiness && !readiness.microphoneReady && microphones ? (
+        <div className="first-run-step">
+          <strong>1 · Choose and test a microphone</strong>
+          <MicrophoneChooser
+            snapshot={microphones}
+            test={micTest}
+            testing={testingMic}
+            onRefresh={() => void getMicrophones().then(setMicrophones)}
+            onSelect={(id) => {
+              setMicTest(null)
+              void setMicrophone(id).then(setMicrophones).catch((reason: unknown) => setSetupError(messageFrom(reason)))
+            }}
+            onTest={(id, fallback) => {
+              setTestingMic(true)
+              const run = fallback ? testMicrophoneFallback() : testInputDevice(id)
+              void run.then(setMicTest).finally(() => setTestingMic(false))
+            }}
+          />
+        </div>
+      ) : null}
+      {readiness && !readiness.speechReady ? (
+        <div className="first-run-step">
+          <strong>2 · Set up local speech</strong>
+          <SpeechSetupSection
+            readiness={readiness}
+            onRefresh={() => void getReadiness().then(setReadiness)}
+            onError={setSetupError}
+          />
+        </div>
+      ) : null}
       {items.map((item) => (
         <div className="checklist-item" data-done={item.done} key={item.key}>
           <span className="checklist-check" aria-hidden="true">
             {item.done ? <Check size={13} /> : null}
           </span>
           <span className="checklist-label">{item.label}</span>
-          {!item.done ? (
+          {!item.done && item.key === 'shortcut' ? (
             <button type="button" className="compact-button" onClick={onOpenSettings}>
               Open Settings
             </button>
@@ -897,8 +948,7 @@ function SettingsView({
   const [microphones, setMicrophones] = useState<MicrophoneSnapshot | null>(null)
   const [inventory, setInventory] = useState<ModelInventory | null>(null)
   const [languages, setLanguages] = useState<LanguageOptions | null>(null)
-  const [offers, setOffers] = useState<ModelOffer[]>([])
-  const [downloads, setDownloads] = useState<Record<string, DownloadProgress>>({})
+  const [readiness, setReadiness] = useState<Readiness | null>(null)
   const [micTest, setMicTest] = useState<MicrophoneTestResult | null>(null)
   const [testingMic, setTestingMic] = useState(false)
   const [repairingLegacyShortcut, setRepairingLegacyShortcut] = useState(false)
@@ -914,7 +964,7 @@ function SettingsView({
       void getMicrophones().then(setMicrophones).catch((reason: unknown) => onError(messageFrom(reason)))
       void listModels().then(setInventory).catch((reason: unknown) => onError(messageFrom(reason)))
       void listLanguages().then(setLanguages).catch((reason: unknown) => onError(messageFrom(reason)))
-      void listModelOffers().then(setOffers).catch((reason: unknown) => onError(messageFrom(reason)))
+      void getReadiness().then(setReadiness).catch((reason: unknown) => onError(messageFrom(reason)))
     }, 0)
     return () => window.clearTimeout(timer)
   }, [onError])
@@ -937,12 +987,10 @@ function SettingsView({
   useEffect(() => {
     let unlisten: (() => void) | undefined
     const timer = window.setTimeout(() => {
-      void onDownloadProgress((progress) => {
-        setDownloads((previous) => ({ ...previous, [progress.id]: progress }))
-        if (progress.stage === 'done') {
-          void listModelOffers().then(setOffers)
-          void listModels().then(setInventory)
-        }
+      void onSetupEvent((event) => {
+        if (event.kind === 'failed') onError(event.error)
+        void getReadiness().then(setReadiness)
+        if (event.kind !== 'progress') void listModels().then(setInventory)
       }).then((fn) => {
         unlisten = fn
       })
@@ -951,7 +999,7 @@ function SettingsView({
       window.clearTimeout(timer)
       unlisten?.()
     }
-  }, [])
+  }, [onError])
 
   useEffect(() => {
     settingsRef.current = settings
@@ -1044,17 +1092,6 @@ function SettingsView({
               <span className="status-dot" data-tone="attention" aria-hidden="true" />
               {status.languageWarning}
             </span>
-            {offers
-              .filter((offer) => offer.id === 'small' && !offer.installed)
-              .map((offer) => (
-                <OfferAction
-                  key={offer.id}
-                  offer={offer}
-                  progress={downloads[offer.id]}
-                  onDownload={() => void downloadModel(offer.id)}
-                  onCancel={() => void cancelDownload(offer.id)}
-                />
-              ))}
           </div>
         ) : null}
         {settings && whisperRuns && inventory ? (
@@ -1079,66 +1116,12 @@ function SettingsView({
             </select>
           </div>
         ) : null}
-        {inventory && inventory.vad.length === 0
-          ? offers
-              .filter((offer) => offer.id === 'silero-vad' && !offer.installed)
-              .map((offer) => (
-                <div className="setting-row" key={offer.id}>
-                  <div>
-                    <strong>Silence detection</strong>
-                    <span>
-                      Trims non-speech before transcription. {formatSize(offer.sizeBytes)} · {offer.url}
-                    </span>
-                  </div>
-                  <OfferAction
-                    offer={offer}
-                    progress={downloads[offer.id]}
-                    onDownload={() => void downloadModel(offer.id)}
-                    onCancel={() => void cancelDownload(offer.id)}
-                  />
-                </div>
-              ))
-          : null}
-        {offers.filter(
-          (offer) =>
-            offer.id !== 'silero-vad' &&
-            !(status.languageWarning && offer.id === 'small') &&
-            (!offer.installed || downloads[offer.id]),
-        ).length > 0 ? (
-          <>
-            <div className="setting-row">
-              <div>
-                <strong>Get a model</strong>
-                <span>Downloaded over HTTPS from huggingface.co and verified against the published SHA-1.</span>
-              </div>
-            </div>
-            {offers
-              .filter(
-                (offer) =>
-                  offer.id !== 'silero-vad' &&
-                  !(status.languageWarning && offer.id === 'small') &&
-                  (!offer.installed || downloads[offer.id]),
-              )
-              .map((offer) => (
-                <div className="setting-row" key={offer.id}>
-                  <div>
-                    <strong>{offer.label}</strong>
-                    <span>
-                      {formatSize(offer.sizeBytes)}
-                      {offer.runtimeMb != null ? ` · ~${offer.runtimeMb} MB memory` : ''}
-                      {offer.multilingual ? ' · multilingual' : ''}
-                    </span>
-                    <span className="offer-url">{offer.url}</span>
-                  </div>
-                  <OfferAction
-                    offer={offer}
-                    progress={downloads[offer.id]}
-                    onDownload={() => void downloadModel(offer.id)}
-                    onCancel={() => void cancelDownload(offer.id)}
-                  />
-                </div>
-              ))}
-          </>
+        {readiness ? (
+          <SpeechSetupSection
+            readiness={readiness}
+            onRefresh={() => void getReadiness().then(setReadiness)}
+            onError={onError}
+          />
         ) : null}
         <ShortcutRow
           status={status}
@@ -1306,65 +1289,158 @@ function formatSize(bytes: number) {
   return `${Math.round(bytes / 1024)} KiB`
 }
 
-function OfferAction({
-  offer,
-  progress,
-  onDownload,
-  onCancel,
+function managedStateLabel(component: Readiness['components'][number]) {
+  if (component.activity) {
+    if (component.activity.phase === 'downloading') {
+      const percent = component.activity.totalBytes > 0
+        ? Math.floor((component.activity.receivedBytes / component.activity.totalBytes) * 100)
+        : 0
+      return component.activity.resumedFromBytes > 0
+        ? `Downloading ${percent}% · resumed at ${formatSize(component.activity.resumedFromBytes)}`
+        : `Downloading ${percent}%`
+    }
+    return `${capitalize(component.activity.phase)}…`
+  }
+  switch (component.managed.kind) {
+    case 'absent':
+      return component.managed.resumableBytes > 0
+        ? `Partial · ${formatSize(component.managed.resumableBytes)} ready to resume`
+        : 'Not installed by Echo'
+    case 'ready':
+      return `Ready · managed by Echo · ${component.managed.version}`
+    case 'needs-repair':
+      return `Needs repair · ${component.managed.reason}`
+    case 'unsupported':
+      return component.managed.reason
+  }
+}
+
+function SpeechSetupSection({
+  readiness,
+  onRefresh,
+  onError,
 }: {
-  offer: ModelOffer
-  progress: DownloadProgress | undefined
-  onDownload: () => void
-  onCancel: () => void
+  readiness: Readiness
+  onRefresh: () => void
+  onError: (message: string) => void
 }) {
-  if (!progress || progress.stage === 'cancelled') {
-    return (
-      <button type="button" className="compact-button" onClick={onDownload}>
-        Download
-      </button>
-    )
+  const run = (action: Promise<unknown>) => {
+    void action.then(onRefresh).catch((reason: unknown) => onError(messageFrom(reason)))
   }
-  if (progress.stage === 'failed') {
-    return (
-      <div className="setting-actions">
-        <span className="status-note" data-tone="attention">
-          <span className="status-dot" data-tone="attention" aria-hidden="true" />
-          {progress.error ?? 'Download failed'}
-        </span>
-        <button type="button" className="compact-button" onClick={onDownload}>
-          Retry
-        </button>
-      </div>
-    )
-  }
-  if (progress.stage === 'done') {
-    return (
-      <span className="status-note" data-tone="ok">
-        <span className="status-dot" data-tone="ok" aria-hidden="true" />
-        Installed
-      </span>
-    )
-  }
-  const percent =
-    progress.total > 0 ? Math.min(100, Math.floor((progress.received / progress.total) * 100)) : 0
+  const recommended = readiness.plans.find((plan) => plan.id === 'recommended')
+  const parakeet = readiness.plans.find((plan) => plan.id === 'parakeet')
+  const activeOperation = readiness.activeOperation
   return (
-    <div className="setting-actions">
-      <div
-        className="download-track"
-        role="progressbar"
-        aria-valuenow={percent}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-label={`Downloading ${offer.filename}`}
-      >
-        <div className="download-fill" style={{ width: `${percent}%` }} />
+    <div className="speech-setup" aria-label="Speech setup">
+      <div className="setting-row">
+        <div>
+          <strong>Speech setup</strong>
+          <span>
+            Downloads stay in Echo's managed cache, use SHA-256, and never change PATH or external files.
+          </span>
+          <span>Parakeet setup selects Parakeet. Auto also prefers an available Parakeet setup.</span>
+        </div>
+        <div className="setting-actions">
+          {readiness.managedSupported && recommended && !recommended.satisfied ? (
+            <button
+              type="button"
+              className="compact-button"
+              disabled={!recommended.diskReady}
+              onClick={() => run(startSetup('recommended'))}
+            >
+              Set up recommended · {formatSize(recommended.downloadBytes)}
+            </button>
+          ) : null}
+          {readiness.managedSupported && parakeet && !parakeet.satisfied ? (
+            <button type="button" className="compact-button" onClick={() => run(startSetup('parakeet'))}>
+              Set up Parakeet
+            </button>
+          ) : null}
+          {activeOperation ? (
+            <button type="button" className="compact-button" onClick={() => run(cancelSetup(activeOperation))}>
+              Cancel setup
+            </button>
+          ) : null}
+        </div>
+        {recommended && !recommended.diskReady && recommended.diskReason ? (
+          <span className="status-note" data-tone="attention">{recommended.diskReason}</span>
+        ) : recommended && recommended.availableBytes != null ? (
+          <span className="status-note">
+            Needs {formatSize(recommended.requiredFreeBytes)} free · {formatSize(recommended.availableBytes)} available
+          </span>
+        ) : null}
       </div>
-      <span className="status-note">
-        {progress.stage === 'verifying' ? 'Verifying…' : `${percent}%`}
-      </span>
-      <button type="button" className="compact-button" onClick={onCancel}>
-        Cancel
-      </button>
+      {!readiness.managedSupported && readiness.unsupportedReason ? (
+        <div className="setting-row">
+          <span className="status-note" data-tone="attention">{readiness.unsupportedReason}</span>
+        </div>
+      ) : null}
+      {readiness.components.map((component) => (
+        <div className="setting-row component-row" key={component.id}>
+          <div>
+            <strong>{component.label}</strong>
+            <span>{managedStateLabel(component)}</span>
+            {component.external.map((external) => (
+              <span className="offer-url" key={`${external.origin}:${external.path}`}>
+                {capitalize(external.origin)} · {external.path}
+              </span>
+            ))}
+          </div>
+          <div className="setting-actions">
+            {component.activity ? (
+              <div
+                className="download-track"
+                role="progressbar"
+                aria-label={`${component.label} ${component.activity.phase}`}
+                aria-valuemin={0}
+                aria-valuemax={component.activity.totalBytes}
+                aria-valuenow={component.activity.receivedBytes}
+              >
+                <div
+                  className="download-fill"
+                  style={{
+                    width: `${component.activity.totalBytes > 0
+                      ? Math.min(100, (component.activity.receivedBytes / component.activity.totalBytes) * 100)
+                      : 0}%`,
+                  }}
+                />
+              </div>
+            ) : null}
+            {component.managed.kind === 'needs-repair' ? (
+              <button type="button" className="compact-button" onClick={() => run(repairManaged(component.id))}>
+                Repair
+              </button>
+            ) : null}
+            {component.managed.kind === 'absent' && readiness.managedSupported ? (
+              <button type="button" className="compact-button" onClick={() => run(repairManaged(component.id))}>
+                {component.managed.resumableBytes > 0
+                  ? `Resume · ${formatSize(component.managed.resumableBytes)} saved`
+                  : component.external.length > 0
+                    ? 'Install managed copy'
+                    : 'Install'}
+              </button>
+            ) : null}
+            {component.managed.kind === 'ready' ? (
+              <>
+                <button type="button" className="compact-button" onClick={() => run(verifyManaged(component.id))}>
+                  Verify
+                </button>
+                <button
+                  type="button"
+                  className="compact-button danger-button"
+                  onClick={() => {
+                    if (window.confirm(`Remove Echo-managed ${component.label}? External files stay untouched.`)) {
+                      run(removeManaged(component.id))
+                    }
+                  }}
+                >
+                  Remove · {formatSize(component.managed.bytes)}
+                </button>
+              </>
+            ) : null}
+          </div>
+        </div>
+      ))}
     </div>
   )
 }

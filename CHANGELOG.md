@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Microphones now use CPAL stable device IDs, keep equal labels distinct, show available metadata, preserve disconnected choices with an explicit fallback, and test the exact selected input.
+- Linux x86_64 users can install complete Whisper or Parakeet setups inside Echo. Managed components use resumable downloads, SHA-256, bounded archive extraction, immutable activation records, Verify, Repair, and managed-only removal.
+- System runtimes and existing cache files remain external, visible, and untouched. Healthy managed components take precedence while corrupt managed components fall back to those external inputs.
+
 ## v0.6.0
 
 - `echo-desktop transcribe FILE.wav` now writes clean text, raw text, or schema-versioned JSON to stdout or an exact output path without starting recorder or desktop side effects.

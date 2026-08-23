@@ -3,6 +3,7 @@ import App from './App'
 import {
   getSettings,
   getMicrophones,
+  getReadiness,
   listModels,
   removeStaleInstalls,
   repairLegacyShortcut,
@@ -12,6 +13,7 @@ import {
   seedPreviewMicrophones,
   seedPreviewMicTestError,
   seedPreviewRemoveStaleError,
+  seedPreviewReadiness,
   seedPreviewSettings,
   seedPreviewStatus,
   setSettings,
@@ -543,79 +545,124 @@ describe('Echo desktop shell', () => {
     expect(screen.queryByLabelText('Language')).not.toBeInTheDocument()
   })
 
-  it('lists uninstalled offers with size and URL, and downloads one', async () => {
+  it('shows always-visible managed and external component rows', async () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-
-    // The installed offer renders no download button; uninstalled ones do.
-    expect(await screen.findByText('Balanced, multilingual')).toBeInTheDocument()
-    expect(screen.getByText(/465 MiB · ~852 MB memory · multilingual/)).toBeInTheDocument()
-    expect(screen.getByText('https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin')).toBeInTheDocument()
-    expect(screen.queryByText('Fast, English')).not.toBeInTheDocument()
-
-    const row = screen.getByText('Balanced, multilingual').closest('.setting-row')!
-    const button = within(row as HTMLElement).getByRole('button', { name: 'Download' })
-    fireEvent.click(button)
-    expect(
-      await within(row as HTMLElement).findByRole('progressbar', {
-        name: 'Downloading ggml-small.bin',
-      }),
-    ).toBeInTheDocument()
-    expect(await within(row as HTMLElement).findByText('Verifying…')).toBeInTheDocument()
-    expect(await within(row as HTMLElement).findByText('Installed')).toBeInTheDocument()
+    expect(await screen.findByText('Whisper runtime')).toBeInTheDocument()
+    expect(screen.getByText('Small multilingual')).toBeInTheDocument()
+    expect(screen.getByText(/System · \/usr\/bin\/whisper-cli/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Set up Parakeet' })).toBeInTheDocument()
   })
 
-  it('cancels a download midway', async () => {
-    render(<App />)
-    await screen.findByRole('button', { name: 'Start recording' })
-    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    const row = (await screen.findByText('Best, multilingual')).closest('.setting-row')!
-    fireEvent.click(within(row as HTMLElement).getByRole('button', { name: 'Download' }))
-    await within(row as HTMLElement).findByRole('progressbar')
-    fireEvent.click(within(row as HTMLElement).getByRole('button', { name: 'Cancel' }))
-    expect(
-      await within(row as HTMLElement).findByRole('button', { name: 'Download' }),
-    ).toBeInTheDocument()
-  })
-
-  it('offers a multilingual model at the language incompatibility warning', async () => {
-    const defaults = await getSettings()
-    seedPreviewSettings({
-      ...defaults,
-      engine: { value: 'whisper', effective: 'whisper', source: 'file' },
-      language: { value: 'de', effective: 'de', source: 'file' },
-    })
-    seedPreviewStatus({
-      languageWarning:
-        'ggml-base.en.bin is English-only but the language is set to german. Choose a multilingual model or set the language to English.',
+  it('runs recommended setup and refreshes terminal state', async () => {
+    const readiness = await getReadiness()
+    seedPreviewReadiness({
+      ...readiness,
+      speechReady: false,
+      firstRunComplete: false,
+      plans: readiness.plans.map((plan) =>
+        plan.id === 'recommended' ? { ...plan, satisfied: false, downloadBytes: 498_000_000 } : plan,
+      ),
     })
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    const warning = await screen.findAllByText(/ggml-base\.en\.bin is English-only/)
-    const warningRow = warning[0].closest('.setting-row')!
-    // The fix is a click, right at the point of failure. The button renders
-    // once the async offer fetch resolves, later than the status-driven
-    // warning text, so the lookup must wait for it.
-    fireEvent.click(
-      await within(warningRow as HTMLElement).findByRole('button', { name: 'Download' }),
-    )
-    expect(
-      await within(warningRow as HTMLElement).findByRole('progressbar', {
-        name: 'Downloading ggml-small.bin',
-      }),
-    ).toBeInTheDocument()
-    // And the offer is not duplicated in the general list while the warning shows.
-    expect(screen.queryByText('Balanced, multilingual')).not.toBeInTheDocument()
+    fireEvent.click(await screen.findByRole('button', { name: /Set up recommended/ }))
+    await waitFor(async () => {
+      expect((await getReadiness()).plans.find((plan) => plan.id === 'recommended')?.satisfied).toBe(true)
+    })
   })
 
-  it('offers the VAD model where VAD is reported unavailable', async () => {
+  it('shows repair and managed-only removal actions', async () => {
+    const readiness = await getReadiness()
+    seedPreviewReadiness({
+      ...readiness,
+      components: readiness.components.map((component) =>
+        component.id === 'silero-vad'
+          ? { ...component, managed: { kind: 'needs-repair', reason: 'wrong size', resumableBytes: 0 } }
+          : component.id === 'whisper-small'
+            ? { ...component, managed: { kind: 'ready', version: 'small', bytes: 100, root: '/managed/small' } }
+            : component,
+      ),
+    })
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    expect(await screen.findByText('Silence detection')).toBeInTheDocument()
-    expect(screen.getByText(/864 KiB/)).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Repair' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Remove ·/ })).toBeInTheDocument()
+  })
+
+  it('shows unsupported guidance without managed mutation actions', async () => {
+    const readiness = await getReadiness()
+    seedPreviewReadiness({
+      ...readiness,
+      managedSupported: false,
+      unsupportedReason: 'Managed setup is available on Linux x86_64.',
+      components: readiness.components.map((component) => ({
+        ...component,
+        managed: { kind: 'unsupported', reason: 'Linux x86_64 only' },
+      })),
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(await screen.findByText('Managed setup is available on Linux x86_64.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Set up recommended/ })).not.toBeInTheDocument()
+  })
+
+  it('renders component progress, resume, and low-space admission truthfully', async () => {
+    const readiness = await getReadiness()
+    seedPreviewReadiness({
+      ...readiness,
+      plans: readiness.plans.map((plan) =>
+        plan.id === 'recommended'
+          ? { ...plan, satisfied: false, diskReady: false, diskReason: 'Needs 900 bytes free; 400 bytes are available' }
+          : plan,
+      ),
+      components: readiness.components.map((component) =>
+        component.id === 'whisper-small'
+          ? {
+              ...component,
+              managed: { kind: 'absent', resumableBytes: 42 },
+              activity: {
+                operationId: 'op-1',
+                component: component.id,
+                phase: 'downloading',
+                receivedBytes: 50,
+                totalBytes: 100,
+                resumedFromBytes: 42,
+              },
+            }
+          : component,
+      ),
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(await screen.findByRole('progressbar', { name: 'Small multilingual downloading' })).toHaveAttribute('aria-valuenow', '50')
+    expect(screen.getByRole('button', { name: /Resume/ })).toBeInTheDocument()
+    expect(screen.getByText('Needs 900 bytes free; 400 bytes are available')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Set up recommended/ })).toBeDisabled()
+  })
+
+  it('shows microphone then speech as guided Home steps', async () => {
+    const readiness = await getReadiness()
+    seedPreviewReadiness({
+      ...readiness,
+      microphoneReady: false,
+      speechReady: false,
+      hasSuccessfulDictation: false,
+      firstRunComplete: false,
+      plans: readiness.plans.map((plan) =>
+        plan.id === 'recommended' ? { ...plan, satisfied: false, downloadBytes: 100 } : plan,
+      ),
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    expect(await screen.findByText('1 · Choose and test a microphone')).toBeInTheDocument()
+    expect(screen.getByText('2 · Set up local speech')).toBeInTheDocument()
+    expect(screen.getByText('First dictation complete')).toBeInTheDocument()
   })
 
   it('shows usage stats derived from history', async () => {
@@ -880,7 +927,7 @@ describe('Echo desktop shell', () => {
     })
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
-    expect(screen.getByText('Bind it in your desktop settings.')).toBeInTheDocument()
+    expect(await screen.findByText('Bind it in your desktop settings.')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     expect(await screen.findByText('Manual shortcut setup')).toBeInTheDocument()
     expect(screen.getByText('/usr/bin/echo-desktop rec --toggle')).toBeInTheDocument()

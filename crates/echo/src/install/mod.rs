@@ -14,6 +14,7 @@ use sha2::{Digest, Sha256};
 
 pub use catalog::{ComponentId, SetupPlanId};
 pub use download::{DiskSpace, HttpRequest, HttpResponse, HttpTransport, SystemDisk, UreqTransport};
+pub use download::required_free_bytes;
 
 use catalog::{archive_component, component, ArtifactFormat, PayloadKind};
 use download::{download_verified, forget_partial, DownloadSpec};
