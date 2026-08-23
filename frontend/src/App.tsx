@@ -1901,6 +1901,34 @@ function MicrophoneChooser({
             : 'Choose a source by its familiar name. Echo keeps similarly named devices separate.'}
         </span>
       </div>
+      <div className="setting-actions microphone-actions">
+        <button type="button" className="compact-button" onClick={onRefresh}>Refresh</button>
+        {selectedId !== undefined ? (
+          <button type="button" className="compact-button" disabled={testing} onClick={() => onTest(selectedId, false)}>
+            Test selected
+          </button>
+        ) : null}
+        {fallback ? (
+          <button type="button" className="compact-button" disabled={testing} onClick={() => onTest(null, true)}>
+            Test system fallback
+          </button>
+        ) : null}
+        {test ? (
+          <span
+            className="status-note"
+            data-tone={test.kind === 'completed' && test.outcome === 'heard' ? 'ok' : 'attention'}
+            role="status"
+            aria-live="polite"
+          >
+            <span
+              className="status-dot"
+              data-tone={test.kind === 'completed' && test.outcome === 'heard' ? 'ok' : 'attention'}
+              aria-hidden="true"
+            />
+            {microphoneTestMessage(test)}
+          </span>
+        ) : null}
+      </div>
       {missing ? (
         <div className="microphone-warning" role="alert">
           <strong>{missing} is disconnected.</strong>
@@ -1969,46 +1997,6 @@ function MicrophoneChooser({
               ))}
             </div>
           </details>
-        ) : null}
-      </div>
-      <div className="setting-actions microphone-actions">
-        <button type="button" className="compact-button" onClick={onRefresh}>
-          Refresh
-        </button>
-        {selectedId !== undefined ? (
-          <button
-            type="button"
-            className="compact-button"
-            disabled={testing}
-            onClick={() => onTest(selectedId, false)}
-          >
-            Test selected
-          </button>
-        ) : null}
-        {fallback ? (
-          <button
-            type="button"
-            className="compact-button"
-            disabled={testing}
-            onClick={() => onTest(null, true)}
-          >
-            Test system fallback
-          </button>
-        ) : null}
-        {test ? (
-          <span
-            className="status-note"
-            data-tone={test.kind === 'completed' && test.outcome === 'heard' ? 'ok' : 'attention'}
-            role="status"
-            aria-live="polite"
-          >
-            <span
-              className="status-dot"
-              data-tone={test.kind === 'completed' && test.outcome === 'heard' ? 'ok' : 'attention'}
-              aria-hidden="true"
-            />
-            {microphoneTestMessage(test)}
-          </span>
         ) : null}
       </div>
       {snapshot.enumerationWarning ? (
