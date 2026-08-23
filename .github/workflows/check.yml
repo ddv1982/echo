@@ -30,6 +30,7 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libdbus-1-dev \
             libayatana-appindicator3-dev \
+            ripgrep \
             xdotool \
             desktop-file-utils \
             xvfb
