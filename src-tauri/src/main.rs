@@ -253,7 +253,7 @@ fn health_snapshot() -> Health {
         })
         .unwrap_or_default();
     let health = Health {
-        microphone_ready: AudioCapture::open_default().is_ok(),
+        microphone_ready: AudioCapture::default_input_ready().is_ok(),
         engine_name,
         engine_ready,
         injection_name,
@@ -1347,7 +1347,7 @@ fn get_microphones() -> echo::microphone::MicrophoneSnapshot {
 fn set_microphone(id: Option<String>) -> Result<echo::microphone::MicrophoneSnapshot, String> {
     if env::var("ECHO_MICROPHONE")
         .ok()
-        .is_some_and(|value| !value.is_empty())
+        .is_some_and(|value| !value.trim().is_empty())
     {
         return Err("ECHO_MICROPHONE controls the microphone in this process".to_string());
     }

@@ -135,6 +135,14 @@ pub fn selection_from_sources(
                 id: raw.to_string(),
                 last_seen_label: device.label.clone(),
             })
+            .or_else(|| {
+                raw.parse::<cpal::DeviceId>()
+                    .ok()
+                    .map(|_| MicrophoneSelection::Device {
+                        id: raw.to_string(),
+                        last_seen_label: raw.to_string(),
+                    })
+            })
             .unwrap_or_else(|| MicrophoneSelection::LegacyName {
                 name: raw.to_string(),
             });
@@ -151,7 +159,13 @@ pub fn resolve_selection(
     selection: Option<&MicrophoneSelection>,
     devices: &[InputDeviceInfo],
 ) -> InputSelectionStatus {
-    let fallback = || devices.iter().find(|device| device.is_default).cloned();
+    let fallback = || {
+        devices
+            .iter()
+            .find(|device| device.is_default)
+            .or_else(|| devices.first())
+            .cloned()
+    };
     match selection {
         None => InputSelectionStatus::SystemDefault { active: fallback() },
         Some(MicrophoneSelection::Device {
@@ -280,6 +294,20 @@ mod tests {
     }
 
     #[test]
+    fn missing_stable_id_uses_first_input_when_no_default_exists() {
+        let selection = MicrophoneSelection::Device {
+            id: "alsa:gone".into(),
+            last_seen_label: "Travel Mic".into(),
+        };
+        let inputs = vec![device("alsa:usb-one", "USB Mic", false)];
+        assert!(matches!(
+            resolve_selection(Some(&selection), &inputs),
+            InputSelectionStatus::MissingWithFallback { fallback, .. }
+                if fallback.id.as_str() == "alsa:usb-one"
+        ));
+    }
+
+    #[test]
     fn unique_legacy_name_is_migratable() {
         let selection = MicrophoneSelection::LegacyName {
             name: "Built-in".into(),
@@ -322,6 +350,22 @@ mod tests {
         assert!(matches!(
             resolve_selection(selection.as_ref(), &devices()),
             InputSelectionStatus::AmbiguousLegacyName { matches, .. } if matches.len() == 2
+        ));
+    }
+
+    #[test]
+    fn disconnected_environment_id_stays_an_id() {
+        #[cfg(target_os = "linux")]
+        let raw = "alsa:gone";
+        #[cfg(target_os = "macos")]
+        let raw = "coreaudio:gone";
+        #[cfg(target_os = "windows")]
+        let raw = "wasapi:gone";
+        let (selection, source) = selection_from_sources(Some(raw), None, &devices());
+        assert_eq!(source, SelectionSource::Environment);
+        assert!(matches!(
+            selection,
+            Some(MicrophoneSelection::Device { id, .. }) if id == raw
         ));
     }
 }

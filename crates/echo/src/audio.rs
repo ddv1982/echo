@@ -212,7 +212,7 @@ fn describe_device(device: &cpal::Device, is_default: bool) -> Result<InputDevic
     let label = description
         .as_ref()
         .map(|value| value.name().to_string())
-        .unwrap_or_else(|| device.to_string());
+        .unwrap_or_else(|| id.clone());
     Ok(InputDeviceInfo {
         id: MicrophoneId::parse(id).map_err(AudioError::Selection)?,
         label,
@@ -332,6 +332,15 @@ pub fn microphone_snapshot() -> MicrophoneSnapshot {
 }
 
 impl AudioCapture {
+    pub fn default_input_ready() -> Result<(), AudioError> {
+        let capture = Self::open_default()?;
+        capture
+            .device
+            .default_input_config()
+            .map(|_| ())
+            .map_err(map_cpal_error)
+    }
+
     pub fn open_default() -> Result<Self, AudioError> {
         let discovery = discover_inputs(&cpal::default_host());
         let snapshot = process_snapshot_from(&discovery);

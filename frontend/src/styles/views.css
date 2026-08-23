@@ -392,8 +392,13 @@
   background: hsl(var(--accent) / 0.08);
 }
 
-.microphone-option input {
+.microphone-option input[type='radio'] {
+  flex: none;
+  width: 1rem;
+  height: 1rem;
   margin-top: 0.2rem;
+  padding: 0;
+  accent-color: hsl(var(--accent));
 }
 
 .microphone-option span,
