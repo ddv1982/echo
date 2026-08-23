@@ -12,7 +12,7 @@ mod session;
 mod types;
 
 pub use cleanup::{Cleanup, CleanupError, CleanupMode, OffCleanup, RulesCleanup};
-pub use config::{resolve, Config, EngineChoice};
+pub use config::{resolve, Config, EngineChoice, MicrophoneSelection};
 pub use dictionary::{DictEntry, Dictionary, RecognitionHints, Rewrite};
 pub use engine::{DecodeOptions, Engine, EngineError, RunDetail, Transcript};
 pub use history::{History, HistoryRow};

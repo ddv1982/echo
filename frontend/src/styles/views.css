@@ -366,6 +366,81 @@
   gap: var(--space-3);
 }
 
+.microphone-setting {
+  align-items: stretch;
+  flex-direction: column;
+}
+
+.microphone-options {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.microphone-option {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  border: 1px solid hsl(var(--border-subtle));
+  border-radius: var(--radius-md);
+  background: hsl(var(--surface-raised));
+  padding: var(--space-3);
+  cursor: pointer;
+}
+
+.microphone-option[data-selected='true'] {
+  border-color: hsl(var(--accent) / 0.55);
+  background: hsl(var(--accent) / 0.08);
+}
+
+.microphone-option input[type='radio'] {
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 50%;
+  margin-top: 0.2rem;
+  padding: 0;
+  accent-color: hsl(var(--accent));
+}
+
+.microphone-option span,
+.microphone-option strong,
+.microphone-option small,
+.microphone-warning span,
+.microphone-warning strong {
+  display: block;
+}
+
+.microphone-option small,
+.microphone-warning span {
+  color: hsl(var(--text-tertiary));
+  font-size: var(--text-xs);
+  margin-top: var(--space-1);
+}
+
+.microphone-warning {
+  border-left: 2px solid hsl(var(--warning));
+  padding-left: var(--space-3);
+}
+
+.microphone-actions {
+  justify-content: flex-start;
+}
+
+.first-run-step,
+.speech-setup {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.first-run-step {
+  border-top: 1px solid hsl(var(--border-subtle));
+  padding-top: var(--space-4);
+}
+
+.component-row {
+  margin-top: 0;
+}
+
 .setting-row select:disabled {
   cursor: not-allowed;
   opacity: 0.55;
@@ -482,6 +557,8 @@
   .home-grid { grid-template-columns: 1fr; }
   .dictionary-form { grid-template-columns: 1fr; }
   .mapping-arrow { display: none; }
+  .speech-setup .setting-row { align-items: flex-start; flex-direction: column; }
+  .speech-setup .setting-actions { justify-content: flex-start; }
 }
 
 @media (max-width: 520px) {

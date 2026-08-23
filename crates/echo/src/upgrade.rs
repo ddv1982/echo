@@ -218,11 +218,7 @@ pub struct RemovalReport {
 /// leftovers of a source install: the desktop entry and the hicolor icons.
 /// Nothing here touches the running binary or needs privileges.
 #[must_use]
-pub fn remove_stale_installs(
-    current: &Path,
-    path_var: &str,
-    home: &Path,
-) -> RemovalReport {
+pub fn remove_stale_installs(current: &Path, path_var: &str, home: &Path) -> RemovalReport {
     let mut report = RemovalReport::default();
     let Ok(current_id) = file_identity(current) else {
         return report;
@@ -292,7 +288,10 @@ mod tests {
 
     #[test]
     fn missing_file_restarts_so_the_spawn_guard_decides() {
-        assert_eq!(second_launch_decision(id(1, 2), None), SecondLaunch::Restart);
+        assert_eq!(
+            second_launch_decision(id(1, 2), None),
+            SecondLaunch::Restart
+        );
     }
 
     #[test]
@@ -326,13 +325,17 @@ mod tests {
         let path_var = format!("{}:{}", early.display(), late.display());
 
         let installs = path_installs(&path_var);
+        let canonical_early = early.canonicalize().unwrap();
         assert_eq!(installs.len(), 2, "only echo-desktop files, once each");
-        assert!(installs[0].0.starts_with(&early), "PATH order preserved");
+        assert!(
+            installs[0].0.starts_with(&canonical_early),
+            "PATH order preserved"
+        );
 
         let current = file_identity(&late.join("echo-desktop")).unwrap();
         let stale = stale_installs(&installs, current);
         assert_eq!(stale.len(), 1);
-        assert!(stale[0].starts_with(&early));
+        assert!(stale[0].starts_with(&canonical_early));
         assert!(stale_installs(&installs[1..], current).is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -359,7 +362,12 @@ mod tests {
             ProcessDisposition::Keep,
             "never touch another user's processes"
         );
-        let stranger = process(100, 1000, "/usr/bin/echo-desktop-not", &["echo-desktop-not"]);
+        let stranger = process(
+            100,
+            1000,
+            "/usr/bin/echo-desktop-not",
+            &["echo-desktop-not"],
+        );
         assert_eq!(
             classify_process(&stranger, 200, 1000),
             ProcessDisposition::Keep
@@ -399,11 +407,13 @@ mod tests {
             ProcessDisposition::Keep,
             "an active dictation must not be killed"
         );
-        let demo = process(100, 1000, "/tmp/echo-desktop", &["echo-desktop", "--hud-demo"]);
-        assert_eq!(
-            classify_process(&demo, 200, 1000),
-            ProcessDisposition::Keep
+        let demo = process(
+            100,
+            1000,
+            "/tmp/echo-desktop",
+            &["echo-desktop", "--hud-demo"],
         );
+        assert_eq!(classify_process(&demo, 200, 1000), ProcessDisposition::Keep);
     }
 
     #[test]
@@ -448,7 +458,10 @@ mod tests {
 
         let report = remove_stale_installs(&current, "", &home);
         assert!(report.removed.is_empty());
-        assert!(entry.exists(), "leftovers stay when no stale binary was removed");
+        assert!(
+            entry.exists(),
+            "leftovers stay when no stale binary was removed"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

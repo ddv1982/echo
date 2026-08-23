@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::env;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -12,7 +12,6 @@ use ashpd::desktop::global_shortcuts::{
 use ashpd::desktop::CreateSessionOptions;
 use echo::audio::AudioCapture;
 use echo::inject::{Pasteboard, SysClipboard};
-use echo::stt::fetch::{self, DownloadStage};
 use echo_core::{DictEntry, Dictionary, History};
 use futures_util::StreamExt;
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
@@ -21,12 +20,26 @@ use serde::{Deserialize, Serialize};
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{Emitter, Manager, WindowEvent};
+use tauri::{Manager, WindowEvent};
 
 mod cli;
+mod setup;
 
 const APP_ID: &str = "io.github.ddv1982.echo";
 const GNOME_MEDIA_KEYS_SCHEMA: &str = "org.gnome.settings-daemon.plugins.media-keys";
+static CONFIG_WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+fn update_file_config(
+    update: impl FnOnce(&mut echo_core::Config) -> Result<(), String>,
+) -> Result<(), String> {
+    let _write = CONFIG_WRITE_LOCK.lock().expect("config write lock");
+    let mut config = echo_core::Config::load().unwrap_or_default();
+    update(&mut config)?;
+    config.save()?;
+    echo::settings::reload();
+    health_invalidate();
+    Ok(())
+}
 const GNOME_CUSTOM_KEY_SCHEMA: &str =
     "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding";
 const ECHO_CUSTOM_KEY_PATH: &str =
@@ -196,7 +209,6 @@ struct Settings {
     cleanup: SettingField<String>,
     hud: SettingField<bool>,
     record_seconds: SettingField<u32>,
-    microphone: SettingField<String>,
     language: SettingField<String>,
 }
 
@@ -207,7 +219,6 @@ struct SettingsEnv {
     cleanup: Option<String>,
     hud: Option<String>,
     record_seconds: Option<String>,
-    microphone: Option<String>,
     language: Option<String>,
 }
 
@@ -255,7 +266,7 @@ fn health_snapshot() -> Health {
         })
         .unwrap_or_default();
     let health = Health {
-        microphone_ready: AudioCapture::open_default().is_ok(),
+        microphone_ready: AudioCapture::default_input_ready().is_ok(),
         engine_name,
         engine_ready,
         injection_name,
@@ -1116,117 +1127,6 @@ struct LanguageOptionsDto {
     options: Vec<LanguageOptionDto>,
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ModelOfferDto {
-    id: String,
-    label: String,
-    filename: String,
-    url: String,
-    size_bytes: u64,
-    runtime_mb: Option<u32>,
-    multilingual: bool,
-    installed: bool,
-}
-
-#[tauri::command]
-fn list_model_offers() -> Vec<ModelOfferDto> {
-    let cache = echo::stt::ModelCache::from_env();
-    fetch::OFFERS
-        .iter()
-        .map(|offer| ModelOfferDto {
-            id: offer.id.to_string(),
-            label: offer.label.to_string(),
-            filename: offer.filename.to_string(),
-            url: offer.url.to_string(),
-            size_bytes: offer.size_bytes,
-            runtime_mb: offer.runtime_mb,
-            multilingual: offer.multilingual,
-            installed: cache.path(offer.filename).is_file(),
-        })
-        .collect()
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DownloadProgressDto {
-    id: String,
-    received: u64,
-    total: u64,
-    /// "downloading", "verifying", "done", "failed", or "cancelled".
-    stage: String,
-    error: Option<String>,
-}
-
-static DOWNLOADS: Mutex<Option<HashMap<String, Arc<AtomicBool>>>> = Mutex::new(None);
-
-#[tauri::command]
-fn download_model(id: String, app: tauri::AppHandle) -> Result<(), String> {
-    let offer = fetch::offer(&id).ok_or_else(|| format!("unknown model offer {id}"))?;
-    let cancel = Arc::new(AtomicBool::new(false));
-    DOWNLOADS
-        .lock()
-        .expect("downloads lock")
-        .get_or_insert_with(HashMap::new)
-        .insert(id.clone(), cancel.clone());
-    std::thread::Builder::new()
-        .name(format!("echo-download-{id}"))
-        .spawn(move || {
-            let dir = echo::stt::ModelCache::from_env().dir().to_path_buf();
-            let emit = |stage: &str, received: u64, total: u64, error: Option<String>| {
-                let _ = app.emit(
-                    "model-download-progress",
-                    DownloadProgressDto {
-                        id: id.clone(),
-                        received,
-                        total,
-                        stage: stage.to_string(),
-                        error,
-                    },
-                );
-            };
-            let result = fetch::download(
-                offer,
-                &dir,
-                |progress| {
-                    let stage = match progress.stage {
-                        DownloadStage::Downloading => "downloading",
-                        DownloadStage::Verifying => "verifying",
-                        DownloadStage::Done => "done",
-                    };
-                    emit(stage, progress.received, progress.total, None);
-                },
-                &cancel,
-            );
-            match result {
-                Ok(_) => emit("done", offer.size_bytes, offer.size_bytes, None),
-                Err(fetch::FetchError::Cancelled) => emit("cancelled", 0, offer.size_bytes, None),
-                Err(err) => emit("failed", 0, offer.size_bytes, Some(err.to_string())),
-            }
-            DOWNLOADS
-                .lock()
-                .expect("downloads lock")
-                .as_mut()
-                .map(|active| active.remove(&id));
-        })
-        .map_err(|err| err.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-fn cancel_download(id: String) -> bool {
-    DOWNLOADS
-        .lock()
-        .expect("downloads lock")
-        .as_ref()
-        .and_then(|active| active.get(&id))
-        .map(|cancel| {
-            cancel.store(true, Ordering::Relaxed);
-            true
-        })
-        .unwrap_or(false)
-}
-
 #[tauri::command]
 fn list_languages() -> LanguageOptionsDto {
     match echo::stt::language_support() {
@@ -1302,7 +1202,7 @@ struct ModelInventoryDto {
 #[tauri::command]
 fn list_models() -> Result<ModelInventoryDto, String> {
     let cache = echo::stt::ModelCache::from_env();
-    let inventory = cache.inventory();
+    let inventory = echo::stt::SpeechRuntimeInventory::from_cache(&cache).models;
     Ok(ModelInventoryDto {
         whisper: inventory
             .whisper
@@ -1340,32 +1240,109 @@ fn set_settings(settings: Settings) -> Result<Settings, String> {
     write_settings(settings)
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct InputDeviceDto {
-    name: String,
-    is_default: bool,
+#[tauri::command]
+fn get_microphones() -> echo::microphone::MicrophoneSnapshot {
+    echo::audio::microphone_snapshot()
 }
 
 #[tauri::command]
-fn list_input_devices() -> Result<Vec<InputDeviceDto>, String> {
-    Ok(echo::audio::list_input_devices()
+fn set_microphone(id: Option<String>) -> Result<echo::microphone::MicrophoneSnapshot, String> {
+    if env::var("ECHO_MICROPHONE")
+        .ok()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        return Err("ECHO_MICROPHONE controls the microphone in this process".to_string());
+    }
+    let snapshot = echo::audio::microphone_snapshot();
+    let selection = match id {
+        None => None,
+        Some(raw) => {
+            let id = echo::microphone::MicrophoneId::parse(raw)?;
+            let device = snapshot
+                .devices
+                .iter()
+                .find(|device| device.id == id)
+                .ok_or_else(|| {
+                    "that microphone is no longer connected; refresh and choose again".to_string()
+                })?;
+            Some((id, device.label.clone()))
+        }
+    };
+    update_file_config(|config| {
+        update_microphone_config(config, selection);
+        Ok(())
+    })?;
+    Ok(echo::audio::microphone_snapshot())
+}
+
+fn update_microphone_config(
+    config: &mut echo_core::Config,
+    selection: Option<(echo::microphone::MicrophoneId, String)>,
+) {
+    config.microphone =
+        selection.map(
+            |(id, last_seen_label)| echo_core::MicrophoneSelection::Device {
+                id: id.as_str().to_string(),
+                last_seen_label,
+            },
+        );
+}
+
+fn microphone_test(
+    capture: Result<AudioCapture, echo::audio::AudioError>,
+) -> echo::microphone::MicrophoneTestResult {
+    let capture = match capture {
+        Ok(capture) => capture,
+        Err(error) => {
+            return echo::microphone::MicrophoneTestResult::Failed {
+                device: None,
+                category: error.category(),
+                message: error.to_string(),
+            };
+        }
+    };
+    let snapshot = echo::audio::microphone_snapshot();
+    let device = snapshot
+        .devices
         .into_iter()
-        .map(|device| InputDeviceDto {
-            name: device.name,
-            is_default: device.is_default,
-        })
-        .collect())
+        .find(|device| device.id == capture.device_id);
+    match capture.record(std::time::Duration::from_secs(1), None) {
+        Ok(result) => echo::microphone::MicrophoneTestResult::Completed {
+            device: device.unwrap_or_else(|| echo::microphone::InputDeviceInfo {
+                id: capture.device_id,
+                label: capture.device_name,
+                is_default: false,
+                manufacturer: None,
+                device_type: None,
+                interface_type: None,
+                address: None,
+                driver: None,
+                extended: Vec::new(),
+            }),
+            peak_rms: result.peak_rms,
+            outcome: if result.peak_rms > 0.001 {
+                echo::microphone::MicrophoneTestOutcome::Heard
+            } else {
+                echo::microphone::MicrophoneTestOutcome::Silent
+            },
+        },
+        Err(error) => echo::microphone::MicrophoneTestResult::Failed {
+            device,
+            category: error.category(),
+            message: error.to_string(),
+        },
+    }
 }
 
 #[tauri::command]
-fn test_input_device(name: Option<String>) -> Result<f32, String> {
-    let capture =
-        echo::audio::AudioCapture::open(name.as_deref()).map_err(|err| err.to_string())?;
-    let result = capture
-        .record(std::time::Duration::from_secs(1), None)
-        .map_err(|err| err.to_string())?;
-    Ok(result.peak_rms)
+fn test_input_device(id: Option<String>) -> Result<echo::microphone::MicrophoneTestResult, String> {
+    let id = id.map(echo::microphone::MicrophoneId::parse).transpose()?;
+    Ok(microphone_test(AudioCapture::open_exact(id.as_ref())))
+}
+
+#[tauri::command]
+fn test_microphone_fallback() -> echo::microphone::MicrophoneTestResult {
+    microphone_test(AudioCapture::open_default())
 }
 
 fn read_settings() -> Result<Settings, String> {
@@ -1383,9 +1360,10 @@ fn read_settings() -> Result<Settings, String> {
 }
 
 fn write_settings(settings: Settings) -> Result<Settings, String> {
-    config_from_values(&settings)?.save()?;
-    echo::settings::reload();
-    health_invalidate();
+    update_file_config(|config| {
+        *config = config_from_values_with_base(&settings, config.clone())?;
+        Ok(())
+    })?;
     read_settings()
 }
 
@@ -1396,7 +1374,6 @@ fn process_settings_env() -> SettingsEnv {
         cleanup: env::var("ECHO_CLEANUP").ok(),
         hud: env::var("ECHO_HUD").ok(),
         record_seconds: env::var("ECHO_RECORD_SECONDS").ok(),
-        microphone: env::var("ECHO_MICROPHONE").ok(),
         language: env::var("ECHO_LANGUAGE").ok(),
     }
 }
@@ -1437,11 +1414,6 @@ fn settings_from(
                 .and_then(|raw| raw.parse::<u64>().ok()),
             file.record_seconds,
         ),
-        microphone: setting_field(
-            env.microphone.clone().filter(|name| !name.is_empty()),
-            file.microphone.clone(),
-            String::new(),
-        ),
         language: setting_field(
             env.language
                 .as_deref()
@@ -1453,8 +1425,15 @@ fn settings_from(
     })
 }
 
+#[cfg(test)]
 fn config_from_values(settings: &Settings) -> Result<echo_core::Config, String> {
-    let mut config = echo_core::Config::load().unwrap_or_default();
+    config_from_values_with_base(settings, echo_core::Config::load().unwrap_or_default())
+}
+
+fn config_from_values_with_base(
+    settings: &Settings,
+    mut config: echo_core::Config,
+) -> Result<echo_core::Config, String> {
     config.engine = match settings.engine.value.as_deref() {
         None => None,
         Some(raw) => Some(
@@ -1472,7 +1451,6 @@ fn config_from_values(settings: &Settings) -> Result<echo_core::Config, String> 
         .record_seconds
         .value
         .map(|secs| secs.clamp(1, echo::rec::MAX_RECORD_SECONDS as u32));
-    config.microphone = nonempty(settings.microphone.value.clone());
     config.language = match settings.language.value.as_deref() {
         None => None,
         Some(raw) => Some(
@@ -2251,6 +2229,7 @@ fn run_desktop() {
     let mut context = tauri::generate_context!();
     context.config_mut().app.tray_icon = None;
     let result = tauri::Builder::default()
+        .manage(setup::SetupService::default())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             let Some(watch) = app.try_state::<UpgradeWatch>() else {
                 show_main_window(app);
@@ -2348,11 +2327,16 @@ fn run_desktop() {
             set_settings,
             list_models,
             list_languages,
-            list_model_offers,
-            download_model,
-            cancel_download,
-            list_input_devices,
+            setup::get_readiness,
+            setup::start_setup,
+            setup::repair_managed,
+            setup::verify_managed,
+            setup::remove_managed,
+            setup::cancel_setup,
+            get_microphones,
+            set_microphone,
             test_input_device,
+            test_microphone_fallback,
         ])
         .run(context);
     stop_native_shortcuts();
@@ -2846,11 +2830,6 @@ mod settings_tests {
                 effective: 3,
                 source: SettingSource::Default,
             },
-            microphone: SettingField {
-                value: Some("USB Mic".into()),
-                effective: String::new(),
-                source: SettingSource::Default,
-            },
             language: SettingField {
                 value: Some("de".into()),
                 effective: "en".into(),
@@ -2875,12 +2854,50 @@ mod settings_tests {
         assert_eq!(got.record_seconds.value, Some(8));
         assert_eq!(got.record_seconds.effective, 8);
         assert_eq!(got.record_seconds.source, SettingSource::File);
-        assert_eq!(got.microphone.value.as_deref(), Some("USB Mic"));
-        assert_eq!(got.microphone.effective, "USB Mic");
-        assert_eq!(got.microphone.source, SettingSource::File);
         assert_eq!(got.language.value.as_deref(), Some("de"));
         assert_eq!(got.language.effective, "de");
         assert_eq!(got.language.source, SettingSource::File);
+    }
+
+    #[test]
+    fn dedicated_microphone_update_writes_id_and_clears_legacy_name() {
+        let mut config = Config {
+            microphone: Some(echo_core::MicrophoneSelection::LegacyName {
+                name: "USB Mic".into(),
+            }),
+            ..Config::default()
+        };
+        update_microphone_config(
+            &mut config,
+            Some((
+                echo::microphone::MicrophoneId::parse("alsa:usb-one").unwrap(),
+                "USB Mic".into(),
+            )),
+        );
+        assert_eq!(
+            config.microphone,
+            Some(echo_core::MicrophoneSelection::Device {
+                id: "alsa:usb-one".into(),
+                last_seen_label: "USB Mic".into(),
+            })
+        );
+        update_microphone_config(&mut config, None);
+        assert_eq!(config.microphone, None);
+    }
+
+    #[test]
+    fn settings_patch_preserves_concurrently_owned_microphone_field() {
+        let microphone = echo_core::MicrophoneSelection::Device {
+            id: "alsa:buds".into(),
+            last_seen_label: "Earbuds".into(),
+        };
+        let base = Config {
+            microphone: Some(microphone.clone()),
+            ..Config::default()
+        };
+        let incoming = settings_from(&SettingsEnv::default(), &base, "en").unwrap();
+        let updated = config_from_values_with_base(&incoming, base).unwrap();
+        assert_eq!(updated.microphone, Some(microphone));
     }
 
     #[test]

@@ -1,6 +1,7 @@
 export type View = 'home' | 'history' | 'dictionary' | 'settings'
 export type ThemeMode = 'system' | 'light' | 'dark'
 export type SettingSource = 'env' | 'file' | 'default'
+export type MicrophoneSource = 'environment' | 'config' | 'default'
 
 export interface SettingField<T> {
   value: T | null
@@ -14,14 +15,66 @@ export interface Settings {
   cleanup: SettingField<string>
   hud: SettingField<boolean>
   recordSeconds: SettingField<number>
-  microphone: SettingField<string>
   language: SettingField<string>
 }
 
 export interface InputDevice {
-  name: string
+  id: string
+  label: string
   isDefault: boolean
+  manufacturer: string | null
+  deviceType: string | null
+  interfaceType: string | null
+  address: string | null
+  driver: string | null
+  extended: string[]
 }
+
+export type MicrophoneSelection =
+  | { kind: 'system-default'; active: InputDevice | null }
+  | { kind: 'selected'; device: InputDevice }
+  | { kind: 'legacy-match'; name: string; device: InputDevice }
+  | {
+      kind: 'missing-with-fallback'
+      requestedId: string
+      requestedLabel: string
+      fallback: InputDevice
+    }
+  | { kind: 'missing-without-fallback'; requestedId: string; requestedLabel: string }
+  | {
+      kind: 'ambiguous-legacy-name'
+      name: string
+      matches: InputDevice[]
+      fallback: InputDevice | null
+    }
+
+export interface MicrophoneSnapshot {
+  source: MicrophoneSource
+  devices: InputDevice[]
+  selection: MicrophoneSelection
+  enumerationWarning: string | null
+}
+
+export type MicrophoneTestResult =
+  | {
+      kind: 'completed'
+      device: InputDevice
+      peakRms: number
+      outcome: 'heard' | 'silent'
+    }
+  | {
+      kind: 'failed'
+      device: InputDevice | null
+      category:
+        | 'disconnected'
+        | 'selection'
+        | 'permission'
+        | 'busy'
+        | 'unsupported'
+        | 'host'
+        | 'failed'
+      message: string
+    }
 
 export interface AppStatus {
   phase: string
@@ -134,24 +187,78 @@ export interface LanguageOptions {
   options: LanguageOption[]
 }
 
-export interface ModelOffer {
-  id: string
-  label: string
-  filename: string
-  url: string
-  sizeBytes: number
-  runtimeMb: number | null
-  multilingual: boolean
-  installed: boolean
+export type ComponentId =
+  | 'whisper-runtime'
+  | 'whisper-base-q5-1'
+  | 'whisper-small'
+  | 'whisper-large-v3-turbo-q5-0'
+  | 'silero-vad'
+  | 'sherpa-runtime'
+  | 'parakeet-tdt-06b-v3-int8'
+
+export type SetupPlanId =
+  | 'recommended'
+  | 'parakeet'
+  | 'whisper-base'
+  | 'whisper-small'
+  | 'whisper-large-v3-turbo'
+
+export type ManagedComponentState =
+  | { kind: 'absent'; resumableBytes: number }
+  | { kind: 'ready'; version: string; bytes: number; root: string }
+  | { kind: 'needs-repair'; reason: string; resumableBytes: number }
+  | { kind: 'unsupported'; reason: string }
+
+export interface InstallProgress {
+  operationId: string
+  component: ComponentId
+  phase: 'checking-disk' | 'downloading' | 'verifying' | 'extracting' | 'activating'
+  receivedBytes: number
+  totalBytes: number
+  resumedFromBytes: number
 }
 
-export interface DownloadProgress {
-  id: string
-  received: number
-  total: number
-  stage: 'downloading' | 'verifying' | 'done' | 'failed' | 'cancelled'
-  error: string | null
+export interface ComponentStatus {
+  id: ComponentId
+  label: string
+  managed: ManagedComponentState
+  external: Array<{ origin: 'system' | 'external'; path: string }>
+  activeOrigin: 'managed' | 'system' | 'external' | null
+  activity: InstallProgress | null
 }
+
+export interface SetupPlan {
+  id: SetupPlanId
+  label: string
+  components: ComponentId[]
+  satisfied: boolean
+  downloadBytes: number
+  requiredFreeBytes: number
+  availableBytes: number | null
+  diskReady: boolean
+  diskReason: string | null
+}
+
+export interface Readiness {
+  managedSupported: boolean
+  unsupportedReason: string | null
+  totalMemoryBytes: number | null
+  recommendedModel: ComponentId
+  components: ComponentStatus[]
+  plans: SetupPlan[]
+  microphoneReady: boolean
+  speechReady: boolean
+  hasSuccessfulDictation: boolean
+  firstRunComplete: boolean
+  activeOperation: string | null
+  activeCancellable: boolean
+}
+
+export type SetupEvent =
+  | { kind: 'progress'; progress: InstallProgress }
+  | { kind: 'finished'; operationId: string }
+  | { kind: 'cancelled'; operationId: string }
+  | { kind: 'failed'; operationId: string; error: string }
 
 export interface HistoryItem {
   id: string

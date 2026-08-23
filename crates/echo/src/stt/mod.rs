@@ -1,12 +1,13 @@
 mod cache;
 mod fake;
-pub mod fetch;
 mod parakeet;
+mod runtime;
 mod whisper;
 
 pub use cache::{InstalledModel, ModelCache, ModelInventory, WhisperFamily};
 pub use fake::FakeEngine;
 pub use parakeet::ParakeetEngine;
+pub use runtime::SpeechRuntimeInventory;
 pub use whisper::WhisperEngine;
 
 use std::path::PathBuf;
@@ -70,10 +71,15 @@ pub fn engine_summary() -> (String, bool) {
                 ("Parakeet · tdt-0.6b-v3".to_string(), true)
             }
             crate::transcribe::ResolvedEngine::Whisper { model, .. } => {
-                let vad = if ModelCache::from_env().vad_model().is_some() {
-                    "VAD on"
-                } else {
+                let cache = ModelCache::from_env();
+                let vad = if SpeechRuntimeInventory::from_cache(&cache)
+                    .models
+                    .vad
+                    .is_empty()
+                {
                     "VAD unavailable"
+                } else {
+                    "VAD on"
                 };
                 (format!("Whisper · {model} · {vad}"), true)
             }
@@ -111,17 +117,18 @@ fn show_fake_engine(show_fake_env: Option<&str>, engine_env: Option<&str>) -> bo
 #[must_use]
 pub fn engine_availability() -> Vec<EngineAvailability> {
     let cache = ModelCache::from_env();
+    let runtime = SpeechRuntimeInventory::from_cache(&cache);
     let whisper_reason = match (
-        WhisperEngine::binary().is_some(),
-        cache.inventory().whisper.is_empty(),
+        runtime.whisper_binary.is_some(),
+        runtime.models.whisper.is_empty(),
     ) {
         (true, false) => None,
         (false, _) => Some("whisper-cli is not on PATH".to_string()),
         (true, true) => Some(format!("no Whisper models in {}", cache.dir().display())),
     };
     let parakeet_reason = match (
-        ParakeetEngine::binary().is_some(),
-        cache.parakeet_root().is_some(),
+        runtime.parakeet_binary.is_some(),
+        runtime.models.parakeet.is_some(),
     ) {
         (true, true) => None,
         (false, _) => Some("sherpa-onnx-offline is not on PATH".to_string()),

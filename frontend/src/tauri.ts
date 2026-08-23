@@ -3,13 +3,17 @@ import { listen } from '@tauri-apps/api/event'
 import type {
   AppStatus,
   DictionaryItem,
-  DownloadProgress,
   HistoryItem,
   InputDevice,
   LanguageOptions,
   LegacyShortcutSetup,
   ModelInventory,
-  ModelOffer,
+  MicrophoneSnapshot,
+  MicrophoneTestResult,
+  Readiness,
+  SetupEvent,
+  SetupPlanId,
+  ComponentId,
   ShortcutStatus,
   SettingField,
   Settings,
@@ -325,112 +329,6 @@ export function seedPreviewLanguages(languages: LanguageOptions) {
   previewLanguages = languages
 }
 
-function defaultPreviewOffers(): ModelOffer[] {
-  return [
-    {
-      id: 'base-en-q5_1',
-      label: 'Fast, English',
-      filename: 'ggml-base.en-q5_1.bin',
-      url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q5_1.bin',
-      sizeBytes: 59_721_011,
-      runtimeMb: 388,
-      multilingual: false,
-      installed: true,
-    },
-    {
-      id: 'small',
-      label: 'Balanced, multilingual',
-      filename: 'ggml-small.bin',
-      url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin',
-      sizeBytes: 487_601_967,
-      runtimeMb: 852,
-      multilingual: true,
-      installed: false,
-    },
-    {
-      id: 'large-v3-turbo-q5_0',
-      label: 'Best, multilingual',
-      filename: 'ggml-large-v3-turbo-q5_0.bin',
-      url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin',
-      sizeBytes: 574_041_195,
-      runtimeMb: null,
-      multilingual: true,
-      installed: false,
-    },
-    {
-      id: 'silero-vad',
-      label: 'Silence detection',
-      filename: 'ggml-silero-v6.2.0.bin',
-      url: 'https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v6.2.0.bin',
-      sizeBytes: 885_098,
-      runtimeMb: null,
-      multilingual: false,
-      installed: false,
-    },
-  ]
-}
-
-let previewOffers: ModelOffer[] = defaultPreviewOffers()
-
-const previewDownloadListeners = new Set<(progress: DownloadProgress) => void>()
-const previewDownloadTimers = new Map<string, Array<ReturnType<typeof setTimeout>>>()
-
-export function listModelOffers(): Promise<ModelOffer[]> {
-  if (isTauri()) return invoke('list_model_offers')
-  return Promise.resolve(preview ? previewOffers.map((offer) => ({ ...offer })) : [])
-}
-
-export function downloadModel(id: string): Promise<void> {
-  if (isTauri()) return invoke('download_model', { id })
-  if (!preview) return Promise.resolve()
-  const offer = previewOffers.find((candidate) => candidate.id === id)
-  if (!offer) return Promise.reject(new Error(`unknown model offer ${id}`))
-  const emit = (stage: DownloadProgress['stage'], received: number, error: string | null = null) => {
-    const progress: DownloadProgress = { id, received, total: offer.sizeBytes, stage, error }
-    previewDownloadListeners.forEach((listener) => listener(progress))
-  }
-  emit('downloading', 0)
-  const midway = setTimeout(() => emit('downloading', Math.floor(offer.sizeBytes / 2)), 300)
-  const verifying = setTimeout(() => emit('verifying', offer.sizeBytes), 700)
-  const done = setTimeout(() => {
-    previewOffers = previewOffers.map((candidate) =>
-      candidate.id === id ? { ...candidate, installed: true } : candidate,
-    )
-    emit('done', offer.sizeBytes)
-  }, 1100)
-  previewDownloadTimers.set(id, [midway, verifying, done])
-  return Promise.resolve()
-}
-
-export function cancelDownload(id: string): Promise<boolean> {
-  if (isTauri()) return invoke('cancel_download', { id })
-  if (preview) {
-    const timers = previewDownloadTimers.get(id)
-    if (timers) {
-      timers.forEach(clearTimeout)
-      previewDownloadTimers.delete(id)
-      previewDownloadListeners.forEach((listener) =>
-        listener({ id, received: 0, total: 0, stage: 'cancelled', error: null }),
-      )
-      return Promise.resolve(true)
-    }
-  }
-  return Promise.resolve(false)
-}
-
-export function onDownloadProgress(
-  handler: (progress: DownloadProgress) => void,
-): Promise<() => void> {
-  if (isTauri()) {
-    return listen<DownloadProgress>('model-download-progress', (event) => handler(event.payload))
-  }
-  previewDownloadListeners.add(handler)
-  return Promise.resolve(() => previewDownloadListeners.delete(handler))
-}
-
-export function seedPreviewOffers(offers: ModelOffer[]) {
-  previewOffers = offers
-}
 
 export function setSettings(settings: Settings): Promise<Settings> {
   if (isTauri()) return invoke('set_settings', { settings })
@@ -464,26 +362,232 @@ export function resetPreviewSettings() {
   previewRemoveStaleError = null
   previewLanguages = defaultPreviewLanguages()
   previewInventory = defaultPreviewInventory()
-  previewOffers = defaultPreviewOffers()
-  previewDownloadTimers.forEach((timers) => timers.forEach(clearTimeout))
-  previewDownloadTimers.clear()
+  previewDevices = defaultPreviewDevices()
+  previewMicrophones = {
+    source: 'default',
+    devices: previewDevices,
+    selection: { kind: 'system-default', active: previewDevices[0] },
+    enumerationWarning: null,
+  }
+  previewReadiness = defaultPreviewReadiness()
 }
 
-const previewDevices: InputDevice[] = [
-  { name: 'Built-in Audio Analog Stereo', isDefault: true },
-  { name: 'USB Microphone', isDefault: false },
-  { name: 'Bluetooth Headset', isDefault: false },
-]
-
-export function listInputDevices(): Promise<InputDevice[]> {
-  if (isTauri()) return invoke('list_input_devices')
-  return Promise.resolve(preview ? previewDevices.map((device) => ({ ...device })) : [])
+function defaultPreviewDevices(): InputDevice[] {
+  return [
+    {
+      id: 'alsa:default',
+      label: 'Built-in Audio Analog Stereo',
+      isDefault: true,
+      manufacturer: 'Intel',
+      deviceType: 'Microphone',
+      interfaceType: 'Built-in',
+      address: null,
+      driver: 'PipeWire',
+      extended: [],
+    },
+    {
+      id: 'alsa:usb-one',
+      label: 'USB Microphone',
+      isDefault: false,
+      manufacturer: 'Focusrite',
+      deviceType: 'Microphone',
+      interfaceType: 'USB',
+      address: '1-2',
+      driver: 'PipeWire',
+      extended: [],
+    },
+    {
+      id: 'alsa:usb-two',
+      label: 'USB Microphone',
+      isDefault: false,
+      manufacturer: 'Logitech',
+      deviceType: 'Headset',
+      interfaceType: 'USB',
+      address: '1-3',
+      driver: 'PipeWire',
+      extended: [],
+    },
+  ]
 }
 
-export function testInputDevice(name: string | null): Promise<number> {
-  if (isTauri()) return invoke('test_input_device', { name })
-  if (previewMicTestError) return Promise.reject(new Error(previewMicTestError))
-  return Promise.resolve(name === 'Bluetooth Headset' ? 0 : 0.042)
+let previewDevices = defaultPreviewDevices()
+
+let previewMicrophones: MicrophoneSnapshot = {
+  source: 'default',
+  devices: previewDevices,
+  selection: { kind: 'system-default', active: previewDevices[0] },
+  enumerationWarning: null,
+}
+
+export function getMicrophones(): Promise<MicrophoneSnapshot> {
+  if (isTauri()) return invoke('get_microphones')
+  return Promise.resolve(previewMicrophones)
+}
+
+export function setMicrophone(id: string | null): Promise<MicrophoneSnapshot> {
+  if (isTauri()) return invoke('set_microphone', { id })
+  if (!preview) return Promise.resolve(previewMicrophones)
+  const device = id == null ? null : previewDevices.find((candidate) => candidate.id === id)
+  if (id != null && !device) return Promise.reject(new Error('microphone is no longer connected'))
+  previewMicrophones = {
+    ...previewMicrophones,
+    source: id == null ? 'default' : 'config',
+    selection:
+      device == null
+        ? { kind: 'system-default', active: previewDevices[0] }
+        : { kind: 'selected', device },
+  }
+  const microphoneReady = device != null || previewDevices.some((candidate) => candidate.isDefault)
+  previewReadiness = {
+    ...previewReadiness,
+    microphoneReady,
+    firstRunComplete:
+      microphoneReady && previewReadiness.speechReady && previewReadiness.hasSuccessfulDictation,
+  }
+  return Promise.resolve(previewMicrophones)
+}
+
+function previewMicrophoneTest(device: InputDevice | null): MicrophoneTestResult {
+  if (previewMicTestError) {
+    return { kind: 'failed', device, category: 'busy', message: previewMicTestError }
+  }
+  if (!device) {
+    return { kind: 'failed', device: null, category: 'disconnected', message: 'microphone is unavailable' }
+  }
+  const peakRms = device.id === 'alsa:usb-two' ? 0 : 0.042
+  return {
+    kind: 'completed',
+    device,
+    peakRms,
+    outcome: peakRms > 0.001 ? 'heard' : 'silent',
+  }
+}
+
+export function testInputDevice(id: string | null): Promise<MicrophoneTestResult> {
+  if (isTauri()) return invoke('test_input_device', { id })
+  const device = id == null
+    ? previewDevices.find((candidate) => candidate.isDefault) ?? null
+    : previewDevices.find((candidate) => candidate.id === id) ?? null
+  return Promise.resolve(previewMicrophoneTest(device))
+}
+
+export function testMicrophoneFallback(): Promise<MicrophoneTestResult> {
+  if (isTauri()) return invoke('test_microphone_fallback')
+  return Promise.resolve(
+    previewMicrophoneTest(previewDevices.find((candidate) => candidate.isDefault) ?? null),
+  )
+}
+
+export function seedPreviewMicrophones(snapshot: MicrophoneSnapshot) {
+  previewDevices = snapshot.devices
+  previewMicrophones = snapshot
+}
+
+function defaultPreviewReadiness(): Readiness {
+  const sources: Array<{ id: ComponentId; label: string; path: string; origin: 'system' | 'external' }> = [
+    { id: 'whisper-runtime', label: 'Whisper runtime', path: '/usr/bin/whisper-cli', origin: 'system' },
+    { id: 'whisper-small', label: 'Small multilingual', path: '/home/user/.cache/echo/ggml-small.bin', origin: 'external' },
+    { id: 'silero-vad', label: 'Silero voice detection', path: '/home/user/.cache/echo/ggml-silero-v6.2.0.bin', origin: 'external' },
+    { id: 'sherpa-runtime', label: 'sherpa-onnx runtime', path: '', origin: 'system' },
+    { id: 'parakeet-tdt-06b-v3-int8', label: 'Parakeet TDT 0.6b v3 INT8', path: '', origin: 'external' },
+  ]
+  return {
+    managedSupported: true,
+    unsupportedReason: null,
+    totalMemoryBytes: 8 * 1024 * 1024 * 1024,
+    recommendedModel: 'whisper-small',
+    components: sources.map(({ id, label, path, origin }) => ({
+      id,
+      label,
+      managed: { kind: 'absent', resumableBytes: 0 },
+      external: path ? [{ origin, path }] : [],
+      activeOrigin: path ? origin : null,
+      activity: null,
+    })),
+    plans: [
+      { id: 'recommended', label: 'Recommended', components: ['whisper-runtime', 'whisper-small', 'silero-vad'], satisfied: true, downloadBytes: 0, requiredFreeBytes: 0, availableBytes: 10_000_000_000, diskReady: true, diskReason: null },
+      { id: 'parakeet', label: 'Parakeet', components: ['sherpa-runtime', 'parakeet-tdt-06b-v3-int8'], satisfied: false, downloadBytes: 848_526_547, requiredFreeBytes: 1_500_000_000, availableBytes: 10_000_000_000, diskReady: true, diskReason: null },
+    ],
+    microphoneReady: true,
+    speechReady: true,
+    hasSuccessfulDictation: true,
+    firstRunComplete: true,
+    activeOperation: null,
+    activeCancellable: false,
+  }
+}
+
+let previewReadiness = defaultPreviewReadiness()
+const previewSetupListeners = new Set<(event: SetupEvent) => void>()
+
+export function getReadiness(): Promise<Readiness> {
+  if (isTauri()) return invoke('get_readiness')
+  return Promise.resolve(previewReadiness)
+}
+
+export function startSetup(plan: SetupPlanId, managedCopy = false): Promise<string> {
+  if (isTauri()) return invoke('start_setup', { plan, managedCopy })
+  const operationId = `preview-${plan}`
+  previewReadiness = { ...previewReadiness, activeOperation: operationId, activeCancellable: true }
+  const selected = previewReadiness.plans.find((candidate) => candidate.id === plan)
+  const component = selected?.components[0] ?? 'whisper-runtime'
+  previewSetupListeners.forEach((listener) => listener({
+    kind: 'progress',
+    progress: { operationId, component, phase: 'downloading', receivedBytes: 1, totalBytes: 2, resumedFromBytes: 0 },
+  }))
+  window.setTimeout(() => {
+    previewReadiness = {
+      ...previewReadiness,
+      speechReady: true,
+      activeOperation: null,
+      activeCancellable: false,
+      plans: previewReadiness.plans.map((candidate) =>
+        candidate.id === plan ? { ...candidate, satisfied: true } : candidate,
+      ),
+    }
+    previewSetupListeners.forEach((listener) => listener({ kind: 'finished', operationId }))
+  }, 20)
+  return Promise.resolve(operationId)
+}
+
+export function repairManaged(component: ComponentId): Promise<string> {
+  if (isTauri()) return invoke('repair_managed', { component })
+  return startSetup('recommended', true)
+}
+
+export function verifyManaged(component: ComponentId): Promise<string> {
+  if (isTauri()) return invoke('verify_managed', { component })
+  return startSetup('recommended', true)
+}
+
+export function removeManaged(component: ComponentId): Promise<string> {
+  if (isTauri()) return invoke('remove_managed', { component })
+  previewReadiness = {
+    ...previewReadiness,
+    components: previewReadiness.components.map((candidate) =>
+      candidate.id === component
+        ? { ...candidate, managed: { kind: 'absent', resumableBytes: 0 } }
+        : candidate,
+    ),
+  }
+  return Promise.resolve(`remove-${component}`)
+}
+
+export function cancelSetup(operation: string): Promise<boolean> {
+  if (isTauri()) return invoke('cancel_setup', { operation })
+  previewReadiness = { ...previewReadiness, activeOperation: null, activeCancellable: false }
+  previewSetupListeners.forEach((listener) => listener({ kind: 'cancelled', operationId: operation }))
+  return Promise.resolve(true)
+}
+
+export function onSetupEvent(handler: (event: SetupEvent) => void): Promise<() => void> {
+  if (isTauri()) return listen<SetupEvent>('setup-event', (event) => handler(event.payload))
+  previewSetupListeners.add(handler)
+  return Promise.resolve(() => previewSetupListeners.delete(handler))
+}
+
+export function seedPreviewReadiness(readiness: Readiness) {
+  previewReadiness = readiness
 }
 
 function defaultPreviewSettings(): Settings {
@@ -493,7 +597,6 @@ function defaultPreviewSettings(): Settings {
     cleanup: { value: null, effective: 'rules', source: 'default' },
     hud: { value: null, effective: true, source: 'default' },
     recordSeconds: { value: null, effective: 3, source: 'default' },
-    microphone: { value: null, effective: '', source: 'default' },
     language: { value: null, effective: 'auto', source: 'default' },
   })
 }
@@ -509,7 +612,6 @@ function projectPreviewSettings(settings: Settings): Settings {
     cleanup: previewField(settings.cleanup.value, 'rules'),
     hud: previewField(settings.hud.value, true),
     recordSeconds: previewField(recordValue, 3),
-    microphone: previewField(settings.microphone.value, ''),
     language: previewField(settings.language.value, 'auto'),
   }
 }

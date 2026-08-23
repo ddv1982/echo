@@ -2,18 +2,22 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import App from './App'
 import {
   getSettings,
-  listInputDevices,
+  getMicrophones,
+  getReadiness,
   listModels,
   removeStaleInstalls,
   repairLegacyShortcut,
   resetPreviewSettings,
   retryShortcut,
   seedPreviewLanguages,
+  seedPreviewMicrophones,
   seedPreviewMicTestError,
   seedPreviewRemoveStaleError,
+  seedPreviewReadiness,
   seedPreviewSettings,
   seedPreviewStatus,
   setSettings,
+  setMicrophone,
 } from './tauri'
 import type { ShortcutStatus } from './types'
 
@@ -22,9 +26,10 @@ vi.mock('./tauri', async (importOriginal) => {
   return {
     ...actual,
     getSettings: vi.fn(() => actual.getSettings()),
-    listInputDevices: vi.fn(() => actual.listInputDevices()),
+    getMicrophones: vi.fn(() => actual.getMicrophones()),
     listModels: vi.fn(() => actual.listModels()),
     setSettings: vi.fn((settings) => actual.setSettings(settings)),
+    setMicrophone: vi.fn((id) => actual.setMicrophone(id)),
     removeStaleInstalls: vi.fn(() => actual.removeStaleInstalls()),
     repairLegacyShortcut: vi.fn(() => actual.repairLegacyShortcut()),
     retryShortcut: vi.fn(() => actual.retryShortcut()),
@@ -59,8 +64,10 @@ describe('Echo desktop shell', () => {
     vi.mocked(retryShortcut).mockImplementation(() => actual.retryShortcut())
     vi.mocked(getSettings).mockReset()
     vi.mocked(getSettings).mockImplementation(() => actual.getSettings())
-    vi.mocked(listInputDevices).mockReset()
-    vi.mocked(listInputDevices).mockImplementation(() => actual.listInputDevices())
+    vi.mocked(getMicrophones).mockReset()
+    vi.mocked(getMicrophones).mockImplementation(() => actual.getMicrophones())
+    vi.mocked(setMicrophone).mockReset()
+    vi.mocked(setMicrophone).mockImplementation((id) => actual.setMicrophone(id))
     vi.mocked(listModels).mockReset()
     vi.mocked(listModels).mockImplementation(() => actual.listModels())
   })
@@ -186,52 +193,64 @@ describe('Echo desktop shell', () => {
   })
 
 
-  it('lists preview microphones and persists a named choice', async () => {
+  it('renders duplicate labels as distinct stable-ID radio rows', async () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    const picker = await screen.findByLabelText('Microphone')
-    expect(screen.getByRole('option', { name: 'System default' })).toBeInTheDocument()
-    expect(screen.getByRole('option', { name: 'USB Microphone' })).toBeInTheDocument()
-    expect(screen.getByRole('option', { name: 'Built-in Audio Analog Stereo' })).toBeInTheDocument()
-    fireEvent.change(picker, { target: { value: 'USB Microphone' } })
-    await waitFor(() => expect(picker).toHaveValue('USB Microphone'))
-    expect((await getSettings()).microphone).toEqual({
-      value: 'USB Microphone',
-      effective: 'USB Microphone',
-      source: 'file',
+    const choices = await screen.findAllByRole('radio', { name: /USB Microphone/ })
+    expect(choices).toHaveLength(2)
+    expect(screen.getByText(/Focusrite · USB · Microphone/)).toBeInTheDocument()
+    expect(screen.getByText(/Logitech · USB · Headset/)).toBeInTheDocument()
+    fireEvent.click(choices[1])
+    await waitFor(async () => {
+      const snapshot = await getMicrophones()
+      expect(snapshot.selection).toMatchObject({
+        kind: 'selected',
+        device: { id: 'alsa:usb-two' },
+      })
     })
   })
 
-  it('names the fallback when the configured microphone is gone', async () => {
-    const defaults = await getSettings()
-    seedPreviewSettings({
-      ...defaults,
-      microphone: { value: 'Missing Headset', effective: 'Missing Headset', source: 'file' },
+  it('names a missing selection and tests fallback only through the explicit action', async () => {
+    const snapshot = await getMicrophones()
+    seedPreviewMicrophones({
+      ...snapshot,
+      source: 'config',
+      selection: {
+        kind: 'missing-with-fallback',
+        requestedId: 'alsa:travel',
+        requestedLabel: 'Travel Mic',
+        fallback: snapshot.devices[0],
+      },
     })
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    expect(await screen.findByText('Missing Headset is gone; using Built-in Audio Analog Stereo')).toBeInTheDocument()
+    expect(await screen.findByText(/Travel Mic is disconnected/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Test selected' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Test system fallback' }))
+    expect(await screen.findByRole('status')).toHaveTextContent(
+      'Input heard on Built-in Audio Analog Stereo',
+    )
   })
 
-  it('clears the mic meter when the selection changes', async () => {
+  it('clears the microphone test result when the selection changes', async () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Test' }))
-    expect(await screen.findByText('Level 0.042')).toBeInTheDocument()
-    fireEvent.change(screen.getByLabelText('Microphone'), { target: { value: 'USB Microphone' } })
-    await waitFor(() => expect(screen.queryByText('Level 0.042')).not.toBeInTheDocument())
+    fireEvent.click(await screen.findByRole('button', { name: 'Test selected' }))
+    expect(await screen.findByRole('status')).toHaveTextContent('Input heard')
+    fireEvent.click((await screen.findAllByRole('radio', { name: /USB Microphone/ }))[0])
+    await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument())
   })
 
-  it('shows unavailable when a microphone test fails', async () => {
+  it('announces the exact microphone test failure', async () => {
     seedPreviewMicTestError('device busy')
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Test' }))
-    expect(await screen.findByText('Unavailable')).toBeInTheDocument()
+    fireEvent.click(await screen.findByRole('button', { name: 'Test selected' }))
+    expect(await screen.findByRole('status')).toHaveTextContent('device busy')
   })
 
   it('hides the Fake engine from the selector by default', async () => {
@@ -526,79 +545,132 @@ describe('Echo desktop shell', () => {
     expect(screen.queryByLabelText('Language')).not.toBeInTheDocument()
   })
 
-  it('lists uninstalled offers with size and URL, and downloads one', async () => {
+  it('shows always-visible managed and external component rows', async () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-
-    // The installed offer renders no download button; uninstalled ones do.
-    expect(await screen.findByText('Balanced, multilingual')).toBeInTheDocument()
-    expect(screen.getByText(/465 MiB · ~852 MB memory · multilingual/)).toBeInTheDocument()
-    expect(screen.getByText('https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin')).toBeInTheDocument()
-    expect(screen.queryByText('Fast, English')).not.toBeInTheDocument()
-
-    const row = screen.getByText('Balanced, multilingual').closest('.setting-row')!
-    const button = within(row as HTMLElement).getByRole('button', { name: 'Download' })
-    fireEvent.click(button)
-    expect(
-      await within(row as HTMLElement).findByRole('progressbar', {
-        name: 'Downloading ggml-small.bin',
-      }),
-    ).toBeInTheDocument()
-    expect(await within(row as HTMLElement).findByText('Verifying…')).toBeInTheDocument()
-    expect(await within(row as HTMLElement).findByText('Installed')).toBeInTheDocument()
+    expect(await screen.findByText('Whisper runtime')).toBeInTheDocument()
+    expect(screen.getByText('Small multilingual')).toBeInTheDocument()
+    expect(screen.getByText(/System · \/usr\/bin\/whisper-cli/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Set up Parakeet' })).toBeInTheDocument()
   })
 
-  it('cancels a download midway', async () => {
-    render(<App />)
-    await screen.findByRole('button', { name: 'Start recording' })
-    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    const row = (await screen.findByText('Best, multilingual')).closest('.setting-row')!
-    fireEvent.click(within(row as HTMLElement).getByRole('button', { name: 'Download' }))
-    await within(row as HTMLElement).findByRole('progressbar')
-    fireEvent.click(within(row as HTMLElement).getByRole('button', { name: 'Cancel' }))
-    expect(
-      await within(row as HTMLElement).findByRole('button', { name: 'Download' }),
-    ).toBeInTheDocument()
-  })
-
-  it('offers a multilingual model at the language incompatibility warning', async () => {
-    const defaults = await getSettings()
-    seedPreviewSettings({
-      ...defaults,
-      engine: { value: 'whisper', effective: 'whisper', source: 'file' },
-      language: { value: 'de', effective: 'de', source: 'file' },
-    })
-    seedPreviewStatus({
-      languageWarning:
-        'ggml-base.en.bin is English-only but the language is set to german. Choose a multilingual model or set the language to English.',
+  it('runs recommended setup and refreshes terminal state', async () => {
+    const readiness = await getReadiness()
+    seedPreviewReadiness({
+      ...readiness,
+      speechReady: false,
+      firstRunComplete: false,
+      plans: readiness.plans.map((plan) =>
+        plan.id === 'recommended' ? { ...plan, satisfied: false, downloadBytes: 498_000_000 } : plan,
+      ),
     })
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    const warning = await screen.findAllByText(/ggml-base\.en\.bin is English-only/)
-    const warningRow = warning[0].closest('.setting-row')!
-    // The fix is a click, right at the point of failure. The button renders
-    // once the async offer fetch resolves, later than the status-driven
-    // warning text, so the lookup must wait for it.
-    fireEvent.click(
-      await within(warningRow as HTMLElement).findByRole('button', { name: 'Download' }),
-    )
-    expect(
-      await within(warningRow as HTMLElement).findByRole('progressbar', {
-        name: 'Downloading ggml-small.bin',
-      }),
-    ).toBeInTheDocument()
-    // And the offer is not duplicated in the general list while the warning shows.
-    expect(screen.queryByText('Balanced, multilingual')).not.toBeInTheDocument()
+    fireEvent.click(await screen.findByRole('button', { name: /Set up recommended/ }))
+    await waitFor(async () => {
+      expect((await getReadiness()).plans.find((plan) => plan.id === 'recommended')?.satisfied).toBe(true)
+    })
   })
 
-  it('offers the VAD model where VAD is reported unavailable', async () => {
+  it('shows repair and managed-only removal actions', async () => {
+    const readiness = await getReadiness()
+    seedPreviewReadiness({
+      ...readiness,
+      components: readiness.components.map((component) =>
+        component.id === 'silero-vad'
+          ? { ...component, managed: { kind: 'needs-repair', reason: 'wrong size', resumableBytes: 0 } }
+          : component.id === 'whisper-small'
+            ? { ...component, managed: { kind: 'ready', version: 'small', bytes: 100, root: '/managed/small' } }
+            : component,
+      ),
+    })
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    expect(await screen.findByText('Silence detection')).toBeInTheDocument()
-    expect(screen.getByText(/864 KiB/)).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Repair' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Remove ·/ })).toBeInTheDocument()
+  })
+
+  it('shows unsupported guidance without managed mutation actions', async () => {
+    const readiness = await getReadiness()
+    seedPreviewReadiness({
+      ...readiness,
+      managedSupported: false,
+      unsupportedReason: 'Managed setup is available on Linux x86_64.',
+      components: readiness.components.map((component) => ({
+        ...component,
+        managed: { kind: 'unsupported', reason: 'Linux x86_64 only' },
+      })),
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(await screen.findByText('Managed setup is available on Linux x86_64.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Set up recommended/ })).not.toBeInTheDocument()
+  })
+
+  it('renders component progress, resume, and low-space admission truthfully', async () => {
+    const readiness = await getReadiness()
+    seedPreviewReadiness({
+      ...readiness,
+      plans: readiness.plans.map((plan) =>
+        plan.id === 'recommended'
+          ? { ...plan, satisfied: false, diskReady: false, diskReason: 'Needs 900 bytes free; 400 bytes are available' }
+          : plan.id === 'parakeet'
+            ? { ...plan, satisfied: false, diskReady: false, diskReason: 'Needs 1200 bytes free; 400 bytes are available' }
+            : plan,
+      ),
+      components: readiness.components.map((component) =>
+        component.id === 'whisper-small'
+          ? {
+              ...component,
+              managed: { kind: 'absent', resumableBytes: 42 },
+              activity: {
+                operationId: 'op-1',
+                component: component.id,
+                phase: 'downloading',
+                receivedBytes: 50,
+                totalBytes: 100,
+                resumedFromBytes: 42,
+              },
+            }
+          : component,
+      ),
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(await screen.findByRole('progressbar', { name: 'Small multilingual downloading' })).toHaveAttribute('aria-valuenow', '50')
+    expect(screen.getByRole('button', { name: /Resume/ })).toBeInTheDocument()
+    expect(screen.getByText('Recommended: Needs 900 bytes free; 400 bytes are available')).toBeInTheDocument()
+    expect(screen.getByText('Parakeet: Needs 1200 bytes free; 400 bytes are available')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Set up recommended/ })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Set up Parakeet' })).toBeDisabled()
+  })
+
+  it('shows microphone then speech as guided Home steps', async () => {
+    const readiness = await getReadiness()
+    seedPreviewReadiness({
+      ...readiness,
+      microphoneReady: false,
+      speechReady: false,
+      hasSuccessfulDictation: false,
+      firstRunComplete: false,
+      plans: readiness.plans.map((plan) =>
+        plan.id === 'recommended' ? { ...plan, satisfied: false, downloadBytes: 100 } : plan,
+      ),
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    expect(await screen.findByText('1 · Choose and test a microphone')).toBeInTheDocument()
+    expect(screen.getByText('2 · Set up local speech')).toBeInTheDocument()
+    expect(screen.getByText('First dictation complete')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('radio', { name: /USB Microphone.*Focusrite/ }))
+    await waitFor(() => {
+      expect(screen.queryByText('1 · Choose and test a microphone')).not.toBeInTheDocument()
+    })
   })
 
   it('shows usage stats derived from history', async () => {
@@ -707,7 +779,7 @@ describe('Echo desktop shell', () => {
   it('renders shortcut setup when settings, models, and microphones fail to load', async () => {
     vi.mocked(getSettings).mockRejectedValueOnce(new Error('settings unavailable'))
     vi.mocked(listModels).mockRejectedValueOnce(new Error('models unavailable'))
-    vi.mocked(listInputDevices).mockRejectedValueOnce(new Error('microphones unavailable'))
+    vi.mocked(getMicrophones).mockRejectedValueOnce(new Error('microphones unavailable'))
     seedPreviewStatus({
       shortcut: {
         kind: 'gnome-setup',
@@ -863,7 +935,7 @@ describe('Echo desktop shell', () => {
     })
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
-    expect(screen.getByText('Bind it in your desktop settings.')).toBeInTheDocument()
+    expect(await screen.findByText('Bind it in your desktop settings.')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     expect(await screen.findByText('Manual shortcut setup')).toBeInTheDocument()
     expect(screen.getByText('/usr/bin/echo-desktop rec --toggle')).toBeInTheDocument()

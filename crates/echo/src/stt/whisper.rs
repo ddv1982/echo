@@ -14,16 +14,45 @@ use super::write_temp_wav;
 use crate::which::path_of;
 
 pub struct WhisperEngine {
-    cache: ModelCache,
     model: String,
+    files: WhisperFiles,
+}
+
+enum WhisperFiles {
+    Discover(ModelCache),
+    Explicit {
+        binary: PathBuf,
+        model: PathBuf,
+        vad: Option<PathBuf>,
+        multilingual: bool,
+    },
 }
 
 impl WhisperEngine {
     #[must_use]
     pub fn configured(cache: ModelCache, model: impl Into<String>) -> Self {
         Self {
-            cache,
             model: model.into(),
+            files: WhisperFiles::Discover(cache),
+        }
+    }
+
+    #[must_use]
+    pub fn with_paths(
+        model_name: impl Into<String>,
+        binary: PathBuf,
+        model: PathBuf,
+        vad: Option<PathBuf>,
+        multilingual: bool,
+    ) -> Self {
+        Self {
+            model: model_name.into(),
+            files: WhisperFiles::Explicit {
+                binary,
+                model,
+                vad,
+                multilingual,
+            },
         }
     }
 
@@ -31,7 +60,7 @@ impl WhisperEngine {
     /// A metadata check only; no inference runs.
     #[must_use]
     pub fn available(&self) -> bool {
-        self.model_file().is_some() && Self::binary().is_some()
+        self.model_file().is_some() && self.resolved_binary().is_some()
     }
 
     #[must_use]
@@ -47,8 +76,19 @@ impl WhisperEngine {
     /// is a pre-flight guess used to refuse impossible language choices; the
     /// authoritative value is `model.multilingual` in the engine's JSON.
     pub(crate) fn selected_model(&self) -> Option<(PathBuf, bool)> {
+        if let WhisperFiles::Explicit {
+            model,
+            multilingual,
+            ..
+        } = &self.files
+        {
+            return Some((model.clone(), *multilingual));
+        }
+        let WhisperFiles::Discover(cache) = &self.files else {
+            return None;
+        };
         let model = self.model.as_str();
-        let inventory = self.cache.inventory();
+        let inventory = cache.inventory();
         if let Some(installed) = inventory.whisper.iter().find(|m| m.name == model) {
             return Some((installed.path.clone(), installed.multilingual));
         }
@@ -61,7 +101,7 @@ impl WhisperEngine {
         ];
         candidates
             .into_iter()
-            .map(|name| self.cache.path(&name))
+            .map(|name| cache.path(&name))
             .find(|path| path.is_file())
             .map(|path| {
                 let multilingual = path
@@ -79,6 +119,20 @@ impl WhisperEngine {
             .into_iter()
             .find_map(path_of)
     }
+
+    fn resolved_binary(&self) -> Option<PathBuf> {
+        match &self.files {
+            WhisperFiles::Explicit { binary, .. } => Some(binary.clone()),
+            WhisperFiles::Discover(_) => Self::binary(),
+        }
+    }
+
+    fn vad_model(&self) -> Option<PathBuf> {
+        match &self.files {
+            WhisperFiles::Explicit { vad, .. } => vad.clone(),
+            WhisperFiles::Discover(cache) => cache.vad_model(),
+        }
+    }
 }
 
 impl Engine for WhisperEngine {
@@ -95,10 +149,10 @@ impl Engine for WhisperEngine {
     ) -> Result<Transcript, EngineError> {
         let (model, multilingual) = self.selected_model().ok_or(EngineError::Missing)?;
         refuse_impossible_language(&model, multilingual, options.language)?;
-        let bin = Self::binary().ok_or(EngineError::Missing)?;
+        let bin = self.resolved_binary().ok_or(EngineError::Missing)?;
         let started = Instant::now();
         let wav = write_temp_wav(pcm).map_err(EngineError::Infer)?;
-        let vad = self.cache.vad_model();
+        let vad = self.vad_model();
         let first = Command::new(&bin)
             .args(whisper_args(&model, &wav, vad.as_deref(), options))
             .output()

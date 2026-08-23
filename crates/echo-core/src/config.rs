@@ -7,6 +7,51 @@ use crate::cleanup::CleanupMode;
 use crate::language::LanguageChoice;
 use crate::paths::{config_path, set_aside_corrupt, write_atomic};
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "snake_case"
+)]
+pub enum MicrophoneSelection {
+    Device { id: String, last_seen_label: String },
+    LegacyName { name: String },
+}
+
+impl<'de> Deserialize<'de> for MicrophoneSelection {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(
+            tag = "kind",
+            rename_all = "kebab-case",
+            rename_all_fields = "snake_case"
+        )]
+        enum Tagged {
+            Device { id: String, last_seen_label: String },
+            LegacyName { name: String },
+        }
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Stored {
+            Legacy(String),
+            Tagged(Tagged),
+        }
+
+        Ok(match Stored::deserialize(deserializer)? {
+            Stored::Legacy(name) => Self::LegacyName { name },
+            Stored::Tagged(Tagged::Device {
+                id,
+                last_seen_label,
+            }) => Self::Device {
+                id,
+                last_seen_label,
+            },
+            Stored::Tagged(Tagged::LegacyName { name }) => Self::LegacyName { name },
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EngineChoice {
@@ -42,7 +87,7 @@ pub struct Config {
     #[serde(default)]
     pub record_seconds: Option<u32>,
     #[serde(default)]
-    pub microphone: Option<String>,
+    pub microphone: Option<MicrophoneSelection>,
     #[serde(default)]
     pub language: Option<LanguageChoice>,
 }
@@ -127,7 +172,10 @@ mod tests {
             }),
             hud: Some(true),
             record_seconds: Some(8),
-            microphone: Some("USB Mic".into()),
+            microphone: Some(MicrophoneSelection::Device {
+                id: "alsa:hw:USB".into(),
+                last_seen_label: "USB Mic".into(),
+            }),
             language: Some(LanguageChoice::Auto),
         };
         original.save_to(&path).unwrap();
@@ -146,6 +194,39 @@ mod tests {
         assert_eq!(loaded.record_seconds, None);
         assert_eq!(loaded.microphone, None);
         assert_eq!(loaded.language, None);
+    }
+
+    #[test]
+    fn legacy_microphone_name_loads_without_becoming_an_id() {
+        let path = scratch_path("legacy-microphone");
+        fs::write(&path, r#"{"microphone":"USB Mic"}"#).unwrap();
+        assert_eq!(
+            Config::load_from(&path).unwrap().microphone,
+            Some(MicrophoneSelection::LegacyName {
+                name: "USB Mic".into()
+            })
+        );
+    }
+
+    #[test]
+    fn stable_microphone_id_round_trips_with_last_seen_label() {
+        let path = scratch_path("stable-microphone");
+        let selection = MicrophoneSelection::Device {
+            id: "alsa:hw:CARD=USB,DEV=0".into(),
+            last_seen_label: "USB Mic".into(),
+        };
+        let config = Config {
+            microphone: Some(selection.clone()),
+            ..Config::default()
+        };
+        config.save_to(&path).unwrap();
+        assert_eq!(
+            Config::load_from(&path).unwrap().microphone,
+            Some(selection)
+        );
+        let raw = fs::read_to_string(path).unwrap();
+        assert!(raw.contains(r#""kind": "device""#));
+        assert!(raw.contains(r#""last_seen_label": "USB Mic""#));
     }
 
     #[test]

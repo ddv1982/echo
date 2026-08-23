@@ -16,43 +16,49 @@ import {
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   addDictionaryEntry,
-  cancelDownload,
+  cancelSetup,
   copyText,
-  downloadModel,
   getAppStatus,
   getDictionary,
   getHistory,
+  getReadiness,
   getRecordingLevel,
   getShortcutStatus,
   getSettings,
-  listInputDevices,
+  getMicrophones,
   listLanguages,
-  listModelOffers,
   listModels,
-  onDownloadProgress,
+  onSetupEvent,
   removeDictionaryEntry,
   removeStaleInstalls,
   repairLegacyShortcut,
+  repairManaged,
   retryShortcut,
+  setMicrophone,
   setSettings,
+  startSetup,
   testInputDevice,
+  testMicrophoneFallback,
   toggleRecording,
+  verifyManaged,
+  removeManaged,
 } from './tauri'
 import { deriveStats, groupByDay } from './stats'
 import { presentShortcut } from './shortcut'
 import type {
   AppStatus,
   DictionaryItem,
-  DownloadProgress,
   HistoryItem,
   LanguageOptions,
   ModelInventory,
-  ModelOffer,
+  Readiness,
+  SetupEvent,
+  MicrophoneSnapshot,
+  MicrophoneTestResult,
   SettingSource,
   Settings as AppSettings,
   ThemeMode,
   View,
-  InputDevice,
   WhisperModelInfo,
 } from './types'
 
@@ -711,27 +717,100 @@ function SetupChecklist({
   status: AppStatus
   onOpenSettings: () => void
 }) {
+  const [readiness, setReadiness] = useState<Readiness | null>(null)
+  const [microphones, setMicrophones] = useState<MicrophoneSnapshot | null>(null)
+  const [micTest, setMicTest] = useState<MicrophoneTestResult | null>(null)
+  const [testingMic, setTestingMic] = useState(false)
+  const [setupError, setSetupError] = useState<string | null>(null)
+  useEffect(() => {
+    let unlisten: (() => void) | undefined
+    void getReadiness().then(setReadiness).catch((reason: unknown) => setSetupError(messageFrom(reason)))
+    void getMicrophones().then(setMicrophones).catch((reason: unknown) => setSetupError(messageFrom(reason)))
+    void onSetupEvent((event) => {
+      if (event.kind === 'progress') {
+        setReadiness((current) => current && applySetupProgress(current, event))
+        return
+      }
+      if (event.kind === 'failed') setSetupError(event.error)
+      void getReadiness().then(setReadiness).catch((reason: unknown) => setSetupError(messageFrom(reason)))
+    }).then((next) => {
+      unlisten = next
+    }).catch((reason: unknown) => setSetupError(messageFrom(reason)))
+    return () => unlisten?.()
+  }, [])
   // Verified, not asserted: only a passing shortcut test completes this.
   const identity = presentShortcut(status.shortcut).verificationIdentity
   const verified = identity != null
     && localStorage.getItem('echo-shortcut-verified-at') !== null
     && localStorage.getItem('echo-shortcut-verified-identity') === identity
   const items = [
-    { key: 'mic', done: status.microphoneReady, label: 'Microphone ready' },
-    { key: 'engine', done: status.engineReady, label: 'Speech engine and model installed' },
+    { key: 'mic', done: readiness?.microphoneReady ?? status.microphoneReady, label: 'Microphone ready' },
+    { key: 'engine', done: readiness?.speechReady ?? status.engineReady, label: 'Speech engine and model installed' },
+    { key: 'dictation', done: readiness?.hasSuccessfulDictation ?? false, label: 'First dictation complete' },
     { key: 'shortcut', done: verified, label: verified ? 'Shortcut verified' : 'Shortcut bound' },
   ]
-  if (items.every((item) => item.done)) return null
+  if (readiness?.firstRunComplete && verified) return null
   return (
     <section className="panel checklist" aria-label="Finish setup">
       <SectionHeading title="Finish setup" subtitle="The first-run job is one successful dictation." />
+      {setupError ? <div role="alert" className="error-banner">{setupError}</div> : null}
+      {readiness && !readiness.microphoneReady && microphones ? (
+        <div className="first-run-step">
+          <strong>1 · Choose and test a microphone</strong>
+          <MicrophoneChooser
+            snapshot={microphones}
+            test={micTest}
+            testing={testingMic}
+            onRefresh={() => {
+              void Promise.all([getMicrophones(), getReadiness()])
+                .then(([nextMicrophones, nextReadiness]) => {
+                  setMicrophones(nextMicrophones)
+                  setReadiness(nextReadiness)
+                })
+                .catch((reason: unknown) => setSetupError(messageFrom(reason)))
+            }}
+            onSelect={(id) => {
+              setMicTest(null)
+              void setMicrophone(id)
+                .then((nextMicrophones) => {
+                  setMicrophones(nextMicrophones)
+                  return getReadiness()
+                })
+                .then(setReadiness)
+                .catch((reason: unknown) => setSetupError(messageFrom(reason)))
+            }}
+            onTest={(id, fallback) => {
+              setTestingMic(true)
+              const run = fallback ? testMicrophoneFallback() : testInputDevice(id)
+              void run
+                .then((result) => {
+                  setMicTest(result)
+                  return getReadiness()
+                })
+                .then(setReadiness)
+                .catch((reason: unknown) => setSetupError(messageFrom(reason)))
+                .finally(() => setTestingMic(false))
+            }}
+          />
+        </div>
+      ) : null}
+      {readiness && !readiness.speechReady ? (
+        <div className="first-run-step">
+          <strong>2 · Set up local speech</strong>
+          <SpeechSetupSection
+            readiness={readiness}
+            onRefresh={() => void getReadiness().then(setReadiness)}
+            onError={setSetupError}
+          />
+        </div>
+      ) : null}
       {items.map((item) => (
         <div className="checklist-item" data-done={item.done} key={item.key}>
           <span className="checklist-check" aria-hidden="true">
             {item.done ? <Check size={13} /> : null}
           </span>
           <span className="checklist-label">{item.label}</span>
-          {!item.done ? (
+          {!item.done && item.key === 'shortcut' ? (
             <button type="button" className="compact-button" onClick={onOpenSettings}>
               Open Settings
             </button>
@@ -891,12 +970,11 @@ function SettingsView({
   const [settings, setLocalSettings] = useState<AppSettings | null>(null)
   const settingsRef = useRef<AppSettings | null>(null)
   const writeChainRef = useRef(Promise.resolve())
-  const [devices, setDevices] = useState<InputDevice[]>([])
+  const [microphones, setMicrophones] = useState<MicrophoneSnapshot | null>(null)
   const [inventory, setInventory] = useState<ModelInventory | null>(null)
   const [languages, setLanguages] = useState<LanguageOptions | null>(null)
-  const [offers, setOffers] = useState<ModelOffer[]>([])
-  const [downloads, setDownloads] = useState<Record<string, DownloadProgress>>({})
-  const [micMeter, setMicMeter] = useState<number | 'unavailable' | null>(null)
+  const [readiness, setReadiness] = useState<Readiness | null>(null)
+  const [micTest, setMicTest] = useState<MicrophoneTestResult | null>(null)
   const [testingMic, setTestingMic] = useState(false)
   const [repairingLegacyShortcut, setRepairingLegacyShortcut] = useState(false)
 
@@ -908,23 +986,48 @@ function SettingsView({
           setLocalSettings(next)
         })
         .catch((reason: unknown) => onError(messageFrom(reason)))
-      void listInputDevices().then(setDevices).catch((reason: unknown) => onError(messageFrom(reason)))
+      void getMicrophones().then(setMicrophones).catch((reason: unknown) => onError(messageFrom(reason)))
       void listModels().then(setInventory).catch((reason: unknown) => onError(messageFrom(reason)))
       void listLanguages().then(setLanguages).catch((reason: unknown) => onError(messageFrom(reason)))
-      void listModelOffers().then(setOffers).catch((reason: unknown) => onError(messageFrom(reason)))
+      void getReadiness().then(setReadiness).catch((reason: unknown) => onError(messageFrom(reason)))
     }, 0)
     return () => window.clearTimeout(timer)
   }, [onError])
 
+  const refreshMicrophones = useCallback(() => {
+    void getMicrophones()
+      .then(setMicrophones)
+      .catch((reason: unknown) => onError(messageFrom(reason)))
+  }, [onError])
+
+  useEffect(() => {
+    const interval = window.setInterval(refreshMicrophones, 3_000)
+    window.addEventListener('focus', refreshMicrophones)
+    return () => {
+      window.clearInterval(interval)
+      window.removeEventListener('focus', refreshMicrophones)
+    }
+  }, [refreshMicrophones])
+
   useEffect(() => {
     let unlisten: (() => void) | undefined
     const timer = window.setTimeout(() => {
-      void onDownloadProgress((progress) => {
-        setDownloads((previous) => ({ ...previous, [progress.id]: progress }))
-        if (progress.stage === 'done') {
-          void listModelOffers().then(setOffers)
-          void listModels().then(setInventory)
+      void onSetupEvent((event) => {
+        if (event.kind === 'progress') {
+          setReadiness((current) => current && applySetupProgress(current, event))
+          return
         }
+        if (event.kind === 'failed') onError(event.error)
+        void Promise.all([getReadiness(), listModels(), getSettings(), listLanguages()])
+          .then(([nextReadiness, nextInventory, nextSettings, nextLanguages]) => {
+            setReadiness(nextReadiness)
+            setInventory(nextInventory)
+            settingsRef.current = nextSettings
+            setLocalSettings(nextSettings)
+            setLanguages(nextLanguages)
+            void onStatusChange()
+          })
+          .catch((reason: unknown) => onError(messageFrom(reason)))
       }).then((fn) => {
         unlisten = fn
       })
@@ -933,7 +1036,7 @@ function SettingsView({
       window.clearTimeout(timer)
       unlisten?.()
     }
-  }, [])
+  }, [onError, onStatusChange])
 
   useEffect(() => {
     settingsRef.current = settings
@@ -990,59 +1093,25 @@ function SettingsView({
       <ViewHeader title="Settings" subtitle="Change how Echo records and transcribes, on this machine." />
       <section className="panel settings-section" aria-label="General">
         <SectionHeading title="General" subtitle="The few decisions that matter." />
-        {settings ? (
-          <div className="setting-row">
-            <div>
-              <strong>Microphone</strong>
-              <span>{microphoneHint(settings, devices)}</span>
-            </div>
-            <div className="setting-actions">
-              <select
-                aria-label="Microphone"
-                value={settings.microphone.effective}
-                disabled={settings.microphone.source === 'env'}
-                onChange={(event) => {
-                  setMicMeter(null)
-                  void patch('microphone', event.target.value || null)
-                }}
-              >
-                <option value="">System default</option>
-                {microphoneOptions(devices, settings.microphone.effective).map((device) => (
-                  <option key={device.name} value={device.name}>{device.name}</option>
-                ))}
-              </select>
-              <button
-                type="button"
-                className="compact-button"
-                disabled={testingMic}
-                onClick={() => {
-                  setTestingMic(true)
-                  void testInputDevice(settings.microphone.effective || null)
-                    .then(setMicMeter)
-                    .catch(() => setMicMeter('unavailable'))
-                    .finally(() => setTestingMic(false))
-                }}
-              >
-                Test
-              </button>
-              {micMeter === 'unavailable' ? (
-                <span className="status-note" data-tone="attention">
-                  <span className="status-dot" data-tone="attention" aria-hidden="true" />
-                  Unavailable
-                </span>
-              ) : micMeter != null ? (
-                <span className="status-note" data-tone={micMeter > 0.001 ? 'ok' : 'attention'}>
-                  <span className="status-dot" data-tone={micMeter > 0.001 ? 'ok' : 'attention'} aria-hidden="true" />
-                  {micMeter > 0.001 ? `Level ${micMeter.toFixed(3)}` : 'Silent'}
-                </span>
-              ) : (
-                <span className="status-note" data-tone={status.microphoneReady ? 'ok' : 'attention'}>
-                  <span className="status-dot" data-tone={status.microphoneReady ? 'ok' : 'attention'} aria-hidden="true" />
-                  {status.microphoneReady ? 'Ready' : 'Needs setup'}
-                </span>
-              )}
-            </div>
-          </div>
+        {microphones ? (
+          <MicrophoneChooser
+            snapshot={microphones}
+            test={micTest}
+            testing={testingMic}
+            onRefresh={refreshMicrophones}
+            onSelect={(id) => {
+              setMicTest(null)
+              void setMicrophone(id)
+                .then(setMicrophones)
+                .then(() => onStatusChange())
+                .catch((reason: unknown) => onError(messageFrom(reason)))
+            }}
+            onTest={(id, fallback) => {
+              setTestingMic(true)
+              const run = fallback ? testMicrophoneFallback() : testInputDevice(id)
+              void run.then(setMicTest).finally(() => setTestingMic(false))
+            }}
+          />
         ) : (
           <SettingLine label="Microphone" value={status.microphoneReady ? 'Default input available' : 'No default input'} tone={status.microphoneReady ? 'ok' : 'attention'} />
         )}
@@ -1060,17 +1129,6 @@ function SettingsView({
               <span className="status-dot" data-tone="attention" aria-hidden="true" />
               {status.languageWarning}
             </span>
-            {offers
-              .filter((offer) => offer.id === 'small' && !offer.installed)
-              .map((offer) => (
-                <OfferAction
-                  key={offer.id}
-                  offer={offer}
-                  progress={downloads[offer.id]}
-                  onDownload={() => void downloadModel(offer.id)}
-                  onCancel={() => void cancelDownload(offer.id)}
-                />
-              ))}
           </div>
         ) : null}
         {settings && whisperRuns && inventory ? (
@@ -1095,66 +1153,12 @@ function SettingsView({
             </select>
           </div>
         ) : null}
-        {inventory && inventory.vad.length === 0
-          ? offers
-              .filter((offer) => offer.id === 'silero-vad' && !offer.installed)
-              .map((offer) => (
-                <div className="setting-row" key={offer.id}>
-                  <div>
-                    <strong>Silence detection</strong>
-                    <span>
-                      Trims non-speech before transcription. {formatSize(offer.sizeBytes)} · {offer.url}
-                    </span>
-                  </div>
-                  <OfferAction
-                    offer={offer}
-                    progress={downloads[offer.id]}
-                    onDownload={() => void downloadModel(offer.id)}
-                    onCancel={() => void cancelDownload(offer.id)}
-                  />
-                </div>
-              ))
-          : null}
-        {offers.filter(
-          (offer) =>
-            offer.id !== 'silero-vad' &&
-            !(status.languageWarning && offer.id === 'small') &&
-            (!offer.installed || downloads[offer.id]),
-        ).length > 0 ? (
-          <>
-            <div className="setting-row">
-              <div>
-                <strong>Get a model</strong>
-                <span>Downloaded over HTTPS from huggingface.co and verified against the published SHA-1.</span>
-              </div>
-            </div>
-            {offers
-              .filter(
-                (offer) =>
-                  offer.id !== 'silero-vad' &&
-                  !(status.languageWarning && offer.id === 'small') &&
-                  (!offer.installed || downloads[offer.id]),
-              )
-              .map((offer) => (
-                <div className="setting-row" key={offer.id}>
-                  <div>
-                    <strong>{offer.label}</strong>
-                    <span>
-                      {formatSize(offer.sizeBytes)}
-                      {offer.runtimeMb != null ? ` · ~${offer.runtimeMb} MB memory` : ''}
-                      {offer.multilingual ? ' · multilingual' : ''}
-                    </span>
-                    <span className="offer-url">{offer.url}</span>
-                  </div>
-                  <OfferAction
-                    offer={offer}
-                    progress={downloads[offer.id]}
-                    onDownload={() => void downloadModel(offer.id)}
-                    onCancel={() => void cancelDownload(offer.id)}
-                  />
-                </div>
-              ))}
-          </>
+        {readiness ? (
+          <SpeechSetupSection
+            readiness={readiness}
+            onRefresh={() => void getReadiness().then(setReadiness)}
+            onError={onError}
+          />
         ) : null}
         <ShortcutRow
           status={status}
@@ -1322,65 +1326,206 @@ function formatSize(bytes: number) {
   return `${Math.round(bytes / 1024)} KiB`
 }
 
-function OfferAction({
-  offer,
-  progress,
-  onDownload,
-  onCancel,
+function managedStateLabel(component: Readiness['components'][number]) {
+  if (component.activity) {
+    if (component.activity.phase === 'downloading') {
+      const percent = component.activity.totalBytes > 0
+        ? Math.floor((component.activity.receivedBytes / component.activity.totalBytes) * 100)
+        : 0
+      return component.activity.resumedFromBytes > 0
+        ? `Downloading ${percent}% · resumed at ${formatSize(component.activity.resumedFromBytes)}`
+        : `Downloading ${percent}%`
+    }
+    return `${capitalize(component.activity.phase)}…`
+  }
+  switch (component.managed.kind) {
+    case 'absent':
+      if (component.activeOrigin === 'system') return 'Ready · system runtime'
+      if (component.activeOrigin === 'external') return 'Ready · manually installed'
+      return component.managed.resumableBytes > 0
+        ? `Partial · ${formatSize(component.managed.resumableBytes)} ready to resume`
+        : 'Not installed by Echo'
+    case 'ready':
+      return `Ready · managed by Echo · ${component.managed.version}`
+    case 'needs-repair':
+      return component.activeOrigin === 'external' || component.activeOrigin === 'system'
+        ? `Managed copy needs repair · using ${component.activeOrigin} fallback`
+        : `Needs repair · ${component.managed.reason}`
+    case 'unsupported':
+      return component.managed.reason
+  }
+}
+
+function applySetupProgress(readiness: Readiness, event: Extract<SetupEvent, { kind: 'progress' }>) {
+  return {
+    ...readiness,
+    activeOperation: event.progress.operationId,
+    activeCancellable: true,
+    components: readiness.components.map((component) => ({
+      ...component,
+      activity: component.id === event.progress.component ? event.progress : null,
+    })),
+  }
+}
+
+function SpeechSetupSection({
+  readiness,
+  onRefresh,
+  onError,
 }: {
-  offer: ModelOffer
-  progress: DownloadProgress | undefined
-  onDownload: () => void
-  onCancel: () => void
+  readiness: Readiness
+  onRefresh: () => void
+  onError: (message: string) => void
 }) {
-  if (!progress || progress.stage === 'cancelled') {
-    return (
-      <button type="button" className="compact-button" onClick={onDownload}>
-        Download
-      </button>
-    )
+  const run = (action: Promise<unknown>) => {
+    void action.then(onRefresh).catch((reason: unknown) => onError(messageFrom(reason)))
   }
-  if (progress.stage === 'failed') {
-    return (
-      <div className="setting-actions">
-        <span className="status-note" data-tone="attention">
-          <span className="status-dot" data-tone="attention" aria-hidden="true" />
-          {progress.error ?? 'Download failed'}
-        </span>
-        <button type="button" className="compact-button" onClick={onDownload}>
-          Retry
-        </button>
-      </div>
-    )
-  }
-  if (progress.stage === 'done') {
-    return (
-      <span className="status-note" data-tone="ok">
-        <span className="status-dot" data-tone="ok" aria-hidden="true" />
-        Installed
-      </span>
-    )
-  }
-  const percent =
-    progress.total > 0 ? Math.min(100, Math.floor((progress.received / progress.total) * 100)) : 0
+  const recommended = readiness.plans.find((plan) => plan.id === 'recommended')
+  const parakeet = readiness.plans.find((plan) => plan.id === 'parakeet')
+  const recommendedModel = readiness.components.find(
+    (component) => component.id === readiness.recommendedModel,
+  )
+  const activeOperation = readiness.activeOperation
   return (
-    <div className="setting-actions">
-      <div
-        className="download-track"
-        role="progressbar"
-        aria-valuenow={percent}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-label={`Downloading ${offer.filename}`}
-      >
-        <div className="download-fill" style={{ width: `${percent}%` }} />
+    <div className="speech-setup" aria-label="Speech setup">
+      <div className="setting-row">
+        <div>
+          <strong>Speech setup</strong>
+          <span>
+            Downloads stay in Echo's managed cache, use SHA-256, and never change PATH or external files.
+          </span>
+          <span>
+            Recommended chooses {recommendedModel?.label ?? 'the low-memory model'}
+            {readiness.totalMemoryBytes == null
+              ? ' because system memory could not be detected.'
+              : ` for ${formatSize(readiness.totalMemoryBytes)} system memory.`}
+          </span>
+          <span>Parakeet setup selects Parakeet. Auto also prefers an available Parakeet setup.</span>
+        </div>
+        <div className="setting-actions">
+          {readiness.managedSupported && recommended && !recommended.satisfied ? (
+            <button
+              type="button"
+              className="compact-button"
+              disabled={activeOperation != null || !recommended.diskReady}
+              onClick={() => run(startSetup('recommended'))}
+            >
+              Set up recommended · {formatSize(recommended.downloadBytes)}
+            </button>
+          ) : null}
+          {readiness.managedSupported && parakeet && !parakeet.satisfied ? (
+            <button
+              type="button"
+              className="compact-button"
+              disabled={activeOperation != null || !parakeet.diskReady}
+              onClick={() => run(startSetup('parakeet'))}
+            >
+              Set up Parakeet
+            </button>
+          ) : null}
+          {activeOperation && readiness.activeCancellable ? (
+            <button type="button" className="compact-button" onClick={() => run(cancelSetup(activeOperation))}>
+              Cancel setup
+            </button>
+          ) : null}
+        </div>
+        {recommended && !recommended.diskReady && recommended.diskReason ? (
+          <span className="status-note" data-tone="attention">Recommended: {recommended.diskReason}</span>
+        ) : recommended && recommended.availableBytes != null ? (
+          <span className="status-note">
+            Recommended needs {formatSize(recommended.requiredFreeBytes)} free · {formatSize(recommended.availableBytes)} available
+          </span>
+        ) : null}
+        {parakeet && !parakeet.satisfied && !parakeet.diskReady && parakeet.diskReason ? (
+          <span className="status-note" data-tone="attention">Parakeet: {parakeet.diskReason}</span>
+        ) : null}
       </div>
-      <span className="status-note">
-        {progress.stage === 'verifying' ? 'Verifying…' : `${percent}%`}
-      </span>
-      <button type="button" className="compact-button" onClick={onCancel}>
-        Cancel
-      </button>
+      {!readiness.managedSupported && readiness.unsupportedReason ? (
+        <div className="setting-row">
+          <span className="status-note" data-tone="attention">{readiness.unsupportedReason}</span>
+        </div>
+      ) : null}
+      {readiness.components.map((component) => (
+        <div className="setting-row component-row" key={component.id}>
+          <div>
+            <strong>{component.label}</strong>
+            <span>{managedStateLabel(component)}</span>
+            {component.external.map((external) => (
+              <span className="offer-url" key={`${external.origin}:${external.path}`}>
+                {capitalize(external.origin)} · {external.path}
+              </span>
+            ))}
+          </div>
+          <div className="setting-actions">
+            {component.activity ? (
+              <div
+                className="download-track"
+                role="progressbar"
+                aria-label={`${component.label} ${component.activity.phase}`}
+                aria-valuemin={0}
+                aria-valuemax={component.activity.totalBytes}
+                aria-valuenow={component.activity.receivedBytes}
+              >
+                <div
+                  className="download-fill"
+                  style={{
+                    width: `${component.activity.totalBytes > 0
+                      ? Math.min(100, (component.activity.receivedBytes / component.activity.totalBytes) * 100)
+                      : 0}%`,
+                  }}
+                />
+              </div>
+            ) : null}
+            {component.managed.kind === 'needs-repair' ? (
+              <>
+                <button type="button" className="compact-button" disabled={activeOperation != null} onClick={() => run(repairManaged(component.id))}>
+                  Repair
+                </button>
+                <button
+                  type="button"
+                  className="compact-button danger-button"
+                  disabled={activeOperation != null}
+                  onClick={() => {
+                    if (window.confirm(`Remove damaged Echo-managed ${component.label}? External files stay untouched.`)) {
+                      run(removeManaged(component.id))
+                    }
+                  }}
+                >
+                  Remove damaged copy
+                </button>
+              </>
+            ) : null}
+            {component.managed.kind === 'absent' && readiness.managedSupported ? (
+              <button type="button" className="compact-button" disabled={activeOperation != null} onClick={() => run(repairManaged(component.id))}>
+                {component.managed.resumableBytes > 0
+                  ? `Resume · ${formatSize(component.managed.resumableBytes)} saved`
+                  : component.external.length > 0
+                    ? 'Install managed copy'
+                    : 'Install'}
+              </button>
+            ) : null}
+            {component.managed.kind === 'ready' ? (
+              <>
+                <button type="button" className="compact-button" disabled={activeOperation != null} onClick={() => run(verifyManaged(component.id))}>
+                  Verify
+                </button>
+                <button
+                  type="button"
+                  className="compact-button danger-button"
+                  disabled={activeOperation != null}
+                  onClick={() => {
+                    if (window.confirm(`Remove Echo-managed ${component.label}? External files stay untouched.`)) {
+                      run(removeManaged(component.id))
+                    }
+                  }}
+                >
+                  Remove · {formatSize(component.managed.bytes)}
+                </button>
+              </>
+            ) : null}
+          </div>
+        </div>
+      ))}
     </div>
   )
 }
@@ -1491,20 +1636,173 @@ function LanguageRow({
   )
 }
 
-function microphoneOptions(devices: InputDevice[], current: string) {
-  if (!current || devices.some((device) => device.name === current)) return devices
-  return [...devices, { name: current, isDefault: false }]
+function selectedMicrophoneId(snapshot: MicrophoneSnapshot): string | null | undefined {
+  switch (snapshot.selection.kind) {
+    case 'system-default':
+      return null
+    case 'selected':
+    case 'legacy-match':
+      return snapshot.selection.device.id
+    case 'missing-with-fallback':
+    case 'missing-without-fallback':
+    case 'ambiguous-legacy-name':
+      return undefined
+  }
 }
 
-function microphoneHint(settings: AppSettings, devices: InputDevice[]) {
-  if (settings.microphone.source === 'env') return 'ECHO_MICROPHONE'
-  const requested = settings.microphone.effective
-  if (!requested) return 'Follow the system default input.'
-  if (devices.some((device) => device.name === requested)) {
-    return 'Used for GUI recording and rec --toggle.'
+function microphoneMetadata(device: MicrophoneSnapshot['devices'][number]) {
+  return [device.manufacturer, device.interfaceType, device.deviceType]
+    .filter((value) => value != null && value.length > 0)
+    .join(' · ')
+}
+
+function microphoneTestMessage(test: MicrophoneTestResult) {
+  switch (test.kind) {
+    case 'completed':
+      return test.outcome === 'heard'
+        ? `Input heard on ${test.device.label} · level ${test.peakRms.toFixed(3)}`
+        : `No input detected on ${test.device.label}`
+    case 'failed':
+      return test.device == null ? test.message : `${test.device.label}: ${test.message}`
   }
-  const fallback = devices.find((device) => device.isDefault)?.name ?? 'the system default'
-  return `${requested} is gone; using ${fallback}`
+}
+
+function MicrophoneChooser({
+  snapshot,
+  test,
+  testing,
+  onSelect,
+  onRefresh,
+  onTest,
+}: {
+  snapshot: MicrophoneSnapshot
+  test: MicrophoneTestResult | null
+  testing: boolean
+  onSelect: (id: string | null) => void
+  onRefresh: () => void
+  onTest: (id: string | null, fallback: boolean) => void
+}) {
+  const selectedId = selectedMicrophoneId(snapshot)
+  const locked = snapshot.source === 'environment'
+  const fallback =
+    snapshot.selection.kind === 'missing-with-fallback'
+      ? snapshot.selection.fallback
+      : snapshot.selection.kind === 'ambiguous-legacy-name'
+        ? snapshot.selection.fallback
+        : null
+  const missing =
+    snapshot.selection.kind === 'missing-with-fallback' ||
+    snapshot.selection.kind === 'missing-without-fallback'
+      ? snapshot.selection.requestedLabel
+      : null
+  return (
+    <div className="setting-row microphone-setting">
+      <div>
+        <strong>Microphone</strong>
+        <span>
+          {locked
+            ? 'ECHO_MICROPHONE controls this setting.'
+            : 'Choose the microphone Echo should use. Similar names stay separate.'}
+        </span>
+      </div>
+      {missing ? (
+        <div className="microphone-warning" role="alert">
+          <strong>{missing} is disconnected.</strong>
+          <span>
+            {fallback
+              ? `Recording will use the system fallback: ${fallback.label}.`
+              : 'No system fallback is available.'}
+          </span>
+        </div>
+      ) : null}
+      {snapshot.selection.kind === 'ambiguous-legacy-name' ? (
+        <div className="microphone-warning" role="alert">
+          <strong>More than one microphone is named {snapshot.selection.name}.</strong>
+          <span>Choose the intended device once to save its stable ID.</span>
+        </div>
+      ) : null}
+      <div className="microphone-options" role="radiogroup" aria-label="Microphone">
+        <label className="microphone-option" data-selected={selectedId === null}>
+          <input
+            type="radio"
+            name="microphone"
+            checked={selectedId === null}
+            disabled={locked}
+            onChange={() => onSelect(null)}
+          />
+          <span>
+            <strong>Follow system default</strong>
+            <small>
+              {snapshot.devices.find((device) => device.isDefault)?.label ?? 'No default input'}
+            </small>
+          </span>
+        </label>
+        {snapshot.devices.map((device) => (
+          <label className="microphone-option" data-selected={selectedId === device.id} key={device.id}>
+            <input
+              type="radio"
+              name="microphone"
+              checked={selectedId === device.id}
+              disabled={locked}
+              onChange={() => onSelect(device.id)}
+            />
+            <span>
+              <strong>
+                {device.label}
+                {device.isDefault ? ' · Current default' : ''}
+              </strong>
+              <small>{microphoneMetadata(device) || device.id}</small>
+            </span>
+          </label>
+        ))}
+      </div>
+      <div className="setting-actions microphone-actions">
+        <button type="button" className="compact-button" onClick={onRefresh}>
+          Refresh
+        </button>
+        {selectedId !== undefined ? (
+          <button
+            type="button"
+            className="compact-button"
+            disabled={testing}
+            onClick={() => onTest(selectedId, false)}
+          >
+            Test selected
+          </button>
+        ) : null}
+        {fallback ? (
+          <button
+            type="button"
+            className="compact-button"
+            disabled={testing}
+            onClick={() => onTest(null, true)}
+          >
+            Test system fallback
+          </button>
+        ) : null}
+        {test ? (
+          <span
+            className="status-note"
+            data-tone={test.kind === 'completed' && test.outcome === 'heard' ? 'ok' : 'attention'}
+            role="status"
+            aria-live="polite"
+          >
+            <span
+              className="status-dot"
+              data-tone={test.kind === 'completed' && test.outcome === 'heard' ? 'ok' : 'attention'}
+              aria-hidden="true"
+            />
+            {microphoneTestMessage(test)}
+          </span>
+        ) : null}
+      </div>
+      {snapshot.enumerationWarning ? (
+        <span className="status-note" data-tone="attention">
+          Some microphones could not be listed: {snapshot.enumerationWarning}
+        </span>
+      ) : null}
+    </div>
+  )
 }
 
 
