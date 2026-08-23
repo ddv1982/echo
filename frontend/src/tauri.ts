@@ -10,6 +10,7 @@ import type {
   LegacyShortcutSetup,
   ModelInventory,
   ModelOffer,
+  ShortcutStatus,
   SettingField,
   Settings,
 } from './types'
@@ -30,7 +31,14 @@ function richPreviewStatus(): AppStatus {
     engineReady: true,
     injectionName: 'ydotool · Wayland',
     injectionReady: true,
-    shortcut: 'Super+Alt+Space',
+    shortcut: {
+      kind: 'active',
+      desired: 'Super+Alt+Space',
+      effective: 'Super+Alt+Space',
+      backend: 'portal',
+      activation: null,
+      verificationIdentity: 'portal:Super+Alt+Space',
+    },
     cleanupName: 'Rules · fillers and punctuation',
     hudEnabled: true,
     maxRecordSeconds: 60,
@@ -52,16 +60,6 @@ function richPreviewStatus(): AppStatus {
     currentExe: '/usr/bin/echo-desktop',
     firstPathHit: '/usr/bin/echo-desktop',
     staleInstalls: [],
-    holdListener: 'native',
-    holdListenerError: null,
-    shortcutBackend: 'portal',
-    shortcutHealthy: true,
-    shortcutError: null,
-    requestedShortcut: 'Super+Alt+Space',
-    requestedHoldShortcut: 'RightCtrl',
-    effectiveHoldShortcut: 'RightCtrl',
-    legacyShortcut: null,
-    shortcutActivation: null,
   }
 }
 
@@ -161,10 +159,23 @@ export function getAppStatus(): Promise<AppStatus> {
   return Promise.resolve(preview ? { ...previewStatus } : initialPreviewStatus())
 }
 
+export function getShortcutStatus(): Promise<ShortcutStatus> {
+  if (isTauri()) return invoke('get_shortcut_status')
+  return Promise.resolve(previewStatus.shortcut)
+}
+
+export function retryShortcut(): Promise<ShortcutStatus> {
+  if (isTauri()) return invoke('retry_shortcut')
+  return Promise.resolve(previewStatus.shortcut)
+}
+
 export function repairLegacyShortcut(): Promise<LegacyShortcutSetup> {
   if (isTauri()) return invoke('repair_legacy_shortcut')
-  const setup = previewStatus.legacyShortcut
-  if (!setup) return Promise.reject(new Error('This session does not need a legacy shortcut.'))
+  const shortcut = previewStatus.shortcut
+  if (shortcut.kind !== 'gnome-setup') {
+    return Promise.reject(new Error('This session does not need a legacy shortcut.'))
+  }
+  const setup = shortcut.setup
   if (setup.state === 'conflicting' || setup.state === 'unsupported') {
     return Promise.reject(new Error(setup.detail))
   }
@@ -173,7 +184,19 @@ export function repairLegacyShortcut(): Promise<LegacyShortcutSetup> {
     state: 'ready',
     detail: 'GNOME owns this Echo shortcut and its command is current.',
   }
-  previewStatus = { ...previewStatus, legacyShortcut: repaired }
+  previewStatus = {
+    ...previewStatus,
+    shortcut: {
+      kind: 'gnome-ready',
+      desired: shortcut.desired,
+      effective: shortcut.desired,
+      detail: repaired.detail,
+      command: repaired.command,
+      binding: repaired.binding,
+      activation: null,
+      verificationIdentity: `gnome:${repaired.binding}:${repaired.command}`,
+    },
+  }
   return Promise.resolve(repaired)
 }
 
@@ -469,8 +492,6 @@ function defaultPreviewSettings(): Settings {
     whisperModel: { value: null, effective: '', source: 'default' },
     cleanup: { value: null, effective: 'rules', source: 'default' },
     hud: { value: null, effective: true, source: 'default' },
-    toggleShortcut: { value: null, effective: 'Super+Alt+Space', source: 'default' },
-    holdKey: { value: null, effective: 'RightCtrl', source: 'default' },
     recordSeconds: { value: null, effective: 3, source: 'default' },
     microphone: { value: null, effective: '', source: 'default' },
     language: { value: null, effective: 'auto', source: 'default' },
@@ -487,8 +508,6 @@ function projectPreviewSettings(settings: Settings): Settings {
     whisperModel: previewField(settings.whisperModel.value, ''),
     cleanup: previewField(settings.cleanup.value, 'rules'),
     hud: previewField(settings.hud.value, true),
-    toggleShortcut: previewField(settings.toggleShortcut.value, 'Super+Alt+Space'),
-    holdKey: previewField(settings.holdKey.value, 'RightCtrl'),
     recordSeconds: previewField(recordValue, 3),
     microphone: previewField(settings.microphone.value, ''),
     language: previewField(settings.language.value, 'auto'),
@@ -520,7 +539,6 @@ function applyPreviewStatus(settings: Settings) {
     engineReady: settings.engine.effective !== 'auto',
     cleanupName: cleanupNames[settings.cleanup.effective] ?? settings.cleanup.effective,
     hudEnabled: settings.hud.effective,
-    shortcut: settings.toggleShortcut.effective,
   }
 }
 
@@ -534,7 +552,11 @@ function initialPreviewStatus(): AppStatus {
     engineReady: false,
     injectionName: 'Not connected',
     injectionReady: false,
-    shortcut: 'Super+Alt+Space',
+    shortcut: {
+      kind: 'unsupported',
+      desired: 'Super+Alt+Space',
+      detail: 'Not connected',
+    },
     cleanupName: 'Rules · fillers and punctuation',
     hudEnabled: true,
     maxRecordSeconds: 60,
@@ -547,15 +569,5 @@ function initialPreviewStatus(): AppStatus {
     currentExe: '',
     firstPathHit: null,
     staleInstalls: [],
-    holdListener: 'unavailable',
-    holdListenerError: null,
-    shortcutBackend: 'unsupported',
-    shortcutHealthy: false,
-    shortcutError: 'Not connected',
-    requestedShortcut: 'Super+Alt+Space',
-    requestedHoldShortcut: 'RightCtrl',
-    effectiveHoldShortcut: null,
-    legacyShortcut: null,
-    shortcutActivation: null,
   }
 }

@@ -46,7 +46,7 @@
       "icons/256x256.png",
       "icons/512x512.png"
     ],
-    "shortDescription": "Local hold-to-talk dictation",
+    "shortDescription": "Private local dictation",
     "longDescription": "Echo records speech, transcribes it locally, cleans it up, and inserts it at the active cursor.",
     "category": "Utility",
     "linux": {

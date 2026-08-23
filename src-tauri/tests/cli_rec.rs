@@ -141,7 +141,7 @@ fn rec_once_without_mic_names_permission() {
     );
     if !text.contains("session Transcribing") {
         assert!(
-            text.contains("microphone") || text.contains("evdev"),
+            text.contains("microphone"),
             "expected a permission reason, got {text:?}"
         );
     }

@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::env;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Barrier, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -23,16 +23,26 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Emitter, Manager, WindowEvent};
 
-const DEFAULT_TOGGLE_SHORTCUT: &str = "Super+Alt+Space";
 const APP_ID: &str = "io.github.ddv1982.echo";
-const TOGGLE_SHORTCUT_ID: &str = "toggle-recording";
-const HOLD_SHORTCUT_ID: &str = "push-to-talk";
 const GNOME_MEDIA_KEYS_SCHEMA: &str = "org.gnome.settings-daemon.plugins.media-keys";
 const GNOME_CUSTOM_KEY_SCHEMA: &str =
     "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding";
 const ECHO_CUSTOM_KEY_PATH: &str =
     "/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/echo/";
 const ECHO_CUSTOM_KEY_NAME: &str = "Echo Dictation";
+
+struct FixedShortcut;
+
+impl FixedShortcut {
+    const ID: &'static str = "toggle-recording";
+    const DISPLAY: &'static str = "Super+Alt+Space";
+    const PORTAL_TRIGGER: &'static str = "LOGO+ALT+space";
+    const GNOME_ACCELERATOR: &'static str = "<Super><Alt>space";
+
+    fn x11_hotkey() -> HotKey {
+        HotKey::new(Some(Modifiers::SUPER | Modifiers::ALT), Code::Space)
+    }
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -45,7 +55,7 @@ struct AppStatus {
     engine_ready: bool,
     injection_name: String,
     injection_ready: bool,
-    shortcut: String,
+    shortcut: ShortcutStatus,
     cleanup_name: String,
     hud_enabled: bool,
     max_record_seconds: u64,
@@ -58,16 +68,51 @@ struct AppStatus {
     current_exe: String,
     first_path_hit: Option<String>,
     stale_installs: Vec<String>,
-    hold_listener: String,
-    hold_listener_error: Option<String>,
-    shortcut_backend: String,
-    shortcut_healthy: bool,
-    shortcut_error: Option<String>,
-    requested_shortcut: String,
-    requested_hold_shortcut: String,
-    effective_hold_shortcut: Option<String>,
-    legacy_shortcut: Option<LegacyShortcutSetup>,
-    shortcut_activation: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+enum ShortcutStatus {
+    Probing {
+        desired: String,
+    },
+    Active {
+        desired: String,
+        effective: String,
+        backend: ShortcutBackendName,
+        activation: Option<String>,
+        verification_identity: String,
+    },
+    GnomeReady {
+        desired: String,
+        effective: String,
+        detail: String,
+        command: String,
+        binding: String,
+        activation: Option<String>,
+        verification_identity: String,
+    },
+    GnomeSetup {
+        desired: String,
+        setup: LegacyShortcutSetup,
+    },
+    Manual {
+        desired: String,
+        command: String,
+        detail: String,
+    },
+    Failed {
+        desired: String,
+        detail: String,
+    },
+    Unsupported {
+        desired: String,
+        detail: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -148,8 +193,6 @@ struct Settings {
     whisper_model: SettingField<String>,
     cleanup: SettingField<String>,
     hud: SettingField<bool>,
-    toggle_shortcut: SettingField<String>,
-    hold_key: SettingField<String>,
     record_seconds: SettingField<u32>,
     microphone: SettingField<String>,
     language: SettingField<String>,
@@ -161,8 +204,6 @@ struct SettingsEnv {
     whisper_model: Option<String>,
     cleanup: Option<String>,
     hud: Option<String>,
-    toggle_shortcut: Option<String>,
-    hold_key: Option<String>,
     record_seconds: Option<String>,
     microphone: Option<String>,
     language: Option<String>,
@@ -235,25 +276,20 @@ static LEGACY_SHORTCUT_CACHE: Mutex<Option<(Instant, String, String, LegacyShort
     Mutex::new(None);
 
 fn legacy_shortcut_setup(
-    native: &NativeShortcutStatus,
+    native: &NativeShortcutState,
     current_exe: &str,
 ) -> Option<LegacyShortcutSetup> {
-    if native.healthy
-        || !native.global_shortcuts_absent
-        || echo::hotkey::DesktopSession::from_xdg_session_type(
-            env::var("XDG_SESSION_TYPE").ok().as_deref(),
-        ) != echo::hotkey::DesktopSession::Wayland
-    {
+    let session = echo::hotkey::DesktopSession::from_xdg_session_type(
+        env::var("XDG_SESSION_TYPE").ok().as_deref(),
+    );
+    if !needs_legacy_setup(native, session) {
         return None;
     }
 
     let desktop = env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
-    let executable = stable_shortcut_executable(
-        current_exe,
-        env::var_os("APPIMAGE").as_deref(),
-    );
+    let executable = stable_shortcut_executable(current_exe, env::var_os("APPIMAGE").as_deref());
     let command = absolute_toggle_command(&executable).unwrap_or_default();
-    let binding = gnome_accelerator(&native.requested_toggle).unwrap_or_default();
+    let binding = FixedShortcut::GNOME_ACCELERATOR.to_string();
     if !desktop
         .split(':')
         .any(|part| matches!(part.to_ascii_lowercase().as_str(), "gnome" | "zorin"))
@@ -298,6 +334,11 @@ fn legacy_shortcut_setup(
     Some(setup)
 }
 
+fn needs_legacy_setup(native: &NativeShortcutState, session: echo::hotkey::DesktopSession) -> bool {
+    matches!(native, NativeShortcutState::PortalAbsent { .. })
+        && session == echo::hotkey::DesktopSession::Wayland
+}
+
 fn absolute_toggle_command(current_exe: &str) -> Result<String, String> {
     let path = std::path::Path::new(current_exe);
     if !path.is_absolute() {
@@ -322,35 +363,6 @@ fn stable_shortcut_executable(current_exe: &str, appimage: Option<&std::ffi::OsS
         .unwrap_or_else(|| std::path::Path::new(current_exe))
         .to_string_lossy()
         .into_owned()
-}
-
-fn gnome_accelerator(shortcut: &str) -> Result<String, String> {
-    let canonical =
-        echo_core::Config::canonical_toggle_shortcut(shortcut).map_err(|err| err.to_string())?;
-    let parts = canonical.split('+').collect::<Vec<_>>();
-    let terminal = parts.last().copied().ok_or("shortcut has no key")?;
-    let mut accelerator = String::new();
-    for modifier in parts.iter().take(parts.len().saturating_sub(1)) {
-        accelerator.push_str(match *modifier {
-            "Super" => "<Super>",
-            "Ctrl" => "<Ctrl>",
-            "Alt" => "<Alt>",
-            "Shift" => "<Shift>",
-            other => return Err(format!("unsupported GNOME modifier {other}")),
-        });
-    }
-    let terminal = match terminal {
-        "Space" => "space".to_string(),
-        "Enter" => "Return".to_string(),
-        "ArrowUp" => "Up".to_string(),
-        "ArrowDown" => "Down".to_string(),
-        "ArrowLeft" => "Left".to_string(),
-        "ArrowRight" => "Right".to_string(),
-        key if key.len() == 1 => key.to_ascii_lowercase(),
-        key => key.to_string(),
-    };
-    accelerator.push_str(&terminal);
-    Ok(accelerator)
 }
 
 fn classify_gnome_shortcut(
@@ -528,20 +540,24 @@ fn gnome_accelerators_match(left: &str, right: &str) -> bool {
 
 fn canonical_gnome_accelerator(raw: &str) -> Option<String> {
     let mut rest = raw.trim();
-    let mut parts = Vec::new();
+    let mut modifiers = [false; 4];
     while let Some(after_open) = rest.strip_prefix('<') {
         let close = after_open.find('>')?;
-        parts.push(match after_open[..close].to_ascii_lowercase().as_str() {
-            "super" | "mod4" => "Super".to_string(),
-            "ctrl" | "control" | "primary" => "Ctrl".to_string(),
-            "alt" | "mod1" => "Alt".to_string(),
-            "shift" => "Shift".to_string(),
+        let index = match after_open[..close].to_ascii_lowercase().as_str() {
+            "super" | "mod4" => 0,
+            "ctrl" | "control" | "primary" => 1,
+            "alt" | "mod1" => 2,
+            "shift" => 3,
             _ => return None,
-        });
+        };
+        if modifiers[index] {
+            return None;
+        }
+        modifiers[index] = true;
         rest = &after_open[close + 1..];
     }
     let terminal = match rest.to_ascii_lowercase().as_str() {
-        "return" => "Enter".to_string(),
+        "enter" | "return" => "Enter".to_string(),
         "up" => "ArrowUp".to_string(),
         "down" => "ArrowDown".to_string(),
         "left" => "ArrowLeft".to_string(),
@@ -551,8 +567,15 @@ fn canonical_gnome_accelerator(raw: &str) -> Option<String> {
     if terminal.is_empty() {
         return None;
     }
+    let names = ["Super", "Ctrl", "Alt", "Shift"];
+    let mut parts = modifiers
+        .iter()
+        .enumerate()
+        .filter(|(_, present)| **present)
+        .map(|(index, _)| names[index].to_string())
+        .collect::<Vec<_>>();
     parts.push(terminal);
-    echo_core::Config::canonical_toggle_shortcut(&parts.join("+")).ok()
+    Some(parts.join("+"))
 }
 
 fn read_gnome_shortcuts() -> Result<GnomeShortcutSnapshot, String> {
@@ -812,10 +835,7 @@ impl From<&DictEntry> for DictionaryItem {
 fn get_app_status() -> AppStatus {
     let status = echo::status::read();
     let health = health_snapshot();
-    let shortcut_status = native_shortcut_status();
-    let evdev_status = evdev_listener_state();
-    let legacy_shortcut = legacy_shortcut_setup(&shortcut_status, &health.current_exe);
-    let shortcut = projected_toggle_shortcut(&shortcut_status, legacy_shortcut.as_ref());
+    let shortcut = project_shortcut_status(&native_shortcut_state(), &health.current_exe);
     let last_run = History::load().ok().and_then(|history| {
         history.rows().last().map(|row| LastRun {
             engine: row.engine.to_string(),
@@ -851,37 +871,88 @@ fn get_app_status() -> AppStatus {
         current_exe: health.current_exe,
         first_path_hit: health.first_path_hit,
         stale_installs: health.stale_installs,
-        hold_listener: evdev_status.projection().to_string(),
-        hold_listener_error: evdev_status.error().map(str::to_string),
-        shortcut_backend: shortcut_status.backend.as_str().to_string(),
-        shortcut_healthy: shortcut_status.healthy,
-        shortcut_error: shortcut_status.error.clone(),
-        requested_shortcut: shortcut_status.requested_toggle,
-        requested_hold_shortcut: shortcut_status.requested_hold,
-        effective_hold_shortcut: shortcut_status.effective_hold,
-        legacy_shortcut,
-        shortcut_activation: echo::status::shortcut_activation(),
     }
 }
 
-fn projected_toggle_shortcut(
-    native: &NativeShortcutStatus,
-    legacy: Option<&LegacyShortcutSetup>,
-) -> String {
-    native.effective_toggle.clone().unwrap_or_else(|| {
-        if legacy.is_some_and(|setup| setup.state == LegacyShortcutState::Ready) {
-            native.requested_toggle.clone()
-        } else {
-            format!("Unavailable ({})", native.requested_toggle)
+fn project_shortcut_status(native: &NativeShortcutState, current_exe: &str) -> ShortcutStatus {
+    let desired = FixedShortcut::DISPLAY.to_string();
+    let activation = echo::status::shortcut_activation();
+    match native {
+        NativeShortcutState::Probing => ShortcutStatus::Probing { desired },
+        NativeShortcutState::Active { backend, effective } => ShortcutStatus::Active {
+            desired,
+            effective: effective.clone(),
+            backend: *backend,
+            activation,
+            verification_identity: format!("{}:{effective}", backend.as_str()),
+        },
+        NativeShortcutState::PortalAbsent { detail } => {
+            let Some(setup) = legacy_shortcut_setup(native, current_exe) else {
+                return ShortcutStatus::Unsupported {
+                    desired,
+                    detail: detail.clone(),
+                };
+            };
+            let is_gnome = env::var("XDG_CURRENT_DESKTOP")
+                .unwrap_or_default()
+                .split(':')
+                .any(|part| matches!(part.to_ascii_lowercase().as_str(), "gnome" | "zorin"));
+            if is_gnome {
+                if setup.state == LegacyShortcutState::Ready {
+                    ShortcutStatus::GnomeReady {
+                        desired: desired.clone(),
+                        effective: desired,
+                        detail: setup.detail,
+                        verification_identity: format!("gnome:{}:{}", setup.binding, setup.command),
+                        command: setup.command,
+                        binding: setup.binding,
+                        activation,
+                    }
+                } else {
+                    ShortcutStatus::GnomeSetup { desired, setup }
+                }
+            } else {
+                if setup.command.is_empty() || setup.binding.is_empty() {
+                    return ShortcutStatus::Unsupported {
+                        desired,
+                        detail: setup.detail,
+                    };
+                }
+                ShortcutStatus::Manual {
+                    desired,
+                    command: setup.command,
+                    detail: setup.detail,
+                }
+            }
         }
-    })
+        NativeShortcutState::Failed { detail } => ShortcutStatus::Failed {
+            desired,
+            detail: detail.clone(),
+        },
+        NativeShortcutState::Unsupported { detail } => ShortcutStatus::Unsupported {
+            desired,
+            detail: detail.clone(),
+        },
+    }
+}
+
+#[tauri::command]
+fn get_shortcut_status() -> ShortcutStatus {
+    project_shortcut_status(&native_shortcut_state(), &current_exe_string())
+}
+
+fn current_exe_string() -> String {
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.canonicalize().ok())
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 #[tauri::command]
 fn repair_legacy_shortcut() -> Result<LegacyShortcutSetup, String> {
-    let native = native_shortcut_status();
-    let health = health_snapshot();
-    let advertised = legacy_shortcut_setup(&native, &health.current_exe)
+    let native = native_shortcut_state();
+    let advertised = legacy_shortcut_setup(&native, &current_exe_string())
         .ok_or("this session does not need a legacy compositor shortcut")?;
     if advertised.state == LegacyShortcutState::Unsupported {
         return Err(advertised.detail);
@@ -1317,10 +1388,6 @@ fn write_settings(settings: Settings) -> Result<Settings, String> {
     config_from_values(&settings)?.save()?;
     echo::settings::reload();
     health_invalidate();
-    *LEGACY_SHORTCUT_CACHE
-        .lock()
-        .expect("legacy shortcut cache lock") = None;
-    reconcile_native_shortcuts();
     read_settings()
 }
 
@@ -1330,8 +1397,6 @@ fn process_settings_env() -> SettingsEnv {
         whisper_model: env::var("ECHO_WHISPER_MODEL").ok(),
         cleanup: env::var("ECHO_CLEANUP").ok(),
         hud: env::var("ECHO_HUD").ok(),
-        toggle_shortcut: env::var("ECHO_TOGGLE_SHORTCUT").ok(),
-        hold_key: env::var("ECHO_HOLD_KEY").ok(),
         record_seconds: env::var("ECHO_RECORD_SECONDS").ok(),
         microphone: env::var("ECHO_MICROPHONE").ok(),
         language: env::var("ECHO_LANGUAGE").ok(),
@@ -1368,20 +1433,6 @@ fn settings_from(
             "rules".to_string(),
         ),
         hud: hud_field(env.hud.as_deref(), file.hud),
-        toggle_shortcut: shortcut_field(
-            "toggle shortcut",
-            env.toggle_shortcut.as_deref(),
-            file.toggle_shortcut.as_deref(),
-            DEFAULT_TOGGLE_SHORTCUT,
-            echo_core::Config::canonical_toggle_shortcut,
-        )?,
-        hold_key: shortcut_field(
-            "push-to-talk shortcut",
-            env.hold_key.as_deref(),
-            file.hold_key.as_deref(),
-            "RightCtrl",
-            echo_core::Config::canonical_shortcut,
-        )?,
         record_seconds: record_seconds_field(
             env.record_seconds
                 .as_deref()
@@ -1419,16 +1470,6 @@ fn config_from_values(settings: &Settings) -> Result<echo_core::Config, String> 
         Some(raw) => Some(echo_core::CleanupMode::parse(raw).map_err(|err| err.to_string())?),
     };
     config.hud = settings.hud.value;
-    config.toggle_shortcut = canonical_shortcut_value(
-        "toggle shortcut",
-        settings.toggle_shortcut.value.as_deref(),
-        echo_core::Config::canonical_toggle_shortcut,
-    )?;
-    config.hold_key = canonical_shortcut_value(
-        "push-to-talk shortcut",
-        settings.hold_key.value.as_deref(),
-        echo_core::Config::canonical_shortcut,
-    )?;
     config.record_seconds = settings
         .record_seconds
         .value
@@ -1442,34 +1483,6 @@ fn config_from_values(settings: &Settings) -> Result<echo_core::Config, String> 
         ),
     };
     Ok(config)
-}
-
-fn shortcut_field<E: std::fmt::Display>(
-    label: &str,
-    env: Option<&str>,
-    file: Option<&str>,
-    default: &str,
-    canonicalize: fn(&str) -> Result<String, E>,
-) -> Result<SettingField<String>, String> {
-    let env = env
-        .map(|raw| {
-            canonicalize(raw).map_err(|err| format!("invalid {label} from environment: {err}"))
-        })
-        .transpose()?;
-    let file = file
-        .map(|raw| canonicalize(raw).map_err(|err| format!("invalid saved {label}: {err}")))
-        .transpose()?;
-    Ok(setting_field(env, file, default.to_string()))
-}
-
-fn canonical_shortcut_value<E: std::fmt::Display>(
-    label: &str,
-    value: Option<&str>,
-    canonicalize: fn(&str) -> Result<String, E>,
-) -> Result<Option<String>, String> {
-    value
-        .map(|raw| canonicalize(raw).map_err(|err| format!("invalid {label}: {err}")))
-        .transpose()
 }
 
 fn setting_field<T: Clone>(env: Option<T>, file: Option<T>, default: T) -> SettingField<T> {
@@ -1551,11 +1564,11 @@ fn start_recording_thread() -> Result<(), String> {
     echo::rec::toggle_managed_recording()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 enum ShortcutBackendName {
     Portal,
     X11,
-    Unsupported,
 }
 
 impl ShortcutBackendName {
@@ -1563,248 +1576,45 @@ impl ShortcutBackendName {
         match self {
             Self::Portal => "portal",
             Self::X11 => "x11",
-            Self::Unsupported => "unsupported",
         }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct NativeShortcutStatus {
-    backend: ShortcutBackendName,
-    healthy: bool,
-    global_shortcuts_absent: bool,
-    error: Option<String>,
-    requested_toggle: String,
-    effective_toggle: Option<String>,
-    requested_hold: String,
-    effective_hold: Option<String>,
-}
-
-impl Default for NativeShortcutStatus {
-    fn default() -> Self {
-        Self {
-            backend: ShortcutBackendName::Unsupported,
-            healthy: false,
-            global_shortcuts_absent: false,
-            error: Some("native shortcut backend has not started".to_string()),
-            requested_toggle: DEFAULT_TOGGLE_SHORTCUT.to_string(),
-            effective_toggle: None,
-            requested_hold: "RightCtrl".to_string(),
-            effective_hold: None,
-        }
-    }
-}
-
-static NATIVE_SHORTCUT_STATUS: OnceLock<Arc<Mutex<NativeShortcutStatus>>> = OnceLock::new();
-
-fn native_status_cell() -> &'static Arc<Mutex<NativeShortcutStatus>> {
-    NATIVE_SHORTCUT_STATUS.get_or_init(|| Arc::new(Mutex::new(NativeShortcutStatus::default())))
-}
-
-fn native_shortcut_status() -> NativeShortcutStatus {
-    native_status_cell()
-        .lock()
-        .expect("native shortcut status lock")
-        .clone()
-}
-
-fn update_native_status(update: impl FnOnce(&mut NativeShortcutStatus)) {
-    update(
-        &mut native_status_cell()
-            .lock()
-            .expect("native shortcut status lock"),
-    );
-}
-
-fn set_effective_shortcuts(status: &mut NativeShortcutStatus, toggle: String, hold: String) {
-    status.effective_toggle = Some(toggle);
-    status.effective_hold = Some(hold);
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NativeHoldState {
-    Probing,
-    Healthy,
-    Failed,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EvdevFallbackPlan {
-    StopForNative,
-    Start,
-}
-
-fn evdev_fallback_plan(native: NativeHoldState) -> EvdevFallbackPlan {
-    if native != NativeHoldState::Failed {
-        EvdevFallbackPlan::StopForNative
-    } else {
-        EvdevFallbackPlan::Start
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum EvdevListenerState {
-    StoppedForNative,
+enum NativeShortcutState {
     Probing,
-    Active,
-    NeedsPermission(String),
-    Unavailable(String),
-    Failed(String),
+    Active {
+        backend: ShortcutBackendName,
+        effective: String,
+    },
+    PortalAbsent {
+        detail: String,
+    },
+    Failed {
+        detail: String,
+    },
+    Unsupported {
+        detail: String,
+    },
 }
 
-impl EvdevListenerState {
-    fn projection(&self) -> &'static str {
-        match self {
-            Self::StoppedForNative => "native",
-            Self::Active => "active",
-            Self::NeedsPermission(_) => "needs-permission",
-            Self::Probing | Self::Unavailable(_) | Self::Failed(_) => "unavailable",
-        }
-    }
+static NATIVE_SHORTCUT_STATE: OnceLock<Arc<Mutex<NativeShortcutState>>> = OnceLock::new();
 
-    fn error(&self) -> Option<&str> {
-        match self {
-            Self::NeedsPermission(error) | Self::Unavailable(error) | Self::Failed(error) => {
-                Some(error)
-            }
-            _ => None,
-        }
-    }
+fn native_state_cell() -> &'static Arc<Mutex<NativeShortcutState>> {
+    NATIVE_SHORTCUT_STATE.get_or_init(|| Arc::new(Mutex::new(NativeShortcutState::Probing)))
 }
 
-static EVDEV_LISTENER_STATE: OnceLock<Arc<Mutex<EvdevListenerState>>> = OnceLock::new();
-
-fn evdev_state_cell() -> &'static Arc<Mutex<EvdevListenerState>> {
-    EVDEV_LISTENER_STATE.get_or_init(|| Arc::new(Mutex::new(EvdevListenerState::StoppedForNative)))
-}
-
-fn evdev_listener_state() -> EvdevListenerState {
-    evdev_state_cell()
+fn native_shortcut_state() -> NativeShortcutState {
+    native_state_cell()
         .lock()
-        .expect("evdev listener status lock")
+        .expect("native shortcut state lock")
         .clone()
 }
 
-fn set_evdev_listener_state(state: EvdevListenerState) {
-    *evdev_state_cell()
+fn set_native_shortcut_state(state: NativeShortcutState) {
+    *native_state_cell()
         .lock()
-        .expect("evdev listener status lock") = state;
-}
-
-struct HoldListenerHandle {
-    key: String,
-    cancel: echo::audio::CancellationToken,
-    thread: JoinHandle<()>,
-}
-
-static HOLD_LISTENER: Mutex<Option<HoldListenerHandle>> = Mutex::new(None);
-static EVDEV_RECONCILE: Mutex<()> = Mutex::new(());
-
-fn stop_evdev_handle(handle: Option<HoldListenerHandle>) {
-    if let Some(handle) = handle {
-        handle.cancel.cancel();
-        if handle.thread.join().is_err() {
-            set_evdev_listener_state(EvdevListenerState::Failed(
-                "evdev hold listener panicked during teardown".to_string(),
-            ));
-        }
-    }
-}
-
-fn stop_evdev_listener() {
-    let old = HOLD_LISTENER.lock().expect("hold listener lock").take();
-    stop_evdev_handle(old);
-}
-
-/// Start, stop, or rekey the evdev fallback. Native probing/ownership always
-/// cancels it; a settled native failure enables a capability-filtered
-/// supervisor that reports permission/device health and reconnects on hotplug.
-fn reconcile_evdev_fallback(native: NativeHoldState) {
-    let _reconcile = EVDEV_RECONCILE.lock().expect("evdev reconcile lock");
-    match evdev_fallback_plan(native) {
-        EvdevFallbackPlan::StopForNative => {
-            stop_evdev_listener();
-            set_evdev_listener_state(if native == NativeHoldState::Healthy {
-                EvdevListenerState::StoppedForNative
-            } else {
-                EvdevListenerState::Probing
-            });
-            return;
-        }
-        EvdevFallbackPlan::Start => {}
-    }
-
-    let spec = match echo::hotkey::hold_key() {
-        Ok(spec) => spec,
-        Err(err) => {
-            stop_evdev_listener();
-            set_evdev_listener_state(EvdevListenerState::Failed(format!(
-                "invalid evdev hold shortcut: {err}"
-            )));
-            return;
-        }
-    };
-    let old = {
-        let mut guard = HOLD_LISTENER.lock().expect("hold listener lock");
-        if guard
-            .as_ref()
-            .is_some_and(|running| running.key == spec.name && !running.thread.is_finished())
-        {
-            return;
-        }
-        guard.take()
-    };
-    stop_evdev_handle(old);
-
-    let cancel = echo::audio::CancellationToken::new();
-    let thread_cancel = cancel.clone();
-    let ready = Arc::new(Barrier::new(2));
-    let thread_ready = ready.clone();
-    let spawned = std::thread::Builder::new()
-        .name("echo-hold-listener".to_string())
-        .spawn(move || {
-            thread_ready.wait();
-            let mut recording = None;
-            echo::hotkey::run_evdev_supervisor(
-                spec.code,
-                &thread_cancel,
-                |health| {
-                    set_evdev_listener_state(match health {
-                        echo::hotkey::EvdevListenerHealth::Active => EvdevListenerState::Active,
-                        echo::hotkey::EvdevListenerHealth::NeedsPermission(detail) => {
-                            EvdevListenerState::NeedsPermission(detail)
-                        }
-                        echo::hotkey::EvdevListenerHealth::Unavailable(detail) => {
-                            EvdevListenerState::Unavailable(detail)
-                        }
-                        echo::hotkey::EvdevListenerHealth::Degraded(detail) => {
-                            EvdevListenerState::Failed(detail)
-                        }
-                    });
-                },
-                |edge| dispatch_hold_edge(edge, &mut recording),
-            );
-            stop_held_recording(&mut recording);
-            if !thread_cancel.is_cancelled() {
-                set_evdev_listener_state(EvdevListenerState::Failed(
-                    "evdev hold listener terminated unexpectedly".to_string(),
-                ));
-            }
-        });
-    match spawned {
-        Ok(thread) => {
-            *HOLD_LISTENER.lock().expect("hold listener lock") = Some(HoldListenerHandle {
-                key: spec.name,
-                cancel,
-                thread,
-            });
-            set_evdev_listener_state(EvdevListenerState::Probing);
-            ready.wait();
-        }
-        Err(err) => set_evdev_listener_state(EvdevListenerState::Failed(format!(
-            "cannot spawn evdev hold listener: {err}"
-        ))),
-    }
+        .expect("native shortcut state lock") = state;
 }
 
 fn is_legacy_registry_absence(error: &ashpd::Error) -> bool {
@@ -1824,8 +1634,6 @@ fn is_global_shortcuts_absence(error: &ashpd::Error) -> bool {
 }
 
 struct NativeShortcutHandle {
-    toggle: String,
-    hold: String,
     cancel: echo::audio::CancellationToken,
     thread: JoinHandle<()>,
 }
@@ -1837,8 +1645,6 @@ static NATIVE_SHORTCUT: Mutex<Option<NativeShortcutHandle>> = Mutex::new(None);
 enum TestShortcutAction {
     Edge(String, echo::hotkey::HotkeyEvent),
     Toggle,
-    HoldStart,
-    HoldStop,
 }
 
 #[cfg(test)]
@@ -1915,12 +1721,6 @@ impl Drop for ShortcutRecordingTestEnv {
     }
 }
 
-enum HeldRecording {
-    Live {
-        _recording: echo::rec::ManagedRecording,
-    },
-}
-
 #[cfg(test)]
 fn report_test_shortcut(action: TestShortcutAction) -> bool {
     let observer = TEST_SHORTCUT_ACTIONS
@@ -1939,82 +1739,56 @@ static NATIVE_RECONCILE: Mutex<()> = Mutex::new(());
 /// joined (which closes a portal session or unregisters X11 grabs) before the
 /// replacement can register, while the runtime/status mutexes stay unlocked.
 fn reconcile_native_shortcuts() {
-    reconcile_native_shortcuts_with_recovery(false);
+    reconcile_native_shortcuts_with_recovery(false, false);
 }
 
-fn retry_native_shortcuts() {
-    reconcile_native_shortcuts_with_recovery(true);
+fn retry_native_shortcuts_after_failure() {
+    reconcile_native_shortcuts_with_recovery(true, true);
 }
 
-fn reconcile_native_shortcuts_with_recovery(recovering: bool) {
+#[tauri::command]
+fn retry_shortcut() -> ShortcutStatus {
+    if shortcut_retry_needed(&native_shortcut_state()) {
+        reconcile_native_shortcuts_with_recovery(false, true);
+    }
+    get_shortcut_status()
+}
+
+fn shortcut_retry_needed(state: &NativeShortcutState) -> bool {
+    !matches!(state, NativeShortcutState::Active { .. })
+}
+
+fn reconcile_native_shortcuts_with_recovery(recovering: bool, force: bool) {
     let _reconcile = NATIVE_RECONCILE
         .lock()
         .expect("native shortcut reconcile lock");
-    let settings = match read_settings() {
-        Ok(settings) => settings,
-        Err(err) => {
-            stop_native_shortcuts();
-            update_native_status(|status| {
-                status.backend = ShortcutBackendName::Unsupported;
-                status.healthy = false;
-                status.global_shortcuts_absent = false;
-                status.error = Some(format!("cannot read shortcut settings: {err}"));
-                status.effective_toggle = None;
-                status.effective_hold = None;
-            });
-            reconcile_evdev_fallback(NativeHoldState::Failed);
-            return;
-        }
-    };
-    let toggle = settings.toggle_shortcut.effective;
-    let hold = settings.hold_key.effective;
-
     let old = {
         let mut guard = NATIVE_SHORTCUT.lock().expect("native shortcut lock");
-        if guard.as_ref().is_some_and(|running| {
-            running.toggle == toggle && running.hold == hold && !running.thread.is_finished()
-        }) {
+        if !force
+            && guard
+                .as_ref()
+                .is_some_and(|running| !running.thread.is_finished())
+        {
             return;
         }
         guard.take()
     };
     stop_native_handle(old);
-    reconcile_evdev_fallback(NativeHoldState::Probing);
 
     let session = echo::hotkey::DesktopSession::from_xdg_session_type(
         env::var("XDG_SESSION_TYPE").ok().as_deref(),
     );
-    update_native_status(|status| {
-        status.backend = match session {
-            echo::hotkey::DesktopSession::X11 => ShortcutBackendName::X11,
-            _ => ShortcutBackendName::Unsupported,
-        };
-        status.healthy = false;
-        status.global_shortcuts_absent = false;
-        status.error = Some(match session {
-            echo::hotkey::DesktopSession::Wayland => {
-                "probing org.freedesktop.portal.GlobalShortcuts".to_string()
-            }
-            echo::hotkey::DesktopSession::X11 => "registering X11 shortcuts".to_string(),
-            echo::hotkey::DesktopSession::Unknown => {
-                "unknown or headless desktop session".to_string()
-            }
-        });
-        status.requested_toggle.clone_from(&toggle);
-        status.requested_hold.clone_from(&hold);
-        status.effective_toggle = None;
-        status.effective_hold = None;
-    });
+    set_native_shortcut_state(NativeShortcutState::Probing);
 
     if session == echo::hotkey::DesktopSession::Unknown {
-        reconcile_evdev_fallback(NativeHoldState::Failed);
+        set_native_shortcut_state(NativeShortcutState::Unsupported {
+            detail: "unknown or headless desktop session".to_string(),
+        });
         return;
     }
 
     let cancel = echo::audio::CancellationToken::new();
     let thread_cancel = cancel.clone();
-    let thread_toggle = toggle.clone();
-    let thread_hold = hold.clone();
     let spawned = std::thread::Builder::new()
         .name(
             match session {
@@ -2027,11 +1801,9 @@ fn reconcile_native_shortcuts_with_recovery(recovering: bool) {
             let active = AtomicBool::new(false);
             let result = panic::catch_unwind(AssertUnwindSafe(|| match session {
                 echo::hotkey::DesktopSession::Wayland => {
-                    run_portal_shortcuts(&thread_toggle, &thread_hold, &thread_cancel, &active)
+                    run_portal_shortcuts(&thread_cancel, &active)
                 }
-                echo::hotkey::DesktopSession::X11 => {
-                    run_x11_shortcuts(&thread_toggle, &thread_hold, &thread_cancel, &active)
-                }
+                echo::hotkey::DesktopSession::X11 => run_x11_shortcuts(&thread_cancel, &active),
                 echo::hotkey::DesktopSession::Unknown => Ok(()),
             }));
             let failure = match result {
@@ -2050,7 +1822,7 @@ fn reconcile_native_shortcuts_with_recovery(recovering: bool) {
                     if let Err(err) = schedule_native_retry(
                         thread_cancel,
                         Duration::from_secs(1),
-                        retry_native_shortcuts,
+                        retry_native_shortcuts_after_failure,
                     ) {
                         eprintln!("native shortcuts: {err}");
                     }
@@ -2061,7 +1833,7 @@ fn reconcile_native_shortcuts_with_recovery(recovering: bool) {
                 if let Err(err) = schedule_native_retry(
                     thread_cancel,
                     Duration::from_secs(1),
-                    retry_native_shortcuts,
+                    retry_native_shortcuts_after_failure,
                 ) {
                     eprintln!("native shortcuts: {err}");
                 }
@@ -2069,12 +1841,8 @@ fn reconcile_native_shortcuts_with_recovery(recovering: bool) {
         });
     match spawned {
         Ok(thread) => {
-            *NATIVE_SHORTCUT.lock().expect("native shortcut lock") = Some(NativeShortcutHandle {
-                toggle,
-                hold,
-                cancel,
-                thread,
-            });
+            *NATIVE_SHORTCUT.lock().expect("native shortcut lock") =
+                Some(NativeShortcutHandle { cancel, thread });
         }
         Err(err) => mark_native_failure(format!("cannot spawn native shortcut listener: {err}")),
     }
@@ -2096,26 +1864,7 @@ fn stop_native_shortcuts() {
 
 fn mark_native_failure(error: String) {
     eprintln!("native shortcuts: {error}");
-    update_native_status(|status| {
-        status.healthy = false;
-        status.global_shortcuts_absent = false;
-        status.error = Some(error);
-        status.effective_toggle = None;
-        status.effective_hold = None;
-    });
-    reconcile_evdev_fallback(NativeHoldState::Failed);
-}
-
-fn mark_native_unsupported(error: String, global_shortcuts_absent: bool) {
-    update_native_status(|status| {
-        status.backend = ShortcutBackendName::Unsupported;
-        status.healthy = false;
-        status.global_shortcuts_absent = global_shortcuts_absent;
-        status.error = Some(error);
-        status.effective_toggle = None;
-        status.effective_hold = None;
-    });
-    reconcile_evdev_fallback(NativeHoldState::Failed);
+    set_native_shortcut_state(NativeShortcutState::Failed { detail: error });
 }
 
 fn schedule_native_retry(
@@ -2150,12 +1899,11 @@ fn dispatch_shortcut_edge(
     id: &str,
     edge: echo::hotkey::HotkeyEvent,
     toggle: &mut echo::hotkey::ToggleDriver,
-    hold: &mut Option<HeldRecording>,
 ) {
     #[cfg(test)]
     report_test_shortcut(TestShortcutAction::Edge(id.to_string(), edge));
     match id {
-        TOGGLE_SHORTCUT_ID if toggle.on_edge(edge) => match start_recording_thread() {
+        FixedShortcut::ID if toggle.on_edge(edge) => match start_recording_thread() {
             Ok(()) => {
                 if let Err(err) = echo::status::mark_shortcut_activation("native-toggle") {
                     eprintln!("toggle shortcut: cannot record provenance: {err}");
@@ -2165,76 +1913,30 @@ fn dispatch_shortcut_edge(
             }
             Err(err) => eprintln!("toggle shortcut: cannot change recording: {err}"),
         },
-        HOLD_SHORTCUT_ID => dispatch_hold_edge(edge, hold),
         _ => {}
-    }
-}
-
-fn dispatch_hold_edge(edge: echo::hotkey::HotkeyEvent, recording: &mut Option<HeldRecording>) {
-    match edge {
-        echo::hotkey::HotkeyEvent::Down if recording.is_none() => {
-            match echo::rec::start_managed_recording() {
-                Ok(Some(started)) => {
-                    *recording = Some(HeldRecording::Live {
-                        _recording: started,
-                    });
-                    #[cfg(test)]
-                    report_test_shortcut(TestShortcutAction::HoldStart);
-                }
-                Ok(None) => {}
-                Err(err) => eprintln!("push-to-talk: cannot start recording: {err}"),
-            }
-        }
-        echo::hotkey::HotkeyEvent::Up => {
-            stop_held_recording(recording);
-        }
-        _ => {}
-    }
-}
-
-fn stop_held_recording(recording: &mut Option<HeldRecording>) {
-    if recording.take().is_some() {
-        #[cfg(test)]
-        report_test_shortcut(TestShortcutAction::HoldStop);
     }
 }
 
 fn run_x11_shortcuts(
-    requested_toggle: &str,
-    requested_hold: &str,
     cancel: &echo::audio::CancellationToken,
     active: &AtomicBool,
 ) -> Result<(), String> {
     let mut toggle = echo::hotkey::ToggleDriver::new();
-    let mut hold = None;
-    let result = run_x11_event_loop(
-        requested_toggle,
-        requested_hold,
-        cancel,
-        active,
-        |id, edge| {
-            dispatch_shortcut_edge(id, edge, &mut toggle, &mut hold);
-        },
-    );
+    let result = run_x11_event_loop(cancel, active, |id, edge| {
+        dispatch_shortcut_edge(id, edge, &mut toggle);
+    });
     toggle.terminate();
-    stop_held_recording(&mut hold);
     result
 }
 
 fn run_x11_event_loop(
-    requested_toggle: &str,
-    requested_hold: &str,
     cancel: &echo::audio::CancellationToken,
     active: &AtomicBool,
     mut on_edge: impl FnMut(&'static str, echo::hotkey::HotkeyEvent),
 ) -> Result<(), String> {
     let decision = echo::hotkey::select_native_backend(echo::hotkey::DesktopSession::X11, None);
     debug_assert_eq!(decision.backend, echo::hotkey::NativeBackend::X11);
-    let toggle_key = x11_hotkey(requested_toggle)?;
-    let hold_key = x11_hotkey(requested_hold)?;
-    if toggle_key.id() == hold_key.id() {
-        return Err("toggle and push-to-talk shortcuts conflict".to_string());
-    }
+    let toggle_key = FixedShortcut::x11_hotkey();
 
     let manager = GlobalHotKeyManager::new()
         .map_err(|err| format!("cannot create X11 global-hotkey manager: {err}"))?;
@@ -2242,64 +1944,37 @@ fn run_x11_event_loop(
     manager
         .register(toggle_key)
         .map_err(|err| format!("X11 toggle shortcut conflict: {err}"))?;
-    let hold_registered = match manager.register(hold_key) {
-        Ok(()) => true,
-        Err(err) => {
-            eprintln!("native shortcuts: X11 push-to-talk shortcut conflict: {err}");
-            false
-        }
-    };
-    let registered = if hold_registered {
-        vec![toggle_key, hold_key]
-    } else {
-        vec![toggle_key]
-    };
-    update_native_status(|status| {
-        status.backend = ShortcutBackendName::X11;
-        status.healthy = true;
-        status.global_shortcuts_absent = false;
-        status.error = None;
-        status.effective_toggle = Some(requested_toggle.to_string());
-        status.effective_hold = hold_registered.then(|| requested_hold.to_string());
-    });
-    reconcile_evdev_fallback(if hold_registered {
-        NativeHoldState::Healthy
-    } else {
-        NativeHoldState::Failed
+    set_native_shortcut_state(NativeShortcutState::Active {
+        backend: ShortcutBackendName::X11,
+        effective: FixedShortcut::DISPLAY.to_string(),
     });
     active.store(true, Ordering::SeqCst);
 
     while !cancel.is_cancelled() {
         match GlobalHotKeyEvent::receiver().recv_timeout(Duration::from_millis(50)) {
             Ok(event) => {
-                let id = if event.id == toggle_key.id() {
-                    TOGGLE_SHORTCUT_ID
-                } else if hold_registered && event.id == hold_key.id() {
-                    HOLD_SHORTCUT_ID
-                } else {
+                if event.id != toggle_key.id() {
                     continue;
-                };
+                }
                 let edge = match event.state {
                     HotKeyState::Pressed => echo::hotkey::HotkeyEvent::Down,
                     HotKeyState::Released => echo::hotkey::HotkeyEvent::Up,
                 };
-                on_edge(id, edge);
+                on_edge(FixedShortcut::ID, edge);
             }
             Err(err) if err.is_timeout() => {}
             Err(err) => {
-                let _ = manager.unregister_all(&registered);
+                let _ = manager.unregister(toggle_key);
                 return Err(format!("X11 shortcut listener terminated: {err}"));
             }
         }
     }
     manager
-        .unregister_all(&registered)
-        .map_err(|err| format!("cannot unregister X11 shortcuts: {err}"))
+        .unregister(toggle_key)
+        .map_err(|err| format!("cannot unregister X11 shortcut: {err}"))
 }
 
 fn run_portal_shortcuts(
-    requested_toggle: &str,
-    requested_hold: &str,
     cancel: &echo::audio::CancellationToken,
     active: &AtomicBool,
 ) -> Result<(), String> {
@@ -2311,14 +1986,11 @@ fn run_portal_shortcuts(
         let connection = ashpd::zbus::Connection::session()
             .await
             .map_err(|err| format!("cannot connect to the session bus: {err}"))?;
-        run_portal_shortcuts_async(requested_toggle, requested_hold, cancel, active, connection)
-            .await
+        run_portal_shortcuts_async(cancel, active, connection).await
     })
 }
 
 async fn run_portal_shortcuts_async(
-    requested_toggle: &str,
-    requested_hold: &str,
     cancel: &echo::audio::CancellationToken,
     active: &AtomicBool,
     connection: ashpd::zbus::Connection,
@@ -2330,11 +2002,7 @@ async fn run_portal_shortcuts_async(
         if is_legacy_registry_absence(&err) {
             eprintln!("native shortcuts: host portal Registry is unavailable; probing legacy GlobalShortcuts support");
         } else {
-            mark_native_unsupported(
-                format!("portal host registry handshake failed: {err}"),
-                false,
-            );
-            return Ok(());
+            return Err(format!("portal host registry handshake failed: {err}"));
         }
     }
 
@@ -2344,11 +2012,12 @@ async fn run_portal_shortcuts_async(
     let portal = match GlobalShortcuts::with_connection(connection).await {
         Ok(portal) => portal,
         Err(err) => {
-            mark_native_unsupported(
-                format!("Wayland GlobalShortcuts interface is unavailable: {err}"),
-                is_global_shortcuts_absence(&err),
-            );
-            return Ok(());
+            let detail = format!("Wayland GlobalShortcuts interface is unavailable: {err}");
+            if is_global_shortcuts_absence(&err) {
+                set_native_shortcut_state(NativeShortcutState::PortalAbsent { detail });
+                return Ok(());
+            }
+            return Err(detail);
         }
     };
     let decision = echo::hotkey::select_native_backend(
@@ -2356,20 +2025,13 @@ async fn run_portal_shortcuts_async(
         Some(portal.version()),
     );
     if decision.backend != echo::hotkey::NativeBackend::Portal {
-        mark_native_unsupported(
-            decision
+        set_native_shortcut_state(NativeShortcutState::Unsupported {
+            detail: decision
                 .reason
                 .unwrap_or_else(|| "Wayland GlobalShortcuts interface is unavailable".to_string()),
-            false,
-        );
+        });
         return Ok(());
     }
-    update_native_status(|status| {
-        status.backend = ShortcutBackendName::Portal;
-        status.global_shortcuts_absent = false;
-        status.error = Some("registering portal shortcuts".to_string());
-    });
-
     let session = portal
         .create_session(CreateSessionOptions::default())
         .await
@@ -2423,19 +2085,9 @@ async fn run_portal_shortcuts_async(
         }
     });
 
-    let toggle_trigger = match portal_trigger(requested_toggle) {
-        Ok(trigger) => trigger,
-        Err(err) => return Err(close_portal_after_failure(&session, err).await),
-    };
-    let hold_trigger = match portal_trigger(requested_hold) {
-        Ok(trigger) => trigger,
-        Err(err) => return Err(close_portal_after_failure(&session, err).await),
-    };
     let shortcuts = [
-        NewShortcut::new(TOGGLE_SHORTCUT_ID, "Start or stop recording")
-            .preferred_trigger(toggle_trigger.as_str()),
-        NewShortcut::new(HOLD_SHORTCUT_ID, "Hold to record")
-            .preferred_trigger(hold_trigger.as_str()),
+        NewShortcut::new(FixedShortcut::ID, "Start or stop recording")
+            .preferred_trigger(FixedShortcut::PORTAL_TRIGGER),
     ];
     let request = tokio::select! {
         result = portal.bind_shortcuts(
@@ -2466,23 +2118,17 @@ async fn run_portal_shortcuts_async(
             .await)
         }
     };
-    let (effective_toggle, effective_hold) = match effective_portal_shortcuts(response.shortcuts())
-    {
+    let effective = match effective_portal_shortcut(response.shortcuts()) {
         Ok(effective) => effective,
         Err(err) => return Err(close_portal_after_failure(&session, err).await),
     };
-    update_native_status(|status| {
-        status.backend = ShortcutBackendName::Portal;
-        status.healthy = true;
-        status.global_shortcuts_absent = false;
-        status.error = None;
-        set_effective_shortcuts(status, effective_toggle, effective_hold);
+    set_native_shortcut_state(NativeShortcutState::Active {
+        backend: ShortcutBackendName::Portal,
+        effective,
     });
-    reconcile_evdev_fallback(NativeHoldState::Healthy);
     active.store(true, Ordering::SeqCst);
 
     let mut toggle = echo::hotkey::ToggleDriver::new();
-    let mut hold = None;
     let listener_error = loop {
         if cancel.is_cancelled() {
             break None;
@@ -2494,7 +2140,6 @@ async fn run_portal_shortcuts_async(
                         event.shortcut_id(),
                         echo::hotkey::HotkeyEvent::Down,
                         &mut toggle,
-                        &mut hold,
                     );
                 }
                 Some(_) => {}
@@ -2506,7 +2151,6 @@ async fn run_portal_shortcuts_async(
                         event.shortcut_id(),
                         echo::hotkey::HotkeyEvent::Up,
                         &mut toggle,
-                        &mut hold,
                     );
                 }
                 Some(_) => {}
@@ -2514,9 +2158,10 @@ async fn run_portal_shortcuts_async(
             },
             event = changed.next() => match event {
                 Some(event) if event.session_handle().as_str() == session_path => {
-                    match effective_portal_shortcuts(event.shortcuts()) {
-                        Ok((effective_toggle, effective_hold)) => update_native_status(|status| {
-                            set_effective_shortcuts(status, effective_toggle, effective_hold);
+                    match effective_portal_shortcut(event.shortcuts()) {
+                        Ok(effective) => set_native_shortcut_state(NativeShortcutState::Active {
+                            backend: ShortcutBackendName::Portal,
+                            effective,
                         }),
                         Err(err) => break Some(format!("invalid ShortcutsChanged signal: {err}")),
                     }
@@ -2532,7 +2177,6 @@ async fn run_portal_shortcuts_async(
         }
     };
     toggle.terminate();
-    stop_held_recording(&mut hold);
     let close_result = tokio::time::timeout(Duration::from_secs(2), session.close()).await;
     match close_result {
         Ok(Ok(())) => {}
@@ -2565,239 +2209,19 @@ where
     }
 }
 
-fn effective_portal_shortcuts(shortcuts: &[Shortcut]) -> Result<(String, String), String> {
-    let effective = |id: &str| {
-        shortcuts
-            .iter()
-            .find(|shortcut| shortcut.id() == id)
-            .map(Shortcut::trigger_description)
-            .filter(|trigger| !trigger.trim().is_empty())
-            .map(str::to_string)
-            .ok_or_else(|| format!("portal did not assign an effective trigger for {id}"))
-    };
-    Ok((effective(TOGGLE_SHORTCUT_ID)?, effective(HOLD_SHORTCUT_ID)?))
-}
-
-fn x11_hotkey(shortcut: &str) -> Result<HotKey, String> {
-    let canonical = echo_core::Config::canonical_shortcut(shortcut)
-        .map_err(|err| format!("cannot parse X11 shortcut {shortcut}: {err}"))?;
-    let parts = canonical.split('+').collect::<Vec<_>>();
-    let terminal = parts.last().copied().ok_or("shortcut has no key")?;
-    let mut modifiers = Modifiers::empty();
-    for modifier in parts.iter().take(parts.len().saturating_sub(1)) {
-        modifiers |= match *modifier {
-            "Super" => Modifiers::SUPER,
-            "Ctrl" => Modifiers::CONTROL,
-            "Alt" => Modifiers::ALT,
-            "Shift" => Modifiers::SHIFT,
-            other => return Err(format!("unsupported X11 modifier {other}")),
-        };
-    }
-    let key = shortcut_code(terminal)
-        .ok_or_else(|| format!("unsupported X11 shortcut key {terminal}"))?;
-    Ok(HotKey::new(Some(modifiers), key))
-}
-
-fn shortcut_code(name: &str) -> Option<Code> {
-    Some(match name {
-        "A" => Code::KeyA,
-        "B" => Code::KeyB,
-        "C" => Code::KeyC,
-        "D" => Code::KeyD,
-        "E" => Code::KeyE,
-        "F" => Code::KeyF,
-        "G" => Code::KeyG,
-        "H" => Code::KeyH,
-        "I" => Code::KeyI,
-        "J" => Code::KeyJ,
-        "K" => Code::KeyK,
-        "L" => Code::KeyL,
-        "M" => Code::KeyM,
-        "N" => Code::KeyN,
-        "O" => Code::KeyO,
-        "P" => Code::KeyP,
-        "Q" => Code::KeyQ,
-        "R" => Code::KeyR,
-        "S" => Code::KeyS,
-        "T" => Code::KeyT,
-        "U" => Code::KeyU,
-        "V" => Code::KeyV,
-        "W" => Code::KeyW,
-        "X" => Code::KeyX,
-        "Y" => Code::KeyY,
-        "Z" => Code::KeyZ,
-        "0" => Code::Digit0,
-        "1" => Code::Digit1,
-        "2" => Code::Digit2,
-        "3" => Code::Digit3,
-        "4" => Code::Digit4,
-        "5" => Code::Digit5,
-        "6" => Code::Digit6,
-        "7" => Code::Digit7,
-        "8" => Code::Digit8,
-        "9" => Code::Digit9,
-        "Space" => Code::Space,
-        "Enter" => Code::Enter,
-        "Tab" => Code::Tab,
-        "Backspace" => Code::Backspace,
-        "Delete" => Code::Delete,
-        "Insert" => Code::Insert,
-        "Home" => Code::Home,
-        "End" => Code::End,
-        "PageUp" => Code::PageUp,
-        "PageDown" => Code::PageDown,
-        "ArrowUp" => Code::ArrowUp,
-        "ArrowDown" => Code::ArrowDown,
-        "ArrowLeft" => Code::ArrowLeft,
-        "ArrowRight" => Code::ArrowRight,
-        "Escape" => Code::Escape,
-        "Minus" => Code::Minus,
-        "Equal" => Code::Equal,
-        "BracketLeft" => Code::BracketLeft,
-        "BracketRight" => Code::BracketRight,
-        "Backslash" => Code::Backslash,
-        "Semicolon" => Code::Semicolon,
-        "Quote" => Code::Quote,
-        "Backquote" => Code::Backquote,
-        "Comma" => Code::Comma,
-        "Period" => Code::Period,
-        "Slash" => Code::Slash,
-        "CapsLock" => Code::CapsLock,
-        "Menu" => Code::ContextMenu,
-        "F1" => Code::F1,
-        "F2" => Code::F2,
-        "F3" => Code::F3,
-        "F4" => Code::F4,
-        "F5" => Code::F5,
-        "F6" => Code::F6,
-        "F7" => Code::F7,
-        "F8" => Code::F8,
-        "F9" => Code::F9,
-        "F10" => Code::F10,
-        "F11" => Code::F11,
-        "F12" => Code::F12,
-        "Super" => Code::MetaLeft,
-        "RightSuper" => Code::MetaRight,
-        "LeftCtrl" => Code::ControlLeft,
-        "RightCtrl" => Code::ControlRight,
-        "Alt" => Code::AltLeft,
-        "RightAlt" => Code::AltRight,
-        "LeftShift" => Code::ShiftLeft,
-        "RightShift" => Code::ShiftRight,
-        _ => return None,
-    })
-}
-
-fn portal_trigger(shortcut: &str) -> Result<String, String> {
-    let canonical = echo_core::Config::canonical_shortcut(shortcut)
-        .map_err(|err| format!("cannot parse portal shortcut {shortcut}: {err}"))?;
-    let parts = canonical.split('+').collect::<Vec<_>>();
-    let terminal = parts.last().copied().ok_or("shortcut has no key")?;
-    let mut trigger = Vec::new();
-    for modifier in parts.iter().take(parts.len().saturating_sub(1)) {
-        trigger.push(match *modifier {
-            "Super" => "LOGO",
-            "Ctrl" => "CTRL",
-            "Alt" => "ALT",
-            "Shift" => "SHIFT",
-            other => return Err(format!("unsupported portal modifier {other}")),
-        });
-    }
-    trigger.push(
-        portal_key_name(terminal)
-            .ok_or_else(|| format!("unsupported portal shortcut key {terminal}"))?,
-    );
-    Ok(trigger.join("+"))
-}
-
-fn portal_key_name(name: &str) -> Option<&'static str> {
-    Some(match name {
-        "A" => "a",
-        "B" => "b",
-        "C" => "c",
-        "D" => "d",
-        "E" => "e",
-        "F" => "f",
-        "G" => "g",
-        "H" => "h",
-        "I" => "i",
-        "J" => "j",
-        "K" => "k",
-        "L" => "l",
-        "M" => "m",
-        "N" => "n",
-        "O" => "o",
-        "P" => "p",
-        "Q" => "q",
-        "R" => "r",
-        "S" => "s",
-        "T" => "t",
-        "U" => "u",
-        "V" => "v",
-        "W" => "w",
-        "X" => "x",
-        "Y" => "y",
-        "Z" => "z",
-        "0" => "0",
-        "1" => "1",
-        "2" => "2",
-        "3" => "3",
-        "4" => "4",
-        "5" => "5",
-        "6" => "6",
-        "7" => "7",
-        "8" => "8",
-        "9" => "9",
-        "Space" => "space",
-        "Enter" => "Return",
-        "Tab" => "Tab",
-        "Backspace" => "BackSpace",
-        "Delete" => "Delete",
-        "Insert" => "Insert",
-        "Home" => "Home",
-        "End" => "End",
-        "PageUp" => "Page_Up",
-        "PageDown" => "Page_Down",
-        "ArrowUp" => "Up",
-        "ArrowDown" => "Down",
-        "ArrowLeft" => "Left",
-        "ArrowRight" => "Right",
-        "Escape" => "Escape",
-        "Minus" => "minus",
-        "Equal" => "equal",
-        "BracketLeft" => "bracketleft",
-        "BracketRight" => "bracketright",
-        "Backslash" => "backslash",
-        "Semicolon" => "semicolon",
-        "Quote" => "apostrophe",
-        "Backquote" => "grave",
-        "Comma" => "comma",
-        "Period" => "period",
-        "Slash" => "slash",
-        "CapsLock" => "Caps_Lock",
-        "Menu" => "Menu",
-        "F1" => "F1",
-        "F2" => "F2",
-        "F3" => "F3",
-        "F4" => "F4",
-        "F5" => "F5",
-        "F6" => "F6",
-        "F7" => "F7",
-        "F8" => "F8",
-        "F9" => "F9",
-        "F10" => "F10",
-        "F11" => "F11",
-        "F12" => "F12",
-        "Super" => "Super_L",
-        "RightSuper" => "Super_R",
-        "LeftCtrl" => "Control_L",
-        "RightCtrl" => "Control_R",
-        "Alt" => "Alt_L",
-        "RightAlt" => "Alt_R",
-        "LeftShift" => "Shift_L",
-        "RightShift" => "Shift_R",
-        _ => return None,
-    })
+fn effective_portal_shortcut(shortcuts: &[Shortcut]) -> Result<String, String> {
+    shortcuts
+        .iter()
+        .find(|shortcut| shortcut.id() == FixedShortcut::ID)
+        .map(Shortcut::trigger_description)
+        .filter(|trigger| !trigger.trim().is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            format!(
+                "portal did not assign an effective trigger for {}",
+                FixedShortcut::ID
+            )
+        })
 }
 
 fn show_main_window(app: &tauri::AppHandle) {
@@ -2816,8 +2240,7 @@ fn main() {
     run_desktop();
 }
 
-/// Compositor shortcuts and hold-to-talk run these subcommands without
-/// starting the webview.
+/// Compositor shortcuts run these subcommands without starting the webview.
 fn try_cli(args: &[String]) -> Option<i32> {
     match args.first().map(String::as_str) {
         None => None,
@@ -2852,9 +2275,8 @@ fn rec(args: &[String]) -> i32 {
     match args {
         [arg] if arg == "--once" => echo::rec::run_rec_once(),
         [arg] if arg == "--toggle" => echo::rec::run_rec_toggle(),
-        [arg] if arg == "--hold" => echo::rec::run_rec_hold(),
         _ => {
-            eprintln!("usage: echo-desktop rec --once|--toggle|--hold");
+            eprintln!("usage: echo-desktop rec --once|--toggle");
             2
         }
     }
@@ -2864,7 +2286,6 @@ fn print_cli_usage() {
     eprintln!("usage: echo-desktop");
     eprintln!("       echo-desktop rec --once");
     eprintln!("       echo-desktop rec --toggle");
-    eprintln!("       echo-desktop rec --hold");
     eprintln!("       echo-desktop --hud-demo");
     eprintln!("       echo-desktop --version");
 }
@@ -2963,6 +2384,8 @@ fn run_desktop() {
         })
         .invoke_handler(tauri::generate_handler![
             get_app_status,
+            get_shortcut_status,
+            retry_shortcut,
             repair_legacy_shortcut,
             get_history,
             get_dictionary,
@@ -2984,7 +2407,6 @@ fn run_desktop() {
         ])
         .run(context);
     stop_native_shortcuts();
-    stop_evdev_listener();
     result.expect("error while running Echo");
 }
 
@@ -3041,14 +2463,9 @@ mod settings_tests {
 
     #[test]
     fn gnome_accelerators_and_commands_are_stable() {
-        assert_eq!(
-            gnome_accelerator("alt+super+space").unwrap(),
-            "<Super><Alt>space"
-        );
-        assert_eq!(
-            gnome_accelerator("Ctrl+Shift+F9").unwrap(),
-            "<Ctrl><Shift>F9"
-        );
+        assert_eq!(FixedShortcut::DISPLAY, "Super+Alt+Space");
+        assert_eq!(FixedShortcut::GNOME_ACCELERATOR, "<Super><Alt>space");
+        assert_eq!(FixedShortcut::PORTAL_TRIGGER, "LOGO+ALT+space");
         assert_eq!(
             absolute_toggle_command("/usr/bin/echo-desktop").unwrap(),
             "/usr/bin/echo-desktop rec --toggle"
@@ -3125,6 +2542,10 @@ mod settings_tests {
         assert!(gnome_accelerators_match(
             "<mod4><alt>Return",
             "<Super><Alt>enter"
+        ));
+        assert!(gnome_accelerators_match(
+            "<Alt><Super>space",
+            FixedShortcut::GNOME_ACCELERATOR
         ));
         assert!(!gnome_accelerators_match(
             "<Super><Alt>space",
@@ -3343,17 +2764,14 @@ mod settings_tests {
         assert!(desktop.to_ascii_lowercase().contains("gnome"));
         let command = "/usr/bin/echo-desktop rec --toggle";
         assert!(std::path::Path::new("/usr/bin/echo-desktop").is_file());
-        let binding = gnome_accelerator(DEFAULT_TOGGLE_SHORTCUT).unwrap();
-        update_native_status(|status| *status = NativeShortcutStatus::default());
+        let binding = FixedShortcut::GNOME_ACCELERATOR.to_string();
+        set_native_shortcut_state(NativeShortcutState::Probing);
         let active = AtomicBool::new(false);
-        run_portal_shortcuts(
-            DEFAULT_TOGGLE_SHORTCUT,
-            "RightCtrl",
-            &echo::audio::CancellationToken::new(),
-            &active,
-        )
-        .unwrap();
-        assert!(native_shortcut_status().global_shortcuts_absent);
+        run_portal_shortcuts(&echo::audio::CancellationToken::new(), &active).unwrap();
+        assert!(matches!(
+            native_shortcut_state(),
+            NativeShortcutState::PortalAbsent { .. }
+        ));
 
         let before = read_gnome_shortcuts().unwrap();
         let occupied = before
@@ -3406,15 +2824,15 @@ mod settings_tests {
         let stale = invoke_test_command(&webview, "get_app_status");
         eprintln!(
             "observed GNOME Echo shortcut state: {}",
-            stale["legacyShortcut"]["state"]
+            stale["shortcut"]["setup"]["state"]
         );
-        assert_eq!(stale["legacyShortcut"]["state"], "stale");
+        assert_eq!(stale["shortcut"]["setup"]["state"], "stale");
 
         let repaired = invoke_test_command(&webview, "repair_legacy_shortcut");
         assert_eq!(repaired["state"], "ready");
         let ready = invoke_test_command(&webview, "get_app_status");
-        assert_eq!(ready["legacyShortcut"]["state"], "ready");
-        assert_eq!(ready["shortcut"], DEFAULT_TOGGLE_SHORTCUT);
+        assert_eq!(ready["shortcut"]["kind"], "gnome-ready");
+        assert_eq!(ready["shortcut"]["effective"], FixedShortcut::DISPLAY);
         assert_eq!(
             invoke_test_command(&webview, "repair_legacy_shortcut")["state"],
             "ready"
@@ -3432,80 +2850,6 @@ mod settings_tests {
             .cloned()
             .collect::<Vec<_>>();
         assert_eq!(unrelated_after, unrelated_before);
-    }
-
-    #[test]
-    #[ignore = "requires the current GNOME host without readable raw keyboard input"]
-    fn denied_evdev_host_status_keeps_the_gnome_toggle_ready() {
-        assert_eq!(
-            echo::hotkey::DesktopSession::from_xdg_session_type(
-                env::var("XDG_SESSION_TYPE").ok().as_deref()
-            ),
-            echo::hotkey::DesktopSession::Wayland
-        );
-        assert!(env::var("XDG_CURRENT_DESKTOP")
-            .unwrap_or_default()
-            .to_ascii_lowercase()
-            .contains("gnome"));
-        let hold = echo::hotkey::parse_hold_key("RightCtrl").unwrap();
-        assert!(!matches!(
-            echo::hotkey::probe_hold_devices(hold.code),
-            echo::hotkey::EvdevAvailability::Ready(_)
-        ));
-
-        update_native_status(|status| {
-            *status = NativeShortcutStatus::default();
-            status.backend = ShortcutBackendName::Unsupported;
-            status.error = Some(
-                "Wayland session has no org.freedesktop.portal.GlobalShortcuts interface"
-                    .to_string(),
-            );
-            status.global_shortcuts_absent = true;
-        });
-        *HEALTH.lock().expect("health cache lock") = Some((
-            Instant::now(),
-            Health {
-                microphone_ready: false,
-                engine_name: String::new(),
-                engine_ready: false,
-                injection_name: String::new(),
-                injection_ready: false,
-                current_exe: "/usr/bin/echo-desktop".to_string(),
-                first_path_hit: None,
-                stale_installs: Vec::new(),
-            },
-        ));
-        reconcile_evdev_fallback(NativeHoldState::Failed);
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while matches!(evdev_listener_state(), EvdevListenerState::Probing)
-            && Instant::now() < deadline
-        {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(matches!(
-            evdev_listener_state(),
-            EvdevListenerState::NeedsPermission(_) | EvdevListenerState::Unavailable(_)
-        ));
-
-        let app = tauri::test::mock_builder()
-            .invoke_handler(tauri::generate_handler![get_app_status])
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .unwrap();
-        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
-            .build()
-            .unwrap();
-        let status = invoke_test_command(&webview, "get_app_status");
-        assert!(matches!(
-            status["holdListener"].as_str(),
-            Some("needs-permission" | "unavailable")
-        ));
-        assert_eq!(status["legacyShortcut"]["state"], "ready");
-        assert_eq!(status["shortcut"], DEFAULT_TOGGLE_SHORTCUT);
-        let serialized = status.to_string().to_ascii_lowercase();
-        assert!(!serialized.contains("sudo"));
-        assert!(!serialized.contains("usermod"));
-        assert!(!serialized.contains("input group"));
-        stop_evdev_listener();
     }
 
     #[test]
@@ -3548,16 +2892,6 @@ mod settings_tests {
                 effective: true,
                 source: SettingSource::Default,
             },
-            toggle_shortcut: SettingField {
-                value: Some("Ctrl+Alt+T".into()),
-                effective: DEFAULT_TOGGLE_SHORTCUT.into(),
-                source: SettingSource::Default,
-            },
-            hold_key: SettingField {
-                value: Some("RightShift".into()),
-                effective: "RightCtrl".into(),
-                source: SettingSource::Default,
-            },
             record_seconds: SettingField {
                 value: Some(8),
                 effective: 3,
@@ -3589,9 +2923,6 @@ mod settings_tests {
         assert_eq!(got.cleanup.effective, "off");
         assert_eq!(got.hud.value, Some(false));
         assert!(!got.hud.effective);
-        assert_eq!(got.toggle_shortcut.value.as_deref(), Some("Ctrl+Alt+T"));
-        assert_eq!(got.toggle_shortcut.effective, "Ctrl+Alt+T");
-        assert_eq!(got.hold_key.value.as_deref(), Some("RightShift"));
         assert_eq!(got.record_seconds.value, Some(8));
         assert_eq!(got.record_seconds.effective, 8);
         assert_eq!(got.record_seconds.source, SettingSource::File);
@@ -3713,167 +3044,68 @@ mod settings_tests {
     }
 
     #[test]
-    fn shortcut_projection_uses_env_file_default_precedence() {
-        let env = SettingsEnv {
-            toggle_shortcut: Some("alt+space+meta".into()),
-            hold_key: Some("control+a".into()),
-            ..SettingsEnv::default()
-        };
-        let file = Config {
-            toggle_shortcut: Some("Ctrl+T".into()),
-            hold_key: Some("RightCtrl".into()),
-            ..Config::default()
-        };
-        let settings = settings_from(&env, &file, "en").unwrap();
-        assert_eq!(settings.toggle_shortcut.effective, "Super+Alt+Space");
-        assert_eq!(settings.toggle_shortcut.value.as_deref(), Some("Ctrl+T"));
-        assert_eq!(settings.toggle_shortcut.source, SettingSource::Env);
-        assert_eq!(settings.hold_key.effective, "Ctrl+A");
-        assert_eq!(settings.hold_key.value.as_deref(), Some("RightCtrl"));
-        assert_eq!(settings.hold_key.source, SettingSource::Env);
-
-        let defaults = settings_from(&SettingsEnv::default(), &Config::default(), "en").unwrap();
-        assert_eq!(defaults.toggle_shortcut.effective, DEFAULT_TOGGLE_SHORTCUT);
-        assert_eq!(defaults.hold_key.effective, "RightCtrl");
-    }
-
-    #[test]
-    fn invalid_shortcuts_are_rejected_before_config_save() {
-        let mut settings =
-            settings_from(&SettingsEnv::default(), &Config::default(), "en").unwrap();
-        settings.toggle_shortcut.value = Some("F8".into());
-        assert!(config_from_values(&settings).is_err());
-        settings.toggle_shortcut.value = Some("Ctrl+Ctrl+T".into());
-        assert!(config_from_values(&settings).is_err());
-        settings.toggle_shortcut.value = None;
-        settings.hold_key.value = Some(String::new());
-        assert!(config_from_values(&settings).is_err());
-    }
-
-    #[test]
-    fn invalid_shortcut_sources_fail_settings_projection() {
-        let env = SettingsEnv {
-            toggle_shortcut: Some(String::new()),
-            ..SettingsEnv::default()
-        };
-        assert!(settings_from(&env, &Config::default(), "en").is_err());
-
-        let file = Config {
-            hold_key: Some("Ctrl+Ctrl+A".into()),
-            ..Config::default()
-        };
-        assert!(settings_from(&SettingsEnv::default(), &file, "en").is_err());
-    }
-
-    #[test]
-    fn native_adapters_parse_canonical_chords_and_single_right_ctrl() {
-        let toggle = x11_hotkey("alt+space+meta").unwrap();
-        assert_eq!(toggle.key, Code::Space);
-        assert!(toggle.mods.contains(Modifiers::SUPER));
-        assert!(toggle.mods.contains(Modifiers::ALT));
-
-        let hold = x11_hotkey("RightCtrl").unwrap();
-        assert_eq!(hold.key, Code::ControlRight);
-        assert!(hold.mods.is_empty());
-        assert_eq!(portal_trigger("Super+Alt+Space").unwrap(), "LOGO+ALT+space");
-        assert_eq!(portal_trigger("RightCtrl").unwrap(), "Control_R");
-        assert!(x11_hotkey("Ctrl+Ctrl+A").is_err());
-    }
-
-    #[test]
-    fn fake_reconcile_is_idempotent_and_tears_down_before_registering() {
+    fn fixed_reconcile_is_idempotent() {
         #[derive(Default)]
         struct FakeAdapter {
-            running: Option<(String, String)>,
+            running: bool,
             calls: Vec<&'static str>,
         }
 
-        fn reconcile(adapter: &mut FakeAdapter, toggle: &str, hold: &str) {
-            let desired = (toggle.to_string(), hold.to_string());
-            if adapter.running.as_ref() == Some(&desired) {
+        fn reconcile(adapter: &mut FakeAdapter) {
+            if adapter.running {
                 return;
             }
-            if adapter.running.take().is_some() {
-                adapter.calls.push("unregister");
-            }
             adapter.calls.push("register");
-            adapter.running = Some(desired);
+            adapter.running = true;
         }
 
         let mut adapter = FakeAdapter::default();
-        reconcile(&mut adapter, "Ctrl+T", "RightCtrl");
-        reconcile(&mut adapter, "Ctrl+T", "RightCtrl");
+        reconcile(&mut adapter);
+        reconcile(&mut adapter);
         assert_eq!(adapter.calls, ["register"]);
-        reconcile(&mut adapter, "Ctrl+Shift+T", "RightCtrl");
-        assert_eq!(adapter.calls, ["register", "unregister", "register"]);
     }
 
     #[test]
-    fn effective_trigger_change_never_mutates_requested_settings() {
-        let mut status = NativeShortcutStatus {
-            requested_toggle: "Super+Alt+Space".to_string(),
-            requested_hold: "RightCtrl".to_string(),
-            ..NativeShortcutStatus::default()
+    fn portal_effective_trigger_is_distinct_from_fixed_policy() {
+        let state = NativeShortcutState::Active {
+            backend: ShortcutBackendName::Portal,
+            effective: "Alt+F8".to_string(),
         };
-        set_effective_shortcuts(
-            &mut status,
-            "Ctrl+Alt+T".to_string(),
-            "Ctrl+Space".to_string(),
-        );
-        assert_eq!(status.requested_toggle, "Super+Alt+Space");
-        assert_eq!(status.requested_hold, "RightCtrl");
-        assert_eq!(status.effective_toggle.as_deref(), Some("Ctrl+Alt+T"));
-        assert_eq!(status.effective_hold.as_deref(), Some("Ctrl+Space"));
+        let projected = project_shortcut_status(&state, "/usr/bin/echo-desktop");
+        let serialized = serde_json::to_value(&projected).unwrap();
+        assert_eq!(serialized["verificationIdentity"], "portal:Alt+F8");
+        assert!(serialized.get("verification_identity").is_none());
+        assert!(matches!(
+            projected,
+            ShortcutStatus::Active {
+                desired,
+                effective,
+                verification_identity,
+                ..
+            } if desired == FixedShortcut::DISPLAY
+                && effective == "Alt+F8"
+                && verification_identity == "portal:Alt+F8"
+        ));
     }
 
     #[test]
-    fn ready_legacy_shortcut_projects_the_requested_toggle() {
-        let native = NativeShortcutStatus {
-            requested_toggle: "Super+Alt+Space".to_string(),
-            ..NativeShortcutStatus::default()
-        };
-        let ready = LegacyShortcutSetup {
-            state: LegacyShortcutState::Ready,
-            detail: String::new(),
-            command: "/usr/bin/echo-desktop rec --toggle".to_string(),
-            binding: "<Super><Alt>space".to_string(),
-        };
-        assert_eq!(
-            projected_toggle_shortcut(&native, Some(&ready)),
-            "Super+Alt+Space"
-        );
-        assert_eq!(
-            projected_toggle_shortcut(&native, None),
-            "Unavailable (Super+Alt+Space)"
-        );
-    }
-
-    #[test]
-    fn fallback_plan_stops_for_native_and_supervises_failed_native_hold() {
-        for native in [NativeHoldState::Probing, NativeHoldState::Healthy] {
-            assert_eq!(
-                evdev_fallback_plan(native),
-                EvdevFallbackPlan::StopForNative
-            );
-        }
-        assert_eq!(
-            evdev_fallback_plan(NativeHoldState::Failed),
-            EvdevFallbackPlan::Start
-        );
-        assert_eq!(EvdevListenerState::Active.projection(), "active");
-        assert_eq!(EvdevListenerState::StoppedForNative.projection(), "native");
-        assert_eq!(EvdevListenerState::Probing.projection(), "unavailable");
-        assert_eq!(
-            EvdevListenerState::NeedsPermission("denied".to_string()).projection(),
-            "needs-permission"
-        );
-        let unavailable = EvdevListenerState::Unavailable("no keyboard".to_string());
-        assert_eq!(unavailable.projection(), "unavailable");
-        assert_eq!(unavailable.error(), Some("no keyboard"));
+    fn fixed_native_policy_has_one_backend_value_per_surface() {
+        let hotkey = FixedShortcut::x11_hotkey();
+        assert_eq!(hotkey.key, Code::Space);
+        assert!(hotkey.mods.contains(Modifiers::SUPER));
+        assert!(hotkey.mods.contains(Modifiers::ALT));
+        assert_eq!(FixedShortcut::PORTAL_TRIGGER, "LOGO+ALT+space");
     }
 
     #[test]
     fn native_retry_runs_after_delay_unless_cancelled() {
+        assert!(!shortcut_retry_needed(&NativeShortcutState::Active {
+            backend: ShortcutBackendName::X11,
+            effective: FixedShortcut::DISPLAY.to_string(),
+        }));
+        assert!(shortcut_retry_needed(&NativeShortcutState::Failed {
+            detail: "listener stopped".to_string(),
+        }));
         assert!(!should_retry_native_listener(false, false, false));
         assert!(should_retry_native_listener(true, false, false));
         assert!(should_retry_native_listener(false, true, false));
@@ -3915,57 +3147,59 @@ mod settings_tests {
         assert!(is_global_shortcuts_absence(&shortcuts_missing));
         assert!(!is_global_shortcuts_absence(&ashpd::Error::InvalidAppID));
 
-        let unavailable = NativeShortcutStatus::default();
-        assert!(legacy_shortcut_setup(&unavailable, "/usr/bin/echo-desktop").is_none());
+        let unavailable = NativeShortcutState::Failed {
+            detail: "registration failed".to_string(),
+        };
+        assert!(!needs_legacy_setup(
+            &unavailable,
+            echo::hotkey::DesktopSession::Wayland
+        ));
+        let absent = NativeShortcutState::PortalAbsent {
+            detail: "portal absent".to_string(),
+        };
+        assert!(needs_legacy_setup(
+            &absent,
+            echo::hotkey::DesktopSession::Wayland
+        ));
+        assert!(!needs_legacy_setup(
+            &absent,
+            echo::hotkey::DesktopSession::X11
+        ));
     }
 
     #[test]
     #[ignore = "needs an isolated X11 display"]
-    fn x11_runtime_keeps_toggle_when_hold_conflicts_and_releases_grabs() {
-        let toggle = "Ctrl+Alt+F12";
-        let hold = "Ctrl+Alt+F11";
-        let hold_owner = GlobalHotKeyManager::new().unwrap();
-        let held = x11_hotkey(hold).unwrap();
-        hold_owner.register(held).unwrap();
-        update_native_status(|status| *status = NativeShortcutStatus::default());
+    fn x11_runtime_registers_and_releases_the_fixed_grab() {
+        set_native_shortcut_state(NativeShortcutState::Probing);
         let cancel = echo::audio::CancellationToken::new();
         let listener_cancel = cancel.clone();
         let active = Arc::new(AtomicBool::new(false));
         let listener_active = active.clone();
-        let listener = std::thread::spawn(move || {
-            run_x11_shortcuts(toggle, hold, &listener_cancel, &listener_active)
-        });
+        let listener =
+            std::thread::spawn(move || run_x11_shortcuts(&listener_cancel, &listener_active));
 
         let deadline = Instant::now() + Duration::from_secs(3);
-        while !native_shortcut_status().healthy && Instant::now() < deadline {
+        while !matches!(native_shortcut_state(), NativeShortcutState::Active { .. })
+            && Instant::now() < deadline
+        {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(
-            native_shortcut_status().healthy,
+            matches!(native_shortcut_state(), NativeShortcutState::Active { .. }),
             "X11 listener did not become healthy"
         );
-        assert_eq!(
-            native_shortcut_status().effective_toggle.as_deref(),
-            Some(toggle)
-        );
-        assert_eq!(native_shortcut_status().effective_hold, None);
         assert!(active.load(Ordering::SeqCst));
-        assert!(!matches!(
-            evdev_listener_state(),
-            EvdevListenerState::StoppedForNative
-        ));
 
         let competing = GlobalHotKeyManager::new().unwrap();
         assert!(
-            competing.register(x11_hotkey(toggle).unwrap()).is_err(),
+            competing.register(FixedShortcut::x11_hotkey()).is_err(),
             "a competing X11 grab should be rejected"
         );
 
         cancel.cancel();
         listener.join().unwrap().unwrap();
-        stop_evdev_listener();
         let after = GlobalHotKeyManager::new().unwrap();
-        let released = x11_hotkey(toggle).unwrap();
+        let released = FixedShortcut::x11_hotkey();
         let deadline = Instant::now() + Duration::from_secs(1);
         while let Err(err) = after.register(released) {
             assert!(
@@ -3975,11 +3209,6 @@ mod settings_tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         after.unregister(released).unwrap();
-        assert!(
-            after.register(held).is_err(),
-            "the competing hold grab was lost"
-        );
-        hold_owner.unregister(held).unwrap();
     }
 
     #[test]
@@ -4024,7 +3253,7 @@ mod settings_tests {
             .expect("read focused window");
         assert_eq!(String::from_utf8(focused.stdout).unwrap().trim(), window);
 
-        update_native_status(|status| status.healthy = false);
+        set_native_shortcut_state(NativeShortcutState::Probing);
         let cancel = echo::audio::CancellationToken::new();
         let listener_cancel = cancel.clone();
         let (actions, received) = std::sync::mpsc::channel();
@@ -4033,13 +3262,18 @@ mod settings_tests {
             .expect("test shortcut observer lock") = Some(actions);
         let listener = std::thread::spawn(move || {
             let active = AtomicBool::new(false);
-            run_x11_shortcuts("Ctrl+Shift+9", "Ctrl+Shift+8", &listener_cancel, &active)
+            run_x11_shortcuts(&listener_cancel, &active)
         });
         let deadline = Instant::now() + Duration::from_secs(3);
-        while !native_shortcut_status().healthy && Instant::now() < deadline {
+        while !matches!(native_shortcut_state(), NativeShortcutState::Active { .. })
+            && Instant::now() < deadline
+        {
             std::thread::sleep(Duration::from_millis(20));
         }
-        assert!(native_shortcut_status().healthy, "X11 listener not ready");
+        assert!(
+            matches!(native_shortcut_state(), NativeShortcutState::Active { .. }),
+            "X11 listener not ready"
+        );
 
         let send_shortcut = |shortcut: &str| {
             assert!(std::process::Command::new("ydotool")
@@ -4055,47 +3289,27 @@ mod settings_tests {
             assert_eq!(event, expected);
         };
 
-        send_shortcut("ctrl+shift+9");
+        send_shortcut("super+alt+space");
         for expected in [
             TestShortcutAction::Edge(
-                TOGGLE_SHORTCUT_ID.to_string(),
+                FixedShortcut::ID.to_string(),
                 echo::hotkey::HotkeyEvent::Down,
             ),
             TestShortcutAction::Toggle,
-            TestShortcutAction::Edge(
-                TOGGLE_SHORTCUT_ID.to_string(),
-                echo::hotkey::HotkeyEvent::Up,
-            ),
+            TestShortcutAction::Edge(FixedShortcut::ID.to_string(), echo::hotkey::HotkeyEvent::Up),
         ] {
             receive_expected(expected);
         }
         recording_env.assert_active();
 
-        send_shortcut("ctrl+shift+9");
+        send_shortcut("super+alt+space");
         for expected in [
             TestShortcutAction::Edge(
-                TOGGLE_SHORTCUT_ID.to_string(),
+                FixedShortcut::ID.to_string(),
                 echo::hotkey::HotkeyEvent::Down,
             ),
             TestShortcutAction::Toggle,
-            TestShortcutAction::Edge(
-                TOGGLE_SHORTCUT_ID.to_string(),
-                echo::hotkey::HotkeyEvent::Up,
-            ),
-        ] {
-            receive_expected(expected);
-        }
-        recording_env.wait_until_inactive();
-
-        send_shortcut("ctrl+shift+8");
-        for expected in [
-            TestShortcutAction::Edge(
-                HOLD_SHORTCUT_ID.to_string(),
-                echo::hotkey::HotkeyEvent::Down,
-            ),
-            TestShortcutAction::HoldStart,
-            TestShortcutAction::Edge(HOLD_SHORTCUT_ID.to_string(), echo::hotkey::HotkeyEvent::Up),
-            TestShortcutAction::HoldStop,
+            TestShortcutAction::Edge(FixedShortcut::ID.to_string(), echo::hotkey::HotkeyEvent::Up),
         ] {
             receive_expected(expected);
         }
