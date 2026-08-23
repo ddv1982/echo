@@ -376,26 +376,41 @@ fn linux_host_priority(name: &str) -> usize {
     }
 }
 
-fn preferred_host() -> cpal::Host {
+#[cfg(any(target_os = "linux", test))]
+fn first_usable_or_first<T>(
+    candidates: impl IntoIterator<Item = T>,
+    mut is_usable: impl FnMut(&T) -> bool,
+) -> Option<T> {
+    let mut candidates = candidates.into_iter();
+    let first = candidates.next()?;
+    if is_usable(&first) {
+        return Some(first);
+    }
+    candidates.find(|candidate| is_usable(candidate)).or(Some(first))
+}
+
+fn preferred_discovery() -> InputDiscovery {
     #[cfg(target_os = "linux")]
     {
         let mut available = cpal::available_hosts();
         available.sort_by_key(|host| linux_host_priority(host.name()));
-        for host_id in available {
-            if linux_host_priority(host_id.name()) == usize::MAX {
-                continue;
-            }
-            if let Ok(host) = cpal::host_from_id(host_id) {
-                return host;
-            }
+        let discoveries = available
+            .into_iter()
+            .filter(|host| linux_host_priority(host.name()) != usize::MAX)
+            .filter_map(|host| cpal::host_from_id(host).ok())
+            .map(|host| discover_inputs(&host));
+        if let Some(discovery) =
+            first_usable_or_first(discoveries, |candidate| !candidate.devices.is_empty())
+        {
+            return discovery;
         }
     }
-    cpal::default_host()
+    discover_inputs(&cpal::default_host())
 }
 
 #[must_use]
 pub fn microphone_snapshot() -> MicrophoneSnapshot {
-    process_snapshot_from(&discover_inputs(&preferred_host()))
+    process_snapshot_from(&preferred_discovery())
 }
 
 impl AudioCapture {
@@ -409,13 +424,13 @@ impl AudioCapture {
     }
 
     pub fn open_default() -> Result<Self, AudioError> {
-        let discovery = discover_inputs(&preferred_host());
+        let discovery = preferred_discovery();
         let snapshot = process_snapshot_from(&discovery);
         Self::open_snapshot(discovery, &snapshot.selection, true)
     }
 
     pub fn open(requested: Option<&str>) -> Result<Self, AudioError> {
-        let discovery = discover_inputs(&preferred_host());
+        let discovery = preferred_discovery();
         let devices: Vec<_> = discovery
             .devices
             .iter()
@@ -438,7 +453,7 @@ impl AudioCapture {
     }
 
     pub fn open_exact(id: Option<&MicrophoneId>) -> Result<Self, AudioError> {
-        let discovery = discover_inputs(&preferred_host());
+        let discovery = preferred_discovery();
         let devices: Vec<_> = discovery
             .devices
             .iter()
@@ -841,6 +856,18 @@ mod tests {
         assert!(linux_host_priority("PipeWire") < linux_host_priority("PulseAudio"));
         assert!(linux_host_priority("PulseAudio") < linux_host_priority("ALSA"));
         assert_eq!(linux_host_priority("JACK"), usize::MAX);
+    }
+
+    #[test]
+    fn linux_host_falls_through_empty_discoveries() {
+        assert_eq!(
+            first_usable_or_first([0, 0, 3], |device_count| *device_count > 0),
+            Some(3)
+        );
+        assert_eq!(
+            first_usable_or_first([0, 0, 0], |device_count| *device_count > 0),
+            Some(0)
+        );
     }
 
     #[test]
