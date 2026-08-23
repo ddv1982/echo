@@ -52,12 +52,15 @@ pub fn run_rec_once() -> i32 {
 pub fn run_rec_toggle() -> i32 {
     match ToggleSession::start_or_stop() {
         Ok(action) => {
-            if let Err(err) = status::mark_shortcut_activation("toggle-command") {
+            let recording_token = action.recording_token().map(str::to_string);
+            if let Err(err) =
+                status::mark_shortcut_activation("toggle-command", recording_token.as_deref())
+            {
                 eprintln!("toggle: cannot record shortcut provenance: {err}");
             }
             match action {
                 ToggleAction::Start(session) => run_record(StopWhen::ToggleFile(session)),
-                ToggleAction::Stop => 0,
+                ToggleAction::Stop(_) => 0,
             }
         }
         Err(err) => {
@@ -69,21 +72,31 @@ pub fn run_rec_toggle() -> i32 {
 
 /// Toggle an in-process recording after synchronously acquiring or stopping
 /// the cross-process session. Recording work continues on a background thread.
-pub fn toggle_managed_recording() -> Result<(), String> {
+pub fn toggle_managed_recording() -> Result<Option<String>, String> {
     match ToggleSession::start_or_stop()? {
-        ToggleAction::Start(session) => std::thread::Builder::new()
-            .name("echo-record-toggle".to_string())
-            .spawn(move || {
-                let _ = run_record(StopWhen::ToggleFile(session));
-            })
-            .map(|_| ())
-            .map_err(|err| err.to_string()),
-        ToggleAction::Stop => Ok(()),
+        ToggleAction::Start(session) => {
+            let recording_token = session.token.clone();
+            std::thread::Builder::new()
+                .name("echo-record-toggle".to_string())
+                .spawn(move || {
+                    let _ = run_record(StopWhen::ToggleFile(session));
+                })
+                .map(|_| Some(recording_token))
+                .map_err(|err| err.to_string())
+        }
+        ToggleAction::Stop(owner) => Ok(owner.token),
     }
 }
 
-pub fn stop_managed_recording_if_active() -> Result<bool, String> {
-    ToggleSession::request_stop_if_active_in(&echo_core::data_dir())
+pub fn stop_shortcut_recording(activation: &str) -> Result<bool, String> {
+    let current = status::shortcut_activation();
+    if current.as_deref().map(str::trim) != Some(activation.trim()) {
+        return Ok(false);
+    }
+    let Some(recording_token) = status::shortcut_recording_token(activation) else {
+        return Ok(false);
+    };
+    ToggleSession::request_stop_for_token_in(&echo_core::data_dir(), recording_token)
 }
 
 fn run_record(stop: StopWhen) -> i32 {
@@ -319,7 +332,16 @@ fn spawn_toggle_stop_watcher<'scope>(
 
 enum ToggleAction {
     Start(ToggleSession),
-    Stop,
+    Stop(LockOwner),
+}
+
+impl ToggleAction {
+    fn recording_token(&self) -> Option<&str> {
+        match self {
+            Self::Start(session) => Some(&session.token),
+            Self::Stop(owner) => owner.token.as_deref(),
+        }
+    }
 }
 
 enum LockAcquisition {
@@ -349,11 +371,12 @@ impl ToggleSession {
             LockAcquisition::Started(session) => Ok(ToggleAction::Start(session)),
             LockAcquisition::Busy(owner) => {
                 write_stop_request(&dir.join("recording.stop"), &owner)?;
-                Ok(ToggleAction::Stop)
+                Ok(ToggleAction::Stop(owner))
             }
         }
     }
 
+    #[cfg(test)]
     fn request_stop_if_active_in(dir: &Path) -> Result<bool, String> {
         let lock_path = dir.join("recording.lock");
         let stop_path = dir.join("recording.stop");
@@ -363,6 +386,18 @@ impl ToggleSession {
             return Ok(false);
         };
         write_stop_request(&stop_path, &owner)?;
+        Ok(true)
+    }
+
+    fn request_stop_for_token_in(dir: &Path, token: &str) -> Result<bool, String> {
+        let lock_path = dir.join("recording.lock");
+        let Some(owner) = live_lock_owner(&lock_path) else {
+            return Ok(false);
+        };
+        if owner.token.as_deref() != Some(token) {
+            return Ok(false);
+        }
+        write_stop_request(&dir.join("recording.stop"), &owner)?;
         Ok(true)
     }
 
@@ -407,7 +442,6 @@ impl ToggleSession {
                         }
                     }
                     let _ = fs::remove_file(&candidate);
-                    let _ = fs::remove_file(&stop_path);
                     return Ok(LockAcquisition::Started(Self {
                         lock_path,
                         stop_path,
@@ -549,6 +583,18 @@ mod tests {
     }
 
     #[test]
+    fn token_scoped_stop_ignores_an_unrelated_session() {
+        let dir = std::env::temp_dir().join(format!("echo-scoped-stop-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let session = ToggleSession::try_start_in(&dir).unwrap().unwrap();
+
+        assert!(!ToggleSession::request_stop_for_token_in(&dir, "another-session").unwrap());
+        assert!(!session.stop_path.exists());
+        assert!(ToggleSession::request_stop_for_token_in(&dir, &session.token).unwrap());
+        assert!(session.stop_requested());
+    }
+
+    #[test]
     fn stale_stop_request_cannot_cancel_a_replacement_session() {
         let dir = std::env::temp_dir().join(format!("echo-stop-token-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
@@ -648,12 +694,12 @@ mod tests {
 
         let first = match ToggleSession::start_or_stop_in(&dir).unwrap() {
             ToggleAction::Start(session) => session,
-            ToggleAction::Stop => panic!("first toggle should start"),
+            ToggleAction::Stop(_) => panic!("first toggle should start"),
         };
         assert!(first.lock_path.is_file());
         assert!(matches!(
             ToggleSession::start_or_stop_in(&dir).unwrap(),
-            ToggleAction::Stop
+            ToggleAction::Stop(_)
         ));
         assert!(first.stop_path.is_file());
 

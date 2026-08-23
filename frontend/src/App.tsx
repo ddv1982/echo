@@ -560,10 +560,12 @@ function ShortcutRow({
   const [retrying, setRetrying] = useState(false)
   const attempt = useRef(0)
   const verificationActive = useRef(false)
+  const verificationContext = useRef<ShortcutTestContext | null>(null)
   const pollTimer = useRef<number | null>(null)
   const timeoutTimer = useRef<number | null>(null)
   const completeVerification = (identity: string) => {
     verificationActive.current = false
+    verificationContext.current = null
     attempt.current += 1
     if (pollTimer.current != null) window.clearTimeout(pollTimer.current)
     if (timeoutTimer.current != null) window.clearTimeout(timeoutTimer.current)
@@ -579,13 +581,16 @@ function ShortcutRow({
       attempt.current += 1
       if (pollTimer.current != null) window.clearTimeout(pollTimer.current)
       if (timeoutTimer.current != null) window.clearTimeout(timeoutTimer.current)
-      if (verificationActive.current) void stopRecording()
+      const context = verificationContext.current
+      if (verificationActive.current && context != null) {
+        void stopAttributedShortcutRecording(context)
+      }
     }
   }, [])
 
-  const stopVerifiedRecording = async () => {
+  const stopVerifiedRecording = async (activation: string) => {
     try {
-      await stopRecording()
+      await stopRecording(activation)
       for (let check = 0; check < 20; check += 1) {
         if (!(await getAppStatus()).recording) return true
         await new Promise((resolve) => window.setTimeout(resolve, 25))
@@ -604,6 +609,7 @@ function ShortcutRow({
     if (timeoutTimer.current != null) window.clearTimeout(timeoutTimer.current)
     setPhase('arming')
     verificationActive.current = true
+    verificationContext.current = null
 
     try {
       const baseline = presentShortcut(await getShortcutStatus())
@@ -615,20 +621,24 @@ function ShortcutRow({
         setPhase('timed-out')
         return
       }
+      const context = {
+        baselineActivation: baseline.activation,
+        expectedActivationSource,
+        verificationIdentity: baselineIdentity,
+      }
+      verificationContext.current = context
       setPhase('listening')
 
       const poll = async () => {
         const next = presentShortcut(await getShortcutStatus())
         if (attempt.current !== attemptId) return
-        if (
-          next.activation !== baseline.activation &&
-          next.activation?.startsWith(`${expectedActivationSource}:`) === true &&
-          next.verificationIdentity === baselineIdentity
-        ) {
-          const stopped = await stopVerifiedRecording()
+        const activation = attributedShortcutActivation(next, context)
+        if (activation != null) {
+          const stopped = await stopVerifiedRecording(activation)
           if (attempt.current !== attemptId) return
           if (!stopped) {
             verificationActive.current = false
+            verificationContext.current = null
             setPhase('timed-out')
             return
           }
@@ -642,15 +652,23 @@ function ShortcutRow({
         if (attempt.current !== attemptId) return
         attempt.current += 1
         verificationActive.current = false
+        const context = verificationContext.current
+        verificationContext.current = null
         if (pollTimer.current != null) window.clearTimeout(pollTimer.current)
         setPhase('timed-out')
-        void stopRecording().catch((reason: unknown) => onError(messageFrom(reason)))
+        if (context != null) {
+          void stopAttributedShortcutRecording(context).catch((reason: unknown) =>
+            onError(messageFrom(reason)),
+          )
+        }
       }, 10_000)
     } catch (reason) {
       if (attempt.current === attemptId) {
         verificationActive.current = false
+        const context = verificationContext.current
+        verificationContext.current = null
         setPhase('timed-out')
-        void stopRecording().catch(() => undefined)
+        if (context != null) void stopAttributedShortcutRecording(context).catch(() => undefined)
         onError(messageFrom(reason))
       }
     }
@@ -733,6 +751,35 @@ function ShortcutRow({
       </div>
     </div>
   )
+}
+
+interface ShortcutTestContext {
+  baselineActivation: string | null
+  expectedActivationSource: string
+  verificationIdentity: string
+}
+
+function attributedShortcutActivation(
+  shortcut: ReturnType<typeof presentShortcut>,
+  context: ShortcutTestContext,
+) {
+  const activation = shortcut.activation
+  return activation !== context.baselineActivation &&
+    activation?.startsWith(`${context.expectedActivationSource}:`) === true &&
+    shortcut.verificationIdentity === context.verificationIdentity
+    ? activation
+    : null
+}
+
+async function stopAttributedShortcutRecording(
+  context: ShortcutTestContext,
+  observedActivation?: string,
+) {
+  const activation =
+    observedActivation ??
+    attributedShortcutActivation(presentShortcut(await getShortcutStatus()), context)
+  if (activation == null) return false
+  return stopRecording(activation)
 }
 
 function StatsStrip({ history }: { history: HistoryItem[] }) {

@@ -43,3 +43,7 @@ Three reviewers independently identified shortcut cleanup risk. Two identified f
 ## Decision-trail audit
 
 `gpt-5.4` checked the TSV against the final diff and reran focused evidence. It found one low-severity wording mismatch: the video proves visible UI states but not console state. The TSV now limits that row to what the artifact visibly proves. No implementation or test claim was disputed.
+
+## PR review follow-up
+
+The automated review on PR 49 found two P2 races at exact head `bb61675`. Lock publication could delete a valid stop request written immediately after the hard link, and timeout cleanup could stop an unrelated recording. The follow-up removes post-publication stop-file deletion and carries the exact recording-session token through shortcut provenance, the Tauri command, and preview cleanup. Timeout and unmount cleanup now act only after a matching attributed activation. Review comments: `discussion_r3838361194` and `discussion_r3838361195`.

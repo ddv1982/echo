@@ -2,6 +2,7 @@ import {
   getAppStatus,
   getSettings,
   resetPreviewSettings,
+  seedPreviewStatus,
   setSettings,
   stopRecording,
   toggleRecording,
@@ -51,7 +52,12 @@ describe('settings preview wrappers', () => {
       recordSeconds: { ...settings.recordSeconds, value: 120 },
     })
     expect((await getAppStatus()).recordingLimitSeconds).toBe(600)
-    expect(await stopRecording()).toBe(true)
+    const shortcut = (await getAppStatus()).shortcut
+    if (shortcut.kind !== 'active') throw new Error('active preview shortcut')
+    seedPreviewStatus({
+      shortcut: { ...shortcut, activation: 'native-toggle:preview-test' },
+    })
+    expect(await stopRecording('native-toggle:preview-test')).toBe(true)
 
     await toggleRecording()
     expect((await getAppStatus()).recordingLimitSeconds).toBe(120)

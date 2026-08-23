@@ -1077,12 +1077,12 @@ fn remove_dictionary_entry(spoken: String, written: String) -> Result<bool, Stri
 
 #[tauri::command]
 fn toggle_recording() -> Result<(), String> {
-    start_recording_thread()
+    start_recording_thread().map(|_| ())
 }
 
 #[tauri::command]
-fn stop_recording() -> Result<bool, String> {
-    echo::rec::stop_managed_recording_if_active()
+fn stop_recording(activation: String) -> Result<bool, String> {
+    echo::rec::stop_shortcut_recording(&activation)
 }
 
 /// Live microphone RMS when this process holds the recording session (the
@@ -1568,7 +1568,7 @@ fn nonempty(value: Option<String>) -> Option<String> {
     value.filter(|raw| !raw.is_empty())
 }
 
-fn start_recording_thread() -> Result<(), String> {
+fn start_recording_thread() -> Result<Option<String>, String> {
     echo::rec::toggle_managed_recording()
 }
 
@@ -1912,8 +1912,11 @@ fn dispatch_shortcut_edge(
     report_test_shortcut(TestShortcutAction::Edge(id.to_string(), edge));
     match id {
         FixedShortcut::ID if toggle.on_edge(edge) => match start_recording_thread() {
-            Ok(()) => {
-                if let Err(err) = echo::status::mark_shortcut_activation("native-toggle") {
+            Ok(recording_token) => {
+                if let Err(err) = echo::status::mark_shortcut_activation(
+                    "native-toggle",
+                    recording_token.as_deref(),
+                ) {
                     eprintln!("toggle shortcut: cannot record provenance: {err}");
                 }
                 #[cfg(test)]

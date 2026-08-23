@@ -258,9 +258,12 @@ export function toggleRecording(): Promise<void> {
   return Promise.resolve()
 }
 
-export function stopRecording(): Promise<boolean> {
-  if (isTauri()) return invoke('stop_recording')
-  return Promise.resolve(preview ? stopPreviewRecording() : false)
+export function stopRecording(activation: string): Promise<boolean> {
+  if (isTauri()) return invoke('stop_recording', { activation })
+  const currentActivation =
+    'activation' in previewStatus.shortcut ? previewStatus.shortcut.activation : null
+  if (!preview || currentActivation !== activation) return Promise.resolve(false)
+  return Promise.resolve(stopPreviewRecording())
 }
 
 function stopPreviewRecording() {

@@ -109,23 +109,39 @@ pub fn shortcut_activation() -> Option<String> {
 
 /// Mark a successful action from the fixed shortcut source. GUI and tray
 /// recording paths deliberately never call this.
-pub fn mark_shortcut_activation(source: &str) -> Result<(), String> {
-    write_shortcut_activation(&shortcut_activation_path(), source)
+pub fn mark_shortcut_activation(source: &str, recording_token: Option<&str>) -> Result<(), String> {
+    write_shortcut_activation(&shortcut_activation_path(), source, recording_token)
 }
 
-fn write_shortcut_activation(path: &Path, source: &str) -> Result<(), String> {
+fn write_shortcut_activation(
+    path: &Path,
+    source: &str,
+    recording_token: Option<&str>,
+) -> Result<(), String> {
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
-    let token = format!(
+    let mut token = format!(
         "{source}:{}:{}:{}:{}",
         now.as_secs(),
         now.subsec_nanos(),
         std::process::id(),
         SEQUENCE.fetch_add(1, Ordering::Relaxed)
     );
+    if let Some(recording_token) = recording_token {
+        token.push_str(":recording=");
+        token.push_str(recording_token);
+    }
     write_atomic(path, token.as_bytes())
+}
+
+#[must_use]
+pub fn shortcut_recording_token(activation: &str) -> Option<&str> {
+    activation
+        .rsplit_once(":recording=")
+        .map(|(_, token)| token.trim())
+        .filter(|token| !token.is_empty())
 }
 
 fn parse(raw: &str, alive: impl Fn(&str) -> bool) -> Status {
@@ -266,11 +282,13 @@ mod tests {
     fn shortcut_activation_tokens_are_explicit_and_monotonic() {
         let dir = std::env::temp_dir().join(format!("echo-shortcut-token-{}", std::process::id()));
         let path = dir.join("activation");
-        write_shortcut_activation(&path, "native-toggle").unwrap();
+        write_shortcut_activation(&path, "native-toggle", Some("session-a")).unwrap();
         let first = fs::read_to_string(&path).unwrap();
-        write_shortcut_activation(&path, "native-toggle").unwrap();
+        write_shortcut_activation(&path, "native-toggle", Some("session-b")).unwrap();
         let second = fs::read_to_string(&path).unwrap();
         assert!(first.starts_with("native-toggle:"));
+        assert_eq!(shortcut_recording_token(&first), Some("session-a"));
+        assert_eq!(shortcut_recording_token(&second), Some("session-b"));
         assert_ne!(first, second);
         let _ = fs::remove_dir_all(dir);
     }

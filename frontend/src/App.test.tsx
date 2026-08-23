@@ -34,7 +34,7 @@ vi.mock('./tauri', async (importOriginal) => {
     removeStaleInstalls: vi.fn(() => actual.removeStaleInstalls()),
     repairLegacyShortcut: vi.fn(() => actual.repairLegacyShortcut()),
     retryShortcut: vi.fn(() => actual.retryShortcut()),
-    stopRecording: vi.fn(() => actual.stopRecording()),
+    stopRecording: vi.fn((activation) => actual.stopRecording(activation)),
   }
 })
 
@@ -65,7 +65,7 @@ describe('Echo desktop shell', () => {
     vi.mocked(retryShortcut).mockReset()
     vi.mocked(retryShortcut).mockImplementation(() => actual.retryShortcut())
     vi.mocked(stopRecording).mockReset()
-    vi.mocked(stopRecording).mockImplementation(() => actual.stopRecording())
+    vi.mocked(stopRecording).mockImplementation((activation) => actual.stopRecording(activation))
     vi.mocked(getSettings).mockReset()
     vi.mocked(getSettings).mockImplementation(() => actual.getSettings())
     vi.mocked(getMicrophones).mockReset()
@@ -805,7 +805,7 @@ describe('Echo desktop shell', () => {
 
     seedPreviewStatus({ shortcut: activeShortcut('native-toggle:1') })
     await waitFor(() => expect(localStorage.getItem('echo-shortcut-verified-at')).not.toBeNull())
-    expect(stopRecording).toHaveBeenCalledOnce()
+    expect(stopRecording).toHaveBeenCalledWith('native-toggle:1')
     expect(localStorage.getItem('echo-shortcut-verified-identity')).toBe('portal:Super+Alt+Space')
     expect(await screen.findByText(/Verified/)).toBeInTheDocument()
 
@@ -826,10 +826,11 @@ describe('Echo desktop shell', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
       fireEvent.click(await screen.findByRole('button', { name: 'Test shortcut' }))
       expect(await screen.findByText('Listening… press your shortcut')).toBeInTheDocument()
+      seedPreviewStatus({ phase: 'Recording', recording: true, recordingInProcess: true })
       await vi.advanceTimersByTimeAsync(10_100)
       expect(await screen.findByText('No keypress seen — check the binding')).toBeInTheDocument()
       expect(localStorage.getItem('echo-shortcut-verified-at')).toBeNull()
-      expect(stopRecording).toHaveBeenCalledOnce()
+      expect(stopRecording).not.toHaveBeenCalled()
     } finally {
       vi.useRealTimers()
     }
@@ -849,15 +850,22 @@ describe('Echo desktop shell', () => {
     expect(await screen.findByText('No keypress seen — check the binding')).toBeInTheDocument()
   })
 
-  it('stops a shortcut-test recording when Settings unmounts', async () => {
+  it('stops only an attributed shortcut-test recording when Settings unmounts', async () => {
     const { unmount } = render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Test shortcut' }))
     expect(await screen.findByText('Listening… press your shortcut')).toBeInTheDocument()
+    seedPreviewStatus({
+      phase: 'Recording',
+      recording: true,
+      shortcut: activeShortcut('native-toggle:unmount'),
+    })
 
     unmount()
-    expect(stopRecording).toHaveBeenCalledOnce()
+    await waitFor(() =>
+      expect(stopRecording).toHaveBeenCalledWith('native-toggle:unmount'),
+    )
   })
 
   it('lists the microphone step when the mic is not ready', async () => {
