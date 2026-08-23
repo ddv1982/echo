@@ -10,6 +10,8 @@ import type {
   LegacyShortcutSetup,
   ModelInventory,
   ModelOffer,
+  MicrophoneSnapshot,
+  MicrophoneTestResult,
   ShortcutStatus,
   SettingField,
   Settings,
@@ -465,25 +467,113 @@ export function resetPreviewSettings() {
   previewLanguages = defaultPreviewLanguages()
   previewInventory = defaultPreviewInventory()
   previewOffers = defaultPreviewOffers()
+  previewMicrophones = {
+    source: 'default',
+    devices: previewDevices,
+    selection: { kind: 'system-default', active: previewDevices[0] },
+    enumerationWarning: null,
+  }
   previewDownloadTimers.forEach((timers) => timers.forEach(clearTimeout))
   previewDownloadTimers.clear()
 }
 
 const previewDevices: InputDevice[] = [
-  { name: 'Built-in Audio Analog Stereo', isDefault: true },
-  { name: 'USB Microphone', isDefault: false },
-  { name: 'Bluetooth Headset', isDefault: false },
+  {
+    id: 'alsa:default',
+    label: 'Built-in Audio Analog Stereo',
+    isDefault: true,
+    manufacturer: 'Intel',
+    deviceType: 'Microphone',
+    interfaceType: 'Built-in',
+    address: null,
+    driver: 'PipeWire',
+    extended: [],
+  },
+  {
+    id: 'alsa:usb-one',
+    label: 'USB Microphone',
+    isDefault: false,
+    manufacturer: 'Focusrite',
+    deviceType: 'Microphone',
+    interfaceType: 'USB',
+    address: '1-2',
+    driver: 'PipeWire',
+    extended: [],
+  },
+  {
+    id: 'alsa:usb-two',
+    label: 'USB Microphone',
+    isDefault: false,
+    manufacturer: 'Logitech',
+    deviceType: 'Headset',
+    interfaceType: 'USB',
+    address: '1-3',
+    driver: 'PipeWire',
+    extended: [],
+  },
 ]
 
-export function listInputDevices(): Promise<InputDevice[]> {
-  if (isTauri()) return invoke('list_input_devices')
-  return Promise.resolve(preview ? previewDevices.map((device) => ({ ...device })) : [])
+let previewMicrophones: MicrophoneSnapshot = {
+  source: 'default',
+  devices: previewDevices,
+  selection: { kind: 'system-default', active: previewDevices[0] },
+  enumerationWarning: null,
 }
 
-export function testInputDevice(name: string | null): Promise<number> {
-  if (isTauri()) return invoke('test_input_device', { name })
-  if (previewMicTestError) return Promise.reject(new Error(previewMicTestError))
-  return Promise.resolve(name === 'Bluetooth Headset' ? 0 : 0.042)
+export function getMicrophones(): Promise<MicrophoneSnapshot> {
+  if (isTauri()) return invoke('get_microphones')
+  return Promise.resolve(previewMicrophones)
+}
+
+export function setMicrophone(id: string | null): Promise<MicrophoneSnapshot> {
+  if (isTauri()) return invoke('set_microphone', { id })
+  if (!preview) return Promise.resolve(previewMicrophones)
+  const device = id == null ? null : previewDevices.find((candidate) => candidate.id === id)
+  if (id != null && !device) return Promise.reject(new Error('microphone is no longer connected'))
+  previewMicrophones = {
+    ...previewMicrophones,
+    source: id == null ? 'default' : 'config',
+    selection:
+      device == null
+        ? { kind: 'system-default', active: previewDevices[0] }
+        : { kind: 'selected', device },
+  }
+  return Promise.resolve(previewMicrophones)
+}
+
+function previewMicrophoneTest(device: InputDevice | null): MicrophoneTestResult {
+  if (previewMicTestError) {
+    return { kind: 'failed', device, category: 'busy', message: previewMicTestError }
+  }
+  if (!device) {
+    return { kind: 'failed', device: null, category: 'disconnected', message: 'microphone is unavailable' }
+  }
+  const peakRms = device.id === 'alsa:usb-two' ? 0 : 0.042
+  return {
+    kind: 'completed',
+    device,
+    peakRms,
+    outcome: peakRms > 0.001 ? 'heard' : 'silent',
+  }
+}
+
+export function testInputDevice(id: string | null): Promise<MicrophoneTestResult> {
+  if (isTauri()) return invoke('test_input_device', { id })
+  const device = id == null
+    ? previewDevices.find((candidate) => candidate.isDefault) ?? null
+    : previewDevices.find((candidate) => candidate.id === id) ?? null
+  return Promise.resolve(previewMicrophoneTest(device))
+}
+
+export function testMicrophoneFallback(): Promise<MicrophoneTestResult> {
+  if (isTauri()) return invoke('test_microphone_fallback')
+  return Promise.resolve(
+    previewMicrophoneTest(previewDevices.find((candidate) => candidate.isDefault) ?? null),
+  )
+}
+
+export function seedPreviewMicrophones(snapshot: MicrophoneSnapshot) {
+  previewMicrophones = snapshot
 }
 
 function defaultPreviewSettings(): Settings {
@@ -493,7 +583,6 @@ function defaultPreviewSettings(): Settings {
     cleanup: { value: null, effective: 'rules', source: 'default' },
     hud: { value: null, effective: true, source: 'default' },
     recordSeconds: { value: null, effective: 3, source: 'default' },
-    microphone: { value: null, effective: '', source: 'default' },
     language: { value: null, effective: 'auto', source: 'default' },
   })
 }
@@ -509,7 +598,6 @@ function projectPreviewSettings(settings: Settings): Settings {
     cleanup: previewField(settings.cleanup.value, 'rules'),
     hud: previewField(settings.hud.value, true),
     recordSeconds: previewField(recordValue, 3),
-    microphone: previewField(settings.microphone.value, ''),
     language: previewField(settings.language.value, 'auto'),
   }
 }

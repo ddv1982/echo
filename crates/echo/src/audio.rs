@@ -4,8 +4,13 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{Sample, SampleFormat, SizedSample};
-use echo_core::{Pcm16kMono, SAMPLE_RATE_HZ};
+use cpal::{Sample, SampleFormat, SizedSample, I24, U24};
+use echo_core::{MicrophoneSelection, Pcm16kMono, SAMPLE_RATE_HZ};
+
+use crate::microphone::{
+    resolve_selection, selection_from_sources, InputDeviceInfo, InputSelectionStatus,
+    MicrophoneFailure, MicrophoneId, MicrophoneSnapshot,
+};
 
 /// The microphone's RMS level, shared between the capture callback and
 /// whoever renders it. f32 bits in one atomic; publishing is a few
@@ -43,8 +48,7 @@ impl LevelMeter {
 /// The meter for this process's own recording session. The GUI reads it for
 /// its live level bars; a session started by a compositor shortcut lives in
 /// another process and this meter stays parked at zero.
-static PROCESS_METER: std::sync::LazyLock<LevelMeter> =
-    std::sync::LazyLock::new(LevelMeter::new);
+static PROCESS_METER: std::sync::LazyLock<LevelMeter> = std::sync::LazyLock::new(LevelMeter::new);
 
 #[must_use]
 pub fn process_meter() -> LevelMeter {
@@ -106,25 +110,20 @@ impl CancellationToken {
 
 pub struct AudioCapture {
     device: cpal::Device,
+    pub device_id: MicrophoneId,
     pub device_name: String,
     pub fallback_from: Option<String>,
     pub cancel: CancellationToken,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InputDevice {
-    pub name: String,
-    pub is_default: bool,
+struct DiscoveredInput {
+    info: InputDeviceInfo,
+    handle: cpal::Device,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DeviceChoice {
-    Found(InputDevice),
-    Fallback {
-        requested: String,
-        device: InputDevice,
-    },
-    None,
+struct InputDiscovery {
+    devices: Vec<DiscoveredInput>,
+    warning: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -148,6 +147,12 @@ impl CaptureResult {
 #[derive(Debug)]
 pub enum AudioError {
     NoDevice,
+    Selection(String),
+    Permission(String),
+    Busy(String),
+    Disconnected(String),
+    Unsupported(String),
+    Host(String),
     Stream(String),
     Wav(String),
 }
@@ -156,6 +161,12 @@ impl std::fmt::Display for AudioError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NoDevice => f.write_str("no input device"),
+            Self::Selection(msg)
+            | Self::Permission(msg)
+            | Self::Busy(msg)
+            | Self::Disconnected(msg)
+            | Self::Unsupported(msg)
+            | Self::Host(msg) => f.write_str(msg),
             Self::Stream(msg) | Self::Wav(msg) => f.write_str(msg),
         }
     }
@@ -163,132 +174,368 @@ impl std::fmt::Display for AudioError {
 
 impl std::error::Error for AudioError {}
 
-#[must_use]
-pub fn resolve_device(candidates: &[InputDevice], requested: Option<&str>) -> DeviceChoice {
-    let default = candidates
-        .iter()
-        .find(|device| device.is_default)
-        .or_else(|| candidates.first());
-    match requested.map(str::trim).filter(|name| !name.is_empty()) {
-        Some(name) => {
-            if let Some(found) = candidates.iter().find(|device| device.name == name) {
-                DeviceChoice::Found(found.clone())
-            } else if let Some(default) = default {
-                DeviceChoice::Fallback {
-                    requested: name.to_string(),
-                    device: default.clone(),
-                }
-            } else {
-                DeviceChoice::None
+impl AudioError {
+    #[must_use]
+    pub fn category(&self) -> MicrophoneFailure {
+        match self {
+            Self::NoDevice | Self::Disconnected(_) => MicrophoneFailure::Disconnected,
+            Self::Selection(_) => MicrophoneFailure::Selection,
+            Self::Permission(_) => MicrophoneFailure::Permission,
+            Self::Busy(_) => MicrophoneFailure::Busy,
+            Self::Unsupported(_) => MicrophoneFailure::Unsupported,
+            Self::Host(_) => MicrophoneFailure::Host,
+            Self::Stream(_) | Self::Wav(_) => MicrophoneFailure::Failed,
+        }
+    }
+}
+
+fn map_cpal_error(error: cpal::Error) -> AudioError {
+    use cpal::ErrorKind;
+    let detail = error.to_string();
+    match error.kind() {
+        ErrorKind::PermissionDenied => AudioError::Permission(detail),
+        ErrorKind::DeviceBusy => AudioError::Busy(detail),
+        ErrorKind::DeviceNotAvailable | ErrorKind::DeviceChanged => {
+            AudioError::Disconnected(detail)
+        }
+        ErrorKind::HostUnavailable => AudioError::Host(detail),
+        ErrorKind::UnsupportedConfig | ErrorKind::UnsupportedOperation => {
+            AudioError::Unsupported(detail)
+        }
+        _ => AudioError::Stream(detail),
+    }
+}
+
+fn describe_device(device: &cpal::Device, is_default: bool) -> Result<InputDeviceInfo, AudioError> {
+    let id = device.id().map_err(map_cpal_error)?.to_string();
+    let description = device.description().ok();
+    let label = description
+        .as_ref()
+        .map(|value| value.name().to_string())
+        .unwrap_or_else(|| device.to_string());
+    Ok(InputDeviceInfo {
+        id: MicrophoneId::parse(id).map_err(AudioError::Selection)?,
+        label,
+        is_default,
+        manufacturer: description
+            .as_ref()
+            .and_then(|value| value.manufacturer().map(str::to_string)),
+        device_type: description.as_ref().and_then(|value| {
+            let text = value.device_type().to_string();
+            (text != "Unknown").then_some(text)
+        }),
+        interface_type: description.as_ref().and_then(|value| {
+            let text = value.interface_type().to_string();
+            (text != "Unknown").then_some(text)
+        }),
+        address: description
+            .as_ref()
+            .and_then(|value| value.address().map(str::to_string)),
+        driver: description
+            .as_ref()
+            .and_then(|value| value.driver().map(str::to_string)),
+        extended: description
+            .as_ref()
+            .map(|value| value.extended().map(str::to_string).collect())
+            .unwrap_or_default(),
+    })
+}
+
+fn merge_default_handle<T>(
+    mut enumerated: Vec<T>,
+    default: Option<T>,
+    id: impl Fn(&T) -> Option<String>,
+) -> Vec<T> {
+    if let Some(default) = default {
+        let default_id = id(&default);
+        let present = default_id.is_some_and(|expected| {
+            enumerated
+                .iter()
+                .any(|candidate| id(candidate).as_deref() == Some(expected.as_str()))
+        });
+        if !present {
+            enumerated.push(default);
+        }
+    }
+    enumerated
+}
+
+fn discover_inputs(host: &cpal::Host) -> InputDiscovery {
+    let default = host.default_input_device();
+    let default_id = default
+        .as_ref()
+        .and_then(|device| device.id().ok())
+        .map(|id| id.to_string());
+    let mut warning = None;
+    let handles = match host.input_devices() {
+        Ok(devices) => devices.collect::<Vec<_>>(),
+        Err(error) => {
+            warning = Some(error.to_string());
+            Vec::new()
+        }
+    };
+    let handles = merge_default_handle(handles, default, |device| {
+        device.id().ok().map(|id| id.to_string())
+    });
+    let mut devices = Vec::new();
+    for handle in handles {
+        let is_default = handle
+            .id()
+            .ok()
+            .is_some_and(|id| default_id.as_deref() == Some(id.to_string().as_str()));
+        match describe_device(&handle, is_default) {
+            Ok(info)
+                if !devices
+                    .iter()
+                    .any(|known: &DiscoveredInput| known.info.id == info.id) =>
+            {
+                devices.push(DiscoveredInput { info, handle });
+            }
+            Ok(_) => {}
+            Err(error) => {
+                warning.get_or_insert_with(|| error.to_string());
             }
         }
-        None => default
-            .cloned()
-            .map(DeviceChoice::Found)
-            .unwrap_or(DeviceChoice::None),
     }
+    devices.sort_by(|left, right| {
+        right
+            .info
+            .is_default
+            .cmp(&left.info.is_default)
+            .then_with(|| left.info.label.cmp(&right.info.label))
+            .then_with(|| left.info.id.as_str().cmp(right.info.id.as_str()))
+    });
+    InputDiscovery { devices, warning }
 }
 
-pub fn list_input_devices() -> Vec<InputDevice> {
-    list_host_devices(&cpal::default_host()).0
-}
-
-fn keep_default_device<T>(default: Option<(String, T)>) -> (Vec<InputDevice>, Vec<(String, T)>) {
-    match default {
-        Some((name, device)) => (
-            vec![InputDevice {
-                is_default: true,
-                name: name.clone(),
-            }],
-            vec![(name, device)],
-        ),
-        None => (Vec::new(), Vec::new()),
-    }
-}
-
-fn list_host_devices(host: &cpal::Host) -> (Vec<InputDevice>, Vec<(String, cpal::Device)>) {
-    let default = host
-        .default_input_device()
-        .and_then(|device| device.name().ok().map(|name| (name, device)));
-    let default_name = default.as_ref().map(|(name, _)| name.clone());
-    let mut named = Vec::new();
-    let Ok(devices) = host.input_devices() else {
-        return keep_default_device(default);
-    };
-    for device in devices {
-        let Ok(name) = device.name() else {
-            continue;
-        };
-        named.push((name, device));
-    }
-    let list = named
+fn process_snapshot_from(discovery: &InputDiscovery) -> MicrophoneSnapshot {
+    let devices: Vec<_> = discovery
+        .devices
         .iter()
-        .map(|(name, _)| InputDevice {
-            is_default: default_name.as_deref() == Some(name.as_str()),
-            name: name.clone(),
-        })
+        .map(|device| device.info.clone())
         .collect();
-    (list, named)
+    let file = crate::settings::file_config();
+    let environment = std::env::var("ECHO_MICROPHONE").ok();
+    let (selection, source) =
+        selection_from_sources(environment.as_deref(), file.microphone.as_ref(), &devices);
+    MicrophoneSnapshot {
+        source,
+        selection: resolve_selection(selection.as_ref(), &devices),
+        devices,
+        enumeration_warning: discovery.warning.clone(),
+    }
+}
+
+#[must_use]
+pub fn microphone_snapshot() -> MicrophoneSnapshot {
+    process_snapshot_from(&discover_inputs(&cpal::default_host()))
 }
 
 impl AudioCapture {
     pub fn open_default() -> Result<Self, AudioError> {
-        let env = std::env::var("ECHO_MICROPHONE")
-            .ok()
-            .filter(|name| !name.is_empty());
-        let requested = echo_core::resolve(
-            env,
-            crate::settings::file_config().microphone,
-            String::new(),
-        );
-        Self::open((!requested.is_empty()).then_some(requested).as_deref())
+        let discovery = discover_inputs(&cpal::default_host());
+        let snapshot = process_snapshot_from(&discovery);
+        Self::open_snapshot(discovery, &snapshot.selection, true)
     }
 
     pub fn open(requested: Option<&str>) -> Result<Self, AudioError> {
-        let host = cpal::default_host();
-        let (candidates, named) = list_host_devices(&host);
-        let (chosen, fallback_from) = match resolve_device(&candidates, requested) {
-            DeviceChoice::Found(device) => (device, None),
-            DeviceChoice::Fallback { requested, device } => {
-                eprintln!("microphone {requested} is gone; using {}", device.name);
-                (device, Some(requested))
-            }
-            DeviceChoice::None => return Err(AudioError::NoDevice),
+        let discovery = discover_inputs(&cpal::default_host());
+        let devices: Vec<_> = discovery
+            .devices
+            .iter()
+            .map(|device| device.info.clone())
+            .collect();
+        let selection = requested.map(|raw| {
+            devices
+                .iter()
+                .find(|device| device.id.as_str() == raw)
+                .map(|device| MicrophoneSelection::Device {
+                    id: raw.to_string(),
+                    last_seen_label: device.label.clone(),
+                })
+                .unwrap_or_else(|| MicrophoneSelection::LegacyName {
+                    name: raw.to_string(),
+                })
+        });
+        let status = resolve_selection(selection.as_ref(), &devices);
+        Self::open_snapshot(discovery, &status, true)
+    }
+
+    pub fn open_exact(id: Option<&MicrophoneId>) -> Result<Self, AudioError> {
+        let discovery = discover_inputs(&cpal::default_host());
+        let devices: Vec<_> = discovery
+            .devices
+            .iter()
+            .map(|device| device.info.clone())
+            .collect();
+        let status = match id {
+            None => resolve_selection(None, &devices),
+            Some(id) => resolve_selection(
+                Some(&MicrophoneSelection::Device {
+                    id: id.as_str().to_string(),
+                    last_seen_label: id.as_str().to_string(),
+                }),
+                &devices,
+            ),
         };
-        let device = named
+        Self::open_snapshot(discovery, &status, false)
+    }
+
+    fn open_snapshot(
+        discovery: InputDiscovery,
+        status: &InputSelectionStatus,
+        allow_fallback: bool,
+    ) -> Result<Self, AudioError> {
+        let (chosen, fallback_from) = match status {
+            InputSelectionStatus::SystemDefault {
+                active: Some(device),
+            }
+            | InputSelectionStatus::Selected { device }
+            | InputSelectionStatus::LegacyMatch { device, .. } => (device, None),
+            InputSelectionStatus::MissingWithFallback {
+                requested_label,
+                fallback,
+                ..
+            } if allow_fallback => (fallback, Some(requested_label.clone())),
+            InputSelectionStatus::AmbiguousLegacyName {
+                name,
+                fallback: Some(fallback),
+                ..
+            } if allow_fallback => (fallback, Some(name.clone())),
+            InputSelectionStatus::SystemDefault { active: None } => {
+                return Err(AudioError::NoDevice)
+            }
+            InputSelectionStatus::MissingWithFallback {
+                requested_label, ..
+            }
+            | InputSelectionStatus::MissingWithoutFallback {
+                requested_label, ..
+            } => {
+                return Err(AudioError::Selection(format!(
+                    "selected microphone {requested_label} is unavailable"
+                )));
+            }
+            InputSelectionStatus::AmbiguousLegacyName { name, .. } => {
+                return Err(AudioError::Selection(format!(
+                    "more than one microphone is named {name}; select one by ID"
+                )));
+            }
+        };
+        let handle = discovery
+            .devices
             .into_iter()
-            .find(|(name, _)| *name == chosen.name)
-            .map(|(_, device)| device)
+            .find(|device| device.info.id == chosen.id)
+            .map(|device| device.handle)
             .ok_or(AudioError::NoDevice)?;
         Ok(Self {
-            device,
-            device_name: chosen.name,
+            device: handle,
+            device_id: chosen.id.clone(),
+            device_name: chosen.label.clone(),
             fallback_from,
             cancel: CancellationToken::new(),
         })
     }
 
-    pub fn record(&self, max: Duration, meter: Option<&LevelMeter>) -> Result<CaptureResult, AudioError> {
-        let config = self
-            .device
-            .default_input_config()
-            .map_err(|err| AudioError::Stream(err.to_string()))?;
-        let src_hz = config.sample_rate().0;
+    pub fn record(
+        &self,
+        max: Duration,
+        meter: Option<&LevelMeter>,
+    ) -> Result<CaptureResult, AudioError> {
+        let config = self.device.default_input_config().map_err(map_cpal_error)?;
+        let src_hz = config.sample_rate();
         let channels = config.channels();
         let collected = Arc::new(Mutex::new(Vec::<f32>::new()));
-        let err_slot: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let err_slot: Arc<Mutex<Option<AudioError>>> = Arc::new(Mutex::new(None));
         let stream = match config.sample_format() {
-            SampleFormat::F32 => {
-                build_stream::<f32>(&self.device, &config.into(), &collected, &err_slot, meter)?
-            }
-            SampleFormat::I16 => {
-                build_stream::<i16>(&self.device, &config.into(), &collected, &err_slot, meter)?
-            }
-            SampleFormat::I32 => {
-                build_stream::<i32>(&self.device, &config.into(), &collected, &err_slot, meter)?
-            }
-            SampleFormat::F64 => {
-                build_stream::<f64>(&self.device, &config.into(), &collected, &err_slot, meter)?
+            SampleFormat::I8 => build_stream::<i8>(
+                &self.device,
+                config.into(),
+                &collected,
+                &err_slot,
+                meter,
+            )?,
+            SampleFormat::I16 => build_stream::<i16>(
+                &self.device,
+                config.into(),
+                &collected,
+                &err_slot,
+                meter,
+            )?,
+            SampleFormat::I24 => build_stream::<I24>(
+                &self.device,
+                config.into(),
+                &collected,
+                &err_slot,
+                meter,
+            )?,
+            SampleFormat::I32 => build_stream::<i32>(
+                &self.device,
+                config.into(),
+                &collected,
+                &err_slot,
+                meter,
+            )?,
+            SampleFormat::I64 => build_stream::<i64>(
+                &self.device,
+                config.into(),
+                &collected,
+                &err_slot,
+                meter,
+            )?,
+            SampleFormat::U8 => build_stream::<u8>(
+                &self.device,
+                config.into(),
+                &collected,
+                &err_slot,
+                meter,
+            )?,
+            SampleFormat::U16 => build_stream::<u16>(
+                &self.device,
+                config.into(),
+                &collected,
+                &err_slot,
+                meter,
+            )?,
+            SampleFormat::U24 => build_stream::<U24>(
+                &self.device,
+                config.into(),
+                &collected,
+                &err_slot,
+                meter,
+            )?,
+            SampleFormat::U32 => build_stream::<u32>(
+                &self.device,
+                config.into(),
+                &collected,
+                &err_slot,
+                meter,
+            )?,
+            SampleFormat::U64 => build_stream::<u64>(
+                &self.device,
+                config.into(),
+                &collected,
+                &err_slot,
+                meter,
+            )?,
+            SampleFormat::F32 => build_stream::<f32>(
+                &self.device,
+                config.into(),
+                &collected,
+                &err_slot,
+                meter,
+            )?,
+            SampleFormat::F64 => build_stream::<f64>(
+                &self.device,
+                config.into(),
+                &collected,
+                &err_slot,
+                meter,
+            )?,
+            SampleFormat::DsdU8 | SampleFormat::DsdU16 | SampleFormat::DsdU32 => {
+                return Err(AudioError::Stream(format!(
+                    "unsupported DSD sample format {0:?}",
+                    config.sample_format()
+                )))
             }
             other => {
                 return Err(AudioError::Stream(format!(
@@ -296,16 +543,14 @@ impl AudioCapture {
                 )))
             }
         };
-        stream
-            .play()
-            .map_err(|err| AudioError::Stream(err.to_string()))?;
+        stream.play().map_err(map_cpal_error)?;
         let started = Instant::now();
         while !self.cancel.is_cancelled() && started.elapsed() < max {
             std::thread::sleep(Duration::from_millis(10));
         }
         drop(stream);
         if let Some(msg) = err_slot.lock().expect("stream error lock").take() {
-            return Err(AudioError::Stream(msg));
+            return Err(msg);
         }
         let samples = collected.lock().expect("pcm lock").clone();
         Ok(CaptureResult::from_pcm(resample_to_16k_mono(
@@ -316,9 +561,9 @@ impl AudioCapture {
 
 fn build_stream<T>(
     device: &cpal::Device,
-    config: &cpal::StreamConfig,
+    config: cpal::StreamConfig,
     collected: &Arc<Mutex<Vec<f32>>>,
-    err_slot: &Arc<Mutex<Option<String>>>,
+    err_slot: &Arc<Mutex<Option<AudioError>>>,
     meter: Option<&LevelMeter>,
 ) -> Result<cpal::Stream, AudioError>
 where
@@ -348,11 +593,11 @@ where
                 }
             },
             move |err| {
-                *err_slot.lock().expect("stream error lock") = Some(err.to_string());
+                *err_slot.lock().expect("stream error lock") = Some(map_cpal_error(err));
             },
             None,
         )
-        .map_err(|err| AudioError::Stream(err.to_string()))
+        .map_err(map_cpal_error)
 }
 
 #[must_use]
@@ -438,73 +683,57 @@ mod tests {
         );
     }
 
-    fn sample_devices() -> Vec<InputDevice> {
-        vec![
-            InputDevice {
-                name: "Built-in".into(),
-                is_default: true,
-            },
-            InputDevice {
-                name: "USB Mic".into(),
-                is_default: false,
-            },
-        ]
+    fn sample_to_f32<T>(sample: T) -> f32
+    where
+        T: Sample,
+        f32: cpal::FromSample<T>,
+    {
+        sample.to_sample::<f32>()
     }
 
     #[test]
-    fn resolve_matches_requested_name() {
-        assert_eq!(
-            resolve_device(&sample_devices(), Some("USB Mic")),
-            DeviceChoice::Found(InputDevice {
-                name: "USB Mic".into(),
-                is_default: false,
-            })
-        );
+    fn every_pcm_sample_type_converts_to_capture_f32() {
+        assert_eq!(sample_to_f32(0i8), 0.0);
+        assert_eq!(sample_to_f32(0i16), 0.0);
+        assert_eq!(sample_to_f32(I24::new(0).unwrap()), 0.0);
+        assert_eq!(sample_to_f32(0i32), 0.0);
+        assert_eq!(sample_to_f32(0i64), 0.0);
+        assert_eq!(sample_to_f32(128u8), 0.0);
+        assert_eq!(sample_to_f32(32_768u16), 0.0);
+        assert_eq!(sample_to_f32(U24::new(1 << 23).unwrap()), 0.0);
+        assert_eq!(sample_to_f32(1u32 << 31), 0.0);
+        assert_eq!(sample_to_f32(1u64 << 63), 0.0);
+        assert_eq!(sample_to_f32(0.0f32), 0.0);
+        assert_eq!(sample_to_f32(0.0f64), 0.0);
     }
 
     #[test]
-    fn resolve_missing_name_falls_back_to_default() {
-        assert_eq!(
-            resolve_device(&sample_devices(), Some("Headset")),
-            DeviceChoice::Fallback {
-                requested: "Headset".into(),
-                device: InputDevice {
-                    name: "Built-in".into(),
-                    is_default: true,
-                },
-            }
-        );
+    fn default_missing_from_enumeration_is_kept_once() {
+        let merged = merge_default_handle(vec!["usb"], Some("default"), |value| {
+            Some((*value).to_string())
+        });
+        assert_eq!(merged, vec!["usb", "default"]);
+        let already_present = merge_default_handle(vec!["default"], Some("default"), |value| {
+            Some((*value).to_string())
+        });
+        assert_eq!(already_present, vec!["default"]);
     }
 
     #[test]
-    fn resolve_empty_list_is_none() {
-        assert_eq!(resolve_device(&[], Some("USB Mic")), DeviceChoice::None);
-        assert_eq!(resolve_device(&[], None), DeviceChoice::None);
-    }
-
-    #[test]
-    fn enum_failure_keeps_default_as_sole_candidate() {
-        let (list, named) = keep_default_device(Some(("Built-in".into(), ())));
-        assert_eq!(
-            list,
-            vec![InputDevice {
-                name: "Built-in".into(),
-                is_default: true,
-            }]
-        );
-        assert_eq!(named, vec![("Built-in".into(), ())]);
-        assert_eq!(
-            resolve_device(&list, None),
-            DeviceChoice::Found(list[0].clone())
-        );
-    }
-
-    #[test]
-    fn enum_failure_without_default_is_empty() {
-        let (list, named): (Vec<InputDevice>, Vec<(String, ())>) = keep_default_device(None);
-        assert!(list.is_empty());
-        assert!(named.is_empty());
-        assert_eq!(resolve_device(&list, None), DeviceChoice::None);
+    fn cpal_error_categories_name_actionable_failures() {
+        use cpal::ErrorKind;
+        for (kind, category) in [
+            (ErrorKind::PermissionDenied, MicrophoneFailure::Permission),
+            (ErrorKind::DeviceBusy, MicrophoneFailure::Busy),
+            (
+                ErrorKind::DeviceNotAvailable,
+                MicrophoneFailure::Disconnected,
+            ),
+            (ErrorKind::UnsupportedConfig, MicrophoneFailure::Unsupported),
+            (ErrorKind::HostUnavailable, MicrophoneFailure::Host),
+        ] {
+            assert_eq!(map_cpal_error(cpal::Error::new(kind)).category(), category);
+        }
     }
 
     #[test]

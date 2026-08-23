@@ -1,6 +1,7 @@
 export type View = 'home' | 'history' | 'dictionary' | 'settings'
 export type ThemeMode = 'system' | 'light' | 'dark'
 export type SettingSource = 'env' | 'file' | 'default'
+export type MicrophoneSource = 'environment' | 'config' | 'default'
 
 export interface SettingField<T> {
   value: T | null
@@ -14,14 +15,66 @@ export interface Settings {
   cleanup: SettingField<string>
   hud: SettingField<boolean>
   recordSeconds: SettingField<number>
-  microphone: SettingField<string>
   language: SettingField<string>
 }
 
 export interface InputDevice {
-  name: string
+  id: string
+  label: string
   isDefault: boolean
+  manufacturer: string | null
+  deviceType: string | null
+  interfaceType: string | null
+  address: string | null
+  driver: string | null
+  extended: string[]
 }
+
+export type MicrophoneSelection =
+  | { kind: 'system-default'; active: InputDevice | null }
+  | { kind: 'selected'; device: InputDevice }
+  | { kind: 'legacy-match'; name: string; device: InputDevice }
+  | {
+      kind: 'missing-with-fallback'
+      requestedId: string
+      requestedLabel: string
+      fallback: InputDevice
+    }
+  | { kind: 'missing-without-fallback'; requestedId: string; requestedLabel: string }
+  | {
+      kind: 'ambiguous-legacy-name'
+      name: string
+      matches: InputDevice[]
+      fallback: InputDevice | null
+    }
+
+export interface MicrophoneSnapshot {
+  source: MicrophoneSource
+  devices: InputDevice[]
+  selection: MicrophoneSelection
+  enumerationWarning: string | null
+}
+
+export type MicrophoneTestResult =
+  | {
+      kind: 'completed'
+      device: InputDevice
+      peakRms: number
+      outcome: 'heard' | 'silent'
+    }
+  | {
+      kind: 'failed'
+      device: InputDevice | null
+      category:
+        | 'disconnected'
+        | 'selection'
+        | 'permission'
+        | 'busy'
+        | 'unsupported'
+        | 'host'
+        | 'failed'
+      message: string
+    }
 
 export interface AppStatus {
   phase: string

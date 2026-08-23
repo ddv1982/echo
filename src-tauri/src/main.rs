@@ -196,7 +196,6 @@ struct Settings {
     cleanup: SettingField<String>,
     hud: SettingField<bool>,
     record_seconds: SettingField<u32>,
-    microphone: SettingField<String>,
     language: SettingField<String>,
 }
 
@@ -207,7 +206,6 @@ struct SettingsEnv {
     cleanup: Option<String>,
     hud: Option<String>,
     record_seconds: Option<String>,
-    microphone: Option<String>,
     language: Option<String>,
 }
 
@@ -1340,32 +1338,110 @@ fn set_settings(settings: Settings) -> Result<Settings, String> {
     write_settings(settings)
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct InputDeviceDto {
-    name: String,
-    is_default: bool,
+#[tauri::command]
+fn get_microphones() -> echo::microphone::MicrophoneSnapshot {
+    echo::audio::microphone_snapshot()
 }
 
 #[tauri::command]
-fn list_input_devices() -> Result<Vec<InputDeviceDto>, String> {
-    Ok(echo::audio::list_input_devices()
+fn set_microphone(id: Option<String>) -> Result<echo::microphone::MicrophoneSnapshot, String> {
+    if env::var("ECHO_MICROPHONE")
+        .ok()
+        .is_some_and(|value| !value.is_empty())
+    {
+        return Err("ECHO_MICROPHONE controls the microphone in this process".to_string());
+    }
+    let snapshot = echo::audio::microphone_snapshot();
+    let selection = match id {
+        None => None,
+        Some(raw) => {
+            let id = echo::microphone::MicrophoneId::parse(raw)?;
+            let device = snapshot
+                .devices
+                .iter()
+                .find(|device| device.id == id)
+                .ok_or_else(|| {
+                    "that microphone is no longer connected; refresh and choose again".to_string()
+                })?;
+            Some((id, device.label.clone()))
+        }
+    };
+    let mut config = echo_core::Config::load().unwrap_or_default();
+    update_microphone_config(&mut config, selection);
+    config.save()?;
+    echo::settings::reload();
+    health_invalidate();
+    Ok(echo::audio::microphone_snapshot())
+}
+
+fn update_microphone_config(
+    config: &mut echo_core::Config,
+    selection: Option<(echo::microphone::MicrophoneId, String)>,
+) {
+    config.microphone =
+        selection.map(
+            |(id, last_seen_label)| echo_core::MicrophoneSelection::Device {
+                id: id.as_str().to_string(),
+                last_seen_label,
+            },
+        );
+}
+
+fn microphone_test(
+    capture: Result<AudioCapture, echo::audio::AudioError>,
+) -> echo::microphone::MicrophoneTestResult {
+    let capture = match capture {
+        Ok(capture) => capture,
+        Err(error) => {
+            return echo::microphone::MicrophoneTestResult::Failed {
+                device: None,
+                category: error.category(),
+                message: error.to_string(),
+            };
+        }
+    };
+    let snapshot = echo::audio::microphone_snapshot();
+    let device = snapshot
+        .devices
         .into_iter()
-        .map(|device| InputDeviceDto {
-            name: device.name,
-            is_default: device.is_default,
-        })
-        .collect())
+        .find(|device| device.id == capture.device_id);
+    match capture.record(std::time::Duration::from_secs(1), None) {
+        Ok(result) => echo::microphone::MicrophoneTestResult::Completed {
+            device: device.unwrap_or_else(|| echo::microphone::InputDeviceInfo {
+                id: capture.device_id,
+                label: capture.device_name,
+                is_default: false,
+                manufacturer: None,
+                device_type: None,
+                interface_type: None,
+                address: None,
+                driver: None,
+                extended: Vec::new(),
+            }),
+            peak_rms: result.peak_rms,
+            outcome: if result.peak_rms > 0.001 {
+                echo::microphone::MicrophoneTestOutcome::Heard
+            } else {
+                echo::microphone::MicrophoneTestOutcome::Silent
+            },
+        },
+        Err(error) => echo::microphone::MicrophoneTestResult::Failed {
+            device,
+            category: error.category(),
+            message: error.to_string(),
+        },
+    }
 }
 
 #[tauri::command]
-fn test_input_device(name: Option<String>) -> Result<f32, String> {
-    let capture =
-        echo::audio::AudioCapture::open(name.as_deref()).map_err(|err| err.to_string())?;
-    let result = capture
-        .record(std::time::Duration::from_secs(1), None)
-        .map_err(|err| err.to_string())?;
-    Ok(result.peak_rms)
+fn test_input_device(id: Option<String>) -> Result<echo::microphone::MicrophoneTestResult, String> {
+    let id = id.map(echo::microphone::MicrophoneId::parse).transpose()?;
+    Ok(microphone_test(AudioCapture::open_exact(id.as_ref())))
+}
+
+#[tauri::command]
+fn test_microphone_fallback() -> echo::microphone::MicrophoneTestResult {
+    microphone_test(AudioCapture::open_default())
 }
 
 fn read_settings() -> Result<Settings, String> {
@@ -1396,7 +1472,6 @@ fn process_settings_env() -> SettingsEnv {
         cleanup: env::var("ECHO_CLEANUP").ok(),
         hud: env::var("ECHO_HUD").ok(),
         record_seconds: env::var("ECHO_RECORD_SECONDS").ok(),
-        microphone: env::var("ECHO_MICROPHONE").ok(),
         language: env::var("ECHO_LANGUAGE").ok(),
     }
 }
@@ -1437,11 +1512,6 @@ fn settings_from(
                 .and_then(|raw| raw.parse::<u64>().ok()),
             file.record_seconds,
         ),
-        microphone: setting_field(
-            env.microphone.clone().filter(|name| !name.is_empty()),
-            file.microphone.clone(),
-            String::new(),
-        ),
         language: setting_field(
             env.language
                 .as_deref()
@@ -1472,7 +1542,6 @@ fn config_from_values(settings: &Settings) -> Result<echo_core::Config, String> 
         .record_seconds
         .value
         .map(|secs| secs.clamp(1, echo::rec::MAX_RECORD_SECONDS as u32));
-    config.microphone = nonempty(settings.microphone.value.clone());
     config.language = match settings.language.value.as_deref() {
         None => None,
         Some(raw) => Some(
@@ -2351,8 +2420,10 @@ fn run_desktop() {
             list_model_offers,
             download_model,
             cancel_download,
-            list_input_devices,
+            get_microphones,
+            set_microphone,
             test_input_device,
+            test_microphone_fallback,
         ])
         .run(context);
     stop_native_shortcuts();
@@ -2846,11 +2917,6 @@ mod settings_tests {
                 effective: 3,
                 source: SettingSource::Default,
             },
-            microphone: SettingField {
-                value: Some("USB Mic".into()),
-                effective: String::new(),
-                source: SettingSource::Default,
-            },
             language: SettingField {
                 value: Some("de".into()),
                 effective: "en".into(),
@@ -2875,12 +2941,35 @@ mod settings_tests {
         assert_eq!(got.record_seconds.value, Some(8));
         assert_eq!(got.record_seconds.effective, 8);
         assert_eq!(got.record_seconds.source, SettingSource::File);
-        assert_eq!(got.microphone.value.as_deref(), Some("USB Mic"));
-        assert_eq!(got.microphone.effective, "USB Mic");
-        assert_eq!(got.microphone.source, SettingSource::File);
         assert_eq!(got.language.value.as_deref(), Some("de"));
         assert_eq!(got.language.effective, "de");
         assert_eq!(got.language.source, SettingSource::File);
+    }
+
+    #[test]
+    fn dedicated_microphone_update_writes_id_and_clears_legacy_name() {
+        let mut config = Config {
+            microphone: Some(echo_core::MicrophoneSelection::LegacyName {
+                name: "USB Mic".into(),
+            }),
+            ..Config::default()
+        };
+        update_microphone_config(
+            &mut config,
+            Some((
+                echo::microphone::MicrophoneId::parse("alsa:usb-one").unwrap(),
+                "USB Mic".into(),
+            )),
+        );
+        assert_eq!(
+            config.microphone,
+            Some(echo_core::MicrophoneSelection::Device {
+                id: "alsa:usb-one".into(),
+                last_seen_label: "USB Mic".into(),
+            })
+        );
+        update_microphone_config(&mut config, None);
+        assert_eq!(config.microphone, None);
     }
 
     #[test]

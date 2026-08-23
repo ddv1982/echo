@@ -2,18 +2,20 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import App from './App'
 import {
   getSettings,
-  listInputDevices,
+  getMicrophones,
   listModels,
   removeStaleInstalls,
   repairLegacyShortcut,
   resetPreviewSettings,
   retryShortcut,
   seedPreviewLanguages,
+  seedPreviewMicrophones,
   seedPreviewMicTestError,
   seedPreviewRemoveStaleError,
   seedPreviewSettings,
   seedPreviewStatus,
   setSettings,
+  setMicrophone,
 } from './tauri'
 import type { ShortcutStatus } from './types'
 
@@ -22,9 +24,10 @@ vi.mock('./tauri', async (importOriginal) => {
   return {
     ...actual,
     getSettings: vi.fn(() => actual.getSettings()),
-    listInputDevices: vi.fn(() => actual.listInputDevices()),
+    getMicrophones: vi.fn(() => actual.getMicrophones()),
     listModels: vi.fn(() => actual.listModels()),
     setSettings: vi.fn((settings) => actual.setSettings(settings)),
+    setMicrophone: vi.fn((id) => actual.setMicrophone(id)),
     removeStaleInstalls: vi.fn(() => actual.removeStaleInstalls()),
     repairLegacyShortcut: vi.fn(() => actual.repairLegacyShortcut()),
     retryShortcut: vi.fn(() => actual.retryShortcut()),
@@ -59,8 +62,10 @@ describe('Echo desktop shell', () => {
     vi.mocked(retryShortcut).mockImplementation(() => actual.retryShortcut())
     vi.mocked(getSettings).mockReset()
     vi.mocked(getSettings).mockImplementation(() => actual.getSettings())
-    vi.mocked(listInputDevices).mockReset()
-    vi.mocked(listInputDevices).mockImplementation(() => actual.listInputDevices())
+    vi.mocked(getMicrophones).mockReset()
+    vi.mocked(getMicrophones).mockImplementation(() => actual.getMicrophones())
+    vi.mocked(setMicrophone).mockReset()
+    vi.mocked(setMicrophone).mockImplementation((id) => actual.setMicrophone(id))
     vi.mocked(listModels).mockReset()
     vi.mocked(listModels).mockImplementation(() => actual.listModels())
   })
@@ -186,52 +191,64 @@ describe('Echo desktop shell', () => {
   })
 
 
-  it('lists preview microphones and persists a named choice', async () => {
+  it('renders duplicate labels as distinct stable-ID radio rows', async () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    const picker = await screen.findByLabelText('Microphone')
-    expect(screen.getByRole('option', { name: 'System default' })).toBeInTheDocument()
-    expect(screen.getByRole('option', { name: 'USB Microphone' })).toBeInTheDocument()
-    expect(screen.getByRole('option', { name: 'Built-in Audio Analog Stereo' })).toBeInTheDocument()
-    fireEvent.change(picker, { target: { value: 'USB Microphone' } })
-    await waitFor(() => expect(picker).toHaveValue('USB Microphone'))
-    expect((await getSettings()).microphone).toEqual({
-      value: 'USB Microphone',
-      effective: 'USB Microphone',
-      source: 'file',
+    const choices = await screen.findAllByRole('radio', { name: /USB Microphone/ })
+    expect(choices).toHaveLength(2)
+    expect(screen.getByText(/Focusrite · USB · Microphone/)).toBeInTheDocument()
+    expect(screen.getByText(/Logitech · USB · Headset/)).toBeInTheDocument()
+    fireEvent.click(choices[1])
+    await waitFor(async () => {
+      const snapshot = await getMicrophones()
+      expect(snapshot.selection).toMatchObject({
+        kind: 'selected',
+        device: { id: 'alsa:usb-two' },
+      })
     })
   })
 
-  it('names the fallback when the configured microphone is gone', async () => {
-    const defaults = await getSettings()
-    seedPreviewSettings({
-      ...defaults,
-      microphone: { value: 'Missing Headset', effective: 'Missing Headset', source: 'file' },
+  it('names a missing selection and tests fallback only through the explicit action', async () => {
+    const snapshot = await getMicrophones()
+    seedPreviewMicrophones({
+      ...snapshot,
+      source: 'config',
+      selection: {
+        kind: 'missing-with-fallback',
+        requestedId: 'alsa:travel',
+        requestedLabel: 'Travel Mic',
+        fallback: snapshot.devices[0],
+      },
     })
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    expect(await screen.findByText('Missing Headset is gone; using Built-in Audio Analog Stereo')).toBeInTheDocument()
+    expect(await screen.findByText(/Travel Mic is disconnected/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Test selected' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Test system fallback' }))
+    expect(await screen.findByRole('status')).toHaveTextContent(
+      'Input heard on Built-in Audio Analog Stereo',
+    )
   })
 
-  it('clears the mic meter when the selection changes', async () => {
+  it('clears the microphone test result when the selection changes', async () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Test' }))
-    expect(await screen.findByText('Level 0.042')).toBeInTheDocument()
-    fireEvent.change(screen.getByLabelText('Microphone'), { target: { value: 'USB Microphone' } })
-    await waitFor(() => expect(screen.queryByText('Level 0.042')).not.toBeInTheDocument())
+    fireEvent.click(await screen.findByRole('button', { name: 'Test selected' }))
+    expect(await screen.findByRole('status')).toHaveTextContent('Input heard')
+    fireEvent.click((await screen.findAllByRole('radio', { name: /USB Microphone/ }))[0])
+    await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument())
   })
 
-  it('shows unavailable when a microphone test fails', async () => {
+  it('announces the exact microphone test failure', async () => {
     seedPreviewMicTestError('device busy')
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Test' }))
-    expect(await screen.findByText('Unavailable')).toBeInTheDocument()
+    fireEvent.click(await screen.findByRole('button', { name: 'Test selected' }))
+    expect(await screen.findByRole('status')).toHaveTextContent('device busy')
   })
 
   it('hides the Fake engine from the selector by default', async () => {
@@ -707,7 +724,7 @@ describe('Echo desktop shell', () => {
   it('renders shortcut setup when settings, models, and microphones fail to load', async () => {
     vi.mocked(getSettings).mockRejectedValueOnce(new Error('settings unavailable'))
     vi.mocked(listModels).mockRejectedValueOnce(new Error('models unavailable'))
-    vi.mocked(listInputDevices).mockRejectedValueOnce(new Error('microphones unavailable'))
+    vi.mocked(getMicrophones).mockRejectedValueOnce(new Error('microphones unavailable'))
     seedPreviewStatus({
       shortcut: {
         kind: 'gnome-setup',

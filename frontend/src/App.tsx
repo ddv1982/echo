@@ -25,7 +25,7 @@ import {
   getRecordingLevel,
   getShortcutStatus,
   getSettings,
-  listInputDevices,
+  getMicrophones,
   listLanguages,
   listModelOffers,
   listModels,
@@ -34,8 +34,10 @@ import {
   removeStaleInstalls,
   repairLegacyShortcut,
   retryShortcut,
+  setMicrophone,
   setSettings,
   testInputDevice,
+  testMicrophoneFallback,
   toggleRecording,
 } from './tauri'
 import { deriveStats, groupByDay } from './stats'
@@ -48,11 +50,12 @@ import type {
   LanguageOptions,
   ModelInventory,
   ModelOffer,
+  MicrophoneSnapshot,
+  MicrophoneTestResult,
   SettingSource,
   Settings as AppSettings,
   ThemeMode,
   View,
-  InputDevice,
   WhisperModelInfo,
 } from './types'
 
@@ -891,12 +894,12 @@ function SettingsView({
   const [settings, setLocalSettings] = useState<AppSettings | null>(null)
   const settingsRef = useRef<AppSettings | null>(null)
   const writeChainRef = useRef(Promise.resolve())
-  const [devices, setDevices] = useState<InputDevice[]>([])
+  const [microphones, setMicrophones] = useState<MicrophoneSnapshot | null>(null)
   const [inventory, setInventory] = useState<ModelInventory | null>(null)
   const [languages, setLanguages] = useState<LanguageOptions | null>(null)
   const [offers, setOffers] = useState<ModelOffer[]>([])
   const [downloads, setDownloads] = useState<Record<string, DownloadProgress>>({})
-  const [micMeter, setMicMeter] = useState<number | 'unavailable' | null>(null)
+  const [micTest, setMicTest] = useState<MicrophoneTestResult | null>(null)
   const [testingMic, setTestingMic] = useState(false)
   const [repairingLegacyShortcut, setRepairingLegacyShortcut] = useState(false)
 
@@ -908,13 +911,28 @@ function SettingsView({
           setLocalSettings(next)
         })
         .catch((reason: unknown) => onError(messageFrom(reason)))
-      void listInputDevices().then(setDevices).catch((reason: unknown) => onError(messageFrom(reason)))
+      void getMicrophones().then(setMicrophones).catch((reason: unknown) => onError(messageFrom(reason)))
       void listModels().then(setInventory).catch((reason: unknown) => onError(messageFrom(reason)))
       void listLanguages().then(setLanguages).catch((reason: unknown) => onError(messageFrom(reason)))
       void listModelOffers().then(setOffers).catch((reason: unknown) => onError(messageFrom(reason)))
     }, 0)
     return () => window.clearTimeout(timer)
   }, [onError])
+
+  const refreshMicrophones = useCallback(() => {
+    void getMicrophones()
+      .then(setMicrophones)
+      .catch((reason: unknown) => onError(messageFrom(reason)))
+  }, [onError])
+
+  useEffect(() => {
+    const interval = window.setInterval(refreshMicrophones, 3_000)
+    window.addEventListener('focus', refreshMicrophones)
+    return () => {
+      window.clearInterval(interval)
+      window.removeEventListener('focus', refreshMicrophones)
+    }
+  }, [refreshMicrophones])
 
   useEffect(() => {
     let unlisten: (() => void) | undefined
@@ -990,59 +1008,25 @@ function SettingsView({
       <ViewHeader title="Settings" subtitle="Change how Echo records and transcribes, on this machine." />
       <section className="panel settings-section" aria-label="General">
         <SectionHeading title="General" subtitle="The few decisions that matter." />
-        {settings ? (
-          <div className="setting-row">
-            <div>
-              <strong>Microphone</strong>
-              <span>{microphoneHint(settings, devices)}</span>
-            </div>
-            <div className="setting-actions">
-              <select
-                aria-label="Microphone"
-                value={settings.microphone.effective}
-                disabled={settings.microphone.source === 'env'}
-                onChange={(event) => {
-                  setMicMeter(null)
-                  void patch('microphone', event.target.value || null)
-                }}
-              >
-                <option value="">System default</option>
-                {microphoneOptions(devices, settings.microphone.effective).map((device) => (
-                  <option key={device.name} value={device.name}>{device.name}</option>
-                ))}
-              </select>
-              <button
-                type="button"
-                className="compact-button"
-                disabled={testingMic}
-                onClick={() => {
-                  setTestingMic(true)
-                  void testInputDevice(settings.microphone.effective || null)
-                    .then(setMicMeter)
-                    .catch(() => setMicMeter('unavailable'))
-                    .finally(() => setTestingMic(false))
-                }}
-              >
-                Test
-              </button>
-              {micMeter === 'unavailable' ? (
-                <span className="status-note" data-tone="attention">
-                  <span className="status-dot" data-tone="attention" aria-hidden="true" />
-                  Unavailable
-                </span>
-              ) : micMeter != null ? (
-                <span className="status-note" data-tone={micMeter > 0.001 ? 'ok' : 'attention'}>
-                  <span className="status-dot" data-tone={micMeter > 0.001 ? 'ok' : 'attention'} aria-hidden="true" />
-                  {micMeter > 0.001 ? `Level ${micMeter.toFixed(3)}` : 'Silent'}
-                </span>
-              ) : (
-                <span className="status-note" data-tone={status.microphoneReady ? 'ok' : 'attention'}>
-                  <span className="status-dot" data-tone={status.microphoneReady ? 'ok' : 'attention'} aria-hidden="true" />
-                  {status.microphoneReady ? 'Ready' : 'Needs setup'}
-                </span>
-              )}
-            </div>
-          </div>
+        {microphones ? (
+          <MicrophoneChooser
+            snapshot={microphones}
+            test={micTest}
+            testing={testingMic}
+            onRefresh={refreshMicrophones}
+            onSelect={(id) => {
+              setMicTest(null)
+              void setMicrophone(id)
+                .then(setMicrophones)
+                .then(() => onStatusChange())
+                .catch((reason: unknown) => onError(messageFrom(reason)))
+            }}
+            onTest={(id, fallback) => {
+              setTestingMic(true)
+              const run = fallback ? testMicrophoneFallback() : testInputDevice(id)
+              void run.then(setMicTest).finally(() => setTestingMic(false))
+            }}
+          />
         ) : (
           <SettingLine label="Microphone" value={status.microphoneReady ? 'Default input available' : 'No default input'} tone={status.microphoneReady ? 'ok' : 'attention'} />
         )}
@@ -1491,20 +1475,173 @@ function LanguageRow({
   )
 }
 
-function microphoneOptions(devices: InputDevice[], current: string) {
-  if (!current || devices.some((device) => device.name === current)) return devices
-  return [...devices, { name: current, isDefault: false }]
+function selectedMicrophoneId(snapshot: MicrophoneSnapshot): string | null | undefined {
+  switch (snapshot.selection.kind) {
+    case 'system-default':
+      return null
+    case 'selected':
+    case 'legacy-match':
+      return snapshot.selection.device.id
+    case 'missing-with-fallback':
+    case 'missing-without-fallback':
+    case 'ambiguous-legacy-name':
+      return undefined
+  }
 }
 
-function microphoneHint(settings: AppSettings, devices: InputDevice[]) {
-  if (settings.microphone.source === 'env') return 'ECHO_MICROPHONE'
-  const requested = settings.microphone.effective
-  if (!requested) return 'Follow the system default input.'
-  if (devices.some((device) => device.name === requested)) {
-    return 'Used for GUI recording and rec --toggle.'
+function microphoneMetadata(device: MicrophoneSnapshot['devices'][number]) {
+  return [device.manufacturer, device.interfaceType, device.deviceType]
+    .filter((value) => value != null && value.length > 0)
+    .join(' · ')
+}
+
+function microphoneTestMessage(test: MicrophoneTestResult) {
+  switch (test.kind) {
+    case 'completed':
+      return test.outcome === 'heard'
+        ? `Input heard on ${test.device.label} · level ${test.peakRms.toFixed(3)}`
+        : `No input detected on ${test.device.label}`
+    case 'failed':
+      return test.device == null ? test.message : `${test.device.label}: ${test.message}`
   }
-  const fallback = devices.find((device) => device.isDefault)?.name ?? 'the system default'
-  return `${requested} is gone; using ${fallback}`
+}
+
+function MicrophoneChooser({
+  snapshot,
+  test,
+  testing,
+  onSelect,
+  onRefresh,
+  onTest,
+}: {
+  snapshot: MicrophoneSnapshot
+  test: MicrophoneTestResult | null
+  testing: boolean
+  onSelect: (id: string | null) => void
+  onRefresh: () => void
+  onTest: (id: string | null, fallback: boolean) => void
+}) {
+  const selectedId = selectedMicrophoneId(snapshot)
+  const locked = snapshot.source === 'environment'
+  const fallback =
+    snapshot.selection.kind === 'missing-with-fallback'
+      ? snapshot.selection.fallback
+      : snapshot.selection.kind === 'ambiguous-legacy-name'
+        ? snapshot.selection.fallback
+        : null
+  const missing =
+    snapshot.selection.kind === 'missing-with-fallback' ||
+    snapshot.selection.kind === 'missing-without-fallback'
+      ? snapshot.selection.requestedLabel
+      : null
+  return (
+    <div className="setting-row microphone-setting">
+      <div>
+        <strong>Microphone</strong>
+        <span>
+          {locked
+            ? 'ECHO_MICROPHONE controls this setting.'
+            : 'Choose the input Echo records. Device IDs keep equal labels distinct.'}
+        </span>
+      </div>
+      {missing ? (
+        <div className="microphone-warning" role="alert">
+          <strong>{missing} is disconnected.</strong>
+          <span>
+            {fallback
+              ? `Recording will use the system fallback: ${fallback.label}.`
+              : 'No system fallback is available.'}
+          </span>
+        </div>
+      ) : null}
+      {snapshot.selection.kind === 'ambiguous-legacy-name' ? (
+        <div className="microphone-warning" role="alert">
+          <strong>More than one microphone is named {snapshot.selection.name}.</strong>
+          <span>Choose the intended device once to save its stable ID.</span>
+        </div>
+      ) : null}
+      <div className="microphone-options" role="radiogroup" aria-label="Microphone">
+        <label className="microphone-option" data-selected={selectedId === null}>
+          <input
+            type="radio"
+            name="microphone"
+            checked={selectedId === null}
+            disabled={locked}
+            onChange={() => onSelect(null)}
+          />
+          <span>
+            <strong>Follow system default</strong>
+            <small>
+              {snapshot.devices.find((device) => device.isDefault)?.label ?? 'No default input'}
+            </small>
+          </span>
+        </label>
+        {snapshot.devices.map((device) => (
+          <label className="microphone-option" data-selected={selectedId === device.id} key={device.id}>
+            <input
+              type="radio"
+              name="microphone"
+              checked={selectedId === device.id}
+              disabled={locked}
+              onChange={() => onSelect(device.id)}
+            />
+            <span>
+              <strong>
+                {device.label}
+                {device.isDefault ? ' · Current default' : ''}
+              </strong>
+              <small>{microphoneMetadata(device) || device.id}</small>
+            </span>
+          </label>
+        ))}
+      </div>
+      <div className="setting-actions microphone-actions">
+        <button type="button" className="compact-button" onClick={onRefresh}>
+          Refresh
+        </button>
+        {selectedId !== undefined ? (
+          <button
+            type="button"
+            className="compact-button"
+            disabled={testing}
+            onClick={() => onTest(selectedId, false)}
+          >
+            Test selected
+          </button>
+        ) : null}
+        {fallback ? (
+          <button
+            type="button"
+            className="compact-button"
+            disabled={testing}
+            onClick={() => onTest(null, true)}
+          >
+            Test system fallback
+          </button>
+        ) : null}
+        {test ? (
+          <span
+            className="status-note"
+            data-tone={test.kind === 'completed' && test.outcome === 'heard' ? 'ok' : 'attention'}
+            role="status"
+            aria-live="polite"
+          >
+            <span
+              className="status-dot"
+              data-tone={test.kind === 'completed' && test.outcome === 'heard' ? 'ok' : 'attention'}
+              aria-hidden="true"
+            />
+            {microphoneTestMessage(test)}
+          </span>
+        ) : null}
+      </div>
+      {snapshot.enumerationWarning ? (
+        <span className="status-note" data-tone="attention">
+          Some microphones could not be listed: {snapshot.enumerationWarning}
+        </span>
+      ) : null}
+    </div>
+  )
 }
 
 
