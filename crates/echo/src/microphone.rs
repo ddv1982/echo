@@ -100,13 +100,12 @@ impl From<RawInputDescriptor> for InputDeviceInfo {
         let transport = input_transport(&raw);
         let tier = classify_input(&raw);
         let hint = input_hint(&raw, transport);
-        let label = if raw.host == AudioHost::PipeWire
-            && raw.id.as_str() == "pipewire:input_default"
-        {
-            "System default".to_string()
-        } else {
-            raw.label
-        };
+        let label =
+            if raw.host == AudioHost::PipeWire && raw.id.as_str() == "pipewire:input_default" {
+                "System default".to_string()
+            } else {
+                raw.label
+            };
         Self {
             id: raw.id,
             label,
@@ -127,6 +126,28 @@ impl From<RawInputDescriptor> for InputDeviceInfo {
 
 #[must_use]
 pub fn classify_input(raw: &RawInputDescriptor) -> EndpointTier {
+    let id = raw.id.as_str().to_ascii_lowercase();
+    if matches!(raw.host, AudioHost::PipeWire | AudioHost::PulseAudio) {
+        let device_type = raw.device_type.as_deref().unwrap_or_default();
+        let playback_endpoint = contains_any(
+            &id,
+            &[
+                ":sink_default",
+                ":output_default",
+                ":alsa_output",
+                ":bluez_output",
+            ],
+        ) || matches!(
+            device_type.to_ascii_lowercase().as_str(),
+            "speaker" | "headphones"
+        );
+        return if playback_endpoint {
+            EndpointTier::Advanced
+        } else {
+            EndpointTier::Primary
+        };
+    }
+
     let searchable = descriptor_text(raw);
     let virtual_metadata = contains_any(
         &searchable,
@@ -136,8 +157,6 @@ pub fn classify_input(raw: &RawInputDescriptor) -> EndpointTier {
             "loopback",
             "sink",
             "output_default",
-            "speaker",
-            "headphones",
             "playback",
             "null audio",
         ],
@@ -145,14 +164,10 @@ pub fn classify_input(raw: &RawInputDescriptor) -> EndpointTier {
     if virtual_metadata {
         return EndpointTier::Advanced;
     }
-    if matches!(raw.host, AudioHost::PipeWire | AudioHost::PulseAudio) {
-        return EndpointTier::Primary;
-    }
     if raw.host != AudioHost::Alsa {
         return EndpointTier::Primary;
     }
 
-    let id = raw.id.as_str().to_ascii_lowercase();
     if id.contains(":hw:") || id.contains(":plughw:") {
         return EndpointTier::Primary;
     }
@@ -517,7 +532,10 @@ mod tests {
         ));
         assert!(is_system_default_proxy(&proxy));
         assert_eq!(proxy.label, "System default");
-        assert_eq!(selectable_inputs(&[proxy, physical.clone()]), vec![physical]);
+        assert_eq!(
+            selectable_inputs(&[proxy, physical.clone()]),
+            vec![physical]
+        );
     }
 
     #[test]
@@ -535,6 +553,17 @@ mod tests {
             descriptor.device_type = device_type.map(str::to_string);
             assert_eq!(classify_input(&descriptor), EndpointTier::Advanced, "{id}");
         }
+    }
+
+    #[test]
+    fn pipewire_speakerphone_input_stays_primary() {
+        let mut descriptor = raw(
+            AudioHost::PipeWire,
+            "pipewire:alsa_input.usb-Jabra_Speak_510-00.mono-fallback",
+            "Jabra Speakerphone Microphone",
+        );
+        descriptor.device_type = Some("Microphone".to_string());
+        assert_eq!(classify_input(&descriptor), EndpointTier::Primary);
     }
 
     #[test]
