@@ -1,4 +1,4 @@
-import type { ComponentStatus, Readiness, SetupPlan } from './types'
+import type { ComponentStatus, Readiness, SetupEvent, SetupPlan } from './types'
 
 export type SpeechSetupState =
   | { kind: 'ready'; title: 'Ready to dictate'; detail: string }
@@ -13,6 +13,21 @@ export interface SpeechSetupPresentation {
   parakeet: SetupPlan | null
   installedComponents: ComponentStatus[]
   alternativePlans: SetupPlan[]
+}
+
+export function applySetupProgress(
+  readiness: Readiness,
+  event: Extract<SetupEvent, { kind: 'progress' }>,
+) {
+  return {
+    ...readiness,
+    activeOperation: event.progress.operationId,
+    activeCancellable: true,
+    components: readiness.components.map((component) => ({
+      ...component,
+      activity: component.id === event.progress.component ? event.progress : null,
+    })),
+  }
 }
 
 export function presentSpeechSetup(readiness: Readiness): SpeechSetupPresentation {
