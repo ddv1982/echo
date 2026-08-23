@@ -79,6 +79,7 @@ function richPreviewStatus(): AppStatus {
 let previewStatus: AppStatus = richPreviewStatus()
 
 let previewSettings: Settings = defaultPreviewSettings()
+let previewRecordingDeadline: number | null = null
 
 const previewHistory: HistoryItem[] = [
   {
@@ -246,13 +247,18 @@ export function toggleRecording(): Promise<void> {
     if (previewStatus.recording) {
       stopPreviewRecording()
     } else {
+      const limit = previewSettings.recordSeconds.effective
       previewStatus = {
         ...previewStatus,
         recording: true,
         recordingInProcess: true,
         phase: 'Recording',
-        recordingLimitSeconds: previewSettings.recordSeconds.effective,
+        recordingLimitSeconds: limit,
       }
+      previewRecordingDeadline = window.setTimeout(() => {
+        previewRecordingDeadline = null
+        stopPreviewRecording()
+      }, limit * 1000)
     }
   }
   return Promise.resolve()
@@ -267,6 +273,10 @@ export function stopRecording(activation: string): Promise<boolean> {
 }
 
 function stopPreviewRecording() {
+  if (previewRecordingDeadline != null) {
+    window.clearTimeout(previewRecordingDeadline)
+    previewRecordingDeadline = null
+  }
   if (!previewStatus.recording) return false
   previewStatus = {
     ...previewStatus,
@@ -385,6 +395,10 @@ export function seedPreviewStatus(status: Partial<AppStatus>) {
 }
 
 export function resetPreviewSettings() {
+  if (previewRecordingDeadline != null) {
+    window.clearTimeout(previewRecordingDeadline)
+    previewRecordingDeadline = null
+  }
   previewSettings = defaultPreviewSettings()
   previewStatus = richPreviewStatus()
   previewMicTestError = null

@@ -62,4 +62,25 @@ describe('settings preview wrappers', () => {
     await toggleRecording()
     expect((await getAppStatus()).recordingLimitSeconds).toBe(120)
   })
+
+  it('stops preview recording at the snapped deadline', async () => {
+    vi.useFakeTimers()
+    try {
+      const settings = await getSettings()
+      await setSettings({
+        ...settings,
+        recordSeconds: { ...settings.recordSeconds, value: 1 },
+      })
+      await toggleRecording()
+      expect((await getAppStatus()).recording).toBe(true)
+
+      await vi.advanceTimersByTimeAsync(1_001)
+      expect((await getAppStatus()).recording).toBe(false)
+      expect((await getAppStatus()).phase).toBe('Transcribing')
+      await vi.advanceTimersByTimeAsync(900)
+      expect((await getAppStatus()).phase).toBe('Idle')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
