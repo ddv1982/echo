@@ -51,9 +51,11 @@
     "category": "Utility",
     "linux": {
       "deb": {
+        "depends": ["libpipewire-0.3-0", "libpulse0"],
         "desktopTemplate": "templates/Echo.desktop"
       },
       "rpm": {
+        "depends": ["pipewire-libs", "pulseaudio-libs"],
         "desktopTemplate": "templates/Echo.desktop"
       }
     }

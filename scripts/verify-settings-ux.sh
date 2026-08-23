@@ -7,6 +7,10 @@ cd "$root"
 rg -q 'features = \["pipewire", "pulseaudio"\]' crates/echo/Cargo.toml
 rg -q 'libpipewire-0.3-dev' .github/workflows/check.yml .github/workflows/release.yml
 rg -q 'libpulse-dev' .github/workflows/check.yml .github/workflows/release.yml
+rg -q '"depends": \["libpipewire-0.3-0", "libpulse0"\]' src-tauri/tauri.conf.json
+rg -q '"depends": \["pipewire-libs", "pulseaudio-libs"\]' src-tauri/tauri.conf.json
+rg -q 'rpm Requires is missing' .github/workflows/release.yml
+rg -q 'deb Depends is missing' .github/workflows/release.yml
 rg -q 'Jabra Elite 8 Active' frontend/src/tauri.ts
 rg -q 'Advanced audio endpoints' frontend/src/App.tsx
 rg -q 'Installed components' frontend/src/App.tsx

@@ -73,6 +73,8 @@ jobs:
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
             build-essential \
+            clang \
+            libclang-dev \
             pkg-config \
             libasound2-dev \
             libpipewire-0.3-dev \
@@ -124,6 +126,21 @@ jobs:
             printf 'rpm VERSION %s does not match workspace version %s\n' "$rpm_version" "$package_version"
             exit 1
           fi
+          deb_depends=$(dpkg-deb -f "$deb" Depends | tr ',' '\n' | sed -E 's/^ *//; s/ *\(.*\)$//')
+          rpm_requires=$(rpm -qp --requires "$rpm_pkg" | awk '{print $1}')
+          for dependency in libpipewire-0.3-0 libpulse0; do
+            if ! grep -Fxq "$dependency" <<< "$deb_depends"; then
+              printf 'deb Depends is missing %s: %s\n' "$dependency" "$(dpkg-deb -f "$deb" Depends)"
+              exit 1
+            fi
+          done
+          for dependency in pipewire-libs pulseaudio-libs; do
+            if ! grep -Fxq "$dependency" <<< "$rpm_requires"; then
+              printf 'rpm Requires is missing %s\n' "$dependency"
+              rpm -qp --requires "$rpm_pkg"
+              exit 1
+            fi
+          done
 
       - uses: actions/upload-artifact@v7
         with:
@@ -165,6 +182,8 @@ jobs:
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
             build-essential \
+            clang \
+            libclang-dev \
             pkg-config \
             libasound2-dev \
             libpipewire-0.3-dev \

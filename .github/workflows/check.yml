@@ -21,6 +21,8 @@ jobs:
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
             build-essential \
+            clang \
+            libclang-dev \
             pkg-config \
             libasound2-dev \
             libpipewire-0.3-dev \
