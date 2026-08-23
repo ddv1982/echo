@@ -27,6 +27,7 @@ npm run build --prefix frontend
 cargo test --workspace
 cargo clippy --workspace -- -D warnings
 cargo build --release
+./scripts/verify-recording-limit.sh
 ```
 
 If `cargo clippy` is unavailable in a rustup installation, add it with `rustup component add clippy`.
@@ -60,9 +61,9 @@ Compositor shortcuts use subcommands on the same binary:
 ./target/release/echo-desktop --hud-demo
 ```
 
-`echo-desktop rec --once` records for three seconds, then moves the session from Recording to Transcribing. Set `ECHO_RECORD_SECONDS` to change the duration (up to 60 seconds), or set `ECHO_AUDIO_FIXTURE` to a 16 kHz WAV if you have no mic.
+`echo-desktop rec --once` records until the maximum recording length, then moves the session from Recording to Transcribing. The default and hard ceiling are ten minutes. Change the limit in Settings or with `ECHO_RECORD_SECONDS`; values clamp to 1 through 600 seconds. Set `ECHO_AUDIO_FIXTURE` to a 16 kHz WAV if you have no mic.
 
-`echo-desktop rec --toggle` is intended for compositor shortcuts on Wayland. The first invocation starts recording; invoke it again to stop, transcribe, and insert at the focused cursor. It stops automatically after 60 seconds if the second invocation never arrives.
+`echo-desktop rec --toggle` is intended for compositor shortcuts on Wayland. The first invocation starts recording; invoke it again to stop, transcribe, and insert at the focused cursor. It uses the same maximum recording length as `rec --once` and can stop sooner on the second invocation.
 
 ## File transcription
 
@@ -119,7 +120,7 @@ Cleanup defaults to rules mode. It drops standalone um and uh, then capitalizes 
 
 ## Status file
 
-The recording process writes `$XDG_DATA_HOME/echo/status` as the session moves, including its pid. The desktop app reads that file; an active state whose writer has died reads as Idle, and a Failed state stays visible until the next session starts.
+The recording process writes `$XDG_DATA_HOME/echo/status` as the session moves, including its pid and the limit snapped for an active recording. The desktop app reads that file; an active state whose writer has died reads as Idle, and a Failed state stays visible until the next session starts.
 
 ## Install the desktop entry
 

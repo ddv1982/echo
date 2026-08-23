@@ -37,6 +37,7 @@ import {
   setMicrophone,
   setSettings,
   startSetup,
+  stopRecording,
   testInputDevice,
   testMicrophoneFallback,
   toggleRecording,
@@ -55,6 +56,8 @@ import type {
   SetupEvent,
   MicrophoneSnapshot,
   MicrophoneTestResult,
+  RecordingPolicy,
+  SettingField,
   SettingSource,
   Settings as AppSettings,
   ThemeMode,
@@ -74,7 +77,13 @@ const initialStatus: AppStatus = {
   shortcut: { kind: 'probing', desired: 'Super+Alt+Space' },
   cleanupName: 'Rules · fillers and punctuation',
   hudEnabled: true,
-  maxRecordSeconds: 60,
+  recordingLimitSeconds: 0,
+  recordingPolicy: {
+    minimumSeconds: 0,
+    defaultSeconds: 0,
+    maximumSeconds: 0,
+    presetsSeconds: [],
+  },
   settingsPath: '',
   version: '',
   lastError: null,
@@ -375,7 +384,8 @@ function HomeView({
               <span>{status.recording ? 'Listening' : status.phase === 'Transcribing' ? 'Transcribing' : 'Ready'}</span>
               {status.recording ? (
                 <span className="readout-timer">
-                  {formatDuration(recordingSeconds)} / {formatDuration(status.maxRecordSeconds)}
+                  {formatDuration(Math.min(recordingSeconds, status.recordingLimitSeconds))} /{' '}
+                  {formatDuration(status.recordingLimitSeconds)}
                 </span>
               ) : null}
             </div>
@@ -530,11 +540,13 @@ function ShortcutRow({
   repairing,
   onRepair,
   onRetry,
+  onError,
 }: {
   status: AppStatus
   repairing: boolean
   onRepair: () => void
   onRetry: () => Promise<void>
+  onError: (message: string) => void
 }) {
   const shortcut = presentShortcut(status.shortcut)
   const currentIdentity = shortcut.verificationIdentity
@@ -593,6 +605,12 @@ function ShortcutRow({
           next.activation?.startsWith(`${expectedActivationSource}:`) === true &&
           next.verificationIdentity === baselineIdentity
         ) {
+          try {
+            await stopRecording()
+          } catch (reason) {
+            onError(messageFrom(reason))
+          }
+          if (attempt.current !== attemptId) return
           completeVerification(baselineIdentity)
           return
         }
@@ -952,7 +970,41 @@ const CLEANUP_OPTIONS = [
   { value: 'rules', label: 'Rules' },
 ] as const
 
-const RECORD_SECOND_PRESETS = [3, 5, 10, 15, 30, 60]
+const DEFAULT_RECORDING_LIMIT_OPTION = 'default'
+
+function recordingLimitOptions(
+  policy: RecordingPolicy,
+  field: SettingField<number>,
+) {
+  const defaultSeconds = policy.defaultSeconds || field.effective
+  const presets = policy.presetsSeconds.length > 0 ? policy.presetsSeconds : [field.effective]
+  const seconds = presets.filter((value) => value !== defaultSeconds)
+  if (
+    (field.source === 'env' || field.value != null) &&
+    !seconds.includes(field.effective)
+  ) {
+    seconds.push(field.effective)
+  }
+  seconds.sort((left, right) => left - right)
+  return seconds
+    .map((value) => ({ value: String(value), label: formatRecordingLength(value) }))
+    .concat({
+      value: DEFAULT_RECORDING_LIMIT_OPTION,
+      label: `${formatRecordingLength(defaultSeconds)} · Default`,
+    })
+}
+
+function recordingLimitValue(field: SettingField<number>) {
+  return field.source !== 'env' && field.value == null
+    ? DEFAULT_RECORDING_LIMIT_OPTION
+    : String(field.effective)
+}
+
+function formatRecordingLength(seconds: number) {
+  if (seconds % 60 !== 0) return `${seconds} ${seconds === 1 ? 'second' : 'seconds'}`
+  const minutes = seconds / 60
+  return `${minutes} ${minutes === 1 ? 'minute' : 'minutes'}`
+}
 
 function SettingsView({
   status,
@@ -1075,12 +1127,6 @@ function SettingsView({
     }
   }
 
-  const recordSecondOptions = RECORD_SECOND_PRESETS
-    .concat(settings ? [settings.recordSeconds.effective] : [])
-    .filter((secs, index, all) => all.indexOf(secs) === index)
-    .sort((left, right) => left - right)
-    .map((secs) => ({ value: String(secs), label: `${secs} seconds` }))
-
   const whisperRuns =
     settings != null &&
     (settings.engine.effective === 'whisper' ||
@@ -1160,10 +1206,27 @@ function SettingsView({
             onError={onError}
           />
         ) : null}
+        {settings ? (
+          <SettingSelect
+            label="Maximum recording length"
+            description="Stops timed recordings and recordings started from the button or shortcut."
+            value={recordingLimitValue(settings.recordSeconds)}
+            options={recordingLimitOptions(status.recordingPolicy, settings.recordSeconds)}
+            source={settings.recordSeconds.source}
+            envName="ECHO_RECORD_SECONDS"
+            onChange={(value) =>
+              void patch(
+                'recordSeconds',
+                value === DEFAULT_RECORDING_LIMIT_OPTION ? null : Number(value),
+              )
+            }
+          />
+        ) : null}
         <ShortcutRow
           status={status}
           repairing={repairingLegacyShortcut}
           onRepair={() => void repairLegacy()}
+          onError={onError}
           onRetry={async () => {
             try {
               await retryShortcut()
@@ -1229,15 +1292,6 @@ function SettingsView({
               source={settings.hud.source}
               envName="ECHO_HUD"
               onChange={(value) => void patch('hud', value)}
-            />
-            <SettingSelect
-              label="Recording length"
-              description={`Timed recordings from the command line. Toggle recording still caps at ${status.maxRecordSeconds} seconds.`}
-              value={String(settings.recordSeconds.effective)}
-              options={recordSecondOptions}
-              source={settings.recordSeconds.source}
-              envName="ECHO_RECORD_SECONDS"
-              onChange={(value) => void patch('recordSeconds', Number(value))}
             />
             <div className="setting-row">
               <div>

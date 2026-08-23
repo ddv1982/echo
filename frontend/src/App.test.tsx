@@ -18,6 +18,7 @@ import {
   seedPreviewStatus,
   setSettings,
   setMicrophone,
+  stopRecording,
 } from './tauri'
 import type { ShortcutStatus } from './types'
 
@@ -33,6 +34,7 @@ vi.mock('./tauri', async (importOriginal) => {
     removeStaleInstalls: vi.fn(() => actual.removeStaleInstalls()),
     repairLegacyShortcut: vi.fn(() => actual.repairLegacyShortcut()),
     retryShortcut: vi.fn(() => actual.retryShortcut()),
+    stopRecording: vi.fn(() => actual.stopRecording()),
   }
 })
 
@@ -62,6 +64,8 @@ describe('Echo desktop shell', () => {
     vi.mocked(repairLegacyShortcut).mockImplementation(() => actual.repairLegacyShortcut())
     vi.mocked(retryShortcut).mockReset()
     vi.mocked(retryShortcut).mockImplementation(() => actual.retryShortcut())
+    vi.mocked(stopRecording).mockReset()
+    vi.mocked(stopRecording).mockImplementation(() => actual.stopRecording())
     vi.mocked(getSettings).mockReset()
     vi.mocked(getSettings).mockImplementation(() => actual.getSettings())
     vi.mocked(getMicrophones).mockReset()
@@ -104,6 +108,62 @@ describe('Echo desktop shell', () => {
     fireEvent.click(within(await screen.findByRole('group', { name: 'Cleanup' })).getByRole('button', { name: 'Off' }))
     expect(within(await screen.findByRole('group', { name: 'Cleanup' })).getByRole('button', { name: 'Off' })).toHaveAttribute('data-active', 'true')
     expect((await getSettings()).cleanup).toEqual({ value: 'off', effective: 'off', source: 'file' })
+  })
+
+  it('offers the Rust recording policy in General and clears the default override', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+
+    const select = await screen.findByLabelText('Maximum recording length')
+    expect(within(select).getAllByRole('option').map((option) => option.textContent)).toEqual([
+      '30 seconds',
+      '1 minute',
+      '2 minutes',
+      '5 minutes',
+      '10 minutes · Default',
+    ])
+    expect(select).toHaveValue('default')
+
+    fireEvent.change(select, { target: { value: '120' } })
+    await waitFor(async () => expect((await getSettings()).recordSeconds.value).toBe(120))
+    fireEvent.change(select, { target: { value: 'default' } })
+    await waitFor(async () => expect((await getSettings()).recordSeconds.value).toBeNull())
+  })
+
+  it('preserves a custom recording limit and locks an environment override', async () => {
+    const defaults = await getSettings()
+    seedPreviewSettings({
+      ...defaults,
+      recordSeconds: { value: 90, effective: 90, source: 'file' },
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(await screen.findByRole('option', { name: '90 seconds' })).toBeInTheDocument()
+    expect(screen.getByLabelText('Maximum recording length')).toHaveValue('90')
+
+    seedPreviewSettings({
+      ...defaults,
+      recordSeconds: { value: 30, effective: 90, source: 'env' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Home' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    const locked = await screen.findByLabelText('Maximum recording length')
+    expect(locked).toBeDisabled()
+    expect(locked).toHaveValue('90')
+    expect(screen.getByText('ECHO_RECORD_SECONDS')).toBeInTheDocument()
+  })
+
+  it('uses the snapped recording limit on Home', async () => {
+    seedPreviewStatus({
+      phase: 'Recording',
+      recording: true,
+      recordingInProcess: false,
+      recordingLimitSeconds: 120,
+    })
+    render(<App />)
+    expect(await screen.findByText('0:00 / 2:00')).toBeInTheDocument()
   })
 
   it('disables an env-backed field and names the variable', async () => {
@@ -717,6 +777,7 @@ describe('Echo desktop shell', () => {
 
     seedPreviewStatus({ shortcut: activeShortcut('native-toggle:1') })
     await waitFor(() => expect(localStorage.getItem('echo-shortcut-verified-at')).not.toBeNull())
+    expect(stopRecording).toHaveBeenCalledOnce()
     expect(localStorage.getItem('echo-shortcut-verified-identity')).toBe('portal:Super+Alt+Space')
     expect(await screen.findByText(/Verified/)).toBeInTheDocument()
 

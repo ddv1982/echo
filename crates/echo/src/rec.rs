@@ -395,8 +395,6 @@ pub fn session_active() -> bool {
     lock_owner_is_alive(&echo_core::data_dir().join("recording.lock"))
 }
 
-pub const MAX_RECORD_SECONDS: u64 = RecordingLimit::MAX.seconds() as u64;
-
 #[must_use]
 pub fn recording_limit_from_process() -> ResolvedRecordingLimit {
     let environment = std::env::var("ECHO_RECORD_SECONDS").ok();

@@ -73,7 +73,8 @@ struct AppStatus {
     shortcut: ShortcutStatus,
     cleanup_name: String,
     hud_enabled: bool,
-    max_record_seconds: u64,
+    recording_limit_seconds: u32,
+    recording_policy: RecordingPolicyDto,
     settings_path: String,
     version: String,
     last_error: Option<String>,
@@ -83,6 +84,24 @@ struct AppStatus {
     current_exe: String,
     first_path_hit: Option<String>,
     stale_installs: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RecordingPolicyDto {
+    minimum_seconds: u32,
+    default_seconds: u32,
+    maximum_seconds: u32,
+    presets_seconds: [u32; 5],
+}
+
+fn recording_policy_dto() -> RecordingPolicyDto {
+    RecordingPolicyDto {
+        minimum_seconds: echo_core::RecordingLimit::MIN.seconds(),
+        default_seconds: echo_core::RecordingLimit::DEFAULT.seconds(),
+        maximum_seconds: echo_core::RecordingLimit::MAX.seconds(),
+        presets_seconds: echo_core::RecordingLimit::PRESETS.map(echo_core::RecordingLimit::seconds),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -847,6 +866,8 @@ impl From<&DictEntry> for DictionaryItem {
 #[tauri::command]
 fn get_app_status() -> AppStatus {
     let status = echo::status::read();
+    let recording_limit =
+        project_recording_limit(&status, echo::rec::recording_limit_from_process().limit);
     let health = health_snapshot();
     let shortcut = project_shortcut_status(&native_shortcut_state(), &health.current_exe);
     let last_run = History::load().ok().and_then(|history| {
@@ -874,7 +895,8 @@ fn get_app_status() -> AppStatus {
         shortcut,
         cleanup_name: echo::cleanup::mode_name(),
         hud_enabled: echo::ui::hud::enabled(),
-        max_record_seconds: echo::rec::MAX_RECORD_SECONDS,
+        recording_limit_seconds: recording_limit.seconds(),
+        recording_policy: recording_policy_dto(),
         settings_path: echo_core::config_path().to_string_lossy().into_owned(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         last_error: status.error,
@@ -884,6 +906,17 @@ fn get_app_status() -> AppStatus {
         current_exe: health.current_exe,
         first_path_hit: health.first_path_hit,
         stale_installs: health.stale_installs,
+    }
+}
+
+fn project_recording_limit(
+    status: &echo::status::Status,
+    current: echo_core::RecordingLimit,
+) -> echo_core::RecordingLimit {
+    if status.state == "Recording" {
+        status.recording_limit.unwrap_or(current)
+    } else {
+        current
     }
 }
 
@@ -1045,6 +1078,11 @@ fn remove_dictionary_entry(spoken: String, written: String) -> Result<bool, Stri
 #[tauri::command]
 fn toggle_recording() -> Result<(), String> {
     start_recording_thread()
+}
+
+#[tauri::command]
+fn stop_recording() -> Result<bool, String> {
+    echo::rec::stop_managed_recording_if_active()
 }
 
 /// Live microphone RMS when this process holds the recording session (the
@@ -1408,12 +1446,7 @@ fn settings_from(
             "rules".to_string(),
         ),
         hud: hud_field(env.hud.as_deref(), file.hud),
-        record_seconds: record_seconds_field(
-            env.record_seconds
-                .as_deref()
-                .and_then(|raw| raw.parse::<u64>().ok()),
-            file.record_seconds,
-        ),
+        record_seconds: record_seconds_field(env.record_seconds.as_deref(), file.record_seconds),
         language: setting_field(
             env.language
                 .as_deref()
@@ -1450,7 +1483,7 @@ fn config_from_values_with_base(
     config.record_seconds = settings
         .record_seconds
         .value
-        .map(|secs| secs.clamp(1, echo::rec::MAX_RECORD_SECONDS as u32));
+        .map(|secs| echo_core::RecordingLimit::clamped(u64::from(secs)).seconds());
     config.language = match settings.language.value.as_deref() {
         None => None,
         Some(raw) => Some(
@@ -1500,17 +1533,16 @@ fn hud_field(env: Option<&str>, file: Option<bool>) -> SettingField<bool> {
     }
 }
 
-fn record_seconds_field(env: Option<u64>, file: Option<u32>) -> SettingField<u32> {
-    let field = setting_field(
-        env.map(|secs| secs.clamp(1, echo::rec::MAX_RECORD_SECONDS) as u32),
-        file,
-        3,
-    );
+fn record_seconds_field(env: Option<&str>, file: Option<u32>) -> SettingField<u32> {
+    let resolved = echo_core::resolve_recording_limit(env, file);
     SettingField {
-        effective: field
-            .effective
-            .clamp(1, echo::rec::MAX_RECORD_SECONDS as u32),
-        ..field
+        value: file,
+        effective: resolved.limit.seconds(),
+        source: match resolved.source {
+            echo_core::RecordingLimitSource::Environment => SettingSource::Env,
+            echo_core::RecordingLimitSource::File => SettingSource::File,
+            echo_core::RecordingLimitSource::Default => SettingSource::Default,
+        },
     }
 }
 
@@ -2320,6 +2352,7 @@ fn run_desktop() {
             add_dictionary_entry,
             remove_dictionary_entry,
             toggle_recording,
+            stop_recording,
             get_recording_level,
             copy_text,
             remove_stale_installs,
@@ -2932,7 +2965,29 @@ mod settings_tests {
     }
 
     #[test]
-    fn record_seconds_env_above_u32_max_clamps_like_recorder() {
+    fn recording_policy_projects_defaults_presets_and_compatibility_values() {
+        let policy = recording_policy_dto();
+        let serialized = serde_json::to_value(&policy).unwrap();
+        assert_eq!(serialized["minimumSeconds"], 1);
+        assert_eq!(serialized["defaultSeconds"], 600);
+        assert_eq!(serialized["maximumSeconds"], 600);
+        assert_eq!(
+            serialized["presetsSeconds"],
+            serde_json::json!([30, 60, 120, 300, 600])
+        );
+
+        let defaults = record_seconds_field(None, None);
+        assert_eq!(defaults.effective, 600);
+        assert_eq!(defaults.source, SettingSource::Default);
+
+        let custom = record_seconds_field(None, Some(90));
+        assert_eq!(custom.effective, 90);
+        assert_eq!(custom.source, SettingSource::File);
+
+        let invalid = record_seconds_field(Some("invalid"), Some(61));
+        assert_eq!(invalid.effective, 61);
+        assert_eq!(invalid.source, SettingSource::File);
+
         let env = SettingsEnv {
             record_seconds: Some(((u32::MAX as u64) + 1).to_string()),
             ..SettingsEnv::default()
@@ -2943,11 +2998,40 @@ mod settings_tests {
         };
         let settings = settings_from(&env, &file, "en").unwrap();
         assert_eq!(settings.record_seconds.value, Some(12));
-        assert_eq!(
-            settings.record_seconds.effective,
-            echo::rec::MAX_RECORD_SECONDS as u32
-        );
+        assert_eq!(settings.record_seconds.effective, 600);
         assert_eq!(settings.record_seconds.source, SettingSource::Env);
+
+        let mut incoming = settings;
+        incoming.record_seconds.value = Some(u32::MAX);
+        assert_eq!(
+            config_from_values_with_base(&incoming, Config::default())
+                .unwrap()
+                .record_seconds,
+            Some(600)
+        );
+    }
+
+    #[test]
+    fn active_recording_limit_snapshot_wins_over_current_settings() {
+        let active = echo::status::Status {
+            state: "Recording".to_string(),
+            last: None,
+            error: None,
+            recording_limit: echo_core::RecordingLimit::new(120),
+        };
+        assert_eq!(
+            project_recording_limit(&active, echo_core::RecordingLimit::MAX).seconds(),
+            120
+        );
+
+        let idle = echo::status::Status {
+            state: "Idle".to_string(),
+            ..active
+        };
+        assert_eq!(
+            project_recording_limit(&idle, echo_core::RecordingLimit::MAX).seconds(),
+            600
+        );
     }
 
     #[test]
