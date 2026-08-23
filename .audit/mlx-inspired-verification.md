@@ -21,3 +21,4 @@ Four independent pstack reviewers covered Rust correctness, CLI boundaries, mult
 - nonzero Parakeet exits reject partial stdout;
 - recorder cleanup failures retain the previous dictionary fallback;
 - stored language/model incompatibility is no longer reported as a missing engine.
+- raw output bypasses cleanup, and normalized output aliases cannot overwrite the source WAV.

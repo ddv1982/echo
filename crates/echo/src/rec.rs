@@ -131,7 +131,7 @@ fn run_record(mut stop: StopWhen) -> i32 {
     let transcript = match prepared.transcribe(
         &capture.pcm,
         &dict,
-        crate::transcribe::CleanupFailurePolicy::DictionaryFallback,
+        crate::transcribe::CleanupPolicy::DictionaryFallback,
     ) {
         Ok(transcript) => transcript,
         Err(err) => {

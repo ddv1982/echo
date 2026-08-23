@@ -31,6 +31,9 @@ cmp "$VERIFY_ROOT/expected-clean" "$VERIFY_ROOT/clean"
 printf 'claude code\n' > "$VERIFY_ROOT/expected-raw"
 run_fake transcribe "$WAV" --raw > "$VERIFY_ROOT/raw"
 cmp "$VERIFY_ROOT/expected-raw" "$VERIFY_ROOT/raw"
+ECHO_CLEANUP=local:/definitely/missing-echo-cleaner \
+  run_fake transcribe "$WAV" --raw > "$VERIFY_ROOT/raw-without-cleanup"
+cmp "$VERIFY_ROOT/expected-raw" "$VERIFY_ROOT/raw-without-cleanup"
 
 run_fake transcribe "$WAV" --format json > "$VERIFY_ROOT/fake.json"
 python3 - "$VERIFY_ROOT/fake.json" <<'PY'

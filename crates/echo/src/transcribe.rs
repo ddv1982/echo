@@ -373,9 +373,10 @@ pub struct PreparedTranscription {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CleanupFailurePolicy {
-    Fail,
+pub enum CleanupPolicy {
+    Strict,
     DictionaryFallback,
+    Skip,
 }
 
 impl PreparedTranscription {
@@ -388,7 +389,7 @@ impl PreparedTranscription {
         &self,
         pcm: &Pcm16kMono,
         dictionary: &Dictionary,
-        cleanup_failure: CleanupFailurePolicy,
+        cleanup_policy: CleanupPolicy,
     ) -> Result<CompletedTranscription, TranscriptionError> {
         let hints = match self.resolved.engine {
             ResolvedEngine::Whisper { .. } => RecognitionHints::from_dictionary(dictionary),
@@ -407,13 +408,20 @@ impl PreparedTranscription {
             .resolved
             .language
             .permits_english_rules(transcript.detail.language.as_deref());
-        let cleanup = effective_cleanup(self.resolved.cleanup.clone(), english);
-        let rewrite = match cleanup.apply(&transcript.raw, dictionary) {
-            Ok(rewrite) => rewrite,
-            Err(_) if cleanup_failure == CleanupFailurePolicy::DictionaryFallback => {
-                dictionary.rewrite(&transcript.raw)
+        let rewrite = match cleanup_policy {
+            CleanupPolicy::Skip => echo_core::Rewrite {
+                text: transcript.raw.clone(),
+            },
+            CleanupPolicy::Strict | CleanupPolicy::DictionaryFallback => {
+                let cleanup = effective_cleanup(self.resolved.cleanup.clone(), english);
+                match cleanup.apply(&transcript.raw, dictionary) {
+                    Ok(rewrite) => rewrite,
+                    Err(_) if cleanup_policy == CleanupPolicy::DictionaryFallback => {
+                        dictionary.rewrite(&transcript.raw)
+                    }
+                    Err(error) => return Err(TranscriptionError::Cleanup(error)),
+                }
             }
-            Err(error) => return Err(TranscriptionError::Cleanup(error)),
         };
         Ok(CompletedTranscription {
             raw: transcript.raw,
@@ -466,9 +474,10 @@ pub fn transcribe_file(
     path: &Path,
     prepared: &PreparedTranscription,
     dictionary: &Dictionary,
+    cleanup_policy: CleanupPolicy,
 ) -> Result<CompletedTranscription, TranscriptionError> {
     let capture = crate::audio::load_wav(path).map_err(TranscriptionError::Audio)?;
-    prepared.transcribe(&capture.pcm, dictionary, CleanupFailurePolicy::Fail)
+    prepared.transcribe(&capture.pcm, dictionary, cleanup_policy)
 }
 
 #[derive(Debug, Clone, PartialEq)]

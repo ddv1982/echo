@@ -188,6 +188,29 @@ fn syntax_and_runtime_failures_use_distinct_exit_codes_and_stderr() {
 }
 
 #[test]
+fn output_alias_with_a_missing_parent_cannot_overwrite_the_input() {
+    let root = scratch("output-alias");
+    let input = root.join("audio.wav");
+    std::fs::copy(fixture(), &input).unwrap();
+    let original = std::fs::read(&input).unwrap();
+    let output = root.join("scratch/../audio.wav");
+
+    let result = run(
+        &root,
+        &[
+            "transcribe",
+            input.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(result.status.code(), Some(2));
+    assert!(result.stdout.is_empty());
+    assert_eq!(std::fs::read(input).unwrap(), original);
+    assert!(!root.join("scratch").exists());
+}
+
+#[test]
 fn audio_setup_inference_cleanup_and_output_failures_exit_one() {
     let root = scratch("runtime-failures");
     let wav = fixture();
@@ -257,6 +280,22 @@ fn audio_setup_inference_cleanup_and_output_failures_exit_one() {
     assert_eq!(cleanup.status.code(), Some(1));
     assert!(cleanup.stdout.is_empty());
     assert!(!cleanup.stderr.is_empty());
+
+    let raw_without_cleanup = Command::new(env!("CARGO_BIN_EXE_echo-desktop"))
+        .args(["transcribe", wav.to_str().unwrap(), "--raw"])
+        .env("ECHO_ENGINE", "fake")
+        .env("ECHO_CLEANUP", "local:/definitely/missing-echo-cleaner")
+        .env("ECHO_CONFIG_DIR", root.join("raw-cleanup-config"))
+        .env("ECHO_DATA_DIR", root.join("raw-cleanup-data"))
+        .env("ECHO_MODEL_DIR", root.join("raw-cleanup-models"))
+        .output()
+        .unwrap();
+    assert!(
+        raw_without_cleanup.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&raw_without_cleanup.stderr)
+    );
+    assert_eq!(raw_without_cleanup.stdout, b"claude code\n");
 
     let output = run(
         &root,

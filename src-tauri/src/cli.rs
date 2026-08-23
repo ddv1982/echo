@@ -1,6 +1,6 @@
 use std::ffi::OsString;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use echo::transcribe::{
@@ -208,7 +208,7 @@ fn run_transcribe(args: TranscribeArgs) -> Result<(), CliFailure> {
             "Parakeet supports automatic language selection only",
         ));
     }
-    if args.output != Path::new("-") && same_path(&args.file, &args.output) {
+    if args.output != Path::new("-") && paths_alias(&args.file, &args.output) {
         return Err(CliFailure::argument(
             "the output path must differ from the input WAV",
         ));
@@ -228,18 +228,50 @@ fn run_transcribe(args: TranscribeArgs) -> Result<(), CliFailure> {
                 CliFailure::runtime(message)
             }
         })?;
-    let result = echo::transcribe::transcribe_file(&args.file, &prepared, &dictionary)
-        .map_err(|error| CliFailure::runtime(error.to_string()))?;
+    let cleanup_policy = if args.raw {
+        echo::transcribe::CleanupPolicy::Skip
+    } else {
+        echo::transcribe::CleanupPolicy::Strict
+    };
+    let result =
+        echo::transcribe::transcribe_file(&args.file, &prepared, &dictionary, cleanup_policy)
+            .map_err(|error| CliFailure::runtime(error.to_string()))?;
     let payload = render_transcription(&result, prepared.resolved(), args.format, args.raw)
         .map_err(CliFailure::runtime)?;
     write_payload(&args.output, &payload).map_err(CliFailure::runtime)
 }
 
-fn same_path(left: &Path, right: &Path) -> bool {
-    match (left.canonicalize(), right.canonicalize()) {
+fn paths_alias(left: &Path, right: &Path) -> bool {
+    match (normalize_path(left), normalize_path(right)) {
         (Ok(left), Ok(right)) => left == right,
         _ => left == right,
     }
+}
+
+fn normalize_path(path: &Path) -> std::io::Result<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(Path::new("/")),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Normal(part) => {
+                normalized.push(part);
+                if normalized.exists() {
+                    normalized = normalized.canonicalize()?;
+                }
+            }
+        }
+    }
+    Ok(normalized)
 }
 
 fn render_transcription(

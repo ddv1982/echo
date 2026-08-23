@@ -12,6 +12,7 @@
 
 - Fake file transcription produces exact text and schema-versioned JSON.
 - Raw output, exact output paths, and one trailing newline are pinned.
+- Raw output bypasses cleanup, and aliased output paths cannot overwrite the input recording.
 - Syntax failures exit 2. Audio, setup, inference, cleanup, and output failures exit 1.
 - A nonzero engine exit fails even when the process wrote partial stdout.
 - Stdout never contains diagnostics.
