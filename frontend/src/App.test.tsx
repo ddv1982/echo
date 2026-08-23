@@ -697,6 +697,21 @@ describe('Echo desktop shell', () => {
     await waitFor(async () => expect((await getReadiness()).speechReady).toBe(true))
   })
 
+  it('does not start setup while a non-cancellable operation is active', async () => {
+    const readiness = await getReadiness()
+    seedPreviewReadiness({
+      ...readiness,
+      speechReady: false,
+      activeOperation: 'verify-whisper',
+      activeCancellable: false,
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await screen.findByRole('heading', { name: 'Settings' })
+    expect(screen.queryByRole('button', { name: /recommended setup/i })).not.toBeInTheDocument()
+  })
+
   it('offers Use for an already available alternative without duplicating Recommended', async () => {
     const readiness = await getReadiness()
     seedPreviewReadiness({

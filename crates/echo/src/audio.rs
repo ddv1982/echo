@@ -366,9 +366,36 @@ fn process_snapshot_from(discovery: &InputDiscovery) -> MicrophoneSnapshot {
     }
 }
 
+#[cfg(any(target_os = "linux", test))]
+fn linux_host_priority(name: &str) -> usize {
+    match name {
+        "PipeWire" => 0,
+        "PulseAudio" => 1,
+        "ALSA" => 2,
+        _ => usize::MAX,
+    }
+}
+
+fn preferred_host() -> cpal::Host {
+    #[cfg(target_os = "linux")]
+    {
+        let mut available = cpal::available_hosts();
+        available.sort_by_key(|host| linux_host_priority(host.name()));
+        for host_id in available {
+            if linux_host_priority(host_id.name()) == usize::MAX {
+                continue;
+            }
+            if let Ok(host) = cpal::host_from_id(host_id) {
+                return host;
+            }
+        }
+    }
+    cpal::default_host()
+}
+
 #[must_use]
 pub fn microphone_snapshot() -> MicrophoneSnapshot {
-    process_snapshot_from(&discover_inputs(&cpal::default_host()))
+    process_snapshot_from(&discover_inputs(&preferred_host()))
 }
 
 impl AudioCapture {
@@ -382,13 +409,13 @@ impl AudioCapture {
     }
 
     pub fn open_default() -> Result<Self, AudioError> {
-        let discovery = discover_inputs(&cpal::default_host());
+        let discovery = discover_inputs(&preferred_host());
         let snapshot = process_snapshot_from(&discovery);
         Self::open_snapshot(discovery, &snapshot.selection, true)
     }
 
     pub fn open(requested: Option<&str>) -> Result<Self, AudioError> {
-        let discovery = discover_inputs(&cpal::default_host());
+        let discovery = discover_inputs(&preferred_host());
         let devices: Vec<_> = discovery
             .devices
             .iter()
@@ -411,7 +438,7 @@ impl AudioCapture {
     }
 
     pub fn open_exact(id: Option<&MicrophoneId>) -> Result<Self, AudioError> {
-        let discovery = discover_inputs(&cpal::default_host());
+        let discovery = discover_inputs(&preferred_host());
         let devices: Vec<_> = discovery
             .devices
             .iter()
@@ -807,6 +834,13 @@ mod tests {
             Some((*value).to_string())
         });
         assert_eq!(already_present, vec!["default"]);
+    }
+
+    #[test]
+    fn linux_host_priority_is_pipewire_then_pulse_then_alsa() {
+        assert!(linux_host_priority("PipeWire") < linux_host_priority("PulseAudio"));
+        assert!(linux_host_priority("PulseAudio") < linux_host_priority("ALSA"));
+        assert_eq!(linux_host_priority("JACK"), usize::MAX);
     }
 
     #[test]

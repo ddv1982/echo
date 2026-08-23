@@ -50,7 +50,7 @@ export function SpeechSetupSection({
             <button type="button" className="compact-button" onClick={() => run(cancelSetup(activeOperation))}>
               Cancel
             </button>
-          ) : !readiness.speechReady && readiness.managedSupported && recommended ? (
+          ) : activeOperation == null && !readiness.speechReady && readiness.managedSupported && recommended ? (
             <button
               type="button"
               className="primary-button setup-primary"
