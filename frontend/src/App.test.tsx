@@ -155,6 +155,21 @@ describe('Echo desktop shell', () => {
     expect(screen.getByText('ECHO_RECORD_SECONDS')).toBeInTheDocument()
   })
 
+  it('shows an explicit 600-second environment override as selected', async () => {
+    const defaults = await getSettings()
+    seedPreviewSettings({
+      ...defaults,
+      recordSeconds: { value: null, effective: 600, source: 'env' },
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+
+    const select = await screen.findByLabelText('Maximum recording length')
+    expect(select).toHaveValue('600')
+    expect(within(select).getByRole('option', { name: '10 minutes' })).toBeInTheDocument()
+  })
+
   it('uses the snapped recording limit on Home', async () => {
     seedPreviewStatus({
       phase: 'Recording',
@@ -164,6 +179,19 @@ describe('Echo desktop shell', () => {
     })
     render(<App />)
     expect(await screen.findByText('0:00 / 2:00')).toBeInTheDocument()
+  })
+
+  it('does not invent a limit for a legacy active status', async () => {
+    seedPreviewStatus({
+      phase: 'Recording',
+      recording: true,
+      recordingInProcess: false,
+      recordingLimitSeconds: null,
+    })
+    render(<App />)
+
+    expect(await screen.findByText('0:00')).toBeInTheDocument()
+    expect(screen.queryByText(/0:00 \/ /)).not.toBeInTheDocument()
   })
 
   it('disables an env-backed field and names the variable', async () => {
@@ -801,9 +829,35 @@ describe('Echo desktop shell', () => {
       await vi.advanceTimersByTimeAsync(10_100)
       expect(await screen.findByText('No keypress seen — check the binding')).toBeInTheDocument()
       expect(localStorage.getItem('echo-shortcut-verified-at')).toBeNull()
+      expect(stopRecording).toHaveBeenCalledOnce()
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('does not verify a shortcut when recording cleanup fails', async () => {
+    vi.mocked(stopRecording).mockRejectedValueOnce(new Error('cannot stop recording'))
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Test shortcut' }))
+    expect(await screen.findByText('Listening… press your shortcut')).toBeInTheDocument()
+
+    seedPreviewStatus({ shortcut: activeShortcut('native-toggle:cleanup-failure') })
+    await waitFor(() => expect(stopRecording).toHaveBeenCalledOnce())
+    expect(localStorage.getItem('echo-shortcut-verified-at')).toBeNull()
+    expect(await screen.findByText('No keypress seen — check the binding')).toBeInTheDocument()
+  })
+
+  it('stops a shortcut-test recording when Settings unmounts', async () => {
+    const { unmount } = render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Test shortcut' }))
+    expect(await screen.findByText('Listening… press your shortcut')).toBeInTheDocument()
+
+    unmount()
+    expect(stopRecording).toHaveBeenCalledOnce()
   })
 
   it('lists the microphone step when the mic is not ready', async () => {

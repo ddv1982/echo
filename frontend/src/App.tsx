@@ -384,8 +384,9 @@ function HomeView({
               <span>{status.recording ? 'Listening' : status.phase === 'Transcribing' ? 'Transcribing' : 'Ready'}</span>
               {status.recording ? (
                 <span className="readout-timer">
-                  {formatDuration(Math.min(recordingSeconds, status.recordingLimitSeconds))} /{' '}
-                  {formatDuration(status.recordingLimitSeconds)}
+                  {status.recordingLimitSeconds == null
+                    ? formatDuration(recordingSeconds)
+                    : `${formatDuration(Math.min(recordingSeconds, status.recordingLimitSeconds))} / ${formatDuration(status.recordingLimitSeconds)}`}
                 </span>
               ) : null}
             </div>
@@ -558,9 +559,11 @@ function ShortcutRow({
   const [phase, setPhase] = useState<'idle' | 'arming' | 'listening' | 'timed-out'>('idle')
   const [retrying, setRetrying] = useState(false)
   const attempt = useRef(0)
+  const verificationActive = useRef(false)
   const pollTimer = useRef<number | null>(null)
   const timeoutTimer = useRef<number | null>(null)
   const completeVerification = (identity: string) => {
+    verificationActive.current = false
     attempt.current += 1
     if (pollTimer.current != null) window.clearTimeout(pollTimer.current)
     if (timeoutTimer.current != null) window.clearTimeout(timeoutTimer.current)
@@ -576,8 +579,23 @@ function ShortcutRow({
       attempt.current += 1
       if (pollTimer.current != null) window.clearTimeout(pollTimer.current)
       if (timeoutTimer.current != null) window.clearTimeout(timeoutTimer.current)
+      if (verificationActive.current) void stopRecording()
     }
   }, [])
+
+  const stopVerifiedRecording = async () => {
+    try {
+      await stopRecording()
+      for (let check = 0; check < 20; check += 1) {
+        if (!(await getAppStatus()).recording) return true
+        await new Promise((resolve) => window.setTimeout(resolve, 25))
+      }
+      onError('Echo could not confirm that the shortcut recording stopped.')
+    } catch (reason) {
+      onError(messageFrom(reason))
+    }
+    return false
+  }
 
   const start = async () => {
     const attemptId = attempt.current + 1
@@ -585,6 +603,7 @@ function ShortcutRow({
     if (pollTimer.current != null) window.clearTimeout(pollTimer.current)
     if (timeoutTimer.current != null) window.clearTimeout(timeoutTimer.current)
     setPhase('arming')
+    verificationActive.current = true
 
     try {
       const baseline = presentShortcut(await getShortcutStatus())
@@ -592,6 +611,7 @@ function ShortcutRow({
       const expectedActivationSource = baseline.expectedActivationSource
       const baselineIdentity = baseline.verificationIdentity
       if (expectedActivationSource == null || baselineIdentity == null) {
+        verificationActive.current = false
         setPhase('timed-out')
         return
       }
@@ -605,12 +625,13 @@ function ShortcutRow({
           next.activation?.startsWith(`${expectedActivationSource}:`) === true &&
           next.verificationIdentity === baselineIdentity
         ) {
-          try {
-            await stopRecording()
-          } catch (reason) {
-            onError(messageFrom(reason))
-          }
+          const stopped = await stopVerifiedRecording()
           if (attempt.current !== attemptId) return
+          if (!stopped) {
+            verificationActive.current = false
+            setPhase('timed-out')
+            return
+          }
           completeVerification(baselineIdentity)
           return
         }
@@ -620,11 +641,18 @@ function ShortcutRow({
       timeoutTimer.current = window.setTimeout(() => {
         if (attempt.current !== attemptId) return
         attempt.current += 1
+        verificationActive.current = false
         if (pollTimer.current != null) window.clearTimeout(pollTimer.current)
         setPhase('timed-out')
+        void stopRecording().catch((reason: unknown) => onError(messageFrom(reason)))
       }, 10_000)
-    } catch {
-      if (attempt.current === attemptId) setPhase('timed-out')
+    } catch (reason) {
+      if (attempt.current === attemptId) {
+        verificationActive.current = false
+        setPhase('timed-out')
+        void stopRecording().catch(() => undefined)
+        onError(messageFrom(reason))
+      }
     }
   }
 

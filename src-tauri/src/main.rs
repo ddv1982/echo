@@ -73,7 +73,7 @@ struct AppStatus {
     shortcut: ShortcutStatus,
     cleanup_name: String,
     hud_enabled: bool,
-    recording_limit_seconds: u32,
+    recording_limit_seconds: Option<u32>,
     recording_policy: RecordingPolicyDto,
     settings_path: String,
     version: String,
@@ -895,7 +895,7 @@ fn get_app_status() -> AppStatus {
         shortcut,
         cleanup_name: echo::cleanup::mode_name(),
         hud_enabled: echo::ui::hud::enabled(),
-        recording_limit_seconds: recording_limit.seconds(),
+        recording_limit_seconds: recording_limit.map(echo_core::RecordingLimit::seconds),
         recording_policy: recording_policy_dto(),
         settings_path: echo_core::config_path().to_string_lossy().into_owned(),
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -912,11 +912,11 @@ fn get_app_status() -> AppStatus {
 fn project_recording_limit(
     status: &echo::status::Status,
     current: echo_core::RecordingLimit,
-) -> echo_core::RecordingLimit {
+) -> Option<echo_core::RecordingLimit> {
     if status.state == "Recording" {
-        status.recording_limit.unwrap_or(current)
+        status.recording_limit
     } else {
-        current
+        Some(current)
     }
 }
 
@@ -3020,8 +3020,18 @@ mod settings_tests {
             recording_limit: echo_core::RecordingLimit::new(120),
         };
         assert_eq!(
-            project_recording_limit(&active, echo_core::RecordingLimit::MAX).seconds(),
-            120
+            project_recording_limit(&active, echo_core::RecordingLimit::MAX)
+                .map(echo_core::RecordingLimit::seconds),
+            Some(120)
+        );
+
+        let legacy = echo::status::Status {
+            recording_limit: None,
+            ..active.clone()
+        };
+        assert_eq!(
+            project_recording_limit(&legacy, echo_core::RecordingLimit::MAX),
+            None
         );
 
         let idle = echo::status::Status {
@@ -3029,8 +3039,9 @@ mod settings_tests {
             ..active
         };
         assert_eq!(
-            project_recording_limit(&idle, echo_core::RecordingLimit::MAX).seconds(),
-            600
+            project_recording_limit(&idle, echo_core::RecordingLimit::MAX)
+                .map(echo_core::RecordingLimit::seconds),
+            Some(600)
         );
     }
 

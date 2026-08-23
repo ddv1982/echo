@@ -1,12 +1,12 @@
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use echo_core::{
-    Dictionary, FailReason, History, HistoryRow, InjectReport, Injector, RecordingLimit,
-    ResolvedRecordingLimit, Session, SessionState,
+    Dictionary, FailReason, History, HistoryRow, InjectReport, Injector, Pcm16kMono,
+    RecordingLimit, ResolvedRecordingLimit, Session, SessionState, SAMPLE_RATE_HZ,
 };
 
 use crate::audio::{self, AudioCapture, CancellationToken};
@@ -254,18 +254,38 @@ fn capture_from(
 ) -> Result<audio::CaptureResult, FailReason> {
     if let Some(path) = fixture {
         let capture = audio::load_wav(&path).map_err(|_| FailReason::EngineError)?;
-        // Publish the fixture's loudness at real-time cadence so the HUD's
-        // bars are truthful in demos and CI screenshots.
-        let playback_cancel = CancellationToken::new();
-        let player = audio::play_fixture_meter(&capture.pcm, meter.clone(), playback_cancel);
-        let _ = player.join();
-        return Ok(capture);
+        return play_fixture_capture(capture, stop, limit, meter);
     }
     let capture = AudioCapture::open_default().map_err(|err| match err {
         audio::AudioError::NoDevice => FailReason::NoInputDevice,
         _ => FailReason::CaptureFailed,
     })?;
     record_device(&capture, stop, limit, meter).map_err(|_| FailReason::CaptureFailed)
+}
+
+fn play_fixture_capture(
+    capture: audio::CaptureResult,
+    stop: &StopWhen,
+    limit: RecordingLimit,
+    meter: &audio::LevelMeter,
+) -> Result<audio::CaptureResult, FailReason> {
+    let max_samples = (limit.seconds() as usize)
+        .saturating_mul(SAMPLE_RATE_HZ as usize)
+        .min(capture.pcm.len());
+    let pcm = Pcm16kMono::from_samples(capture.pcm.samples()[..max_samples].to_vec());
+    let cancel = CancellationToken::new();
+
+    let played = std::thread::scope(|scope| {
+        spawn_toggle_stop_watcher(scope, stop, cancel.clone());
+        let player = audio::play_fixture_meter(&pcm, meter.clone(), cancel.clone());
+        let played = player.join().unwrap_or(0);
+        cancel.cancel();
+        played
+    });
+    let played = played.min(pcm.len());
+    Ok(audio::CaptureResult::from_pcm(Pcm16kMono::from_samples(
+        pcm.samples()[..played].to_vec(),
+    )))
 }
 
 fn record_device(
@@ -275,20 +295,26 @@ fn record_device(
     meter: &audio::LevelMeter,
 ) -> Result<audio::CaptureResult, audio::AudioError> {
     std::thread::scope(|scope| {
-        if let StopWhen::ToggleFile(toggle) = stop {
-            let cancel = capture.cancel.clone();
-            let stop_path = &toggle.stop_path;
-            scope.spawn(move || {
-                while !cancel.is_cancelled() && !stop_path.exists() {
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-                cancel.cancel();
-            });
-        }
+        spawn_toggle_stop_watcher(scope, stop, capture.cancel.clone());
         let result = capture.record(limit.duration(), Some(meter));
         capture.cancel.cancel();
         result
     })
+}
+
+fn spawn_toggle_stop_watcher<'scope>(
+    scope: &'scope std::thread::Scope<'scope, '_>,
+    stop: &'scope StopWhen,
+    cancel: CancellationToken,
+) {
+    if let StopWhen::ToggleFile(toggle) = stop {
+        scope.spawn(move || {
+            while !cancel.is_cancelled() && !toggle.stop_requested() {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            cancel.cancel();
+        });
+    }
 }
 
 enum ToggleAction {
@@ -296,9 +322,21 @@ enum ToggleAction {
     Stop,
 }
 
+enum LockAcquisition {
+    Started(ToggleSession),
+    Busy(LockOwner),
+}
+
 struct ToggleSession {
     lock_path: PathBuf,
     stop_path: PathBuf,
+    token: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LockOwner {
+    pid: u32,
+    token: Option<String>,
 }
 
 impl ToggleSession {
@@ -307,54 +345,85 @@ impl ToggleSession {
     }
 
     fn start_or_stop_in(dir: &Path) -> Result<ToggleAction, String> {
-        if let Some(session) = Self::try_start_in(dir)? {
-            return Ok(ToggleAction::Start(session));
+        match Self::acquire_in(dir)? {
+            LockAcquisition::Started(session) => Ok(ToggleAction::Start(session)),
+            LockAcquisition::Busy(owner) => {
+                write_stop_request(&dir.join("recording.stop"), &owner)?;
+                Ok(ToggleAction::Stop)
+            }
         }
-        fs::write(dir.join("recording.stop"), b"stop\n").map_err(|err| err.to_string())?;
-        Ok(ToggleAction::Stop)
     }
 
     fn request_stop_if_active_in(dir: &Path) -> Result<bool, String> {
         let lock_path = dir.join("recording.lock");
         let stop_path = dir.join("recording.stop");
-        if !lock_owner_is_alive(&lock_path) {
+        let Some(owner) = live_lock_owner(&lock_path) else {
             let _ = fs::remove_file(lock_path);
             let _ = fs::remove_file(stop_path);
             return Ok(false);
-        }
-        fs::write(stop_path, b"stop\n").map_err(|err| err.to_string())?;
+        };
+        write_stop_request(&stop_path, &owner)?;
         Ok(true)
     }
 
+    #[cfg(test)]
     fn try_start_in(dir: &Path) -> Result<Option<Self>, String> {
+        match Self::acquire_in(dir)? {
+            LockAcquisition::Started(session) => Ok(Some(session)),
+            LockAcquisition::Busy(_) => Ok(None),
+        }
+    }
+
+    fn acquire_in(dir: &Path) -> Result<LockAcquisition, String> {
         fs::create_dir_all(dir).map_err(|err| err.to_string())?;
         let lock_path = dir.join("recording.lock");
         let stop_path = dir.join("recording.stop");
         for _ in 0..2 {
+            let token = new_session_token();
+            let candidate = dir.join(format!(".recording.lock.{token}"));
             match OpenOptions::new()
                 .write(true)
                 .create_new(true)
-                .open(&lock_path)
+                .open(&candidate)
             {
                 Ok(mut lock) => {
+                    writeln!(lock, "{}\n{token}", std::process::id())
+                        .map_err(|err| err.to_string())?;
+                    drop(lock);
+                    match fs::hard_link(&candidate, &lock_path) {
+                        Ok(()) => {}
+                        Err(err) if err.kind() == ErrorKind::AlreadyExists => {
+                            let _ = fs::remove_file(&candidate);
+                            if let Some(owner) = live_lock_owner(&lock_path) {
+                                return Ok(LockAcquisition::Busy(owner));
+                            }
+                            let _ = fs::remove_file(&lock_path);
+                            let _ = fs::remove_file(&stop_path);
+                            continue;
+                        }
+                        Err(err) => {
+                            let _ = fs::remove_file(&candidate);
+                            return Err(err.to_string());
+                        }
+                    }
+                    let _ = fs::remove_file(&candidate);
                     let _ = fs::remove_file(&stop_path);
-                    writeln!(lock, "{}", std::process::id()).map_err(|err| err.to_string())?;
-                    return Ok(Some(Self {
+                    return Ok(LockAcquisition::Started(Self {
                         lock_path,
                         stop_path,
+                        token,
                     }));
-                }
-                Err(err) if err.kind() == ErrorKind::AlreadyExists => {
-                    if lock_owner_is_alive(&lock_path) {
-                        return Ok(None);
-                    }
-                    let _ = fs::remove_file(&lock_path);
-                    let _ = fs::remove_file(&stop_path);
                 }
                 Err(err) => return Err(err.to_string()),
             }
         }
         Err("could not acquire recording lock".to_string())
+    }
+
+    fn stop_requested(&self) -> bool {
+        fs::read_to_string(&self.stop_path)
+            .ok()
+            .is_some_and(|token| token.trim() == self.token)
     }
 }
 
@@ -365,12 +434,43 @@ impl Drop for ToggleSession {
     }
 }
 
+fn new_session_token() -> String {
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    format!(
+        "{}-{}-{}-{}",
+        std::process::id(),
+        now.as_secs(),
+        now.subsec_nanos(),
+        SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+fn lock_owner(path: &Path) -> Option<LockOwner> {
+    let raw = fs::read_to_string(path).ok()?;
+    let mut lines = raw.lines();
+    let pid = lines.next()?.trim().parse().ok()?;
+    let token = lines
+        .next()
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(str::to_string);
+    Some(LockOwner { pid, token })
+}
+
+fn live_lock_owner(path: &Path) -> Option<LockOwner> {
+    lock_owner(path).filter(|owner| process_is_alive(owner.pid))
+}
+
 fn lock_owner_is_alive(path: &Path) -> bool {
-    fs::read_to_string(path)
-        .ok()
-        .and_then(|raw| raw.trim().parse::<u32>().ok())
-        .map(process_is_alive)
-        .unwrap_or(false)
+    live_lock_owner(path).is_some()
+}
+
+fn write_stop_request(path: &Path, owner: &LockOwner) -> Result<(), String> {
+    let contents = owner.token.as_deref().unwrap_or("stop");
+    echo_core::write_atomic(path, format!("{contents}\n").as_bytes())
 }
 
 #[cfg(unix)]
@@ -449,6 +549,21 @@ mod tests {
     }
 
     #[test]
+    fn stale_stop_request_cannot_cancel_a_replacement_session() {
+        let dir = std::env::temp_dir().join(format!("echo-stop-token-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+
+        let first = ToggleSession::try_start_in(&dir).unwrap().unwrap();
+        let first_owner = lock_owner(&first.lock_path).unwrap();
+        drop(first);
+        let second = ToggleSession::try_start_in(&dir).unwrap().unwrap();
+
+        write_stop_request(&second.stop_path, &first_owner).unwrap();
+        assert!(!second.stop_requested());
+        assert_ne!(first_owner.token.as_deref(), Some(second.token.as_str()));
+    }
+
+    #[test]
     fn fixture_returns_wav_without_opening_host() {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude_code.wav");
         let mut stop = StopWhen::Timer;
@@ -481,6 +596,49 @@ mod tests {
             .expect("fixture wav");
         let peak = peak.join().expect("probe thread");
         assert!(peak > 0.01, "fixture playback moved the meter: {peak}");
+    }
+
+    #[test]
+    fn fixture_obeys_the_snapped_limit() {
+        let pcm = Pcm16kMono::from_samples(vec![i16::MAX / 4; SAMPLE_RATE_HZ as usize * 2]);
+        let capture = audio::CaptureResult::from_pcm(pcm);
+        let result = play_fixture_capture(
+            capture,
+            &StopWhen::Timer,
+            RecordingLimit::MIN,
+            &audio::LevelMeter::new(),
+        )
+        .unwrap();
+
+        assert_eq!(result.pcm.len(), SAMPLE_RATE_HZ as usize);
+        assert_eq!(result.duration, Duration::from_secs(1));
+    }
+
+    #[test]
+    fn fixture_obeys_a_token_scoped_toggle_stop() {
+        let dir = std::env::temp_dir().join(format!("echo-fixture-stop-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let session = ToggleSession::try_start_in(&dir).unwrap().unwrap();
+        let pcm = Pcm16kMono::from_samples(vec![i16::MAX / 4; SAMPLE_RATE_HZ as usize * 2]);
+        let capture = audio::CaptureResult::from_pcm(pcm);
+        let stopper = std::thread::spawn({
+            let dir = dir.clone();
+            move || {
+                std::thread::sleep(Duration::from_millis(80));
+                ToggleSession::request_stop_if_active_in(&dir).unwrap()
+            }
+        });
+
+        let result = play_fixture_capture(
+            capture,
+            &StopWhen::ToggleFile(session),
+            RecordingLimit::MAX,
+            &audio::LevelMeter::new(),
+        )
+        .unwrap();
+
+        assert!(stopper.join().unwrap());
+        assert!(result.duration < Duration::from_millis(500));
     }
 
     #[test]

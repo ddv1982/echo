@@ -61,7 +61,7 @@ pub fn play_fixture_meter(
     pcm: &Pcm16kMono,
     meter: LevelMeter,
     cancel: CancellationToken,
-) -> std::thread::JoinHandle<()> {
+) -> std::thread::JoinHandle<usize> {
     const CHUNK: usize = SAMPLE_RATE_HZ as usize / 33;
     let samples: Vec<f32> = pcm
         .samples()
@@ -69,13 +69,16 @@ pub fn play_fixture_meter(
         .map(|sample| *sample as f32 / f32::from(i16::MAX))
         .collect();
     std::thread::spawn(move || {
+        let mut played = 0;
         for chunk in samples.chunks(CHUNK) {
             if cancel.is_cancelled() {
                 break;
             }
             meter.publish_samples(chunk);
             std::thread::sleep(Duration::from_millis(30));
+            played += chunk.len();
         }
+        played
     })
 }
 
@@ -835,7 +838,7 @@ mod tests {
     }
 
     #[test]
-    fn ten_minute_stereo_capture_has_two_logical_sample_buffers() {
+    fn ten_minute_stereo_capture_budget_is_249_6_mb() {
         let seconds = 600usize;
         let native_bytes = seconds
             .checked_mul(48_000)

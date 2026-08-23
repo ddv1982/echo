@@ -95,7 +95,7 @@ export interface AppStatus {
   shortcut: ShortcutStatus
   cleanupName: string
   hudEnabled: boolean
-  recordingLimitSeconds: number
+  recordingLimitSeconds: number | null
   recordingPolicy: RecordingPolicy
   settingsPath: string
   version: string
