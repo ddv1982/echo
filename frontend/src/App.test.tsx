@@ -325,17 +325,18 @@ describe('Echo desktop shell', () => {
         kind: 'missing-with-fallback',
         requestedId: 'alsa:travel',
         requestedLabel: 'Travel Mic',
-        fallback: snapshot.devices[0],
+        fallback: snapshot.systemDefault!,
       },
     })
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     expect(await screen.findByText(/Travel Mic is disconnected/)).toBeInTheDocument()
+    expect(screen.getByText(/current input from Linux Sound Settings/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Test selected' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Test system fallback' }))
     expect(await screen.findByRole('status')).toHaveTextContent(
-      'Input heard on Built-in Audio',
+      'Input heard on System default',
     )
   })
 

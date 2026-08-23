@@ -100,9 +100,16 @@ impl From<RawInputDescriptor> for InputDeviceInfo {
         let transport = input_transport(&raw);
         let tier = classify_input(&raw);
         let hint = input_hint(&raw, transport);
+        let label = if raw.host == AudioHost::PipeWire
+            && raw.id.as_str() == "pipewire:input_default"
+        {
+            "System default".to_string()
+        } else {
+            raw.label
+        };
         Self {
             id: raw.id,
-            label: raw.label,
+            label,
             is_default: raw.is_default,
             manufacturer: raw.manufacturer,
             device_type: raw.device_type,
@@ -509,6 +516,7 @@ mod tests {
             "Pixel Buds Pro",
         ));
         assert!(is_system_default_proxy(&proxy));
+        assert_eq!(proxy.label, "System default");
         assert_eq!(selectable_inputs(&[proxy, physical.clone()]), vec![physical]);
     }
 

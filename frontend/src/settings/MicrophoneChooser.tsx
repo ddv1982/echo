@@ -68,7 +68,7 @@ export function MicrophoneChooser({
           <strong>{missing} is disconnected.</strong>
           <span>
             {fallback
-              ? `Recording will use the system fallback: ${fallback.label}.`
+              ? `Recording will use ${fallbackLabel(snapshot, fallback)}.`
               : 'No system fallback is available.'}
           </span>
         </div>
@@ -151,6 +151,15 @@ function systemDefaultLabel(snapshot: MicrophoneSnapshot): string {
   return snapshot.systemDefaultIsProxy
     ? 'Follows the current Linux input automatically'
     : `Currently ${snapshot.systemDefault.label}`
+}
+
+function fallbackLabel(
+  snapshot: MicrophoneSnapshot,
+  fallback: MicrophoneSnapshot['devices'][number],
+): string {
+  return snapshot.systemDefaultIsProxy && fallback.id === snapshot.systemDefault?.id
+    ? 'the current input from Linux Sound Settings'
+    : `the system fallback, ${fallback.label}`
 }
 
 function MicrophoneTestStatus({ test }: { test: MicrophoneTestResult }) {
