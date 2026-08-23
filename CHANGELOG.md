@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.9.0
+
+- Echo now discovers Linux microphones through native PipeWire or PulseAudio before falling back to ALSA, so Bluetooth, USB, and built-in sources use the same recognizable names exposed by the desktop sound server.
+- The normal microphone picker shows the Linux system default and primary input sources. Playback sinks, ALSA plugins, aliases, resamplers, and raw endpoint IDs remain available under Advanced audio endpoints.
+- Speech setup is now one compact readiness card. Installed component paths and maintenance actions, alternative models, and inactive engine plans start collapsed without removing repair, verification, removal, system-runtime, or manual-model support.
+- Settings now adapts cleanly at the 760-pixel minimum and across the navigation breakpoint. Pinned Chromium tests check eight widths in both themes for horizontal overflow and closed disclosures.
+- Debian and RPM packages declare the PipeWire and PulseAudio runtime libraries, and release CI inspects the generated dependency metadata before publication.
+
 ## v0.8.0
 
 - Recording length is now a visible General setting shared by timed, button, tray, CLI, and shortcut capture, with 30-second, 1-minute, 2-minute, 5-minute, and 10-minute choices. Ten minutes is the default and ceiling.
