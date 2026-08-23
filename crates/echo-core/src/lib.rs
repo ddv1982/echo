@@ -13,11 +13,11 @@ mod types;
 
 pub use cleanup::{Cleanup, CleanupError, CleanupMode, OffCleanup, RulesCleanup};
 pub use config::{resolve, Config, EngineChoice};
-pub use dictionary::{DictEntry, Dictionary, Rewrite};
-pub use engine::{Engine, EngineError, RunDetail, Transcript};
+pub use dictionary::{DictEntry, Dictionary, RecognitionHints, Rewrite};
+pub use engine::{DecodeOptions, Engine, EngineError, RunDetail, Transcript};
 pub use history::{History, HistoryRow};
-pub use language::{Language, LanguageChoice, PARAKEET_LANGUAGES};
 pub use inject::{FocusTarget, InjectBackend, InjectReport, Injector};
+pub use language::{Language, LanguageChoice, PARAKEET_LANGUAGES};
 pub use nonspeech::strip_nonspeech;
 pub use paths::{
     config_dir, config_path, data_dir, dictionary_path, history_path, status_path, write_atomic,

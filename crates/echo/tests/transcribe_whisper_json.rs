@@ -1,6 +1,6 @@
 use echo::audio::load_wav;
-use echo::stt::WhisperEngine;
-use echo_core::{Engine, EngineId};
+use echo::stt::{ModelCache, WhisperEngine};
+use echo_core::{DecodeOptions, Engine, EngineId, LanguageChoice, RecognitionHints};
 use std::path::PathBuf;
 
 fn fixture() -> PathBuf {
@@ -25,10 +25,16 @@ fn echo_stt_txt_count() -> usize {
 #[ignore = "needs cached models under ECHO_MODEL_DIR or $XDG_CACHE_HOME/echo"]
 fn transcribe_fixture_uses_stdout_json() {
     let capture = load_wav(&fixture()).expect("fixture wav");
-    let engine = WhisperEngine::new();
+    let cache = ModelCache::from_env();
+    let model = cache.inventory().best_whisper().unwrap().name.clone();
+    let engine = WhisperEngine::configured(cache, model);
+    let options = DecodeOptions {
+        language: LanguageChoice::Auto,
+        hints: RecognitionHints::default(),
+    };
     let before = echo_stt_txt_count();
     let transcript = engine
-        .transcribe(&capture.pcm)
+        .transcribe(&capture.pcm, &options)
         .expect("cached whisper model and runner");
     let after = echo_stt_txt_count();
     assert_eq!(after, before, "whisper must not write a .txt sidecar");

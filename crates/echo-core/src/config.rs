@@ -67,6 +67,19 @@ impl Config {
         }
     }
 
+    pub fn load_read_only() -> Result<Self, String> {
+        Self::load_from_read_only(config_path())
+    }
+
+    pub fn load_from_read_only(path: impl AsRef<Path>) -> Result<Self, String> {
+        let path = path.as_ref();
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let raw = fs::read(path).map_err(|err| err.to_string())?;
+        Ok(serde_json::from_slice::<Self>(&raw).unwrap_or_default())
+    }
+
     pub fn save(&self) -> Result<(), String> {
         self.save_to(config_path())
     }
@@ -203,5 +216,17 @@ mod tests {
         assert_eq!(loaded, Config::default());
         assert!(!path.exists(), "invalid engine should be moved aside");
         assert!(path.with_file_name("config.json.corrupt").exists());
+    }
+
+    #[test]
+    fn read_only_corrupt_config_does_not_move_or_rewrite_it() {
+        let path = scratch_path("read-only-corrupt");
+        fs::write(&path, "not json").unwrap();
+        assert_eq!(
+            Config::load_from_read_only(&path).unwrap(),
+            Config::default()
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "not json");
+        assert!(!path.with_file_name("config.json.corrupt").exists());
     }
 }

@@ -93,6 +93,7 @@ impl std::fmt::Display for FailReason {
 pub enum EngineId {
     ParakeetTdt06bV3,
     Whisper { model: String },
+    Fake,
 }
 
 impl EngineId {
@@ -101,6 +102,7 @@ impl EngineId {
         match self {
             Self::ParakeetTdt06bV3 => "parakeet-tdt-0.6b-v3".to_string(),
             Self::Whisper { model } => format!("whisper-{model}"),
+            Self::Fake => "fake".to_string(),
         }
     }
 }

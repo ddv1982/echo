@@ -6,6 +6,68 @@ use serde::{Deserialize, Serialize};
 
 use crate::paths::{dictionary_path, set_aside_corrupt, write_atomic};
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RecognitionHints {
+    terms: Vec<String>,
+}
+
+impl RecognitionHints {
+    pub const MAX_TERMS: usize = 32;
+    pub const MAX_PROMPT_BYTES: usize = 512;
+
+    #[must_use]
+    pub fn from_dictionary(dictionary: &Dictionary) -> Self {
+        let mut entries: Vec<(usize, &DictEntry)> = dictionary.entries.iter().enumerate().collect();
+        entries.sort_by(|(left_index, left), (right_index, right)| {
+            right
+                .created_at
+                .cmp(&left.created_at)
+                .then_with(|| right_index.cmp(left_index))
+        });
+
+        let mut terms = Vec::new();
+        let mut keys = std::collections::HashSet::new();
+        let mut prompt_bytes = 0;
+        for (_, entry) in entries {
+            if entry.written.chars().any(char::is_control) {
+                continue;
+            }
+            let term = entry
+                .written
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            if term.is_empty() || term.len() > Self::MAX_PROMPT_BYTES {
+                continue;
+            }
+            let key = term.to_lowercase();
+            if !keys.insert(key) {
+                continue;
+            }
+            let separator_bytes = usize::from(!terms.is_empty()) * 2;
+            if prompt_bytes + separator_bytes + term.len() > Self::MAX_PROMPT_BYTES {
+                continue;
+            }
+            prompt_bytes += separator_bytes + term.len();
+            terms.push(term);
+            if terms.len() == Self::MAX_TERMS {
+                break;
+            }
+        }
+        Self { terms }
+    }
+
+    #[must_use]
+    pub fn terms(&self) -> &[String] {
+        &self.terms
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.terms.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DictEntry {
     pub spoken: String,
@@ -58,6 +120,25 @@ impl Dictionary {
                 Vec::new()
             }
         };
+        Ok(Self { entries, path })
+    }
+
+    pub fn load_read_only() -> Result<Self, String> {
+        Self::load_from_read_only(dictionary_path())
+    }
+
+    pub fn load_from_read_only(path: impl AsRef<Path>) -> Result<Self, String> {
+        let path = path.as_ref().to_path_buf();
+        if !path.exists() {
+            return Ok(Self {
+                entries: Vec::new(),
+                path,
+            });
+        }
+        let raw = fs::read_to_string(&path).map_err(|err| err.to_string())?;
+        let entries = serde_json::from_str::<DictFile>(&raw)
+            .map(|file| file.entries)
+            .unwrap_or_default();
         Ok(Self { entries, path })
     }
 
@@ -263,6 +344,65 @@ mod tests {
         let reloaded = Dictionary::load_from(&path).unwrap();
         assert_eq!(reloaded.entries().len(), 1);
         assert_eq!(reloaded.entries()[0].written, "Echo");
+    }
+
+    #[test]
+    fn recognition_hints_are_newest_written_unique_and_normalized() {
+        let d = dict(&[
+            ("clawed code", "Claude   Code"),
+            ("old", "Echo"),
+            ("new", "echo"),
+            ("spoken-only", "New term"),
+        ]);
+        let hints = RecognitionHints::from_dictionary(&d);
+        assert_eq!(hints.terms(), ["New term", "echo", "Claude Code"]);
+        assert!(!hints.terms().iter().any(|term| term == "spoken-only"));
+    }
+
+    #[test]
+    fn recognition_hints_reject_controls_and_bound_whole_utf8_terms() {
+        let mut entries = vec![DictEntry {
+            spoken: "bad".into(),
+            written: "line\nbreak".into(),
+            created_at: 100,
+        }];
+        entries.push(DictEntry {
+            spoken: "too long".into(),
+            written: "x".repeat(RecognitionHints::MAX_PROMPT_BYTES + 1),
+            created_at: 99,
+        });
+        for index in 0..40 {
+            entries.push(DictEntry {
+                spoken: format!("spoken {index}"),
+                written: format!("term {index} é"),
+                created_at: index,
+            });
+        }
+        let d = Dictionary {
+            path: PathBuf::from("/tmp/echo-dict-unused.json"),
+            entries,
+        };
+        let hints = RecognitionHints::from_dictionary(&d);
+        assert_eq!(hints.terms().len(), RecognitionHints::MAX_TERMS);
+        let prompt = hints.terms().join(", ");
+        assert!(prompt.len() <= RecognitionHints::MAX_PROMPT_BYTES);
+        assert!(!prompt.contains("line"));
+        assert!(prompt.is_char_boundary(prompt.len()));
+        assert!(hints.terms().iter().all(|term| term.ends_with('é')));
+    }
+
+    #[test]
+    fn read_only_corrupt_dictionary_does_not_move_or_rewrite_it() {
+        let path = std::env::temp_dir().join(format!(
+            "echo-dict-read-only-corrupt-{}.json",
+            std::process::id()
+        ));
+        fs::write(&path, "not json").unwrap();
+        let loaded = Dictionary::load_from_read_only(&path).unwrap();
+        assert!(loaded.entries().is_empty());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "not json");
+        assert!(!path.with_extension("json.corrupt").exists());
+        let _ = fs::remove_file(path);
     }
 
     #[test]

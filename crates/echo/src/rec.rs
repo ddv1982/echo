@@ -107,33 +107,43 @@ fn run_record(mut stop: StopWhen) -> i32 {
     apply_edge(&mut session, HotkeyEvent::Up);
     let _ = status::write_status(session.state(), None, None);
 
-    let engine = match crate::stt::resolve_engine() {
-        Some(engine) => engine,
-        None => {
-            let _ = session.fail(FailReason::EngineMissing);
+    let dict = Dictionary::load().unwrap_or_else(|_| Dictionary::empty());
+    let prepared = match crate::transcribe::prepare_with_config(
+        crate::transcribe::RunOverrides::default(),
+        &crate::settings::file_config(),
+    ) {
+        Ok(prepared) => prepared,
+        Err(err) => {
+            let reason = match &err {
+                crate::transcribe::PrepareError::EngineMissing(_) => FailReason::EngineMissing,
+                crate::transcribe::PrepareError::InvalidRequest(_)
+                | crate::transcribe::PrepareError::Configuration(_) => FailReason::EngineError,
+            };
+            let _ = session.fail(reason);
             log_state(&session);
-            let _ = status::write_status(session.state(), None, None);
-            eprintln!(
-                "no speech engine installed. install whisper-cli plus a ggml model or \
-                 sherpa-onnx plus the parakeet model (see README), or set ECHO_ENGINE=fake \
-                 for smoke tests"
-            );
-            crate::notify::notify_session_failure(FailReason::EngineMissing, None);
+            let detail = err.to_string();
+            let _ = status::write_status(session.state(), None, Some(&detail));
+            eprintln!("{detail}");
+            crate::notify::notify_session_failure(reason, Some(&detail));
             return 1;
         }
     };
-    let transcript = match engine.transcribe(&capture.pcm) {
-        Ok(t) => t,
+    let transcript = match prepared.transcribe(
+        &capture.pcm,
+        &dict,
+        crate::transcribe::CleanupFailurePolicy::DictionaryFallback,
+    ) {
+        Ok(transcript) => transcript,
         Err(err) => {
             hud.set_state(crate::ui::hud::HudState::Failed);
             let (reason, detail) = match &err {
-                echo_core::EngineError::Missing => (FailReason::EngineMissing, None),
-                // The engine's stderr says exactly what went wrong; keep it
-                // visible in the status file for the desktop app to show.
-                echo_core::EngineError::Infer(message) => {
-                    (FailReason::EngineError, Some(message.as_str()))
+                crate::transcribe::TranscriptionError::Engine(echo_core::EngineError::Missing) => {
+                    (FailReason::EngineMissing, None)
                 }
+                _ => (FailReason::EngineError, None),
             };
+            let message = err.to_string();
+            let detail = detail.or(Some(message.as_str()));
             let _ = session.fail(reason);
             log_state(&session);
             let _ = status::write_status(session.state(), None, detail);
@@ -145,13 +155,6 @@ fn run_record(mut stop: StopWhen) -> i32 {
     if session.begin_cleaning().is_ok() {
         log_state(&session);
     }
-    let dict = Dictionary::load().unwrap_or_else(|_| Dictionary::empty());
-    let language = crate::stt::language_now();
-    let rewrite = crate::cleanup::apply(
-        &transcript.raw,
-        &dict,
-        language.permits_english_rules(transcript.language.as_deref()),
-    );
     if session.begin_injecting().is_ok() {
         log_state(&session);
     }
@@ -161,7 +164,7 @@ fn run_record(mut stop: StopWhen) -> i32 {
     } else {
         let injector = LinuxInjector::new();
         match injector.focus() {
-            Ok(target) => injector.inject(&rewrite.text, &target),
+            Ok(target) => injector.inject(&transcript.text, &target),
             Err(reason) => InjectReport::Failed { reason },
         }
     };
@@ -189,7 +192,7 @@ fn run_record(mut stop: StopWhen) -> i32 {
             // Nanoseconds plus pid keep ids unique across processes and after
             // the store trims to its row cap.
             id: format!("{started_at}-{}-{}", now.subsec_nanos(), std::process::id()),
-            text: rewrite.text.clone(),
+            text: transcript.text.clone(),
             raw: transcript.raw.clone(),
             engine: transcript.engine.clone(),
             started_at,
@@ -203,7 +206,7 @@ fn run_record(mut stop: StopWhen) -> i32 {
         let _ = status::write_status(session.state(), None, None);
         return 1;
     }
-    let _ = status::write_status(session.state(), Some(&rewrite.text), None);
+    let _ = status::write_status(session.state(), Some(&transcript.text), None);
     0
 }
 

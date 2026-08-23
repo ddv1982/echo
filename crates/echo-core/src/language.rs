@@ -86,13 +86,13 @@ impl LanguageChoice {
     /// Whether the English cleanup rules (filler dropping, ASCII punctuation)
     /// may run for a session. Pinned English allows them, a pinned other
     /// language forbids them, and under auto they run only when detection
-    /// reported English or reported nothing, so a Japanese `。` never gains
-    /// an ASCII period.
+    /// reported English. An absent observation stays conservative because
+    /// engines such as Parakeet cannot report the detected language.
     #[must_use]
     pub fn permits_english_rules(&self, detected: Option<&str>) -> bool {
         match self {
             Self::Pinned(language) => *language == Language::ENGLISH,
-            Self::Auto => detected.is_none_or(|code| code == "en"),
+            Self::Auto => detected == Some("en"),
         }
     }
 }
@@ -160,9 +160,15 @@ mod tests {
     fn choice_round_trips_through_json() {
         for choice in [LanguageChoice::Auto, LanguageChoice::default()] {
             let raw = serde_json::to_string(&choice).unwrap();
-            assert_eq!(serde_json::from_str::<LanguageChoice>(&raw).unwrap(), choice);
+            assert_eq!(
+                serde_json::from_str::<LanguageChoice>(&raw).unwrap(),
+                choice
+            );
         }
-        assert_eq!(serde_json::to_string(&LanguageChoice::Auto).unwrap(), "\"auto\"");
+        assert_eq!(
+            serde_json::to_string(&LanguageChoice::Auto).unwrap(),
+            "\"auto\""
+        );
         assert!(serde_json::from_str::<LanguageChoice>("\"xx\"").is_err());
     }
 
@@ -173,7 +179,7 @@ mod tests {
         assert!(LanguageChoice::default().permits_english_rules(None));
         assert!(LanguageChoice::Auto.permits_english_rules(Some("en")));
         assert!(!LanguageChoice::Auto.permits_english_rules(Some("ja")));
-        assert!(LanguageChoice::Auto.permits_english_rules(None));
+        assert!(!LanguageChoice::Auto.permits_english_rules(None));
     }
 
     #[test]
