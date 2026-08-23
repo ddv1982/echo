@@ -863,6 +863,7 @@ describe('Echo desktop shell', () => {
     })
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
+    expect(screen.getByText('Bind it in your desktop settings.')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     expect(await screen.findByText('Manual shortcut setup')).toBeInTheDocument()
     expect(screen.getByText('/usr/bin/echo-desktop rec --toggle')).toBeInTheDocument()

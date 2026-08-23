@@ -222,7 +222,7 @@ function App() {
               {shortcut.ready
                 ? 'Press once to start, again to stop.'
                 : shortcut.manualCommand
-                  ? 'Bind it in your desktop settings, then test it in Echo.'
+                  ? 'Bind it in your desktop settings.'
                   : 'Open Settings to finish shortcut setup.'}
             </small>
           </div>
