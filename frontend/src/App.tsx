@@ -1541,7 +1541,7 @@ function MicrophoneChooser({
         <span>
           {locked
             ? 'ECHO_MICROPHONE controls this setting.'
-            : 'Choose the input Echo records. Device IDs keep equal labels distinct.'}
+            : 'Choose the microphone Echo should use. Similar names stay separate.'}
         </span>
       </div>
       {missing ? (
