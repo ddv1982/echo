@@ -2,6 +2,9 @@ export type View = 'home' | 'history' | 'dictionary' | 'settings'
 export type ThemeMode = 'system' | 'light' | 'dark'
 export type SettingSource = 'env' | 'file' | 'default'
 export type MicrophoneSource = 'environment' | 'config' | 'default'
+export type AudioHost = 'pipe-wire' | 'pulse-audio' | 'alsa' | 'core-audio' | 'wasapi' | 'other'
+export type InputTransport = 'bluetooth' | 'usb' | 'built-in' | 'pci' | 'network' | 'virtual' | 'unknown'
+export type EndpointTier = 'primary' | 'advanced'
 
 export interface SettingField<T> {
   value: T | null
@@ -35,6 +38,10 @@ export interface InputDevice {
   address: string | null
   driver: string | null
   extended: string[]
+  host: AudioHost
+  transport: InputTransport
+  tier: EndpointTier
+  hint: string
 }
 
 export type MicrophoneSelection =
@@ -56,7 +63,9 @@ export type MicrophoneSelection =
     }
 
 export interface MicrophoneSnapshot {
+  host: AudioHost
   source: MicrophoneSource
+  systemDefault: InputDevice | null
   devices: InputDevice[]
   selection: MicrophoneSelection
   enumerationWarning: string | null

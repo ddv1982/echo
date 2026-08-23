@@ -8,8 +8,8 @@ use cpal::{Sample, SampleFormat, SizedSample, I24, U24};
 use echo_core::{MicrophoneSelection, Pcm16kMono, SAMPLE_RATE_HZ};
 
 use crate::microphone::{
-    resolve_selection, selection_from_sources, InputDeviceInfo, InputSelectionStatus,
-    MicrophoneFailure, MicrophoneId, MicrophoneSnapshot,
+    resolve_selection, selection_from_sources, AudioHost, InputDeviceInfo, InputSelectionStatus,
+    MicrophoneFailure, MicrophoneId, MicrophoneSnapshot, RawInputDescriptor,
 };
 
 /// The microphone's RMS level, shared between the capture callback and
@@ -125,6 +125,7 @@ struct DiscoveredInput {
 }
 
 struct InputDiscovery {
+    host: AudioHost,
     devices: Vec<DiscoveredInput>,
     warning: Option<String>,
 }
@@ -209,15 +210,20 @@ fn map_cpal_error(error: cpal::Error) -> AudioError {
     }
 }
 
-fn describe_device(device: &cpal::Device, is_default: bool) -> Result<InputDeviceInfo, AudioError> {
+fn describe_device(
+    device: &cpal::Device,
+    host: AudioHost,
+    is_default: bool,
+) -> Result<InputDeviceInfo, AudioError> {
     let id = device.id().map_err(map_cpal_error)?.to_string();
     let description = device.description().ok();
     let label = description
         .as_ref()
         .map(|value| value.name().to_string())
         .unwrap_or_else(|| id.clone());
-    Ok(InputDeviceInfo {
+    Ok(RawInputDescriptor {
         id: MicrophoneId::parse(id).map_err(AudioError::Selection)?,
+        host,
         label,
         is_default,
         manufacturer: description
@@ -241,7 +247,8 @@ fn describe_device(device: &cpal::Device, is_default: bool) -> Result<InputDevic
             .as_ref()
             .map(|value| value.extended().map(str::to_string).collect())
             .unwrap_or_default(),
-    })
+    }
+    .into())
 }
 
 fn merge_default_handle<T>(
@@ -264,6 +271,7 @@ fn merge_default_handle<T>(
 }
 
 fn discover_inputs(host: &cpal::Host) -> InputDiscovery {
+    let audio_host = AudioHost::from_cpal_name(host.id().name());
     let default = host.default_input_device();
     let default_id = default
         .as_ref()
@@ -286,7 +294,7 @@ fn discover_inputs(host: &cpal::Host) -> InputDiscovery {
             .id()
             .ok()
             .is_some_and(|id| default_id.as_deref() == Some(id.to_string().as_str()));
-        match describe_device(&handle, is_default) {
+        match describe_device(&handle, audio_host, is_default) {
             Ok(info)
                 if !devices
                     .iter()
@@ -308,7 +316,11 @@ fn discover_inputs(host: &cpal::Host) -> InputDiscovery {
             .then_with(|| left.info.label.cmp(&right.info.label))
             .then_with(|| left.info.id.as_str().cmp(right.info.id.as_str()))
     });
-    InputDiscovery { devices, warning }
+    InputDiscovery {
+        host: audio_host,
+        devices,
+        warning,
+    }
 }
 
 fn process_snapshot_from(discovery: &InputDiscovery) -> MicrophoneSnapshot {
@@ -322,7 +334,9 @@ fn process_snapshot_from(discovery: &InputDiscovery) -> MicrophoneSnapshot {
     let (selection, source) =
         selection_from_sources(environment.as_deref(), file.microphone.as_ref(), &devices);
     MicrophoneSnapshot {
+        host: discovery.host,
         source,
+        system_default: devices.iter().find(|device| device.is_default).cloned(),
         selection: resolve_selection(selection.as_ref(), &devices),
         devices,
         enumeration_warning: discovery.warning.clone(),

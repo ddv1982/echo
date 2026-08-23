@@ -407,7 +407,9 @@ export function resetPreviewSettings() {
   previewInventory = defaultPreviewInventory()
   previewDevices = defaultPreviewDevices()
   previewMicrophones = {
+    host: 'pipe-wire',
     source: 'default',
+    systemDefault: previewDevices[0] ?? null,
     devices: previewDevices,
     selection: { kind: 'system-default', active: previewDevices[0] },
     enumerationWarning: null,
@@ -416,10 +418,34 @@ export function resetPreviewSettings() {
 }
 
 function defaultPreviewDevices(): InputDevice[] {
+  const advancedDevices: InputDevice[] = [
+    ['alsa:pipewire', 'PipeWire Sound Server'],
+    ['alsa:pulse', 'PulseAudio Sound Server'],
+    ['alsa:downmix', 'Plugin for channel downmix'],
+    ['alsa:upmix', 'Plugin for channel upmix'],
+    ['alsa:speex', 'Plugin using Speex DSP'],
+    ['alsa:speexrate', 'Rate Converter Using Speex'],
+    ['alsa:dsnoop:CARD=sofhdadsp,DEV=6', 'sof-hda-dsp,'],
+    ['alsa:dsnoop:CARD=sofhdadsp,DEV=7', 'sof-hda-dsp,'],
+  ].map(([id, label]) => ({
+    id,
+    label,
+    isDefault: false,
+    manufacturer: null,
+    deviceType: 'Virtual',
+    interfaceType: 'Virtual',
+    address: null,
+    driver: 'ALSA',
+    extended: [],
+    host: 'alsa',
+    transport: 'virtual',
+    tier: 'advanced',
+    hint: 'Virtual endpoint',
+  }))
   return [
     {
-      id: 'alsa:default',
-      label: 'Built-in Audio Analog Stereo',
+      id: 'pipewire:alsa_input.pci-0000_00_1f.3.analog-stereo',
+      label: 'Built-in Audio',
       isDefault: true,
       manufacturer: 'Intel',
       deviceType: 'Microphone',
@@ -427,9 +453,28 @@ function defaultPreviewDevices(): InputDevice[] {
       address: null,
       driver: 'PipeWire',
       extended: [],
+      host: 'pipe-wire',
+      transport: 'built-in',
+      tier: 'primary',
+      hint: 'Built in · Microphone · Intel',
     },
     {
-      id: 'alsa:usb-one',
+      id: 'pipewire:bluez_input.48_5F_99_00_11_22.0',
+      label: 'Jabra Elite 8 Active',
+      isDefault: false,
+      manufacturer: 'Jabra',
+      deviceType: 'Headset',
+      interfaceType: 'Bluetooth',
+      address: '48:5F:99:00:11:22',
+      driver: 'PipeWire',
+      extended: [],
+      host: 'pipe-wire',
+      transport: 'bluetooth',
+      tier: 'primary',
+      hint: 'Bluetooth · Headset · Jabra',
+    },
+    {
+      id: 'pipewire:alsa_input.usb-Focusrite_Scarlett_Solo_USB-00.analog-stereo',
       label: 'USB Microphone',
       isDefault: false,
       manufacturer: 'Focusrite',
@@ -438,9 +483,13 @@ function defaultPreviewDevices(): InputDevice[] {
       address: '1-2',
       driver: 'PipeWire',
       extended: [],
+      host: 'pipe-wire',
+      transport: 'usb',
+      tier: 'primary',
+      hint: 'USB · Microphone · Focusrite',
     },
     {
-      id: 'alsa:usb-two',
+      id: 'pipewire:alsa_input.usb-Logitech_USB_Headset-00.mono-fallback',
       label: 'USB Microphone',
       isDefault: false,
       manufacturer: 'Logitech',
@@ -449,14 +498,21 @@ function defaultPreviewDevices(): InputDevice[] {
       address: '1-3',
       driver: 'PipeWire',
       extended: [],
+      host: 'pipe-wire',
+      transport: 'usb',
+      tier: 'primary',
+      hint: 'USB · Headset · Logitech',
     },
+    ...advancedDevices,
   ]
 }
 
 let previewDevices = defaultPreviewDevices()
 
 let previewMicrophones: MicrophoneSnapshot = {
+  host: 'pipe-wire',
   source: 'default',
+  systemDefault: previewDevices[0] ?? null,
   devices: previewDevices,
   selection: { kind: 'system-default', active: previewDevices[0] },
   enumerationWarning: null,
@@ -497,7 +553,7 @@ function previewMicrophoneTest(device: InputDevice | null): MicrophoneTestResult
   if (!device) {
     return { kind: 'failed', device: null, category: 'disconnected', message: 'microphone is unavailable' }
   }
-  const peakRms = device.id === 'alsa:usb-two' ? 0 : 0.042
+  const peakRms = device.id.includes('Logitech') ? 0 : 0.042
   return {
     kind: 'completed',
     device,
@@ -529,7 +585,9 @@ export function seedPreviewMicrophones(snapshot: MicrophoneSnapshot) {
 function defaultPreviewReadiness(): Readiness {
   const sources: Array<{ id: ComponentId; label: string; path: string; origin: 'system' | 'external' }> = [
     { id: 'whisper-runtime', label: 'Whisper runtime', path: '/usr/bin/whisper-cli', origin: 'system' },
+    { id: 'whisper-base-q5-1', label: 'Base multilingual Q5_1', path: '', origin: 'external' },
     { id: 'whisper-small', label: 'Small multilingual', path: '/home/user/.cache/echo/ggml-small.bin', origin: 'external' },
+    { id: 'whisper-large-v3-turbo-q5-0', label: 'Large v3 Turbo Q5_0', path: '', origin: 'external' },
     { id: 'silero-vad', label: 'Silero voice detection', path: '/home/user/.cache/echo/ggml-silero-v6.2.0.bin', origin: 'external' },
     { id: 'sherpa-runtime', label: 'sherpa-onnx runtime', path: '', origin: 'system' },
     { id: 'parakeet-tdt-06b-v3-int8', label: 'Parakeet TDT 0.6b v3 INT8', path: '', origin: 'external' },
@@ -550,6 +608,9 @@ function defaultPreviewReadiness(): Readiness {
     plans: [
       { id: 'recommended', label: 'Recommended', components: ['whisper-runtime', 'whisper-small', 'silero-vad'], satisfied: true, downloadBytes: 0, requiredFreeBytes: 0, availableBytes: 10_000_000_000, diskReady: true, diskReason: null },
       { id: 'parakeet', label: 'Parakeet', components: ['sherpa-runtime', 'parakeet-tdt-06b-v3-int8'], satisfied: false, downloadBytes: 848_526_547, requiredFreeBytes: 1_500_000_000, availableBytes: 10_000_000_000, diskReady: true, diskReason: null },
+      { id: 'whisper-base', label: 'Whisper base', components: ['whisper-runtime', 'whisper-base-q5-1'], satisfied: false, downloadBytes: 141_000_000, requiredFreeBytes: 300_000_000, availableBytes: 10_000_000_000, diskReady: true, diskReason: null },
+      { id: 'whisper-small', label: 'Whisper small', components: ['whisper-runtime', 'whisper-small', 'silero-vad'], satisfied: true, downloadBytes: 0, requiredFreeBytes: 0, availableBytes: 10_000_000_000, diskReady: true, diskReason: null },
+      { id: 'whisper-large-v3-turbo', label: 'Whisper large v3 Turbo', components: ['whisper-runtime', 'whisper-large-v3-turbo-q5-0', 'silero-vad'], satisfied: false, downloadBytes: 1_100_000_000, requiredFreeBytes: 2_000_000_000, availableBytes: 10_000_000_000, diskReady: true, diskReason: null },
     ],
     microphoneReady: true,
     speechReady: true,

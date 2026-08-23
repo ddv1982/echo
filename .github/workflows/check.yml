@@ -23,6 +23,8 @@ jobs:
             build-essential \
             pkg-config \
             libasound2-dev \
+            libpipewire-0.3-dev \
+            libpulse-dev \
             libwebkit2gtk-4.1-dev \
             libdbus-1-dev \
             libayatana-appindicator3-dev \

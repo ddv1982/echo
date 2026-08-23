@@ -11,7 +11,7 @@ description = "Private local dictation for Linux"
 workspace = true
 
 [dependencies]
-cpal = "=0.18.2"
+cpal = { version = "=0.18.2", features = ["pipewire", "pulseaudio"] }
 bzip2 = "0.6"
 echo-core = { path = "../echo-core" }
 flate2 = "1"
