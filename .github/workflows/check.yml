@@ -48,6 +48,11 @@ jobs:
 
       - run: ./scripts/verify-settings-ux.sh
 
+      - name: Reclaim browser test space
+        run: |
+          rm -rf "$HOME/.cache/ms-playwright"
+          sudo apt-get clean
+
       - run: npm run build --prefix frontend
 
       - run: npm run lint --prefix frontend
