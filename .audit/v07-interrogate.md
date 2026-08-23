@@ -16,7 +16,7 @@ All four reviewers inspected `origin/main...HEAD` and surrounding source with th
 ## Acted on
 
 1. Cancellation could still activate after download. Three reviewers found missing checks during hashing, direct copies, archive members, runtime probing, and activation. The installer now checks each boundary, reads response bodies on a cancellable channel, bounds connection and header waits, and has tests for a stalled body, copy cancellation, and pre-activation cancellation.
-2. Same-size corruption could remain ready. All four reviewers found the quick metadata path. Managed payloads now get a cached full SHA-256 verification, metadata changes force a new hash, failures persist as repair markers, explicit Verify records failures, and corrupt managed models fall back to manual models.
+2. Same-size corruption could remain ready. All four reviewers found the quick metadata path. Installation and explicit Verify write a durable fingerprint stamp after full SHA-256 verification. Fresh shortcut processes compare the small stamp and file metadata instead of rehashing every model. Metadata changes force a new hash, failures persist as repair markers, and corrupt managed models fall back to manual models.
 3. Recovery and config writes could race. Two reviewers found that a second desktop process could remove live staging. Three found unsynchronized whole-file config updates. Managed operations now hold a cross-process shared lease while recovery requires an exclusive lease. Microphone, Settings, and setup config writes share one transaction lock, and terminal setup refreshes Settings state.
 4. Readiness could disagree with actual selection and capacity. Reviewers found duplicate manual and managed model names, cumulative disk undercounting, an enabled low-space Parakeet button, and progress-triggered readiness storms. Managed models now replace same-name manual entries, plan space includes earlier retained payloads, each plan controls its own button and reason, backend progress is throttled, and the frontend applies progress locally.
 5. The installer module crossed 1,000 lines. The orchestration and tests moved into `installer.rs` and `tests.rs`; `mod.rs` is no longer over 1,000 lines.
@@ -43,3 +43,7 @@ Cancellation and corruption had the strongest agreement and blocked release. Rec
 
 - Final light, dark, narrow, earbud-selection, microphone-test, and guided-setup recording: `/Users/vriesd/.t3/userdata/browser-artifacts/browser-recording-mt5kbmzt.mp4`
 - Focused hardening gate: `scripts/verify-first-run-readiness.sh`
+
+## PR review follow-up
+
+The automated review on PR 48 found two P2 issues at exact head `1658c56`. Home refreshed the microphone snapshot but not readiness after a device change, and process-local fingerprint caching still hashed every managed model in each shortcut process. The `fix: address v0.7 PR review` commit refreshes both snapshots with a regression test and persists verified fingerprints inside each immutable release. Review comments: `discussion_r3838136035` and `discussion_r3838136038`.

@@ -97,12 +97,20 @@ fn direct_install_repairs_same_size_corruption_and_removes_only_managed_files() 
         ManagedComponentState::Ready { .. }
     ));
     let active = installer.store.read_active(spec.id).unwrap().unwrap();
-    let payload = installer
+    let release = installer
         .store
         .component_dir(spec.id)
         .join("releases")
-        .join(&active.release)
-        .join("payload/tiny.bin");
+        .join(&active.release);
+    assert!(release.join("verified.json").is_file());
+    verified_payloads().lock().unwrap().clear();
+    assert!(matches!(
+        installer
+            .store
+            .status_with(&spec, &expected_files_for(&spec), false),
+        ManagedComponentState::Ready { .. }
+    ));
+    let payload = release.join("payload/tiny.bin");
     fs::write(&payload, vec![b'x'; body.len()]).unwrap();
     assert_eq!(fs::metadata(&payload).unwrap().len(), body.len() as u64);
     assert!(matches!(

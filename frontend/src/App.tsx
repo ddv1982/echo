@@ -761,15 +761,35 @@ function SetupChecklist({
             snapshot={microphones}
             test={micTest}
             testing={testingMic}
-            onRefresh={() => void getMicrophones().then(setMicrophones)}
+            onRefresh={() => {
+              void Promise.all([getMicrophones(), getReadiness()])
+                .then(([nextMicrophones, nextReadiness]) => {
+                  setMicrophones(nextMicrophones)
+                  setReadiness(nextReadiness)
+                })
+                .catch((reason: unknown) => setSetupError(messageFrom(reason)))
+            }}
             onSelect={(id) => {
               setMicTest(null)
-              void setMicrophone(id).then(setMicrophones).catch((reason: unknown) => setSetupError(messageFrom(reason)))
+              void setMicrophone(id)
+                .then((nextMicrophones) => {
+                  setMicrophones(nextMicrophones)
+                  return getReadiness()
+                })
+                .then(setReadiness)
+                .catch((reason: unknown) => setSetupError(messageFrom(reason)))
             }}
             onTest={(id, fallback) => {
               setTestingMic(true)
               const run = fallback ? testMicrophoneFallback() : testInputDevice(id)
-              void run.then(setMicTest).finally(() => setTestingMic(false))
+              void run
+                .then((result) => {
+                  setMicTest(result)
+                  return getReadiness()
+                })
+                .then(setReadiness)
+                .catch((reason: unknown) => setSetupError(messageFrom(reason)))
+                .finally(() => setTestingMic(false))
             }}
           />
         </div>

@@ -667,6 +667,10 @@ describe('Echo desktop shell', () => {
     expect(await screen.findByText('1 · Choose and test a microphone')).toBeInTheDocument()
     expect(screen.getByText('2 · Set up local speech')).toBeInTheDocument()
     expect(screen.getByText('First dictation complete')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('radio', { name: /USB Microphone.*Focusrite/ }))
+    await waitFor(() => {
+      expect(screen.queryByText('1 · Choose and test a microphone')).not.toBeInTheDocument()
+    })
   })
 
   it('shows usage stats derived from history', async () => {

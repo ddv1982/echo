@@ -437,6 +437,13 @@ export function setMicrophone(id: string | null): Promise<MicrophoneSnapshot> {
         ? { kind: 'system-default', active: previewDevices[0] }
         : { kind: 'selected', device },
   }
+  const microphoneReady = device != null || previewDevices.some((candidate) => candidate.isDefault)
+  previewReadiness = {
+    ...previewReadiness,
+    microphoneReady,
+    firstRunComplete:
+      microphoneReady && previewReadiness.speechReady && previewReadiness.hasSuccessfulDictation,
+  }
   return Promise.resolve(previewMicrophones)
 }
 
