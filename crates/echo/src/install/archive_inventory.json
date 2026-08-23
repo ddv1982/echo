@@ -1,0 +1,258 @@
+{
+  "components": {
+    "parakeet-model": {
+      "archive": "parakeet.tar.bz2",
+      "entries": 10,
+      "expandedBytes": 671239000,
+      "payload": [
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 420,
+          "path": "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/tokens.txt",
+          "sha256": "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d",
+          "size": 93939
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 420,
+          "path": "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/joiner.int8.onnx",
+          "sha256": "3164c13fc2821009440d20fcb5fdc78bff28b4db2f8d0f0b329101719c0948b3",
+          "size": 6355277
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 420,
+          "path": "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/decoder.int8.onnx",
+          "sha256": "179e50c43d1a9de79c8a24149a2f9bac6eb5981823f2a2ed88d655b24248db4e",
+          "size": 11845275
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 420,
+          "path": "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/encoder.int8.onnx",
+          "sha256": "acfc2b4456377e15d04f0243af540b7fe7c992f8d898d751cf134c3a55fd2247",
+          "size": 652184281
+        }
+      ]
+    },
+    "sherpa-runtime": {
+      "archive": "sherpa.tar.bz2",
+      "entries": 43,
+      "expandedBytes": 1174701493,
+      "payload": [
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "sherpa-onnx-v1.13.6-linux-x64-static-no-tts/bin/sherpa-onnx-offline",
+          "sha256": "b5761803757f9cbd3853deb02ca175b337bf3664054ade3f8f2b8d9ab2c2b241",
+          "size": 35818704
+        }
+      ]
+    },
+    "whisper-runtime": {
+      "archive": "whisper.tar.gz",
+      "entries": 44,
+      "expandedBytes": 24519182,
+      "payload": [
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "whisper-bin-ubuntu-x64/libggml-cpu-cascadelake.so",
+          "sha256": "643f51af219a74b86178992eabbcb683d9f37a38b81d1e9ad63605874331477c",
+          "size": 1070816
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "whisper-bin-ubuntu-x64/libggml-cpu-sse42.so",
+          "sha256": "f0d5d2cf7dbfd3081be59b6ba97a34399c4954a2f8b1ba8d80d9894545225f8e",
+          "size": 881976
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "whisper-bin-ubuntu-x64/libggml-cpu-alderlake.so",
+          "sha256": "53633ffd2a2c668ae08a283b38821a88c61523de2e407096a0c1b6a1cad1d41e",
+          "size": 1013360
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "whisper-bin-ubuntu-x64/libggml-cpu-icelake.so",
+          "sha256": "89248d02d6aa6f06f64a654139f9c1e7cedf4215407f49c8930af98db2df8bf3",
+          "size": 1070816
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "whisper-bin-ubuntu-x64/libggml-cpu-sapphirerapids.so",
+          "sha256": "fb4f9e70b2d83220165afad2073be0ea36ad8e91829f84753c7e9bf7e0b38a54",
+          "size": 1337176
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "whisper-bin-ubuntu-x64/libggml.so.0.18.1",
+          "sha256": "1985fa3dc169a16715a0998da0a075b29be8f68ea2501e3c043be53be7f11857",
+          "size": 54936
+        },
+        {
+          "kind": "symlink",
+          "linkTarget": "libwhisper.so.1",
+          "mode": 511,
+          "path": "whisper-bin-ubuntu-x64/libwhisper.so",
+          "sha256": "afd9560fa2dd20a7c0f9aa682f9c4f339b2d223f2ad6fa200fc229bc3b1606d6",
+          "size": 0
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "whisper-bin-ubuntu-x64/libggml-cpu-cannonlake.so",
+          "sha256": "b28b1ac4709a87c8868921b30eae141aaf8f4d8fb620b584d453cfef5eb698f0",
+          "size": 1074912
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "whisper-bin-ubuntu-x64/whisper-cli",
+          "sha256": "61fa94d25ba9a4695118883011f35e8521c158145ec73bcd8805a7c11760e6d7",
+          "size": 976312
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "whisper-bin-ubuntu-x64/libggml-cpu-skylakex.so",
+          "sha256": "089070b665ba61e8c34f61c9f6d7cf86df5d71847522ecb434d23afb16d466fb",
+          "size": 1074912
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "whisper-bin-ubuntu-x64/libggml-cpu-piledriver.so",
+          "sha256": "5e0e0bc4c3ab21bc4ff43386d1f683c9b07f9a7ce0f6786b0dab7a19570991d5",
+          "size": 951704
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "whisper-bin-ubuntu-x64/libggml-cpu-haswell.so",
+          "sha256": "4e6e0cfe5f94806bf38e3f75d8128df6c65ab8c8c9cf279e392bd9c0b6d5c1f7",
+          "size": 1017456
+        },
+        {
+          "kind": "symlink",
+          "linkTarget": "libggml.so.0",
+          "mode": 511,
+          "path": "whisper-bin-ubuntu-x64/libggml.so",
+          "sha256": "1985fa3dc169a16715a0998da0a075b29be8f68ea2501e3c043be53be7f11857",
+          "size": 0
+        },
+        {
+          "kind": "symlink",
+          "linkTarget": "libggml-base.so.0.18.1",
+          "mode": 511,
+          "path": "whisper-bin-ubuntu-x64/libggml-base.so.0",
+          "sha256": "bc41368cecccc3db8b4f52ad168b51413ee6c005a772b1d3e4f4b3bb47777553",
+          "size": 0
+        },
+        {
+          "kind": "symlink",
+          "linkTarget": "libwhisper.so.1.9.2",
+          "mode": 511,
+          "path": "whisper-bin-ubuntu-x64/libwhisper.so.1",
+          "sha256": "afd9560fa2dd20a7c0f9aa682f9c4f339b2d223f2ad6fa200fc229bc3b1606d6",
+          "size": 0
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "whisper-bin-ubuntu-x64/libggml-cpu-ivybridge.so",
+          "sha256": "c7b66231986e403482de7ef7474b59523ef5968f1c923f12519a30fdc4567741",
+          "size": 951704
+        },
+        {
+          "kind": "symlink",
+          "linkTarget": "libggml-base.so.0",
+          "mode": 511,
+          "path": "whisper-bin-ubuntu-x64/libggml-base.so",
+          "sha256": "bc41368cecccc3db8b4f52ad168b51413ee6c005a772b1d3e4f4b3bb47777553",
+          "size": 0
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "whisper-bin-ubuntu-x64/libggml-cpu-x64.so",
+          "sha256": "b7c084e19dc63a83acf9d6dac8d2cba089026996bf805659e10d650d5a51c216",
+          "size": 878024
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "whisper-bin-ubuntu-x64/libggml-cpu-cooperlake.so",
+          "sha256": "e02b7d041ddbf19a9f1a0a0f61d54e6d8bb6072b6ee09c001e2dd0b4c3b74398",
+          "size": 1070816
+        },
+        {
+          "kind": "symlink",
+          "linkTarget": "libggml.so.0.18.1",
+          "mode": 511,
+          "path": "whisper-bin-ubuntu-x64/libggml.so.0",
+          "sha256": "1985fa3dc169a16715a0998da0a075b29be8f68ea2501e3c043be53be7f11857",
+          "size": 0
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "whisper-bin-ubuntu-x64/libggml-cpu-zen4.so",
+          "sha256": "d17c9e99888b523b1699603b9453594fd47d1e2e686c77dff32d125f7b0c6c36",
+          "size": 1070816
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "whisper-bin-ubuntu-x64/libwhisper.so.1.9.2",
+          "sha256": "afd9560fa2dd20a7c0f9aa682f9c4f339b2d223f2ad6fa200fc229bc3b1606d6",
+          "size": 611280
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "whisper-bin-ubuntu-x64/libggml-cpu-sandybridge.so",
+          "sha256": "fccf45830c2929fe8261064c987fc94da85afdb7fc57cfaae52132cbbeda825c",
+          "size": 959896
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "whisper-bin-ubuntu-x64/libggml-base.so.0.18.1",
+          "sha256": "bc41368cecccc3db8b4f52ad168b51413ee6c005a772b1d3e4f4b3bb47777553",
+          "size": 910680
+        }
+      ]
+    }
+  },
+  "schemaVersion": 1
+}

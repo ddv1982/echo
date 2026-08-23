@@ -2,6 +2,7 @@ pub mod audio;
 pub mod cleanup;
 pub mod hotkey;
 pub mod inject;
+pub mod install;
 pub mod microphone;
 pub mod notify;
 pub mod rec;
