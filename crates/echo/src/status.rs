@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use echo_core::{status_path, write_atomic, SessionState};
+use echo_core::{status_path, write_atomic, RecordingLimit, SessionState};
 
 /// Status file contents after staleness handling.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,6 +13,7 @@ pub struct Status {
     /// Engine stderr from a failed session, so the desktop app can show what
     /// the engine actually said instead of "speech engine failed".
     pub error: Option<String>,
+    pub recording_limit: Option<RecordingLimit>,
 }
 
 impl Status {
@@ -22,6 +23,7 @@ impl Status {
             state: "Idle".to_string(),
             last: None,
             error: None,
+            recording_limit: None,
         }
     }
 }
@@ -46,6 +48,16 @@ pub fn write_status(
     error: Option<&str>,
 ) -> Result<(), String> {
     write_atomic(&status_path(), render(state, last, error).as_bytes())
+}
+
+pub fn write_recording(limit: RecordingLimit) -> Result<(), String> {
+    write_atomic(&status_path(), render_recording(limit).as_bytes())
+}
+
+fn render_recording(limit: RecordingLimit) -> String {
+    let mut body = format!("state=Recording\npid={}\n", std::process::id());
+    body.push_str(&format!("recording_limit_seconds={}\n", limit.seconds()));
+    body
 }
 
 fn render(state: SessionState, last: Option<&str>, error: Option<&str>) -> String {
@@ -97,23 +109,39 @@ pub fn shortcut_activation() -> Option<String> {
 
 /// Mark a successful action from the fixed shortcut source. GUI and tray
 /// recording paths deliberately never call this.
-pub fn mark_shortcut_activation(source: &str) -> Result<(), String> {
-    write_shortcut_activation(&shortcut_activation_path(), source)
+pub fn mark_shortcut_activation(source: &str, recording_token: Option<&str>) -> Result<(), String> {
+    write_shortcut_activation(&shortcut_activation_path(), source, recording_token)
 }
 
-fn write_shortcut_activation(path: &Path, source: &str) -> Result<(), String> {
+fn write_shortcut_activation(
+    path: &Path,
+    source: &str,
+    recording_token: Option<&str>,
+) -> Result<(), String> {
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
-    let token = format!(
+    let mut token = format!(
         "{source}:{}:{}:{}:{}",
         now.as_secs(),
         now.subsec_nanos(),
         std::process::id(),
         SEQUENCE.fetch_add(1, Ordering::Relaxed)
     );
+    if let Some(recording_token) = recording_token {
+        token.push_str(":recording=");
+        token.push_str(recording_token);
+    }
     write_atomic(path, token.as_bytes())
+}
+
+#[must_use]
+pub fn shortcut_recording_token(activation: &str) -> Option<&str> {
+    activation
+        .rsplit_once(":recording=")
+        .map(|(_, token)| token.trim())
+        .filter(|token| !token.is_empty())
 }
 
 fn parse(raw: &str, alive: impl Fn(&str) -> bool) -> Status {
@@ -125,15 +153,28 @@ fn parse(raw: &str, alive: impl Fn(&str) -> bool) -> Status {
     let error = field("error=")
         .filter(|text| !text.trim().is_empty())
         .map(str::to_string);
+    let recording_limit = (state == "Recording")
+        .then(|| {
+            field("recording_limit_seconds=")
+                .and_then(|value| value.parse::<u32>().ok())
+                .and_then(RecordingLimit::new)
+        })
+        .flatten();
     let active = state != "Idle" && !state.starts_with("Failed");
     if active && !field("pid=").map(alive).unwrap_or(false) {
         return Status {
             state: "Idle".to_string(),
             last,
             error,
+            recording_limit: None,
         };
     }
-    Status { state, last, error }
+    Status {
+        state,
+        last,
+        error,
+        recording_limit,
+    }
 }
 
 fn pid_alive(pid: &str) -> bool {
@@ -154,9 +195,37 @@ mod tests {
     }
 
     #[test]
+    fn recording_limit_round_trips_for_a_live_writer() {
+        let limit = echo_core::RecordingLimit::MAX;
+        let body = render_recording(limit);
+        let status = parse(&body, |_| true);
+        assert_eq!(status.state, "Recording");
+        assert_eq!(status.recording_limit, Some(limit));
+        assert!(body.contains("recording_limit_seconds=600\n"));
+    }
+
+    #[test]
+    fn old_and_malformed_recording_limits_are_ignored() {
+        let old = parse("state=Recording\npid=42\n", |_| true);
+        assert_eq!(old.recording_limit, None);
+
+        for raw in ["0", "601", "invalid", "4294967295"] {
+            let status = parse(
+                &format!("state=Recording\npid=42\nrecording_limit_seconds={raw}\n"),
+                |_| true,
+            );
+            assert_eq!(status.recording_limit, None);
+        }
+    }
+
+    #[test]
     fn recording_with_dead_writer_reads_idle() {
-        let status = parse("state=Recording\npid=42\n", |_| false);
+        let status = parse(
+            "state=Recording\npid=42\nrecording_limit_seconds=600\n",
+            |_| false,
+        );
         assert_eq!(status.state, "Idle");
+        assert_eq!(status.recording_limit, None);
     }
 
     #[test]
@@ -213,11 +282,13 @@ mod tests {
     fn shortcut_activation_tokens_are_explicit_and_monotonic() {
         let dir = std::env::temp_dir().join(format!("echo-shortcut-token-{}", std::process::id()));
         let path = dir.join("activation");
-        write_shortcut_activation(&path, "native-toggle").unwrap();
+        write_shortcut_activation(&path, "native-toggle", Some("session-a")).unwrap();
         let first = fs::read_to_string(&path).unwrap();
-        write_shortcut_activation(&path, "native-toggle").unwrap();
+        write_shortcut_activation(&path, "native-toggle", Some("session-b")).unwrap();
         let second = fs::read_to_string(&path).unwrap();
         assert!(first.starts_with("native-toggle:"));
+        assert_eq!(shortcut_recording_token(&first), Some("session-a"));
+        assert_eq!(shortcut_recording_token(&second), Some("session-b"));
         assert_ne!(first, second);
         let _ = fs::remove_dir_all(dir);
     }

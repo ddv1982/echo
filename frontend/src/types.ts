@@ -18,6 +18,13 @@ export interface Settings {
   language: SettingField<string>
 }
 
+export interface RecordingPolicy {
+  minimumSeconds: number
+  defaultSeconds: number
+  maximumSeconds: number
+  presetsSeconds: number[]
+}
+
 export interface InputDevice {
   id: string
   label: string
@@ -88,7 +95,8 @@ export interface AppStatus {
   shortcut: ShortcutStatus
   cleanupName: string
   hudEnabled: boolean
-  maxRecordSeconds: number
+  recordingLimitSeconds: number | null
+  recordingPolicy: RecordingPolicy
   settingsPath: string
   version: string
   lastError: string | null

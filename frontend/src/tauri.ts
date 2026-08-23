@@ -11,6 +11,7 @@ import type {
   MicrophoneSnapshot,
   MicrophoneTestResult,
   Readiness,
+  RecordingPolicy,
   SetupEvent,
   SetupPlanId,
   ComponentId,
@@ -23,6 +24,13 @@ declare global {
   interface Window {
     __TAURI_INTERNALS__?: unknown
   }
+}
+
+const PREVIEW_RECORDING_POLICY: RecordingPolicy = {
+  minimumSeconds: 1,
+  defaultSeconds: 600,
+  maximumSeconds: 600,
+  presetsSeconds: [30, 60, 120, 300, 600],
 }
 
 function richPreviewStatus(): AppStatus {
@@ -45,7 +53,8 @@ function richPreviewStatus(): AppStatus {
     },
     cleanupName: 'Rules · fillers and punctuation',
     hudEnabled: true,
-    maxRecordSeconds: 60,
+    recordingLimitSeconds: PREVIEW_RECORDING_POLICY.defaultSeconds,
+    recordingPolicy: PREVIEW_RECORDING_POLICY,
     settingsPath: '/tmp/echo-preview/config.json',
     version: __APP_VERSION__,
     lastError: null,
@@ -70,6 +79,7 @@ function richPreviewStatus(): AppStatus {
 let previewStatus: AppStatus = richPreviewStatus()
 
 let previewSettings: Settings = defaultPreviewSettings()
+let previewRecordingDeadline: number | null = null
 
 const previewHistory: HistoryItem[] = [
   {
@@ -235,20 +245,49 @@ export function toggleRecording(): Promise<void> {
   if (isTauri()) return invoke('toggle_recording')
   if (preview) {
     if (previewStatus.recording) {
-      previewStatus = { ...previewStatus, recording: false, recordingInProcess: false, phase: 'Transcribing' }
-      window.setTimeout(() => {
-        previewStatus = { ...previewStatus, phase: 'Idle' }
-      }, 900)
+      stopPreviewRecording()
     } else {
+      const limit = previewSettings.recordSeconds.effective
       previewStatus = {
         ...previewStatus,
         recording: true,
         recordingInProcess: true,
         phase: 'Recording',
+        recordingLimitSeconds: limit,
       }
+      previewRecordingDeadline = window.setTimeout(() => {
+        previewRecordingDeadline = null
+        stopPreviewRecording()
+      }, limit * 1000)
     }
   }
   return Promise.resolve()
+}
+
+export function stopRecording(activation: string): Promise<boolean> {
+  if (isTauri()) return invoke('stop_recording', { activation })
+  const currentActivation =
+    'activation' in previewStatus.shortcut ? previewStatus.shortcut.activation : null
+  if (!preview || currentActivation !== activation) return Promise.resolve(false)
+  return Promise.resolve(stopPreviewRecording())
+}
+
+function stopPreviewRecording() {
+  if (previewRecordingDeadline != null) {
+    window.clearTimeout(previewRecordingDeadline)
+    previewRecordingDeadline = null
+  }
+  if (!previewStatus.recording) return false
+  previewStatus = {
+    ...previewStatus,
+    recording: false,
+    recordingInProcess: false,
+    phase: 'Transcribing',
+  }
+  window.setTimeout(() => {
+    previewStatus = { ...previewStatus, phase: 'Idle' }
+  }, 900)
+  return true
 }
 
 export function getRecordingLevel(): Promise<number> {
@@ -356,6 +395,10 @@ export function seedPreviewStatus(status: Partial<AppStatus>) {
 }
 
 export function resetPreviewSettings() {
+  if (previewRecordingDeadline != null) {
+    window.clearTimeout(previewRecordingDeadline)
+    previewRecordingDeadline = null
+  }
   previewSettings = defaultPreviewSettings()
   previewStatus = richPreviewStatus()
   previewMicTestError = null
@@ -596,7 +639,11 @@ function defaultPreviewSettings(): Settings {
     whisperModel: { value: null, effective: '', source: 'default' },
     cleanup: { value: null, effective: 'rules', source: 'default' },
     hud: { value: null, effective: true, source: 'default' },
-    recordSeconds: { value: null, effective: 3, source: 'default' },
+    recordSeconds: {
+      value: null,
+      effective: PREVIEW_RECORDING_POLICY.defaultSeconds,
+      source: 'default',
+    },
     language: { value: null, effective: 'auto', source: 'default' },
   })
 }
@@ -605,13 +652,16 @@ function projectPreviewSettings(settings: Settings): Settings {
   const recordValue =
     settings.recordSeconds.value == null
       ? null
-      : Math.min(60, Math.max(1, settings.recordSeconds.value))
+      : Math.min(
+          PREVIEW_RECORDING_POLICY.maximumSeconds,
+          Math.max(PREVIEW_RECORDING_POLICY.minimumSeconds, settings.recordSeconds.value),
+        )
   return {
     engine: previewField(settings.engine.value, 'auto'),
     whisperModel: previewField(settings.whisperModel.value, ''),
     cleanup: previewField(settings.cleanup.value, 'rules'),
     hud: previewField(settings.hud.value, true),
-    recordSeconds: previewField(recordValue, 3),
+    recordSeconds: previewField(recordValue, PREVIEW_RECORDING_POLICY.defaultSeconds),
     language: previewField(settings.language.value, 'auto'),
   }
 }
@@ -641,6 +691,9 @@ function applyPreviewStatus(settings: Settings) {
     engineReady: settings.engine.effective !== 'auto',
     cleanupName: cleanupNames[settings.cleanup.effective] ?? settings.cleanup.effective,
     hudEnabled: settings.hud.effective,
+    recordingLimitSeconds: previewStatus.recording
+      ? previewStatus.recordingLimitSeconds
+      : settings.recordSeconds.effective,
   }
 }
 
@@ -661,7 +714,8 @@ function initialPreviewStatus(): AppStatus {
     },
     cleanupName: 'Rules · fillers and punctuation',
     hudEnabled: true,
-    maxRecordSeconds: 60,
+    recordingLimitSeconds: PREVIEW_RECORDING_POLICY.defaultSeconds,
+    recordingPolicy: PREVIEW_RECORDING_POLICY,
     settingsPath: '/tmp/echo-preview/config.json',
     version: __APP_VERSION__,
     lastError: null,

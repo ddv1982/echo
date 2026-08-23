@@ -37,6 +37,7 @@ import {
   setMicrophone,
   setSettings,
   startSetup,
+  stopRecording,
   testInputDevice,
   testMicrophoneFallback,
   toggleRecording,
@@ -55,6 +56,8 @@ import type {
   SetupEvent,
   MicrophoneSnapshot,
   MicrophoneTestResult,
+  RecordingPolicy,
+  SettingField,
   SettingSource,
   Settings as AppSettings,
   ThemeMode,
@@ -74,7 +77,13 @@ const initialStatus: AppStatus = {
   shortcut: { kind: 'probing', desired: 'Super+Alt+Space' },
   cleanupName: 'Rules · fillers and punctuation',
   hudEnabled: true,
-  maxRecordSeconds: 60,
+  recordingLimitSeconds: 0,
+  recordingPolicy: {
+    minimumSeconds: 0,
+    defaultSeconds: 0,
+    maximumSeconds: 0,
+    presetsSeconds: [],
+  },
   settingsPath: '',
   version: '',
   lastError: null,
@@ -375,7 +384,9 @@ function HomeView({
               <span>{status.recording ? 'Listening' : status.phase === 'Transcribing' ? 'Transcribing' : 'Ready'}</span>
               {status.recording ? (
                 <span className="readout-timer">
-                  {formatDuration(recordingSeconds)} / {formatDuration(status.maxRecordSeconds)}
+                  {status.recordingLimitSeconds == null
+                    ? formatDuration(recordingSeconds)
+                    : `${formatDuration(Math.min(recordingSeconds, status.recordingLimitSeconds))} / ${formatDuration(status.recordingLimitSeconds)}`}
                 </span>
               ) : null}
             </div>
@@ -530,11 +541,13 @@ function ShortcutRow({
   repairing,
   onRepair,
   onRetry,
+  onError,
 }: {
   status: AppStatus
   repairing: boolean
   onRepair: () => void
   onRetry: () => Promise<void>
+  onError: (message: string) => void
 }) {
   const shortcut = presentShortcut(status.shortcut)
   const currentIdentity = shortcut.verificationIdentity
@@ -546,9 +559,13 @@ function ShortcutRow({
   const [phase, setPhase] = useState<'idle' | 'arming' | 'listening' | 'timed-out'>('idle')
   const [retrying, setRetrying] = useState(false)
   const attempt = useRef(0)
+  const verificationActive = useRef(false)
+  const verificationContext = useRef<ShortcutTestContext | null>(null)
   const pollTimer = useRef<number | null>(null)
   const timeoutTimer = useRef<number | null>(null)
   const completeVerification = (identity: string) => {
+    verificationActive.current = false
+    verificationContext.current = null
     attempt.current += 1
     if (pollTimer.current != null) window.clearTimeout(pollTimer.current)
     if (timeoutTimer.current != null) window.clearTimeout(timeoutTimer.current)
@@ -564,8 +581,26 @@ function ShortcutRow({
       attempt.current += 1
       if (pollTimer.current != null) window.clearTimeout(pollTimer.current)
       if (timeoutTimer.current != null) window.clearTimeout(timeoutTimer.current)
+      const context = verificationContext.current
+      if (verificationActive.current && context != null) {
+        void stopAttributedShortcutRecording(context)
+      }
     }
   }, [])
+
+  const stopVerifiedRecording = async (activation: string) => {
+    try {
+      await stopRecording(activation)
+      for (let check = 0; check < 20; check += 1) {
+        if (!(await getAppStatus()).recording) return true
+        await new Promise((resolve) => window.setTimeout(resolve, 25))
+      }
+      onError('Echo could not confirm that the shortcut recording stopped.')
+    } catch (reason) {
+      onError(messageFrom(reason))
+    }
+    return false
+  }
 
   const start = async () => {
     const attemptId = attempt.current + 1
@@ -573,6 +608,8 @@ function ShortcutRow({
     if (pollTimer.current != null) window.clearTimeout(pollTimer.current)
     if (timeoutTimer.current != null) window.clearTimeout(timeoutTimer.current)
     setPhase('arming')
+    verificationActive.current = true
+    verificationContext.current = null
 
     try {
       const baseline = presentShortcut(await getShortcutStatus())
@@ -580,19 +617,31 @@ function ShortcutRow({
       const expectedActivationSource = baseline.expectedActivationSource
       const baselineIdentity = baseline.verificationIdentity
       if (expectedActivationSource == null || baselineIdentity == null) {
+        verificationActive.current = false
         setPhase('timed-out')
         return
       }
+      const context = {
+        baselineActivation: baseline.activation,
+        expectedActivationSource,
+        verificationIdentity: baselineIdentity,
+      }
+      verificationContext.current = context
       setPhase('listening')
 
       const poll = async () => {
         const next = presentShortcut(await getShortcutStatus())
         if (attempt.current !== attemptId) return
-        if (
-          next.activation !== baseline.activation &&
-          next.activation?.startsWith(`${expectedActivationSource}:`) === true &&
-          next.verificationIdentity === baselineIdentity
-        ) {
+        const activation = attributedShortcutActivation(next, context)
+        if (activation != null) {
+          const stopped = await stopVerifiedRecording(activation)
+          if (attempt.current !== attemptId) return
+          if (!stopped) {
+            verificationActive.current = false
+            verificationContext.current = null
+            setPhase('timed-out')
+            return
+          }
           completeVerification(baselineIdentity)
           return
         }
@@ -602,11 +651,26 @@ function ShortcutRow({
       timeoutTimer.current = window.setTimeout(() => {
         if (attempt.current !== attemptId) return
         attempt.current += 1
+        verificationActive.current = false
+        const context = verificationContext.current
+        verificationContext.current = null
         if (pollTimer.current != null) window.clearTimeout(pollTimer.current)
         setPhase('timed-out')
+        if (context != null) {
+          void stopAttributedShortcutRecording(context).catch((reason: unknown) =>
+            onError(messageFrom(reason)),
+          )
+        }
       }, 10_000)
-    } catch {
-      if (attempt.current === attemptId) setPhase('timed-out')
+    } catch (reason) {
+      if (attempt.current === attemptId) {
+        verificationActive.current = false
+        const context = verificationContext.current
+        verificationContext.current = null
+        setPhase('timed-out')
+        if (context != null) void stopAttributedShortcutRecording(context).catch(() => undefined)
+        onError(messageFrom(reason))
+      }
     }
   }
 
@@ -687,6 +751,35 @@ function ShortcutRow({
       </div>
     </div>
   )
+}
+
+interface ShortcutTestContext {
+  baselineActivation: string | null
+  expectedActivationSource: string
+  verificationIdentity: string
+}
+
+function attributedShortcutActivation(
+  shortcut: ReturnType<typeof presentShortcut>,
+  context: ShortcutTestContext,
+) {
+  const activation = shortcut.activation
+  return activation !== context.baselineActivation &&
+    activation?.startsWith(`${context.expectedActivationSource}:`) === true &&
+    shortcut.verificationIdentity === context.verificationIdentity
+    ? activation
+    : null
+}
+
+async function stopAttributedShortcutRecording(
+  context: ShortcutTestContext,
+  observedActivation?: string,
+) {
+  const activation =
+    observedActivation ??
+    attributedShortcutActivation(presentShortcut(await getShortcutStatus()), context)
+  if (activation == null) return false
+  return stopRecording(activation)
 }
 
 function StatsStrip({ history }: { history: HistoryItem[] }) {
@@ -952,7 +1045,41 @@ const CLEANUP_OPTIONS = [
   { value: 'rules', label: 'Rules' },
 ] as const
 
-const RECORD_SECOND_PRESETS = [3, 5, 10, 15, 30, 60]
+const DEFAULT_RECORDING_LIMIT_OPTION = 'default'
+
+function recordingLimitOptions(
+  policy: RecordingPolicy,
+  field: SettingField<number>,
+) {
+  const defaultSeconds = policy.defaultSeconds || field.effective
+  const presets = policy.presetsSeconds.length > 0 ? policy.presetsSeconds : [field.effective]
+  const seconds = presets.filter((value) => value !== defaultSeconds)
+  if (
+    (field.source === 'env' || field.value != null) &&
+    !seconds.includes(field.effective)
+  ) {
+    seconds.push(field.effective)
+  }
+  seconds.sort((left, right) => left - right)
+  return seconds
+    .map((value) => ({ value: String(value), label: formatRecordingLength(value) }))
+    .concat({
+      value: DEFAULT_RECORDING_LIMIT_OPTION,
+      label: `${formatRecordingLength(defaultSeconds)} · Default`,
+    })
+}
+
+function recordingLimitValue(field: SettingField<number>) {
+  return field.source !== 'env' && field.value == null
+    ? DEFAULT_RECORDING_LIMIT_OPTION
+    : String(field.effective)
+}
+
+function formatRecordingLength(seconds: number) {
+  if (seconds % 60 !== 0) return `${seconds} ${seconds === 1 ? 'second' : 'seconds'}`
+  const minutes = seconds / 60
+  return `${minutes} ${minutes === 1 ? 'minute' : 'minutes'}`
+}
 
 function SettingsView({
   status,
@@ -1075,12 +1202,6 @@ function SettingsView({
     }
   }
 
-  const recordSecondOptions = RECORD_SECOND_PRESETS
-    .concat(settings ? [settings.recordSeconds.effective] : [])
-    .filter((secs, index, all) => all.indexOf(secs) === index)
-    .sort((left, right) => left - right)
-    .map((secs) => ({ value: String(secs), label: `${secs} seconds` }))
-
   const whisperRuns =
     settings != null &&
     (settings.engine.effective === 'whisper' ||
@@ -1160,10 +1281,27 @@ function SettingsView({
             onError={onError}
           />
         ) : null}
+        {settings ? (
+          <SettingSelect
+            label="Maximum recording length"
+            description="Stops timed recordings and recordings started from the button or shortcut."
+            value={recordingLimitValue(settings.recordSeconds)}
+            options={recordingLimitOptions(status.recordingPolicy, settings.recordSeconds)}
+            source={settings.recordSeconds.source}
+            envName="ECHO_RECORD_SECONDS"
+            onChange={(value) =>
+              void patch(
+                'recordSeconds',
+                value === DEFAULT_RECORDING_LIMIT_OPTION ? null : Number(value),
+              )
+            }
+          />
+        ) : null}
         <ShortcutRow
           status={status}
           repairing={repairingLegacyShortcut}
           onRepair={() => void repairLegacy()}
+          onError={onError}
           onRetry={async () => {
             try {
               await retryShortcut()
@@ -1229,15 +1367,6 @@ function SettingsView({
               source={settings.hud.source}
               envName="ECHO_HUD"
               onChange={(value) => void patch('hud', value)}
-            />
-            <SettingSelect
-              label="Recording length"
-              description={`Timed recordings from the command line. Toggle recording still caps at ${status.maxRecordSeconds} seconds.`}
-              value={String(settings.recordSeconds.effective)}
-              options={recordSecondOptions}
-              source={settings.recordSeconds.source}
-              envName="ECHO_RECORD_SECONDS"
-              onChange={(value) => void patch('recordSeconds', Number(value))}
             />
             <div className="setting-row">
               <div>

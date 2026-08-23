@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.8.0
+
+- Recording length is now a visible General setting shared by timed, button, tray, CLI, and shortcut capture, with 30-second, 1-minute, 2-minute, 5-minute, and 10-minute choices. Ten minutes is the default and ceiling.
+- Active sessions snapshot their limit, Home shows that value while recording, preview behavior matches the backend, and existing `record_seconds` config plus `ECHO_RECORD_SECONDS` overrides remain supported.
+- Ten-minute capture avoids the previous native-sample clone and full mono intermediate buffer while preserving exact conversion output on tested mono, stereo, and multichannel inputs.
+- Shortcut verification always cleans up its test recording, and token-scoped stop requests cannot cancel a replacement session. Fixture capture now obeys the same limit and cancellation contract as live capture.
+
 ## v0.7.0
 
 - Microphones now use CPAL stable device IDs, keep equal labels distinct, show available metadata, preserve disconnected choices with an explicit fallback, and test the exact selected input.
