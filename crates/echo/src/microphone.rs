@@ -159,10 +159,12 @@ pub fn classify_input(raw: &RawInputDescriptor) -> EndpointTier {
             "sof-hda-dsp",
         ],
     ) {
-        EndpointTier::Advanced
-    } else {
-        EndpointTier::Primary
+        return EndpointTier::Advanced;
     }
+    // ALSA exposes named PCM definitions as devices. Only raw hardware
+    // endpoints earned a primary row above; unknown names remain available
+    // under technical endpoints instead of looking like physical mics.
+    EndpointTier::Advanced
 }
 
 fn descriptor_text(raw: &RawInputDescriptor) -> String {
@@ -192,9 +194,9 @@ fn input_transport(raw: &RawInputDescriptor) -> InputTransport {
         InputTransport::BuiltIn
     } else if searchable.contains("pci") {
         InputTransport::Pci
-    } else if contains_any(&searchable, &["network", "airplay", "dante"]){
+    } else if contains_any(&searchable, &["network", "airplay", "dante"]) {
         InputTransport::Network
-    } else if contains_any(&searchable, &["virtual", "monitor", "loopback", "sink"]){
+    } else if contains_any(&searchable, &["virtual", "monitor", "loopback", "sink"]) {
         InputTransport::Virtual
     } else {
         InputTransport::Unknown
@@ -211,17 +213,21 @@ fn input_hint(raw: &RawInputDescriptor, transport: InputTransport) -> String {
         InputTransport::Virtual => Some("Virtual endpoint"),
         InputTransport::Unknown => None,
     };
-    [transport, raw.device_type.as_deref(), raw.manufacturer.as_deref()]
-        .into_iter()
-        .flatten()
-        .filter(|part| !part.eq_ignore_ascii_case("unknown"))
-        .fold(Vec::<&str>::new(), |mut parts, part| {
-            if !parts.iter().any(|known| known.eq_ignore_ascii_case(part)) {
-                parts.push(part);
-            }
-            parts
-        })
-        .join(" · ")
+    [
+        transport,
+        raw.device_type.as_deref(),
+        raw.manufacturer.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|part| !part.eq_ignore_ascii_case("unknown"))
+    .fold(Vec::<&str>::new(), |mut parts, part| {
+        if !parts.iter().any(|known| known.eq_ignore_ascii_case(part)) {
+            parts.push(part);
+        }
+        parts
+    })
+    .join(" · ")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -482,8 +488,12 @@ mod tests {
         for (id, label) in [
             ("alsa:pipewire", "PipeWire Sound Server"),
             ("alsa:dsnoop:CARD=sofhdadsp,DEV=6", "sof-hda-dsp,"),
-            ("alsa:speexrate", "Rate Converter Plugin Using Speex Resampler"),
+            (
+                "alsa:speexrate",
+                "Rate Converter Plugin Using Speex Resampler",
+            ),
             ("alsa:upmix", "Plugin for channel upmix (4,6,8)"),
+            ("alsa:sysdefault:CARD=PCH", "HDA Intel PCH"),
         ] {
             assert_eq!(
                 classify_input(&raw(AudioHost::Alsa, id, label)),
