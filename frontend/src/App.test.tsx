@@ -682,6 +682,38 @@ describe('Echo desktop shell', () => {
     })
   })
 
+  it('can activate an already available recommended setup', async () => {
+    const readiness = await getReadiness()
+    seedPreviewReadiness({
+      ...readiness,
+      speechReady: false,
+      firstRunComplete: false,
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Use recommended setup' }))
+    await waitFor(async () => expect((await getReadiness()).speechReady).toBe(true))
+  })
+
+  it('offers Use for an already available alternative without duplicating Recommended', async () => {
+    const readiness = await getReadiness()
+    seedPreviewReadiness({
+      ...readiness,
+      plans: readiness.plans.map((plan) =>
+        plan.id === 'parakeet' ? { ...plan, satisfied: true } : plan,
+      ),
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByText('Advanced speech options'))
+    const advanced = screen.getByText('Advanced speech options').closest('details')!
+    expect(within(advanced).getByText('Parakeet')).toBeVisible()
+    expect(within(advanced).getByRole('button', { name: 'Use' })).toBeEnabled()
+    expect(within(advanced).queryByText('Whisper small')).not.toBeInTheDocument()
+  })
+
   it('shows repair and managed-only removal actions', async () => {
     const readiness = await getReadiness()
     seedPreviewReadiness({

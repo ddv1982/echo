@@ -46,7 +46,7 @@ export function presentSpeechSetup(readiness: Readiness): SpeechSetupPresentatio
     state = {
       kind: 'ready',
       title: 'Ready to dictate',
-      detail: activeSpeechDetail(readiness.components),
+      detail: 'A local speech engine and model are available.',
     }
   } else {
     state = {
@@ -61,7 +61,11 @@ export function presentSpeechSetup(readiness: Readiness): SpeechSetupPresentatio
     recommended,
     parakeet,
     installedComponents: readiness.components,
-    alternativePlans: readiness.plans.filter((plan) => plan.id !== 'recommended'),
+    alternativePlans: readiness.plans.filter((plan) =>
+      plan.id !== 'recommended'
+      && (readiness.speechReady || plan.id !== 'parakeet')
+      && (recommended == null || !sameComponents(plan, recommended)),
+    ),
   }
 }
 
@@ -74,8 +78,7 @@ function setupActivityLabel(component: ComponentStatus): string {
   return `${component.label} · ${activity.phase.replace('-', ' ')}`
 }
 
-function activeSpeechDetail(components: ComponentStatus[]): string {
-  const active = components.filter((component) => component.activeOrigin != null)
-  if (active.length === 0) return 'Your local speech engine and model are available.'
-  return active.map((component) => component.label).join(' · ')
+function sameComponents(left: SetupPlan, right: SetupPlan): boolean {
+  return left.components.length === right.components.length
+    && left.components.every((component) => right.components.includes(component))
 }

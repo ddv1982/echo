@@ -17,10 +17,17 @@ function component(
 }
 
 function plan(id: SetupPlan['id'], satisfied = false): SetupPlan {
+  const components: Record<SetupPlan['id'], ComponentStatus['id'][]> = {
+    recommended: ['whisper-runtime', 'whisper-small'],
+    parakeet: ['sherpa-runtime', 'parakeet-tdt-06b-v3-int8'],
+    'whisper-base': ['whisper-runtime', 'whisper-base-q5-1'],
+    'whisper-small': ['whisper-runtime', 'whisper-small'],
+    'whisper-large-v3-turbo': ['whisper-runtime', 'whisper-large-v3-turbo-q5-0'],
+  }
   return {
     id,
     label: id,
-    components: [],
+    components: components[id],
     satisfied,
     downloadBytes: 100,
     requiredFreeBytes: 200,
@@ -59,18 +66,32 @@ describe('speech setup presentation', () => {
     expect(presented.state).toEqual({
       kind: 'ready',
       title: 'Ready to dictate',
-      detail: 'Whisper runtime · Small multilingual',
+      detail: 'A local speech engine and model are available.',
     })
     expect(presented.installedComponents).toHaveLength(2)
   })
 
-  it('keeps recommended and Parakeet available without copying backend plans', () => {
+  it('keeps recommended and visible Parakeet out of duplicate advanced rows', () => {
     const source = readiness()
     const presented = presentSpeechSetup(source)
 
     expect(presented.state.kind).toBe('needs-setup')
     expect(presented.recommended).toBe(source.plans[0])
     expect(presented.parakeet).toBe(source.plans[1])
+    expect(presented.alternativePlans.map((candidate) => candidate.id)).toEqual(['whisper-base'])
+  })
+
+  it('removes a concrete plan with the same components as Recommended', () => {
+    const presented = presentSpeechSetup(readiness({
+      speechReady: true,
+      plans: [
+        plan('recommended'),
+        plan('parakeet'),
+        plan('whisper-small'),
+        plan('whisper-base'),
+      ],
+    }))
+
     expect(presented.alternativePlans.map((candidate) => candidate.id)).toEqual([
       'parakeet',
       'whisper-base',

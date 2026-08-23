@@ -1538,17 +1538,19 @@ function SpeechSetupSection({
             <button type="button" className="compact-button" onClick={() => run(cancelSetup(activeOperation))}>
               Cancel
             </button>
-          ) : !readiness.speechReady && readiness.managedSupported && recommended && !recommended.satisfied ? (
+          ) : !readiness.speechReady && readiness.managedSupported && recommended ? (
             <button
               type="button"
               className="primary-button setup-primary"
               disabled={!recommended.diskReady}
               onClick={() => run(startSetup('recommended'))}
             >
-              Set up recommended · {formatSize(recommended.downloadBytes)}
+              {recommended.satisfied
+                ? 'Use recommended setup'
+                : `Set up recommended · ${formatSize(recommended.downloadBytes)}`}
             </button>
           ) : null}
-          {activeOperation == null && !readiness.speechReady && readiness.managedSupported && parakeet && !parakeet.satisfied ? (
+          {activeOperation == null && !readiness.speechReady && readiness.managedSupported && parakeet ? (
             <button
               type="button"
               className="compact-button"
@@ -1579,7 +1581,7 @@ function SpeechSetupSection({
           <details className="settings-disclosure" data-settings-surface>
             <summary>
               <span>Installed components</span>
-              <small>{readiness.components.filter((component) => component.activeOrigin != null).length} active</small>
+              <small>{readiness.components.filter((component) => component.activeOrigin != null).length} available</small>
             </summary>
             <div className="disclosure-content">
               {setup.installedComponents.map((component) => (
@@ -1605,14 +1607,14 @@ function SpeechSetupSection({
                     <strong>{plan.label}</strong>
                     <span>{plan.satisfied ? 'Ready' : `${formatSize(plan.downloadBytes)} download`}</span>
                   </div>
-                  {!plan.satisfied && readiness.managedSupported ? (
+                  {readiness.managedSupported ? (
                     <button
                       type="button"
                       className="compact-button"
                       disabled={activeOperation != null || !plan.diskReady}
                       onClick={() => run(startSetup(plan.id))}
                     >
-                      Install
+                      {plan.satisfied ? 'Use' : 'Install'}
                     </button>
                   ) : null}
                 </div>
