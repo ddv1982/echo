@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.5.0
+
+- Echo now uses one fixed Super+Alt+Space toggle across the desktop portal, X11, GNOME setup, and manual compositor setup. Push-to-talk, raw-input fallback, shortcut customization, and the `rec --hold` command have been removed.
+- Shortcut setup is reported through one typed status, remains available when unrelated Settings probes fail, supports explicit retry, and verifies activations against the effective binding.
+
 ## v0.4.2
 
 Publication-path hotfix for the fully verified `v0.4.1` artifacts. The application changes and package contents remain the same.

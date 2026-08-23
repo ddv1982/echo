@@ -13,8 +13,6 @@ export interface Settings {
   whisperModel: SettingField<string>
   cleanup: SettingField<string>
   hud: SettingField<boolean>
-  toggleShortcut: SettingField<string>
-  holdKey: SettingField<string>
   recordSeconds: SettingField<number>
   microphone: SettingField<string>
   language: SettingField<string>
@@ -34,7 +32,7 @@ export interface AppStatus {
   engineReady: boolean
   injectionName: string
   injectionReady: boolean
-  shortcut: string
+  shortcut: ShortcutStatus
   cleanupName: string
   hudEnabled: boolean
   maxRecordSeconds: number
@@ -47,24 +45,49 @@ export interface AppStatus {
   currentExe: string
   firstPathHit: string | null
   staleInstalls: string[]
-  holdListener: 'native' | 'active' | 'needs-permission' | 'unavailable'
-  holdListenerError: string | null
-  shortcutBackend: 'portal' | 'x11' | 'unsupported'
-  shortcutHealthy: boolean
-  shortcutError: string | null
-  requestedShortcut: string
-  requestedHoldShortcut: string
-  effectiveHoldShortcut: string | null
-  legacyShortcut: LegacyShortcutSetup | null
-  shortcutActivation: string | null
 }
 
-export interface LegacyShortcutSetup {
-  state: 'missing' | 'stale' | 'conflicting' | 'ready' | 'unsupported'
+export type ShortcutStatus =
+  | { kind: 'probing'; desired: string }
+  | {
+      kind: 'active'
+      desired: string
+      effective: string
+      backend: 'portal' | 'x11'
+      activation: string | null
+      verificationIdentity: string
+    }
+  | {
+      kind: 'gnome-ready'
+      desired: string
+      effective: string
+      detail: string
+      command: string
+      binding: string
+      activation: string | null
+      verificationIdentity: string
+    }
+  | { kind: 'gnome-setup'; desired: string; setup: GnomeShortcutSetup }
+  | {
+      kind: 'manual'
+      desired: string
+      command: string
+      detail: string
+    }
+  | { kind: 'failed'; desired: string; detail: string }
+  | { kind: 'unsupported'; desired: string; detail: string }
+
+interface LegacyShortcutFields {
   detail: string
   command: string
   binding: string
 }
+
+export type GnomeShortcutSetup = LegacyShortcutFields & {
+  state: 'missing' | 'stale' | 'conflicting' | 'unsupported'
+}
+
+export type LegacyShortcutSetup = GnomeShortcutSetup | (LegacyShortcutFields & { state: 'ready' })
 
 export interface LastRun {
   engine: string

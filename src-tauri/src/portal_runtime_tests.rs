@@ -154,8 +154,15 @@ impl Shortcuts {
         {
             return Err(failed("unexpected session path"));
         }
-        if shortcuts.len() != 2 {
-            return Err(failed("expected two shortcuts"));
+        if shortcuts.len() != 1 {
+            return Err(failed("expected one shortcut"));
+        }
+        let (id, properties) = &shortcuts[0];
+        if id != FixedShortcut::ID
+            || option_string(properties, "description")? != "Start or stop recording"
+            || option_string(properties, "preferred_trigger")? != FixedShortcut::PORTAL_TRIGGER
+        {
+            return Err(failed("unexpected fixed shortcut binding"));
         }
 
         let request = portal_path(
@@ -164,10 +171,11 @@ impl Shortcuts {
             option_string(&options, "handle_token")?,
         )?;
         server.at(request.clone(), Request).await.map_err(failed)?;
-        let output = vec![
-            wire_shortcut(TOGGLE_SHORTCUT_ID, "Start or stop recording", "Ctrl+Alt+T"),
-            wire_shortcut(HOLD_SHORTCUT_ID, "Hold to record", "Control_R"),
-        ];
+        let output = vec![wire_shortcut(
+            FixedShortcut::ID,
+            "Start or stop recording",
+            "Ctrl+Alt+T",
+        )];
         let mut results = Vardict::new();
         results.insert(
             "shortcuts".into(),
@@ -287,7 +295,7 @@ fn portal_runtime_registers_binds_routes_and_closes() {
             .await
             .expect("connect mock portal client");
 
-        update_native_status(|status| *status = NativeShortcutStatus::default());
+        set_native_shortcut_state(NativeShortcutState::Probing);
         let (action_sender, action_receiver) = std::sync::mpsc::channel();
         *TEST_SHORTCUT_ACTIONS
             .lock()
@@ -295,26 +303,27 @@ fn portal_runtime_registers_binds_routes_and_closes() {
         let cancel = echo::audio::CancellationToken::new();
         let listener_cancel = cancel.clone();
         let active = AtomicBool::new(false);
-        let listener = run_portal_shortcuts_async(
-            "Super+Alt+Space",
-            "RightCtrl",
-            &listener_cancel,
-            &active,
-            client,
-        );
+        let listener = run_portal_shortcuts_async(&listener_cancel, &active, client);
         let exercise = async {
             let deadline = Instant::now() + Duration::from_secs(3);
-            while (!calls.bound.load(Ordering::SeqCst) || !native_shortcut_status().healthy)
+            while (!calls.bound.load(Ordering::SeqCst)
+                || !matches!(native_shortcut_state(), NativeShortcutState::Active { .. }))
                 && Instant::now() < deadline
             {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
             assert_eq!(calls.stage.load(Ordering::SeqCst), 2);
-            assert!(native_shortcut_status().healthy);
+            assert!(matches!(
+                native_shortcut_state(),
+                NativeShortcutState::Active { .. }
+            ));
             assert!(active.load(Ordering::SeqCst));
             assert_eq!(
-                native_shortcut_status().effective_toggle.as_deref(),
-                Some("Ctrl+Alt+T")
+                native_shortcut_state(),
+                NativeShortcutState::Active {
+                    backend: ShortcutBackendName::Portal,
+                    effective: "Ctrl+Alt+T".to_string(),
+                }
             );
 
             let session = calls
@@ -326,13 +335,13 @@ fn portal_runtime_registers_binds_routes_and_closes() {
             let emitter = SignalEmitter::new(&service, "/org/freedesktop/portal/desktop")
                 .expect("portal signal emitter");
             let empty = Vardict::new();
-            Shortcuts::activated(&emitter, &session.as_ref(), TOGGLE_SHORTCUT_ID, 1, &empty)
+            Shortcuts::activated(&emitter, &session.as_ref(), FixedShortcut::ID, 1, &empty)
                 .await
                 .expect("emit activation");
             assert_eq!(
                 receive_action(&action_receiver).await,
                 TestShortcutAction::Edge(
-                    TOGGLE_SHORTCUT_ID.to_string(),
+                    FixedShortcut::ID.to_string(),
                     echo::hotkey::HotkeyEvent::Down
                 )
             );
@@ -341,23 +350,23 @@ fn portal_runtime_registers_binds_routes_and_closes() {
                 TestShortcutAction::Toggle
             );
             recording_env.assert_active();
-            Shortcuts::deactivated(&emitter, &session.as_ref(), TOGGLE_SHORTCUT_ID, 2, &empty)
+            Shortcuts::deactivated(&emitter, &session.as_ref(), FixedShortcut::ID, 2, &empty)
                 .await
                 .expect("emit deactivation");
             assert_eq!(
                 receive_action(&action_receiver).await,
                 TestShortcutAction::Edge(
-                    TOGGLE_SHORTCUT_ID.to_string(),
+                    FixedShortcut::ID.to_string(),
                     echo::hotkey::HotkeyEvent::Up
                 )
             );
-            Shortcuts::activated(&emitter, &session.as_ref(), TOGGLE_SHORTCUT_ID, 3, &empty)
+            Shortcuts::activated(&emitter, &session.as_ref(), FixedShortcut::ID, 3, &empty)
                 .await
                 .expect("emit second activation");
             assert_eq!(
                 receive_action(&action_receiver).await,
                 TestShortcutAction::Edge(
-                    TOGGLE_SHORTCUT_ID.to_string(),
+                    FixedShortcut::ID.to_string(),
                     echo::hotkey::HotkeyEvent::Down
                 )
             );
@@ -366,78 +375,36 @@ fn portal_runtime_registers_binds_routes_and_closes() {
                 TestShortcutAction::Toggle
             );
             recording_env.wait_until_inactive();
-            Shortcuts::activated(&emitter, &session.as_ref(), HOLD_SHORTCUT_ID, 4, &empty)
-                .await
-                .expect("emit hold activation");
-            assert_eq!(
-                receive_action(&action_receiver).await,
-                TestShortcutAction::Edge(
-                    HOLD_SHORTCUT_ID.to_string(),
-                    echo::hotkey::HotkeyEvent::Down
-                )
-            );
-            assert_eq!(
-                receive_action(&action_receiver).await,
-                TestShortcutAction::HoldStart
-            );
-            recording_env.assert_active();
-            Shortcuts::deactivated(&emitter, &session.as_ref(), HOLD_SHORTCUT_ID, 5, &empty)
-                .await
-                .expect("emit hold deactivation");
-            assert_eq!(
-                receive_action(&action_receiver).await,
-                TestShortcutAction::Edge(
-                    HOLD_SHORTCUT_ID.to_string(),
-                    echo::hotkey::HotkeyEvent::Up
-                )
-            );
-            assert_eq!(
-                receive_action(&action_receiver).await,
-                TestShortcutAction::HoldStop
-            );
-            recording_env.wait_until_inactive();
-
-            let replacement = vec![
-                wire_shortcut(TOGGLE_SHORTCUT_ID, "Start or stop recording", "Alt+F8"),
-                wire_shortcut(HOLD_SHORTCUT_ID, "Hold to record", "Control_R"),
-            ];
+            let replacement = vec![wire_shortcut(
+                FixedShortcut::ID,
+                "Start or stop recording",
+                "Alt+F8",
+            )];
             Shortcuts::shortcuts_changed(&emitter, &session.as_ref(), &replacement)
                 .await
                 .expect("emit shortcut change");
             let deadline = Instant::now() + Duration::from_secs(3);
-            while native_shortcut_status().effective_toggle.as_deref() != Some("Alt+F8")
+            while native_shortcut_state()
+                != (NativeShortcutState::Active {
+                    backend: ShortcutBackendName::Portal,
+                    effective: "Alt+F8".to_string(),
+                })
                 && Instant::now() < deadline
             {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
             assert_eq!(
-                native_shortcut_status().effective_toggle.as_deref(),
-                Some("Alt+F8")
+                native_shortcut_state(),
+                NativeShortcutState::Active {
+                    backend: ShortcutBackendName::Portal,
+                    effective: "Alt+F8".to_string(),
+                }
             );
-            Shortcuts::activated(&emitter, &session.as_ref(), HOLD_SHORTCUT_ID, 6, &empty)
-                .await
-                .expect("emit held activation before teardown");
-            assert_eq!(
-                receive_action(&action_receiver).await,
-                TestShortcutAction::Edge(
-                    HOLD_SHORTCUT_ID.to_string(),
-                    echo::hotkey::HotkeyEvent::Down
-                )
-            );
-            assert_eq!(
-                receive_action(&action_receiver).await,
-                TestShortcutAction::HoldStart
-            );
-            recording_env.assert_active();
             let session_emitter = SignalEmitter::new(&service, session.clone())
                 .expect("portal session signal emitter");
             Session::closed(&session_emitter, &empty)
                 .await
                 .expect("emit unexpected portal session closure");
-            assert_eq!(
-                receive_action(&action_receiver).await,
-                TestShortcutAction::HoldStop
-            );
         };
 
         let (result, ()) = tokio::join!(listener, exercise);

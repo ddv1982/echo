@@ -87,7 +87,7 @@ fn shortcut_activation_path() -> PathBuf {
     echo_core::data_dir().join("shortcut-activation")
 }
 
-/// Return the opaque token written by the last configured shortcut action.
+/// Return the opaque token written by the last fixed shortcut action.
 #[must_use]
 pub fn shortcut_activation() -> Option<String> {
     fs::read_to_string(shortcut_activation_path())
@@ -95,7 +95,7 @@ pub fn shortcut_activation() -> Option<String> {
         .filter(|token| !token.trim().is_empty())
 }
 
-/// Mark a successful action from a configured shortcut source. GUI and tray
+/// Mark a successful action from the fixed shortcut source. GUI and tray
 /// recording paths deliberately never call this.
 pub fn mark_shortcut_activation(source: &str) -> Result<(), String> {
     write_shortcut_activation(&shortcut_activation_path(), source)

@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Name=Echo
-Comment=Local hold-to-talk dictation
+Comment=Private local dictation
 Exec=echo-desktop
 Icon=echo-desktop
 Terminal=false

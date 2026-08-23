@@ -2,9 +2,12 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import App from './App'
 import {
   getSettings,
+  listInputDevices,
+  listModels,
   removeStaleInstalls,
   repairLegacyShortcut,
   resetPreviewSettings,
+  retryShortcut,
   seedPreviewLanguages,
   seedPreviewMicTestError,
   seedPreviewRemoveStaleError,
@@ -12,21 +15,39 @@ import {
   seedPreviewStatus,
   setSettings,
 } from './tauri'
+import type { ShortcutStatus } from './types'
 
 vi.mock('./tauri', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./tauri')>()
   return {
     ...actual,
+    getSettings: vi.fn(() => actual.getSettings()),
+    listInputDevices: vi.fn(() => actual.listInputDevices()),
+    listModels: vi.fn(() => actual.listModels()),
     setSettings: vi.fn((settings) => actual.setSettings(settings)),
     removeStaleInstalls: vi.fn(() => actual.removeStaleInstalls()),
     repairLegacyShortcut: vi.fn(() => actual.repairLegacyShortcut()),
+    retryShortcut: vi.fn(() => actual.retryShortcut()),
   }
 })
+
+function activeShortcut(
+  activation: string | null = null,
+  effective = 'Super+Alt+Space',
+): ShortcutStatus {
+  return {
+    kind: 'active',
+    desired: 'Super+Alt+Space',
+    effective,
+    backend: 'portal',
+    activation,
+    verificationIdentity: `portal:${effective}`,
+  }
+}
 
 describe('Echo desktop shell', () => {
   beforeEach(async () => {
     resetPreviewSettings()
-    localStorage.removeItem('echo-shortcut-bound')
     localStorage.removeItem('echo-shortcut-verified-at')
     localStorage.removeItem('echo-shortcut-verified-identity')
     const actual = await vi.importActual<typeof import('./tauri')>('./tauri')
@@ -34,6 +55,14 @@ describe('Echo desktop shell', () => {
     vi.mocked(setSettings).mockImplementation((settings) => actual.setSettings(settings))
     vi.mocked(repairLegacyShortcut).mockReset()
     vi.mocked(repairLegacyShortcut).mockImplementation(() => actual.repairLegacyShortcut())
+    vi.mocked(retryShortcut).mockReset()
+    vi.mocked(retryShortcut).mockImplementation(() => actual.retryShortcut())
+    vi.mocked(getSettings).mockReset()
+    vi.mocked(getSettings).mockImplementation(() => actual.getSettings())
+    vi.mocked(listInputDevices).mockReset()
+    vi.mocked(listInputDevices).mockImplementation(() => actual.listInputDevices())
+    vi.mocked(listModels).mockReset()
+    vi.mocked(listModels).mockImplementation(() => actual.listModels())
   })
 
   it('shows the recording entry point and navigation', async () => {
@@ -68,17 +97,6 @@ describe('Echo desktop shell', () => {
     fireEvent.click(within(await screen.findByRole('group', { name: 'Cleanup' })).getByRole('button', { name: 'Off' }))
     expect(within(await screen.findByRole('group', { name: 'Cleanup' })).getByRole('button', { name: 'Off' })).toHaveAttribute('data-active', 'true')
     expect((await getSettings()).cleanup).toEqual({ value: 'off', effective: 'off', source: 'file' })
-
-    fireEvent.click(screen.getByRole('button', { name: 'Record Push-to-talk shortcut' }))
-    fireEvent.keyDown(window, { key: 'Shift', code: 'ShiftRight' })
-    fireEvent.keyUp(window, { key: 'Shift', code: 'ShiftRight' })
-    await waitFor(async () => {
-      expect((await getSettings()).holdKey).toEqual({
-        value: 'RightShift',
-        effective: 'RightShift',
-        source: 'file',
-      })
-    })
   })
 
   it('disables an env-backed field and names the variable', async () => {
@@ -124,19 +142,13 @@ describe('Echo desktop shell', () => {
     fireEvent.click(await screen.findByText('Advanced'))
     fireEvent.click(within(await screen.findByRole('group', { name: 'Cleanup' })).getByRole('button', { name: 'Off' }))
     await firstWriteStarted
-    fireEvent.click(screen.getByRole('button', { name: 'Record Toggle shortcut' }))
-    fireEvent.keyDown(window, { key: 'Control', code: 'ControlLeft' })
-    fireEvent.keyDown(window, { key: 't', code: 'KeyT' })
+    fireEvent.click(within(screen.getByRole('group', { name: 'Recording HUD' })).getByRole('button', { name: 'Off' }))
     releaseFirst()
 
     await waitFor(async () => {
       const stored = await getSettings()
       expect(stored.cleanup).toEqual({ value: 'off', effective: 'off', source: 'file' })
-      expect(stored.toggleShortcut).toEqual({
-        value: 'Ctrl+T',
-        effective: 'Ctrl+T',
-        source: 'file',
-      })
+      expect(stored.hud).toEqual({ value: false, effective: false, source: 'file' })
     })
   })
 
@@ -152,123 +164,27 @@ describe('Echo desktop shell', () => {
     expect(within(cleanup).getByRole('button', { name: 'Off' })).toHaveAttribute('data-active', 'false')
   })
 
-  it('captures, normalizes, and persists a toggle chord without recording', async () => {
+  it('shows one fixed toggle shortcut with no customization controls', async () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Record Toggle shortcut' }))
-    fireEvent.keyDown(window, { key: 'p', code: 'KeyP' })
-    expect(vi.mocked(setSettings)).not.toHaveBeenCalled()
-    expect(screen.getByText('Press keys…')).toBeInTheDocument()
-    fireEvent.keyDown(window, { key: 'Alt', code: 'AltLeft' })
-    fireEvent.keyDown(window, { key: 'Meta', code: 'MetaLeft' })
-    expect(screen.getByText('Super+Alt+…')).toBeInTheDocument()
-    fireEvent.keyDown(window, { key: 'p', code: 'KeyP' })
-
-    await waitFor(async () => {
-      expect((await getSettings()).toggleShortcut).toEqual({
-        value: 'Super+Alt+P',
-        effective: 'Super+Alt+P',
-        source: 'file',
-      })
-    })
-    expect(screen.getByLabelText('Echo status: Idle')).toBeInTheDocument()
-    expect(vi.mocked(setSettings)).toHaveBeenCalledTimes(1)
+    expect(await screen.findAllByText('Super+Alt+Space')).not.toHaveLength(0)
+    expect(screen.queryByRole('button', { name: /Record .*shortcut/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Reset .*shortcut/ })).not.toBeInTheDocument()
+    expect(screen.queryByText(/Push-to-talk/i)).not.toBeInTheDocument()
   })
 
-  it('keeps toggle capture open after a lone modifier is released', async () => {
+  it('keeps shortcut setup available when editable settings fail to load', async () => {
+    vi.mocked(getSettings).mockRejectedValueOnce(new Error('settings unavailable'))
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Record Toggle shortcut' }))
 
-    fireEvent.keyDown(window, { key: 'Control', code: 'ControlLeft' })
-    fireEvent.keyUp(window, { key: 'Control', code: 'ControlLeft' })
-    expect(screen.getByText('Press keys…')).toBeInTheDocument()
-    expect(vi.mocked(setSettings)).not.toHaveBeenCalled()
-
-    fireEvent.keyDown(window, { key: 'Control', code: 'ControlLeft' })
-    fireEvent.keyDown(window, { key: 'k', code: 'KeyK' })
-    await waitFor(async () => {
-      expect((await getSettings()).toggleShortcut.effective).toBe('Ctrl+K')
-    })
+    expect(await screen.findAllByText('Toggle shortcut')).not.toHaveLength(0)
+    expect(screen.getByRole('button', { name: 'Test shortcut' })).toBeEnabled()
+    expect(await screen.findByRole('alert')).toHaveTextContent('settings unavailable')
   })
 
-  it('cancels shortcut capture with Escape and switches to the other recorder', async () => {
-    render(<App />)
-    await screen.findByRole('button', { name: 'Start recording' })
-    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Record Toggle shortcut' }))
-    expect(screen.getAllByText('Press keys…')).toHaveLength(1)
-    fireEvent.click(screen.getByRole('button', { name: 'Record Push-to-talk shortcut' }))
-    expect(screen.getAllByText('Press keys…')).toHaveLength(1)
-    fireEvent.keyDown(window, { key: 'Escape', code: 'Escape' })
-    expect(screen.queryByText('Press keys…')).not.toBeInTheDocument()
-    expect(vi.mocked(setSettings)).not.toHaveBeenCalled()
-    expect((await getSettings()).holdKey.effective).toBe('RightCtrl')
-  })
-
-  it('ignores autorepeat, saves once, and resets a shortcut to its default', async () => {
-    render(<App />)
-    await screen.findByRole('button', { name: 'Start recording' })
-    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Record Toggle shortcut' }))
-    fireEvent.keyDown(window, { key: 'Control', code: 'ControlLeft' })
-    fireEvent.keyDown(window, { key: 'k', code: 'KeyK' })
-    fireEvent.keyDown(window, { key: 'k', code: 'KeyK', repeat: true })
-    await waitFor(() => expect(vi.mocked(setSettings)).toHaveBeenCalledTimes(1))
-    await waitFor(() => expect(screen.getAllByText('Ctrl+K').length).toBeGreaterThan(0))
-
-    fireEvent.click(screen.getByRole('button', { name: 'Reset Toggle shortcut' }))
-    await waitFor(async () => {
-      expect((await getSettings()).toggleShortcut).toEqual({
-        value: null,
-        effective: 'Super+Alt+Space',
-        source: 'default',
-      })
-    })
-  })
-
-  it('rolls back a rejected chord save and leaves the write chain usable', async () => {
-    vi.mocked(setSettings).mockRejectedValueOnce(new Error('invalid shortcut'))
-    render(<App />)
-    await screen.findByRole('button', { name: 'Start recording' })
-    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Record Toggle shortcut' }))
-    fireEvent.keyDown(window, { key: 'Control', code: 'ControlLeft' })
-    fireEvent.keyDown(window, { key: 'x', code: 'KeyX' })
-    expect(await screen.findByRole('alert')).toHaveTextContent('invalid shortcut')
-    expect(screen.getAllByText('Super+Alt+Space').length).toBeGreaterThan(0)
-
-    fireEvent.click(screen.getByRole('button', { name: 'Record Push-to-talk shortcut' }))
-    fireEvent.keyDown(window, { key: 'Control', code: 'ControlRight' })
-    fireEvent.keyUp(window, { key: 'Control', code: 'ControlRight' })
-    await waitFor(() => expect(vi.mocked(setSettings)).toHaveBeenCalledTimes(2))
-    expect((await getSettings()).holdKey.effective).toBe('RightCtrl')
-  })
-
-  it('locks both shortcut recorders and resets when environment-backed', async () => {
-    const defaults = await getSettings()
-    seedPreviewSettings({
-      ...defaults,
-      toggleShortcut: { value: 'Ctrl+T', effective: 'Super+Q', source: 'env' },
-      holdKey: { value: 'LeftCtrl', effective: 'Alt+Space', source: 'env' },
-    })
-    render(<App />)
-    await screen.findByRole('button', { name: 'Start recording' })
-    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    expect(await screen.findByText('ECHO_TOGGLE_SHORTCUT')).toBeInTheDocument()
-    expect(screen.getByText('ECHO_HOLD_KEY')).toBeInTheDocument()
-    for (const name of [
-      'Record Toggle shortcut',
-      'Reset Toggle shortcut',
-      'Record Push-to-talk shortcut',
-      'Reset Push-to-talk shortcut',
-    ]) {
-      expect(screen.getByRole('button', { name })).toBeDisabled()
-    }
-    expect(vi.mocked(setSettings)).not.toHaveBeenCalled()
-  })
 
   it('lists preview microphones and persists a named choice', async () => {
     render(<App />)
@@ -375,11 +291,10 @@ describe('Echo desktop shell', () => {
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
 
-    // General: the four decisions that matter, plus shortcut and theme.
     await screen.findByLabelText('Microphone')
     await screen.findByLabelText('Language')
     await screen.findByLabelText('Model quality')
-    await screen.findByLabelText('Push-to-talk shortcut')
+    expect(await screen.findAllByText('Super+Alt+Space')).not.toHaveLength(0)
     expect(screen.getByRole('group', { name: 'Application theme' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Test shortcut' })).toBeInTheDocument()
 
@@ -709,7 +624,7 @@ describe('Echo desktop shell', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     // This activation lands after the last app poll but before testing starts.
     // The test's fresh backend baseline must consume it rather than verify it.
-    seedPreviewStatus({ shortcutActivation: 'portal:stale-before-click' })
+    seedPreviewStatus({ shortcut: activeShortcut('native-toggle:stale-before-click') })
     fireEvent.click(await screen.findByRole('button', { name: 'Test shortcut' }))
     expect(await screen.findByText('Listening… press your shortcut')).toBeInTheDocument()
     await new Promise((resolve) => window.setTimeout(resolve, 450))
@@ -720,8 +635,15 @@ describe('Echo desktop shell', () => {
     await new Promise((resolve) => window.setTimeout(resolve, 30))
     expect(localStorage.getItem('echo-shortcut-verified-at')).toBeNull()
 
-    // The configured shortcut path publishes a distinct provenance token.
-    seedPreviewStatus({ shortcutActivation: 'portal:1' })
+    seedPreviewStatus({ shortcut: activeShortcut('toggle-command:1') })
+    await new Promise((resolve) => window.setTimeout(resolve, 150))
+    expect(localStorage.getItem('echo-shortcut-verified-at')).toBeNull()
+
+    seedPreviewStatus({ shortcut: activeShortcut('native-toggle:changed', 'Alt+F8') })
+    await new Promise((resolve) => window.setTimeout(resolve, 150))
+    expect(localStorage.getItem('echo-shortcut-verified-at')).toBeNull()
+
+    seedPreviewStatus({ shortcut: activeShortcut('native-toggle:1') })
     await waitFor(() => expect(localStorage.getItem('echo-shortcut-verified-at')).not.toBeNull())
     expect(localStorage.getItem('echo-shortcut-verified-identity')).toBe('portal:Super+Alt+Space')
     expect(await screen.findByText(/Verified/)).toBeInTheDocument()
@@ -782,75 +704,29 @@ describe('Echo desktop shell', () => {
     })
   })
 
-  it('shows native push-to-talk without claiming its evdev listener is unavailable', async () => {
-    render(<App />)
-    await screen.findByRole('button', { name: 'Start recording' })
-    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    await screen.findByLabelText('Push-to-talk shortcut')
-    expect(screen.getByText('Native shortcut active')).toBeInTheDocument()
-    expect(screen.queryByText('Listener unavailable')).not.toBeInTheDocument()
-    expect(screen.getByText('Desktop portal active')).toBeInTheDocument()
-    expect(screen.getByText('Native desktop shortcut active')).toBeInTheDocument()
-  })
-
-  it('reports unavailable raw input without requesting privilege changes', async () => {
+  it('renders shortcut setup when settings, models, and microphones fail to load', async () => {
+    vi.mocked(getSettings).mockRejectedValueOnce(new Error('settings unavailable'))
+    vi.mocked(listModels).mockRejectedValueOnce(new Error('models unavailable'))
+    vi.mocked(listInputDevices).mockRejectedValueOnce(new Error('microphones unavailable'))
     seedPreviewStatus({
-      holdListener: 'needs-permission',
-      holdListenerError: 'Echo cannot read an eligible keyboard; use the desktop global shortcut.',
-      shortcutBackend: 'unsupported',
-      shortcutHealthy: false,
-      legacyShortcut: {
-        state: 'ready',
-        detail: 'GNOME owns this Echo shortcut and its command is current.',
-        command: '/usr/bin/echo-desktop rec --toggle',
-        binding: '<Super><Alt>space',
+      shortcut: {
+        kind: 'gnome-setup',
+        desired: 'Super+Alt+Space',
+        setup: {
+          state: 'missing',
+          detail: 'GNOME has no Echo custom shortcut yet.',
+          command: '/usr/bin/echo-desktop rec --toggle',
+          binding: '<Super><Alt>space',
+        },
       },
     })
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    await screen.findByLabelText('Push-to-talk shortcut')
-    expect(
-      screen.getByText('Echo cannot read an eligible keyboard; use the desktop global shortcut.'),
-    ).toBeInTheDocument()
-    expect(screen.queryByText(/sudo|usermod|input group/i)).not.toBeInTheDocument()
-    expect(screen.getByText('GNOME shortcut ready')).toBeInTheDocument()
-    expect(screen.getByText('GNOME custom shortcut ready')).toBeInTheDocument()
-    expect(screen.getByText(/^Raw keyboard input unavailable:/)).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: 'Set up GNOME shortcut' })).toBeInTheDocument()
+    expect(screen.getAllByText('Super+Alt+Space')).not.toHaveLength(0)
   })
 
-  it('exposes source-specific shortcut backend diagnostics', async () => {
-    seedPreviewStatus({
-      holdListener: 'active',
-      shortcutBackend: 'x11',
-      shortcutHealthy: true,
-    })
-    render(<App />)
-    await screen.findByRole('button', { name: 'Start recording' })
-    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-
-    expect(screen.getByText('Toggle shortcut backend')).toBeInTheDocument()
-    expect(screen.getByText('X11 active')).toBeInTheDocument()
-    expect(screen.getByText('Push-to-talk backend')).toBeInTheDocument()
-    expect(screen.getByText('Raw keyboard input active')).toBeInTheDocument()
-  })
-
-  it('exposes independent shortcut backend errors', async () => {
-    seedPreviewStatus({
-      shortcutBackend: 'unsupported',
-      shortcutHealthy: false,
-      shortcutError: 'Portal registration failed',
-      legacyShortcut: null,
-      holdListener: 'unavailable',
-      holdListenerError: 'No eligible keyboard is connected',
-    })
-    render(<App />)
-    await screen.findByRole('button', { name: 'Start recording' })
-    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-
-    expect(screen.getByText('Registration unavailable: Portal registration failed')).toBeInTheDocument()
-    expect(screen.getByText('Listener unavailable: No eligible keyboard is connected')).toBeInTheDocument()
-  })
 
   it.each([
     ['missing', 'Set up GNOME shortcut'],
@@ -858,13 +734,15 @@ describe('Echo desktop shell', () => {
   ] as const)('requires an explicit action for a %s GNOME shortcut', async (state, action) => {
     localStorage.setItem('echo-shortcut-verified-at', '1710000000')
     seedPreviewStatus({
-      shortcutHealthy: false,
-      shortcutBackend: 'unsupported',
-      legacyShortcut: {
-        state,
-        detail: state === 'missing' ? 'GNOME has no Echo custom shortcut yet.' : 'The Echo command is old.',
-        command: '/usr/bin/echo-desktop rec --toggle',
-        binding: '<Super><Alt>space',
+      shortcut: {
+        kind: 'gnome-setup',
+        desired: 'Super+Alt+Space',
+        setup: {
+          state,
+          detail: state === 'missing' ? 'GNOME has no Echo custom shortcut yet.' : 'The Echo command is old.',
+          command: '/usr/bin/echo-desktop rec --toggle',
+          binding: '<Super><Alt>space',
+        },
       },
     })
     render(<App />)
@@ -886,16 +764,17 @@ describe('Echo desktop shell', () => {
   it('does not offer legacy repair for other native backend failures', async () => {
     localStorage.setItem('echo-shortcut-verified-at', '1710000000')
     seedPreviewStatus({
-      shortcutHealthy: false,
-      shortcutBackend: 'unsupported',
-      shortcutError: 'portal host registry handshake failed',
-      legacyShortcut: null,
+      shortcut: {
+        kind: 'failed',
+        desired: 'Super+Alt+Space',
+        detail: 'portal host registry handshake failed',
+      },
     })
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     expect(screen.getByText('setup required in Settings')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    await screen.findByLabelText('Toggle shortcut')
+    await screen.findByText('Shortcut unavailable')
 
     expect(screen.queryByRole('button', { name: /GNOME shortcut/ })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Test shortcut' })).toBeDisabled()
@@ -903,14 +782,29 @@ describe('Echo desktop shell', () => {
     expect(repairLegacyShortcut).not.toHaveBeenCalled()
   })
 
-  it('does not reuse verification from a different shortcut identity', async () => {
-    localStorage.setItem('echo-shortcut-verified-at', '1710000000')
-    localStorage.setItem('echo-shortcut-verified-identity', 'portal:Super+Alt+Space')
-    seedPreviewStatus({ shortcut: 'Ctrl+Alt+Space', requestedShortcut: 'Ctrl+Alt+Space' })
+  it('retries an operational shortcut failure explicitly', async () => {
+    seedPreviewStatus({
+      shortcut: {
+        kind: 'failed',
+        desired: 'Super+Alt+Space',
+        detail: 'portal shortcut listener stopped',
+      },
+    })
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    await screen.findByLabelText('Toggle shortcut')
+    fireEvent.click(await screen.findByRole('button', { name: 'Retry shortcut' }))
+    await waitFor(() => expect(retryShortcut).toHaveBeenCalledOnce())
+  })
+
+  it('does not reuse verification from a different shortcut identity', async () => {
+    localStorage.setItem('echo-shortcut-verified-at', '1710000000')
+    localStorage.setItem('echo-shortcut-verified-identity', 'portal:Super+Alt+Space')
+    seedPreviewStatus({ shortcut: activeShortcut(null, 'Ctrl+Alt+Space') })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(await screen.findAllByText('Ctrl+Alt+Space')).not.toHaveLength(0)
 
     expect(screen.queryByText(/^Verified /)).not.toBeInTheDocument()
     expect(screen.queryByText('Shortcut verified')).not.toBeInTheDocument()
@@ -918,30 +812,36 @@ describe('Echo desktop shell', () => {
 
   it('refuses to overwrite a conflicting GNOME shortcut', async () => {
     seedPreviewStatus({
-      shortcutHealthy: false,
-      legacyShortcut: {
-        state: 'conflicting',
-        detail: 'Terminal already uses <Super><Alt>space; change it in GNOME Settings first.',
-        command: '/usr/bin/echo-desktop rec --toggle',
-        binding: '<Super><Alt>space',
+      shortcut: {
+        kind: 'gnome-setup',
+        desired: 'Super+Alt+Space',
+        setup: {
+          state: 'conflicting',
+          detail: 'Terminal already uses <Super><Alt>space; change it in GNOME Settings first.',
+          command: '/usr/bin/echo-desktop rec --toggle',
+          binding: '<Super><Alt>space',
+        },
       },
     })
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    expect(await screen.findByText('Resolve the conflict in GNOME Settings')).toBeInTheDocument()
+    expect(await screen.findByText('Resolve the GNOME conflict')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /GNOME shortcut/ })).not.toBeInTheDocument()
     expect(repairLegacyShortcut).not.toHaveBeenCalled()
   })
 
   it('shows ready GNOME setup without offering a write', async () => {
     seedPreviewStatus({
-      shortcutHealthy: false,
-      legacyShortcut: {
-        state: 'ready',
+      shortcut: {
+        kind: 'gnome-ready',
+        desired: 'Super+Alt+Space',
+        effective: 'Super+Alt+Space',
         detail: 'GNOME owns this Echo shortcut and its command is current.',
         command: '/usr/bin/echo-desktop rec --toggle',
         binding: '<Super><Alt>space',
+        activation: null,
+        verificationIdentity: 'gnome:<Super><Alt>space:/usr/bin/echo-desktop rec --toggle',
       },
     })
     render(<App />)
@@ -954,19 +854,20 @@ describe('Echo desktop shell', () => {
 
   it('gives unsupported Wayland compositors a truthful manual command', async () => {
     seedPreviewStatus({
-      shortcutHealthy: false,
-      legacyShortcut: {
-        state: 'unsupported',
+      shortcut: {
+        kind: 'manual',
+        desired: 'Super+Alt+Space',
         detail: 'This Wayland compositor has no GlobalShortcuts portal.',
         command: '/usr/bin/echo-desktop rec --toggle',
-        binding: '<Super><Alt>space',
       },
     })
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
+    expect(screen.getByText('Bind it in your desktop settings.')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    expect(await screen.findByText('Manual setup required')).toBeInTheDocument()
+    expect(await screen.findByText('Manual shortcut setup')).toBeInTheDocument()
     expect(screen.getByText('/usr/bin/echo-desktop rec --toggle')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Test shortcut' })).toBeDisabled()
     expect(screen.queryByRole('button', { name: /GNOME shortcut/ })).not.toBeInTheDocument()
     expect(repairLegacyShortcut).not.toHaveBeenCalled()
   })

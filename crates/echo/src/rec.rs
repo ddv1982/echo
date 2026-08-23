@@ -9,7 +9,7 @@ use echo_core::{
 };
 
 use crate::audio::{self, AudioCapture, CancellationToken};
-use crate::hotkey::{self, HotkeyEvent, HotkeySource};
+use crate::hotkey::HotkeyEvent;
 use crate::inject::LinuxInjector;
 use crate::status;
 
@@ -39,15 +39,9 @@ impl Drop for InProcessSession {
     }
 }
 
-/// What ends a recording: the timer, the toggle stop file, or cancellation by
-/// an in-process shortcut owner.
 enum StopWhen {
     Timer,
     ToggleFile(ToggleSession),
-    External {
-        _session: ToggleSession,
-        cancel: CancellationToken,
-    },
 }
 
 pub fn run_rec_once() -> i32 {
@@ -72,39 +66,6 @@ pub fn run_rec_toggle() -> i32 {
     }
 }
 
-/// A recording started by an in-process press/release shortcut. Dropping the
-/// handle stops only this recording; failure to acquire the session lock never
-/// toggles or truncates another process's session.
-pub struct ManagedRecording {
-    cancel: CancellationToken,
-}
-
-impl Drop for ManagedRecording {
-    fn drop(&mut self) {
-        self.cancel.cancel();
-    }
-}
-
-/// Start recording only when the cross-process session lock is free.
-/// `Ok(None)` means another session owns the lock.
-pub fn start_managed_recording() -> Result<Option<ManagedRecording>, String> {
-    let Some(session) = ToggleSession::try_start()? else {
-        return Ok(None);
-    };
-    let cancel = CancellationToken::new();
-    let thread_cancel = cancel.clone();
-    std::thread::Builder::new()
-        .name("echo-record-hold".to_string())
-        .spawn(move || {
-            let _ = run_record(StopWhen::External {
-                _session: session,
-                cancel: thread_cancel,
-            });
-        })
-        .map_err(|err| err.to_string())?;
-    Ok(Some(ManagedRecording { cancel }))
-}
-
 /// Toggle an in-process recording after synchronously acquiring or stopping
 /// the cross-process session. Recording work continues on a background thread.
 pub fn toggle_managed_recording() -> Result<(), String> {
@@ -120,57 +81,10 @@ pub fn toggle_managed_recording() -> Result<(), String> {
     }
 }
 
-/// Loop forever: wait for the hold key, record while it is down, transcribe
-/// and inject on release. Ctrl-C quits.
-pub fn run_rec_hold() -> i32 {
-    let spec = match hotkey::hold_key() {
-        Ok(spec) => spec,
-        Err(err) => {
-            eprintln!("hold: {err} (set ECHO_HOLD_KEY to a supported key or chord)");
-            return 2;
-        }
-    };
-    if !matches!(
-        hotkey::probe_hold_devices(spec.code),
-        hotkey::EvdevAvailability::Ready(_)
-    ) {
-        eprintln!("{}", hotkey::evdev_permission_hint());
-        eprintln!(
-            "hold mode needs readable /dev/input event devices. \
-                 alternatively bind `echo-desktop rec --toggle` to a desktop shortcut"
-        );
-        return 1;
-    }
-    eprintln!("hold {} to dictate (ctrl-c to quit)", spec.name);
-    let never = CancellationToken::new();
-    let mut recording = None;
-    hotkey::run_evdev_supervisor(
-        spec.code,
-        &never,
-        |health| {
-            if !matches!(health, hotkey::EvdevListenerHealth::Active) {
-                eprintln!("hold: {health:?}");
-            }
-        },
-        |edge| match edge {
-            HotkeyEvent::Down if recording.is_none() => {
-                recording = start_managed_recording().ok().flatten();
-            }
-            HotkeyEvent::Up => drop(recording.take()),
-            HotkeyEvent::Down => {}
-        },
-    );
-    drop(recording);
-    0
-}
-
 fn run_record(mut stop: StopWhen) -> i32 {
     let mut session = Session::new();
     log_state(&session);
     let _ = status::write_status(session.state(), None, None);
-    if matches!(HotkeySource::detect(), HotkeySource::Cli) {
-        eprintln!("{}", hotkey::evdev_permission_hint());
-    }
     apply_edge(&mut session, HotkeyEvent::Down);
     let _ = status::write_status(session.state(), None, None);
     // The HUD lives until after injection: the longest wait in the session
@@ -327,10 +241,7 @@ fn capture_from(
         let capture = audio::load_wav(&path).map_err(|_| FailReason::EngineError)?;
         // Publish the fixture's loudness at real-time cadence so the HUD's
         // bars are truthful in demos and CI screenshots.
-        let playback_cancel = match stop {
-            StopWhen::External { cancel, .. } => cancel.clone(),
-            _ => CancellationToken::new(),
-        };
+        let playback_cancel = CancellationToken::new();
         let player = audio::play_fixture_meter(&capture.pcm, meter.clone(), playback_cancel);
         let _ = player.join();
         return Ok(capture);
@@ -347,21 +258,6 @@ fn capture_from(
             std::thread::scope(|scope| {
                 scope.spawn(|| {
                     while !cancel.is_cancelled() && !stop_path.exists() {
-                        std::thread::sleep(Duration::from_millis(20));
-                    }
-                    cancel.cancel();
-                });
-                let result = capture.record(Duration::from_secs(MAX_RECORD_SECONDS), Some(meter));
-                capture.cancel.cancel();
-                result
-            })
-        }
-        StopWhen::External { cancel: stop, .. } => {
-            let cancel = capture.cancel.clone();
-            let stop = stop.clone();
-            std::thread::scope(|scope| {
-                scope.spawn(|| {
-                    while !cancel.is_cancelled() && !stop.is_cancelled() {
                         std::thread::sleep(Duration::from_millis(20));
                     }
                     cancel.cancel();
@@ -396,10 +292,6 @@ impl ToggleSession {
         }
         fs::write(dir.join("recording.stop"), b"stop\n").map_err(|err| err.to_string())?;
         Ok(ToggleAction::Stop)
-    }
-
-    fn try_start() -> Result<Option<Self>, String> {
-        Self::try_start_in(&echo_core::data_dir())
     }
 
     fn try_start_in(dir: &Path) -> Result<Option<Self>, String> {
@@ -556,97 +448,5 @@ mod tests {
             ToggleSession::start_or_stop_in(&dir).unwrap(),
             ToggleAction::Start(_)
         ));
-    }
-
-    #[test]
-    fn managed_claim_does_not_stop_an_existing_session() {
-        let dir = std::env::temp_dir().join(format!("echo-managed-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-
-        let first = ToggleSession::try_start_in(&dir)
-            .unwrap()
-            .expect("first session");
-        assert!(ToggleSession::try_start_in(&dir).unwrap().is_none());
-        assert!(!dir.join("recording.stop").exists());
-
-        drop(first);
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn dropping_managed_recording_cancels_its_recording() {
-        let cancel = CancellationToken::new();
-        let recording = ManagedRecording {
-            cancel: cancel.clone(),
-        };
-
-        assert!(!cancel.is_cancelled());
-        drop(recording);
-        assert!(cancel.is_cancelled());
-    }
-
-    #[test]
-    #[ignore = "mutates process environment to run the real managed recording thread"]
-    fn managed_recording_rejects_existing_session_and_releases_owned_lock() {
-        struct EnvGuard(Vec<(&'static str, Option<std::ffi::OsString>)>);
-
-        impl EnvGuard {
-            fn set(values: &[(&'static str, std::ffi::OsString)]) -> Self {
-                let old = values
-                    .iter()
-                    .map(|(key, value)| {
-                        let old = std::env::var_os(key);
-                        std::env::set_var(key, value);
-                        (*key, old)
-                    })
-                    .collect();
-                Self(old)
-            }
-        }
-
-        impl Drop for EnvGuard {
-            fn drop(&mut self) {
-                for (key, old) in self.0.drain(..) {
-                    if let Some(old) = old {
-                        std::env::set_var(key, old);
-                    } else {
-                        std::env::remove_var(key);
-                    }
-                }
-            }
-        }
-
-        let dir = std::env::temp_dir().join(format!("echo-managed-live-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/claude_code.wav")
-            .into_os_string();
-        let _env = EnvGuard::set(&[
-            ("ECHO_DATA_DIR", dir.clone().into_os_string()),
-            ("ECHO_AUDIO_FIXTURE", fixture),
-            ("ECHO_ENGINE", "fake".into()),
-            ("ECHO_SKIP_INJECT", "1".into()),
-            ("ECHO_HUD", "0".into()),
-        ]);
-
-        let existing = ToggleSession::try_start_in(&dir)
-            .unwrap()
-            .expect("existing session");
-        assert!(start_managed_recording().unwrap().is_none());
-        assert!(!dir.join("recording.stop").exists());
-        drop(existing);
-
-        let owned = start_managed_recording().unwrap().expect("managed session");
-        assert!(dir.join("recording.lock").is_file());
-        assert!(start_managed_recording().unwrap().is_none());
-        assert!(!dir.join("recording.stop").exists());
-        drop(owned);
-
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
-        while dir.join("recording.lock").exists() && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(!dir.join("recording.lock").exists());
-        let _ = fs::remove_dir_all(dir);
     }
 }
