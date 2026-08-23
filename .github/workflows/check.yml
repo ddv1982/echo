@@ -43,6 +43,10 @@ jobs:
 
       - run: npm ci --prefix frontend
 
+      - run: npx --prefix frontend playwright install --with-deps chromium
+
+      - run: ./scripts/verify-settings-ux.sh
+
       - run: npm run build --prefix frontend
 
       - run: npm run lint --prefix frontend

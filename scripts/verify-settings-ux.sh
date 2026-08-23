@@ -12,9 +12,9 @@ rg -q '"depends": \["pipewire-libs", "pulseaudio-libs"\]' src-tauri/tauri.conf.j
 rg -q 'rpm Requires is missing' .github/workflows/release.yml
 rg -q 'deb Depends is missing' .github/workflows/release.yml
 rg -q 'Jabra Elite 8 Active' frontend/src/tauri.ts
-rg -q 'Advanced audio endpoints' frontend/src/App.tsx
-rg -q 'Installed components' frontend/src/App.tsx
-rg -q 'Advanced speech options' frontend/src/App.tsx
+rg -q 'Advanced audio endpoints' frontend/src/settings/MicrophoneChooser.tsx
+rg -q 'Installed components' frontend/src/settings/SpeechSetupSection.tsx
+rg -q 'Advanced speech options' frontend/src/settings/SpeechSetupSection.tsx
 rg -q -- '--radius-md:' frontend/src/styles/tokens.css
 rg -Fq '@media (max-width: 960px)' frontend/src/styles/views.css
 if rg -Fq '@media (max-width: 760px)' frontend/src/styles/views.css \
@@ -37,5 +37,6 @@ test "$advanced_count" -ge 8
 cargo test -p echo microphone::tests
 npm run typecheck --prefix frontend
 npm run test --prefix frontend -- --run setup.test.ts
+npm run test:responsive --prefix frontend
 
 printf '%s\n' 'verify-settings-ux: ok'
