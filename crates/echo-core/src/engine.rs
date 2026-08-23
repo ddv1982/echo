@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::dictionary::RecognitionHints;
+use crate::language::LanguageChoice;
 use crate::types::{EngineId, Pcm16kMono};
 
 /// What actually ran on a transcription, observed from the engine rather than
@@ -27,10 +29,15 @@ pub struct RunDetail {
 pub struct Transcript {
     pub raw: String,
     pub engine: EngineId,
-    pub language: Option<String>,
     pub audio_ms: u64,
     pub infer_ms: u64,
     pub detail: RunDetail,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodeOptions {
+    pub language: LanguageChoice,
+    pub hints: RecognitionHints,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,5 +66,9 @@ impl std::error::Error for EngineError {}
 
 pub trait Engine {
     fn id(&self) -> EngineId;
-    fn transcribe(&self, pcm: &Pcm16kMono) -> Result<Transcript, EngineError>;
+    fn transcribe(
+        &self,
+        pcm: &Pcm16kMono,
+        options: &DecodeOptions,
+    ) -> Result<Transcript, EngineError>;
 }

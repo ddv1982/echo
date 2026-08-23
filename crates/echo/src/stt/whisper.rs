@@ -4,82 +4,27 @@ use std::process::Command;
 use std::time::Instant;
 
 use echo_core::{
-    strip_nonspeech, Config, Engine, EngineError, EngineId, Language, LanguageChoice, Pcm16kMono,
-    RunDetail, Transcript,
+    strip_nonspeech, DecodeOptions, Engine, EngineError, EngineId, Language, LanguageChoice,
+    Pcm16kMono, RunDetail, Transcript,
 };
 use serde::Deserialize;
 
-use super::cache::{parse_whisper_filename, ModelCache, ModelInventory};
+use super::cache::{parse_whisper_filename, ModelCache};
 use super::write_temp_wav;
-use crate::settings::file_config;
 use crate::which::path_of;
-
-/// The model Echo runs: `ECHO_WHISPER_MODEL` wins over the config file, and
-/// with neither set the best installed model runs instead of a hardcoded
-/// name, so dropping a better model into the directory never silently changes
-/// the weights under a pinned choice, and a better download is used at once.
-fn resolved_whisper_model(
-    env: Option<String>,
-    file: &Config,
-    inventory: &ModelInventory,
-) -> Option<String> {
-    env.filter(|name| !name.is_empty())
-        .or_else(|| file.whisper_model.clone())
-        .or_else(|| inventory.best_whisper().map(|model| model.name.clone()))
-}
 
 pub struct WhisperEngine {
     cache: ModelCache,
-    model: Option<String>,
-    language: LanguageChoice,
-}
-
-impl Default for WhisperEngine {
-    fn default() -> Self {
-        Self::new()
-    }
+    model: String,
 }
 
 impl WhisperEngine {
     #[must_use]
-    pub fn new() -> Self {
-        let cache = ModelCache::from_env();
-        let file = file_config();
-        let model = resolved_whisper_model(
-            std::env::var("ECHO_WHISPER_MODEL").ok(),
-            &file,
-            &cache.inventory(),
-        );
-        let mut engine = Self {
-            cache,
-            model,
-            language: LanguageChoice::default(),
-        };
-        // The model-aware default: a multilingual model auto-detects, an
-        // English-only model pins English. selected_model covers both the
-        // scanned inventory and the probe fallback.
-        let multilingual = engine.selected_model().map(|(_, multilingual)| multilingual);
-        engine.language = super::resolved_language(
-            std::env::var("ECHO_LANGUAGE").ok().as_deref(),
-            &file,
-            multilingual,
-        );
-        engine
-    }
-
-    #[must_use]
-    pub fn with_cache(cache: ModelCache, model: impl Into<String>) -> Self {
+    pub fn configured(cache: ModelCache, model: impl Into<String>) -> Self {
         Self {
             cache,
-            model: Some(model.into()),
-            language: LanguageChoice::default(),
+            model: model.into(),
         }
-    }
-
-    #[must_use]
-    pub fn with_language(mut self, language: LanguageChoice) -> Self {
-        self.language = language;
-        self
     }
 
     /// True when both the runner binary and a model file are installed.
@@ -91,7 +36,7 @@ impl WhisperEngine {
 
     #[must_use]
     pub fn model_name(&self) -> Option<&str> {
-        self.model.as_deref()
+        Some(&self.model)
     }
 
     fn model_file(&self) -> Option<PathBuf> {
@@ -102,7 +47,7 @@ impl WhisperEngine {
     /// is a pre-flight guess used to refuse impossible language choices; the
     /// authoritative value is `model.multilingual` in the engine's JSON.
     pub(crate) fn selected_model(&self) -> Option<(PathBuf, bool)> {
-        let model = self.model.as_deref()?;
+        let model = self.model.as_str();
         let inventory = self.cache.inventory();
         if let Some(installed) = inventory.whisper.iter().find(|m| m.name == model) {
             return Some((installed.path.clone(), installed.multilingual));
@@ -139,24 +84,28 @@ impl WhisperEngine {
 impl Engine for WhisperEngine {
     fn id(&self) -> EngineId {
         EngineId::Whisper {
-            model: self.model.clone().unwrap_or_default(),
+            model: self.model.clone(),
         }
     }
 
-    fn transcribe(&self, pcm: &Pcm16kMono) -> Result<Transcript, EngineError> {
+    fn transcribe(
+        &self,
+        pcm: &Pcm16kMono,
+        options: &DecodeOptions,
+    ) -> Result<Transcript, EngineError> {
         let (model, multilingual) = self.selected_model().ok_or(EngineError::Missing)?;
-        refuse_impossible_language(&model, multilingual, self.language)?;
+        refuse_impossible_language(&model, multilingual, options.language)?;
         let bin = Self::binary().ok_or(EngineError::Missing)?;
         let started = Instant::now();
         let wav = write_temp_wav(pcm).map_err(EngineError::Infer)?;
         let vad = self.cache.vad_model();
         let first = Command::new(&bin)
-            .args(whisper_args(&model, &wav, vad.as_deref(), self.language))
+            .args(whisper_args(&model, &wav, vad.as_deref(), options))
             .output()
             .map_err(|err| EngineError::Infer(err.to_string()))?;
         let (status, vad_active) = if !first.status.success() && vad.is_some() {
             let retry = Command::new(&bin)
-                .args(whisper_args(&model, &wav, None, self.language))
+                .args(whisper_args(&model, &wav, None, options))
                 .output()
                 .map_err(|err| EngineError::Infer(err.to_string()))?;
             (retry, false)
@@ -174,7 +123,6 @@ impl Engine for WhisperEngine {
             engine: EngineId::Whisper {
                 model: parsed.model,
             },
-            language: parsed.language.clone(),
             audio_ms: pcm.duration_ms(),
             infer_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
             detail: RunDetail {
@@ -221,7 +169,7 @@ fn whisper_args(
     model: &Path,
     wav: &Path,
     vad: Option<&Path>,
-    language: LanguageChoice,
+    options: &DecodeOptions,
 ) -> Vec<String> {
     let mut args = vec![
         "-m".into(),
@@ -233,11 +181,15 @@ fn whisper_args(
         "-of".into(),
         "-".into(),
         "-l".into(),
-        match language {
+        match options.language {
             LanguageChoice::Auto => "auto".to_string(),
             LanguageChoice::Pinned(language) => language.code().to_string(),
         },
     ];
+    if !options.hints.is_empty() {
+        args.push("--prompt".into());
+        args.push(options.hints.terms().join(", "));
+    }
     if let Some(vad) = vad {
         args.push("--vad".into());
         args.push("-vm".into());
@@ -310,9 +262,8 @@ fn parse_whisper_stdout(stdout: &[u8]) -> Result<WhisperParse, EngineError> {
 }
 
 fn parse_whisper_json(raw: &str) -> Result<WhisperParse, EngineError> {
-    let output: WhisperOutput = serde_json::from_str(raw.trim()).map_err(|err| {
-        EngineError::Infer(format!("whisper json: {err}"))
-    })?;
+    let output: WhisperOutput = serde_json::from_str(raw.trim())
+        .map_err(|err| EngineError::Infer(format!("whisper json: {err}")))?;
     let text = output
         .transcription
         .iter()
@@ -337,14 +288,40 @@ fn parse_whisper_json(raw: &str) -> Result<WhisperParse, EngineError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use echo_core::{Dictionary, RecognitionHints};
+
+    fn options(language: LanguageChoice) -> DecodeOptions {
+        DecodeOptions {
+            language,
+            hints: RecognitionHints::default(),
+        }
+    }
+
+    fn options_with_hint(language: LanguageChoice, written: &str) -> DecodeOptions {
+        let dir = std::env::temp_dir().join(format!(
+            "echo-whisper-hints-{}-{}",
+            std::process::id(),
+            written.len()
+        ));
+        let _ = fs::create_dir_all(&dir);
+        let mut dictionary = Dictionary::load_from(dir.join("dictionary.json")).unwrap();
+        dictionary.add("misheard", written).unwrap();
+        DecodeOptions {
+            language,
+            hints: RecognitionHints::from_dictionary(&dictionary),
+        }
+    }
 
     #[test]
     fn missing_model_is_engine_missing() {
         let dir = std::env::temp_dir().join("echo-empty-whisper-models");
         let _ = fs::create_dir_all(&dir);
-        let engine = WhisperEngine::with_cache(ModelCache::at(&dir), "base.en");
+        let engine = WhisperEngine::configured(ModelCache::at(&dir), "base.en");
         let pcm = Pcm16kMono::from_samples(vec![0; 16]);
-        assert_eq!(engine.transcribe(&pcm), Err(EngineError::Missing));
+        assert_eq!(
+            engine.transcribe(&pcm, &options(LanguageChoice::default())),
+            Err(EngineError::Missing)
+        );
     }
 
     #[test]
@@ -358,7 +335,7 @@ mod tests {
             Path::new("model.bin"),
             Path::new("in.wav"),
             cache.vad_model().as_deref(),
-            LanguageChoice::default(),
+            &options(LanguageChoice::default()),
         )
     }
 
@@ -387,7 +364,7 @@ mod tests {
             Path::new("model.bin"),
             Path::new("in.wav"),
             Some(vad),
-            LanguageChoice::default(),
+            &options(LanguageChoice::default()),
         );
         assert!(with_vad.iter().any(|arg| arg == "--vad"));
         assert_eq!(vm_path(&with_vad), Some("ggml-silero-v6.2.0.bin"));
@@ -396,7 +373,7 @@ mod tests {
             Path::new("model.bin"),
             Path::new("in.wav"),
             None,
-            LanguageChoice::default(),
+            &options(LanguageChoice::default()),
         );
         assert!(without_vad.iter().all(|arg| arg != "--vad" && arg != "-vm"));
     }
@@ -426,59 +403,23 @@ mod tests {
     }
 
     #[test]
-    fn whisper_model_prefers_env_then_file_then_best_installed() {
-        let dir = std::env::temp_dir().join(format!("echo-resolve-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("ggml-base.en.bin"), []).unwrap();
-        fs::write(dir.join("ggml-small.bin"), []).unwrap();
-        let inventory = ModelCache::at(&dir).inventory();
-        let file = Config {
-            whisper_model: Some("tiny.en".into()),
-            ..Config::default()
-        };
-        assert_eq!(
-            resolved_whisper_model(Some("small.en".into()), &file, &inventory).as_deref(),
-            Some("small.en")
-        );
-        assert_eq!(
-            resolved_whisper_model(None, &file, &inventory).as_deref(),
-            Some("tiny.en")
-        );
-        assert_eq!(
-            resolved_whisper_model(None, &Config::default(), &inventory).as_deref(),
-            Some("small")
-        );
-        assert_eq!(
-            resolved_whisper_model(Some(String::new()), &file, &inventory).as_deref(),
-            Some("tiny.en")
-        );
-        let empty = ModelInventory::default();
-        assert_eq!(
-            resolved_whisper_model(None, &Config::default(), &empty),
-            None
-        );
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
     fn model_file_finds_scanned_and_unconventional_names() {
         let dir = std::env::temp_dir().join(format!("echo-model-file-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("ggml-small.en-q5_1.bin"), []).unwrap();
         fs::write(dir.join("my-finetune.bin"), []).unwrap();
-        let scanned = WhisperEngine::with_cache(ModelCache::at(&dir), "small.en-q5_1");
+        let scanned = WhisperEngine::configured(ModelCache::at(&dir), "small.en-q5_1");
         assert_eq!(
             scanned.model_file().as_deref(),
             Some(dir.join("ggml-small.en-q5_1.bin").as_path())
         );
-        let custom = WhisperEngine::with_cache(ModelCache::at(&dir), "my-finetune");
+        let custom = WhisperEngine::configured(ModelCache::at(&dir), "my-finetune");
         assert_eq!(
             custom.model_file().as_deref(),
             Some(dir.join("my-finetune.bin").as_path())
         );
-        let missing = WhisperEngine::with_cache(ModelCache::at(&dir), "large-v3");
+        let missing = WhisperEngine::configured(ModelCache::at(&dir), "large-v3");
         assert_eq!(missing.model_file(), None);
         let _ = fs::remove_dir_all(&dir);
     }
@@ -496,7 +437,7 @@ mod tests {
             Path::new("model.bin"),
             Path::new("in.wav"),
             None,
-            german,
+            &options(german),
         );
         assert_eq!(language_arg(&args), Some("de"));
     }
@@ -507,9 +448,43 @@ mod tests {
             Path::new("model.bin"),
             Path::new("in.wav"),
             None,
-            LanguageChoice::Auto,
+            &options(LanguageChoice::Auto),
         );
         assert_eq!(language_arg(&args), Some("auto"));
+    }
+
+    #[test]
+    fn prompt_is_one_argument_and_survives_vad_retry_args() {
+        let options = options_with_hint(LanguageChoice::Auto, "Claude Code");
+        let first = whisper_args(
+            Path::new("model.bin"),
+            Path::new("in.wav"),
+            Some(Path::new("vad.bin")),
+            &options,
+        );
+        let retry = whisper_args(Path::new("model.bin"), Path::new("in.wav"), None, &options);
+        for args in [&first, &retry] {
+            assert_eq!(
+                args.windows(2)
+                    .find(|pair| pair[0] == "--prompt")
+                    .map(|pair| pair[1].as_str()),
+                Some("Claude Code")
+            );
+            assert_eq!(language_arg(args), Some("auto"));
+        }
+        assert!(first.iter().any(|arg| arg == "--vad"));
+        assert!(retry.iter().all(|arg| arg != "--vad"));
+    }
+
+    #[test]
+    fn empty_hints_omit_prompt() {
+        let args = whisper_args(
+            Path::new("model.bin"),
+            Path::new("in.wav"),
+            None,
+            &options(LanguageChoice::Auto),
+        );
+        assert!(args.iter().all(|arg| arg != "--prompt"));
     }
 
     #[test]
@@ -522,7 +497,12 @@ mod tests {
             LanguageChoice::Pinned(Language::ENGLISH),
             LanguageChoice::Pinned(Language::from_code("de").unwrap()),
         ] {
-            let args = whisper_args(Path::new("m.bin"), Path::new("in.wav"), None, choice);
+            let args = whisper_args(
+                Path::new("m.bin"),
+                Path::new("in.wav"),
+                None,
+                &options(choice),
+            );
             assert!(!args.iter().any(|arg| arg == "-dl"), "{args:?}");
             assert!(!args.iter().any(|arg| arg == "--task"), "{args:?}");
         }
@@ -541,9 +521,9 @@ mod tests {
         let pcm = Pcm16kMono::from_samples(vec![0; 16]);
 
         let german = LanguageChoice::Pinned(Language::from_code("de").unwrap());
-        let engine = WhisperEngine::with_cache(ModelCache::at(&dir), "base.en").with_language(german);
+        let engine = WhisperEngine::configured(ModelCache::at(&dir), "base.en");
         // The refusal must fire even with no whisper binary on PATH.
-        match engine.transcribe(&pcm) {
+        match engine.transcribe(&pcm, &options(german)) {
             Err(EngineError::Infer(message)) => {
                 assert!(message.contains("ggml-base.en.bin"), "msg={message}");
                 assert!(message.contains("german"), "msg={message}");
@@ -551,11 +531,13 @@ mod tests {
             other => panic!("expected refusal, got {other:?}"),
         }
 
-        let auto = WhisperEngine::with_cache(ModelCache::at(&dir), "base.en")
-            .with_language(LanguageChoice::Auto);
-        match auto.transcribe(&pcm) {
+        let auto = WhisperEngine::configured(ModelCache::at(&dir), "base.en");
+        match auto.transcribe(&pcm, &options(LanguageChoice::Auto)) {
             Err(EngineError::Infer(message)) => {
-                assert!(message.contains("automatic language detection"), "msg={message}")
+                assert!(
+                    message.contains("automatic language detection"),
+                    "msg={message}"
+                )
             }
             other => panic!("expected refusal, got {other:?}"),
         }
@@ -611,10 +593,7 @@ mod tests {
     #[test]
     fn detection_probability_comes_from_stderr() {
         let stderr = "whisper_full: auto-detected language: de (p = 0.958162)\nmore noise";
-        assert_eq!(
-            parse_detection_probability(stderr),
-            Some(0.958_162)
-        );
+        assert_eq!(parse_detection_probability(stderr), Some(0.958_162));
         assert_eq!(parse_detection_probability("no detection here"), None);
         let parsed = finish_whisper(true, fixture("multilingual.json").as_bytes(), stderr)
             .expect("valid fixture");

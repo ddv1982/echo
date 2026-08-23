@@ -87,7 +87,7 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
         .filter(|dir| !dir.as_os_str().is_empty())
-        .ok_or_else(|| format!("{} has no parent directory", path.display()))?;
+        .unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     let name = path
         .file_name()

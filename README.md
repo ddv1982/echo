@@ -64,6 +64,23 @@ Compositor shortcuts use subcommands on the same binary:
 
 `echo-desktop rec --toggle` is intended for compositor shortcuts on Wayland. The first invocation starts recording; invoke it again to stop, transcribe, and insert at the focused cursor. It stops automatically after 60 seconds if the second invocation never arrives.
 
+## File transcription
+
+Transcribe a WAV file without opening the desktop, microphone, HUD, injector, or recording stores:
+
+```sh
+echo-desktop transcribe speech.wav
+echo-desktop transcribe speech.wav --engine whisper --model small --language de
+echo-desktop transcribe speech.wav --format json --output result.json
+echo-desktop transcribe speech.wav --raw
+echo-desktop languages --engine whisper --format json
+echo-desktop languages --engine parakeet
+```
+
+Text output defaults to cleaned text on stdout. `--output -` also selects stdout, while any other value is the exact destination path. `--raw` selects uncleaned text and cannot be combined with JSON. Diagnostics use stderr. CLI overrides apply to one run and do not rewrite Settings.
+
+Auto engine selection uses Whisper when a pinned language or CLI model requires it. Parakeet accepts automatic language selection only. Whisper receives up to 32 recent dictionary spellings as recognition hints, then Echo still applies the dictionary after recognition.
+
 While recording, Echo shows a click-through capsule near the bottom of the screen with live microphone levels; it stays up through transcription and ends on a Done or Failed state. It never takes keyboard focus. The capsule is X11-only; on a Wayland session without XWayland there is no HUD, and the desktop app is the recording indicator. Set `ECHO_HUD=off` to disable it.
 
 ### Wayland global shortcuts

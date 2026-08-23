@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.6.0
+
+- `echo-desktop transcribe FILE.wav` now writes clean text, raw text, or schema-versioned JSON to stdout or an exact output path without starting recorder or desktop side effects.
+- One prepared transcription request now resolves the engine, Whisper model, language, cleanup mode, and bounded dictionary recognition hints for both microphone and file runs.
+- `echo-desktop languages` reports model-aware Whisper languages and Parakeet's 25 automatic-only languages in text or JSON.
+- Engine, model, and language precedence is source-aware, failed inference processes cannot leak partial output, and microphone cleanup retains its dictionary-only fallback.
+
 ## v0.5.0
 
 - Echo now uses one fixed Super+Alt+Space toggle across the desktop portal, X11, GNOME setup, and manual compositor setup. Push-to-talk, raw-input fallback, shortcut customization, and the `rec --hold` command have been removed.

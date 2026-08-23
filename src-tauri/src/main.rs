@@ -23,6 +23,8 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Emitter, Manager, WindowEvent};
 
+mod cli;
+
 const APP_ID: &str = "io.github.ddv1982.echo";
 const GNOME_MEDIA_KEYS_SCHEMA: &str = "org.gnome.settings-daemon.plugins.media-keys";
 const GNOME_CUSTOM_KEY_SCHEMA: &str =
@@ -1369,19 +1371,15 @@ fn test_input_device(name: Option<String>) -> Result<f32, String> {
 fn read_settings() -> Result<Settings, String> {
     // The picker's default must match what the recorder would do: auto when
     // the resolved model is multilingual, pinned English otherwise.
-    let language_default = match echo::stt::resolved_language(
-        None,
-        &echo_core::Config::default(),
-        echo::stt::resolved_model_multilingual(),
-    ) {
-        echo_core::LanguageChoice::Auto => "auto",
-        _ => "en",
+    let file = echo::settings::file_config();
+    let catalog = echo::transcribe::language_catalog(None, &file);
+    let language_default = match catalog.selection {
+        echo::transcribe::LanguageSelection::EnglishOnly => "en",
+        echo::transcribe::LanguageSelection::AutoOrPinned if catalog.model.is_none() => "en",
+        echo::transcribe::LanguageSelection::AutoOrPinned
+        | echo::transcribe::LanguageSelection::AutomaticOnly => "auto",
     };
-    settings_from(
-        &process_settings_env(),
-        &echo::settings::file_config(),
-        language_default,
-    )
+    settings_from(&process_settings_env(), &file, language_default)
 }
 
 fn write_settings(settings: Settings) -> Result<Settings, String> {
@@ -2233,61 +2231,12 @@ fn show_main_window(app: &tauri::AppHandle) {
 }
 
 fn main() {
-    let args: Vec<String> = env::args().skip(1).collect();
-    if let Some(code) = try_cli(&args) {
-        std::process::exit(code);
+    let args = env::args_os().skip(1).collect::<Vec<_>>();
+    if args.is_empty() {
+        run_desktop();
+    } else {
+        std::process::exit(cli::run(args));
     }
-    run_desktop();
-}
-
-/// Compositor shortcuts run these subcommands without starting the webview.
-fn try_cli(args: &[String]) -> Option<i32> {
-    match args.first().map(String::as_str) {
-        None => None,
-        Some("rec") => Some(rec(args.get(1..).unwrap_or(&[]))),
-        Some("--hud-demo") => Some(match echo::ui::hud::run_hud_demo() {
-            Ok(()) => 0,
-            Err(err) => {
-                eprintln!("hud-demo: {err}");
-                1
-            }
-        }),
-        Some("--version" | "-V") => {
-            println!("echo-desktop {}", env!("CARGO_PKG_VERSION"));
-            Some(0)
-        }
-        Some("--help" | "-h") => {
-            print_cli_usage();
-            Some(0)
-        }
-        Some(other) => {
-            eprintln!("unknown command: {other}");
-            print_cli_usage();
-            Some(2)
-        }
-    }
-}
-
-fn rec(args: &[String]) -> i32 {
-    // Bare CLI process: failures must reach the user where they are looking,
-    // which is not the journal. The GUI's in-process sessions leave this off.
-    echo::notify::enable_failure_notifications();
-    match args {
-        [arg] if arg == "--once" => echo::rec::run_rec_once(),
-        [arg] if arg == "--toggle" => echo::rec::run_rec_toggle(),
-        _ => {
-            eprintln!("usage: echo-desktop rec --once|--toggle");
-            2
-        }
-    }
-}
-
-fn print_cli_usage() {
-    eprintln!("usage: echo-desktop");
-    eprintln!("       echo-desktop rec --once");
-    eprintln!("       echo-desktop rec --toggle");
-    eprintln!("       echo-desktop --hud-demo");
-    eprintln!("       echo-desktop --version");
 }
 
 /// The path and file identity this process was loaded from, recorded at
