@@ -1,0 +1,6 @@
+ts	phase	decision	why	evidence	result
+2026-08-23T05:59:52Z	frame	combine clear microphone choice with self-contained Linux setup in v0.7.0	both problems block a new user before the first dictation	user request	in progress
+2026-08-23T06:05:00Z	research	upgrade the microphone design around stable device identity and structured descriptions	CPAL 0.18 exposes IDs and metadata while Echo 0.15 stores ambiguous names	CPAL v0.18.2 traits and device_description.rs	VERIFIED
+2026-08-23T06:09:00Z	research	pin official Linux x64 runtimes and the official Parakeet model	upstream publishes versioned archives with GitHub SHA-256 digests	whisper.cpp v1.9.2; sherpa-onnx v1.13.6; sherpa asr-models	VERIFIED
+2026-08-23T06:12:09Z	frame	define done as a clean Linux x64 user reaching ready state without PATH tools and clearly choosing a tested microphone	the real exit condition is one successful dictation with inspectable component state	.audit/v07-onboarding.tsv	framed
+2026-08-23T06:34:50Z	design	choose candidate C's first-run experience with candidate D's smaller installer implementation	four complete candidates and an independent judge tied safety to visible user state without building a package manager	/tmp/echo-v07-architect/judge.md; docs/plans/07-first-run-readiness/overview.md	VERIFIED
