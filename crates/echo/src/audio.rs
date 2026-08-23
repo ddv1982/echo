@@ -8,8 +8,9 @@ use cpal::{Sample, SampleFormat, SizedSample, I24, U24};
 use echo_core::{MicrophoneSelection, Pcm16kMono, SAMPLE_RATE_HZ};
 
 use crate::microphone::{
-    resolve_selection, selection_from_sources, AudioHost, InputDeviceInfo, InputSelectionStatus,
-    MicrophoneFailure, MicrophoneId, MicrophoneSnapshot, RawInputDescriptor,
+    is_system_default_proxy, resolve_selection, selectable_inputs, selection_from_sources,
+    AudioHost, InputDeviceInfo, InputSelectionStatus, MicrophoneFailure, MicrophoneId,
+    MicrophoneSnapshot, RawInputDescriptor,
 };
 
 /// The microphone's RMS level, shared between the capture callback and
@@ -324,20 +325,42 @@ fn discover_inputs(host: &cpal::Host) -> InputDiscovery {
 }
 
 fn process_snapshot_from(discovery: &InputDiscovery) -> MicrophoneSnapshot {
-    let devices: Vec<_> = discovery
+    let discovered: Vec<_> = discovery
         .devices
         .iter()
         .map(|device| device.info.clone())
         .collect();
+    let system_default = discovered.iter().find(|device| device.is_default).cloned();
+    let system_default_is_proxy = system_default.as_ref().is_some_and(is_system_default_proxy);
+    let devices = selectable_inputs(&discovered);
     let file = crate::settings::file_config();
     let environment = std::env::var("ECHO_MICROPHONE").ok();
     let (selection, source) =
         selection_from_sources(environment.as_deref(), file.microphone.as_ref(), &devices);
+    let selection = match selection {
+        None => InputSelectionStatus::SystemDefault {
+            active: system_default.clone().or_else(|| devices.first().cloned()),
+        },
+        Some(ref requested) => {
+            let resolved = resolve_selection(Some(requested), &discovered);
+            match resolved {
+                InputSelectionStatus::Selected { ref device }
+                    if is_system_default_proxy(device) =>
+                {
+                    InputSelectionStatus::SystemDefault {
+                        active: Some(device.clone()),
+                    }
+                }
+                other => other,
+            }
+        }
+    };
     MicrophoneSnapshot {
         host: discovery.host,
         source,
-        system_default: devices.iter().find(|device| device.is_default).cloned(),
-        selection: resolve_selection(selection.as_ref(), &devices),
+        system_default,
+        system_default_is_proxy,
+        selection,
         devices,
         enumeration_warning: discovery.warning.clone(),
     }

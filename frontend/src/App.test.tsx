@@ -306,7 +306,8 @@ describe('Echo desktop shell', () => {
 
     expect(await screen.findByRole('radio', { name: /Jabra Elite 8 Active/ })).toBeVisible()
     expect(screen.getByText('Bluetooth · Headset · Jabra')).toBeVisible()
-    expect(screen.getByText('Currently Built-in Audio')).toBeVisible()
+    expect(screen.getByText('Follows the current Linux input automatically')).toBeVisible()
+    expect(screen.queryByText('pipewire:input_default')).not.toBeInTheDocument()
     const advanced = screen.getByText('Advanced audio endpoints').closest('details')!
     expect(advanced).not.toHaveAttribute('open')
     expect(screen.getByText('PipeWire Sound Server')).not.toBeVisible()

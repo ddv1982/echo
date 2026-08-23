@@ -66,6 +66,7 @@ export interface MicrophoneSnapshot {
   host: AudioHost
   source: MicrophoneSource
   systemDefault: InputDevice | null
+  systemDefaultIsProxy: boolean
   devices: InputDevice[]
   selection: MicrophoneSelection
   enumerationWarning: string | null

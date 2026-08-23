@@ -123,7 +123,17 @@ pub fn classify_input(raw: &RawInputDescriptor) -> EndpointTier {
     let searchable = descriptor_text(raw);
     let virtual_metadata = contains_any(
         &searchable,
-        &["virtual", "monitor", "loopback", "sink", "null audio"],
+        &[
+            "virtual",
+            "monitor",
+            "loopback",
+            "sink",
+            "output_default",
+            "speaker",
+            "headphones",
+            "playback",
+            "null audio",
+        ],
     );
     if virtual_metadata {
         return EndpointTier::Advanced;
@@ -165,6 +175,20 @@ pub fn classify_input(raw: &RawInputDescriptor) -> EndpointTier {
     // endpoints earned a primary row above; unknown names remain available
     // under technical endpoints instead of looking like physical mics.
     EndpointTier::Advanced
+}
+
+#[must_use]
+pub fn is_system_default_proxy(device: &InputDeviceInfo) -> bool {
+    device.host == AudioHost::PipeWire && device.id.as_str() == "pipewire:input_default"
+}
+
+#[must_use]
+pub fn selectable_inputs(devices: &[InputDeviceInfo]) -> Vec<InputDeviceInfo> {
+    devices
+        .iter()
+        .filter(|device| !is_system_default_proxy(device))
+        .cloned()
+        .collect()
 }
 
 fn descriptor_text(raw: &RawInputDescriptor) -> String {
@@ -277,6 +301,7 @@ pub struct MicrophoneSnapshot {
     pub host: AudioHost,
     pub source: SelectionSource,
     pub system_default: Option<InputDeviceInfo>,
+    pub system_default_is_proxy: bool,
     pub devices: Vec<InputDeviceInfo>,
     pub selection: InputSelectionStatus,
     pub enumeration_warning: Option<String>,
@@ -469,6 +494,39 @@ mod tests {
         assert_eq!(presented.transport, InputTransport::Bluetooth);
         assert_eq!(presented.tier, EndpointTier::Primary);
         assert_eq!(presented.hint, "Bluetooth · Headset");
+    }
+
+    #[test]
+    fn pipewire_default_proxy_is_distinct_from_selectable_sources() {
+        let proxy = InputDeviceInfo::from(raw(
+            AudioHost::PipeWire,
+            "pipewire:input_default",
+            "default_input",
+        ));
+        let physical = InputDeviceInfo::from(raw(
+            AudioHost::PipeWire,
+            "pipewire:bluez_input.48_5F_99_00_11_22.0",
+            "Pixel Buds Pro",
+        ));
+        assert!(is_system_default_proxy(&proxy));
+        assert_eq!(selectable_inputs(&[proxy, physical.clone()]), vec![physical]);
+    }
+
+    #[test]
+    fn pipewire_playback_sinks_are_advanced_even_when_duplex() {
+        for (id, label, device_type) in [
+            ("pipewire:sink_default", "default_sink", None),
+            ("pipewire:output_default", "default_output", None),
+            (
+                "pipewire:alsa_output.pci-0000_00_1f.3.analog-stereo",
+                "Built-in Audio",
+                Some("Speaker"),
+            ),
+        ] {
+            let mut descriptor = raw(AudioHost::PipeWire, id, label);
+            descriptor.device_type = device_type.map(str::to_string);
+            assert_eq!(classify_input(&descriptor), EndpointTier::Advanced, "{id}");
+        }
     }
 
     #[test]

@@ -406,14 +406,7 @@ export function resetPreviewSettings() {
   previewLanguages = defaultPreviewLanguages()
   previewInventory = defaultPreviewInventory()
   previewDevices = defaultPreviewDevices()
-  previewMicrophones = {
-    host: 'pipe-wire',
-    source: 'default',
-    systemDefault: previewDevices[0] ?? null,
-    devices: previewDevices,
-    selection: { kind: 'system-default', active: previewDevices[0] },
-    enumerationWarning: null,
-  }
+  previewMicrophones = defaultPreviewMicrophones(previewDevices)
   previewReadiness = defaultPreviewReadiness()
 }
 
@@ -446,7 +439,7 @@ function defaultPreviewDevices(): InputDevice[] {
     {
       id: 'pipewire:alsa_input.pci-0000_00_1f.3.analog-stereo',
       label: 'Built-in Audio',
-      isDefault: true,
+      isDefault: false,
       manufacturer: 'Intel',
       deviceType: 'Microphone',
       interfaceType: 'Built-in',
@@ -509,14 +502,38 @@ function defaultPreviewDevices(): InputDevice[] {
 
 let previewDevices = defaultPreviewDevices()
 
-let previewMicrophones: MicrophoneSnapshot = {
-  host: 'pipe-wire',
-  source: 'default',
-  systemDefault: previewDevices[0] ?? null,
-  devices: previewDevices,
-  selection: { kind: 'system-default', active: previewDevices[0] },
-  enumerationWarning: null,
+function defaultPreviewSystemDefault(): InputDevice {
+  return {
+    id: 'pipewire:input_default',
+    label: 'System default',
+    isDefault: true,
+    manufacturer: null,
+    deviceType: 'Microphone',
+    interfaceType: 'Virtual',
+    address: null,
+    driver: 'PipeWire',
+    extended: [],
+    host: 'pipe-wire',
+    transport: 'virtual',
+    tier: 'advanced',
+    hint: 'Follows the Linux system default',
+  }
 }
+
+function defaultPreviewMicrophones(devices: InputDevice[]): MicrophoneSnapshot {
+  const systemDefault = defaultPreviewSystemDefault()
+  return {
+    host: 'pipe-wire',
+    source: 'default',
+    systemDefault,
+    systemDefaultIsProxy: true,
+    devices,
+    selection: { kind: 'system-default', active: systemDefault },
+    enumerationWarning: null,
+  }
+}
+
+let previewMicrophones: MicrophoneSnapshot = defaultPreviewMicrophones(previewDevices)
 
 export function getMicrophones(): Promise<MicrophoneSnapshot> {
   if (isTauri()) return invoke('get_microphones')
@@ -533,10 +550,10 @@ export function setMicrophone(id: string | null): Promise<MicrophoneSnapshot> {
     source: id == null ? 'default' : 'config',
     selection:
       device == null
-        ? { kind: 'system-default', active: previewDevices[0] }
+        ? { kind: 'system-default', active: previewMicrophones.systemDefault }
         : { kind: 'selected', device },
   }
-  const microphoneReady = device != null || previewDevices.some((candidate) => candidate.isDefault)
+  const microphoneReady = device != null || previewMicrophones.systemDefault != null
   previewReadiness = {
     ...previewReadiness,
     microphoneReady,
@@ -565,15 +582,20 @@ function previewMicrophoneTest(device: InputDevice | null): MicrophoneTestResult
 export function testInputDevice(id: string | null): Promise<MicrophoneTestResult> {
   if (isTauri()) return invoke('test_input_device', { id })
   const device = id == null
-    ? previewDevices.find((candidate) => candidate.isDefault) ?? null
+    ? previewMicrophones.systemDefault
     : previewDevices.find((candidate) => candidate.id === id) ?? null
   return Promise.resolve(previewMicrophoneTest(device))
 }
 
 export function testMicrophoneFallback(): Promise<MicrophoneTestResult> {
   if (isTauri()) return invoke('test_microphone_fallback')
+  const fallback = previewMicrophones.selection.kind === 'missing-with-fallback'
+    ? previewMicrophones.selection.fallback
+    : previewMicrophones.selection.kind === 'ambiguous-legacy-name'
+      ? previewMicrophones.selection.fallback
+      : previewMicrophones.systemDefault
   return Promise.resolve(
-    previewMicrophoneTest(previewDevices.find((candidate) => candidate.isDefault) ?? null),
+    previewMicrophoneTest(fallback),
   )
 }
 

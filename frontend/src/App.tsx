@@ -1959,7 +1959,9 @@ function MicrophoneChooser({
             <small>
               {snapshot.systemDefault == null
                 ? 'No default input'
-                : `Currently ${snapshot.systemDefault.label}`}
+                : snapshot.systemDefaultIsProxy
+                  ? 'Follows the current Linux input automatically'
+                  : `Currently ${snapshot.systemDefault.label}`}
             </small>
           </span>
         </label>
