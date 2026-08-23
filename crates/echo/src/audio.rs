@@ -389,6 +389,13 @@ fn first_usable_or_first<T>(
     candidates.find(|candidate| is_usable(candidate)).or(Some(first))
 }
 
+#[cfg(any(target_os = "linux", test))]
+fn has_usable_input<'a>(devices: impl IntoIterator<Item = &'a InputDeviceInfo>) -> bool {
+    devices
+        .into_iter()
+        .any(|device| !is_system_default_proxy(device))
+}
+
 fn preferred_discovery() -> InputDiscovery {
     #[cfg(target_os = "linux")]
     {
@@ -399,9 +406,9 @@ fn preferred_discovery() -> InputDiscovery {
             .filter(|host| linux_host_priority(host.name()) != usize::MAX)
             .filter_map(|host| cpal::host_from_id(host).ok())
             .map(|host| discover_inputs(&host));
-        if let Some(discovery) =
-            first_usable_or_first(discoveries, |candidate| !candidate.devices.is_empty())
-        {
+        if let Some(discovery) = first_usable_or_first(discoveries, |candidate| {
+            has_usable_input(candidate.devices.iter().map(|device| &device.info))
+        }) {
             return discovery;
         }
     }
@@ -868,6 +875,39 @@ mod tests {
             first_usable_or_first([0, 0, 0], |device_count| *device_count > 0),
             Some(0)
         );
+    }
+
+    #[test]
+    fn synthetic_default_alone_does_not_stop_host_fallback() {
+        let proxy: InputDeviceInfo = RawInputDescriptor {
+            id: MicrophoneId::parse("pipewire:input_default").unwrap(),
+            host: AudioHost::PipeWire,
+            label: "System default".to_string(),
+            is_default: true,
+            manufacturer: None,
+            device_type: None,
+            interface_type: None,
+            address: None,
+            driver: None,
+            extended: Vec::new(),
+        }
+        .into();
+        let real: InputDeviceInfo = RawInputDescriptor {
+            id: MicrophoneId::parse("alsa:hw:CARD=USB,DEV=0").unwrap(),
+            host: AudioHost::Alsa,
+            label: "USB Microphone".to_string(),
+            is_default: true,
+            manufacturer: None,
+            device_type: None,
+            interface_type: None,
+            address: None,
+            driver: None,
+            extended: Vec::new(),
+        }
+        .into();
+
+        assert!(!has_usable_input([&proxy]));
+        assert!(has_usable_input([&proxy, &real]));
     }
 
     #[test]
