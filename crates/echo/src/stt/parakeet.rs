@@ -13,7 +13,9 @@ use super::write_temp_wav;
 use crate::which::path_of;
 
 pub struct ParakeetEngine {
-    cache: ModelCache,
+    cache: Option<ModelCache>,
+    binary: Option<PathBuf>,
+    root: Option<PathBuf>,
 }
 
 impl Default for ParakeetEngine {
@@ -26,30 +28,49 @@ impl ParakeetEngine {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            cache: ModelCache::from_env(),
+            cache: Some(ModelCache::from_env()),
+            binary: None,
+            root: None,
         }
     }
 
     #[must_use]
     pub fn with_cache(cache: ModelCache) -> Self {
-        Self { cache }
+        Self {
+            cache: Some(cache),
+            binary: None,
+            root: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_paths(binary: PathBuf, root: PathBuf) -> Self {
+        Self {
+            cache: None,
+            binary: Some(binary),
+            root: Some(root),
+        }
     }
 
     /// True when both the runner binary and the model directory are installed.
     /// A metadata check only; no inference runs.
     #[must_use]
     pub fn available(&self) -> bool {
-        self.model_root().is_some() && Self::binary().is_some()
+        self.model_root().is_some() && self.resolved_binary().is_some()
     }
 
     fn model_root(&self) -> Option<PathBuf> {
-        self.cache.parakeet_root()
+        self.root.clone().or_else(|| self.cache.as_ref()?.parakeet_root())
     }
 
     pub(crate) fn binary() -> Option<PathBuf> {
         ["sherpa-onnx-offline", "sherpa-onnx"]
             .into_iter()
             .find_map(path_of)
+    }
+
+    fn resolved_binary(&self) -> Option<PathBuf> {
+        self.binary.clone().or_else(Self::binary)
     }
 }
 
@@ -69,7 +90,7 @@ impl Engine for ParakeetEngine {
             ));
         }
         let root = self.model_root().ok_or(EngineError::Missing)?;
-        let bin = Self::binary().ok_or(EngineError::Missing)?;
+        let bin = self.resolved_binary().ok_or(EngineError::Missing)?;
         let started = Instant::now();
         let wav = write_temp_wav(pcm).map_err(EngineError::Infer)?;
         let encoder = first_existing(&root, &["encoder.int8.onnx", "encoder.onnx"])

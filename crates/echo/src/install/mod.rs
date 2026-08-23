@@ -110,6 +110,7 @@ pub enum InstallError {
     Io(std::io::Error),
     IoMessage(String),
     Cancelled,
+    Probe(String),
 }
 
 impl std::fmt::Display for InstallError {
@@ -121,7 +122,8 @@ impl std::fmt::Display for InstallError {
             | Self::UnsafeArchive(message)
             | Self::Payload(message)
             | Self::State(message)
-            | Self::IoMessage(message) => formatter.write_str(message),
+            | Self::IoMessage(message)
+            | Self::Probe(message) => formatter.write_str(message),
             Self::Busy => formatter.write_str("another managed component operation is active"),
             Self::InsufficientSpace { required, available } => write!(
                 formatter,
@@ -262,6 +264,24 @@ impl ManagedStore {
         Ok(Some(root.join("payload")))
     }
 
+    pub fn candidate_root(&self, id: ComponentId) -> Option<PathBuf> {
+        if !matches!(self.status(id, false), ManagedComponentState::Ready { .. }) {
+            return None;
+        }
+        self.read_active(id)
+            .ok()
+            .flatten()
+            .and_then(|record| {
+                validate_release_name(id, &record.release).ok()?;
+                Some(
+                    self.component_dir(id)
+                        .join("releases")
+                        .join(record.release)
+                        .join("payload"),
+                )
+            })
+    }
+
     pub fn active_root_leased(&self, id: ComponentId) -> Result<Option<ManagedPath>, InstallError> {
         let lease = self.lease_shared(id)?;
         let Some(record) = self.read_active(id)? else {
@@ -270,6 +290,7 @@ impl ManagedStore {
         validate_release_name(id, &record.release)?;
         let root = self.component_dir(id).join("releases").join(&record.release);
         ensure_contained(&self.component_dir(id), &root)?;
+        verify_receipt(&root, &record)?;
         verify_payload(&root.join("payload"), &expected_files(id), false)?;
         Ok(Some(ManagedPath {
             root: root.join("payload"),
@@ -310,6 +331,12 @@ impl ManagedStore {
             };
         }
         let release = self.component_dir(id).join("releases").join(&record.release);
+        if let Err(error) = verify_receipt(&release, &record) {
+            return ManagedComponentState::NeedsRepair {
+                reason: error.to_string(),
+                resumable_bytes,
+            };
+        }
         if let Err(error) = verify_payload(&release.join("payload"), expected, full_verify) {
             return ManagedComponentState::NeedsRepair {
                 reason: error.to_string(),
@@ -611,6 +638,18 @@ fn ensure_contained(parent: &Path, child: &Path) -> Result<(), InstallError> {
     Ok(())
 }
 
+fn verify_receipt(release: &Path, active: &ActivationRecord) -> Result<(), InstallError> {
+    let raw = fs::read(release.join("receipt.json"))?;
+    let receipt: ActivationRecord = serde_json::from_slice(&raw)
+        .map_err(|error| InstallError::State(format!("invalid release receipt: {error}")))?;
+    if receipt != *active {
+        return Err(InstallError::State(
+            "release receipt does not match its activation record".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_release_name(id: ComponentId, release: &str) -> Result<(), InstallError> {
     validate_release_name_for(component(id), release)
 }
@@ -693,6 +732,32 @@ pub struct Installer<'a> {
     pub store: ManagedStore,
     pub transport: &'a dyn HttpTransport,
     pub disk: &'a dyn DiskSpace,
+    pub probe: &'a dyn RuntimeProbe,
+}
+
+pub trait RuntimeProbe: Send + Sync {
+    fn probe(&self, component: ComponentId, binary: &Path) -> Result<(), InstallError>;
+}
+
+#[derive(Default)]
+pub struct CommandRuntimeProbe;
+
+impl RuntimeProbe for CommandRuntimeProbe {
+    fn probe(&self, component: ComponentId, binary: &Path) -> Result<(), InstallError> {
+        let output = std::process::Command::new(binary)
+            .arg("--help")
+            .output()
+            .map_err(|error| InstallError::Probe(format!("cannot run {}: {error}", binary.display())))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(InstallError::Probe(format!(
+                "{} failed its runtime probe: {}",
+                component.as_str(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            )))
+        }
+    }
 }
 
 impl Installer<'_> {
@@ -789,6 +854,17 @@ impl Installer<'_> {
             return Err(error);
         }
         verify_payload(&payload, &expected, true)?;
+        match id {
+            ComponentId::WhisperRuntime => self.probe.probe(id, &payload.join("whisper-cli"))?,
+            ComponentId::SherpaRuntime => {
+                self.probe.probe(id, &payload.join("sherpa-onnx-offline"))?
+            }
+            ComponentId::WhisperBaseQ51
+            | ComponentId::WhisperSmall
+            | ComponentId::WhisperLargeV3TurboQ50
+            | ComponentId::SileroVad
+            | ComponentId::ParakeetTdt06bV3Int8 => {}
+        }
         progress(InstallProgress::new(operation, id, InstallPhase::Activating, spec.installed_bytes, spec.installed_bytes, 0));
         let record = self
             .store
@@ -810,6 +886,22 @@ mod tests {
     impl DiskSpace for UnlimitedDisk {
         fn available_bytes(&self, _: &Path) -> Result<Option<u64>, InstallError> {
             Ok(None)
+        }
+    }
+
+    struct AcceptProbe;
+
+    impl RuntimeProbe for AcceptProbe {
+        fn probe(&self, _: ComponentId, _: &Path) -> Result<(), InstallError> {
+            Ok(())
+        }
+    }
+
+    struct RejectProbe;
+
+    impl RuntimeProbe for RejectProbe {
+        fn probe(&self, _: ComponentId, _: &Path) -> Result<(), InstallError> {
+            Err(InstallError::Probe("fixture runtime is incompatible".to_string()))
         }
     }
 
@@ -866,6 +958,7 @@ mod tests {
             store: ManagedStore::new(&root),
             transport: &transport,
             disk: &UnlimitedDisk,
+            probe: &AcceptProbe,
         };
         let first = installer
             .ensure_spec(
@@ -909,6 +1002,44 @@ mod tests {
         assert_ne!(first.release, second.release);
         assert!(!payload.exists());
         assert_eq!(fs::read(&external).unwrap(), b"manual sentinel");
+    }
+
+    #[test]
+    fn runtime_probe_failure_never_activates_staging() {
+        let body = b"fake executable".to_vec();
+        let digest: &'static str =
+            Box::leak(format!("{:x}", Sha256::digest(&body)).into_boxed_str());
+        let spec = catalog::ComponentSpec {
+            id: ComponentId::WhisperRuntime,
+            label: "Fixture runtime",
+            version: "fixture",
+            url: "https://fixture.invalid/runtime",
+            artifact_name: "whisper-cli",
+            artifact_size: body.len() as u64,
+            artifact_sha256: digest,
+            installed_bytes: body.len() as u64,
+            format: ArtifactFormat::Direct,
+            inventory_key: None,
+        };
+        let root = scratch("runtime-probe");
+        let transport = FixtureTransport(Mutex::new(VecDeque::from([body])));
+        let installer = Installer {
+            store: ManagedStore::new(&root),
+            transport: &transport,
+            disk: &UnlimitedDisk,
+            probe: &RejectProbe,
+        };
+        let error = installer
+            .ensure_spec(
+                &spec,
+                false,
+                &OperationId::fixture("1"),
+                &AtomicBool::new(false),
+                |_| {},
+            )
+            .unwrap_err();
+        assert!(matches!(error, InstallError::Probe(_)));
+        assert!(installer.store.read_active(spec.id).unwrap().is_none());
     }
 
     #[test]

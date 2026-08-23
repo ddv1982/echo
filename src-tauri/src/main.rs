@@ -1300,7 +1300,7 @@ struct ModelInventoryDto {
 #[tauri::command]
 fn list_models() -> Result<ModelInventoryDto, String> {
     let cache = echo::stt::ModelCache::from_env();
-    let inventory = cache.inventory();
+    let inventory = echo::stt::SpeechRuntimeInventory::from_cache(&cache).models;
     Ok(ModelInventoryDto {
         whisper: inventory
             .whisper

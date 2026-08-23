@@ -1,11 +1,14 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use echo_core::{
     CleanupError, CleanupMode, Config, DecodeOptions, Dictionary, Engine, EngineChoice,
     EngineError, EngineId, Language, LanguageChoice, Pcm16kMono, RecognitionHints, RunDetail,
 };
 
-use crate::stt::{FakeEngine, ModelCache, ParakeetEngine, WhisperEngine};
+use crate::install::ManagedPath;
+use crate::stt::{
+    FakeEngine, ModelCache, ParakeetEngine, SpeechRuntimeInventory, WhisperEngine,
+};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RunOverrides {
@@ -70,6 +73,7 @@ pub(crate) fn resolved_cleanup_for_process(file: &Config) -> CleanupMode {
 pub struct WhisperModelCapability {
     pub name: String,
     pub multilingual: bool,
+    pub path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -80,15 +84,20 @@ pub struct EngineAvailabilitySnapshot {
 }
 
 impl EngineAvailabilitySnapshot {
-    fn from_process(cache: &ModelCache, model_candidates: &[String]) -> Self {
-        let inventory = cache.inventory();
+    fn from_process(
+        cache: &ModelCache,
+        runtime: &SpeechRuntimeInventory,
+        model_candidates: &[String],
+    ) -> Self {
+        let inventory = &runtime.models;
         let best = inventory.best_whisper().map(|model| model.name.clone());
         let mut whisper_models = inventory
             .whisper
-            .into_iter()
+            .iter()
             .map(|model| WhisperModelCapability {
-                name: model.name,
+                name: model.name.clone(),
                 multilingual: model.multilingual,
+                path: Some(model.path.clone()),
             })
             .collect::<Vec<_>>();
         for name in model_candidates {
@@ -101,6 +110,9 @@ impl EngineAvailabilitySnapshot {
                 whisper_models.push(WhisperModelCapability {
                     name: name.clone(),
                     multilingual,
+                    path: WhisperEngine::configured(cache.clone(), name)
+                        .selected_model()
+                        .map(|(path, _)| path),
                 });
             }
         }
@@ -111,9 +123,9 @@ impl EngineAvailabilitySnapshot {
             }
         }
         Self {
-            whisper_binary: WhisperEngine::binary().is_some(),
+            whisper_binary: runtime.whisper_binary.is_some(),
             whisper_models,
-            parakeet: ParakeetEngine::binary().is_some() && cache.parakeet_root().is_some(),
+            parakeet: runtime.parakeet_binary.is_some() && runtime.models.parakeet.is_some(),
         }
     }
 
@@ -124,7 +136,11 @@ impl EngineAvailabilitySnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolvedEngine {
-    Whisper { model: String, multilingual: bool },
+    Whisper {
+        model: String,
+        multilingual: bool,
+        model_path: Option<PathBuf>,
+    },
     ParakeetTdt06bV3,
     Fake,
 }
@@ -321,6 +337,7 @@ pub fn resolve_run(
     if let ResolvedEngine::Whisper {
         model,
         multilingual: false,
+        ..
     } = &selected
     {
         if !matches!(language, LanguageChoice::Pinned(Language::ENGLISH)) {
@@ -364,12 +381,14 @@ fn resolve_whisper(
     Ok(ResolvedEngine::Whisper {
         model: model.name.clone(),
         multilingual: model.multilingual,
+        model_path: model.path.clone(),
     })
 }
 
 pub struct PreparedTranscription {
     resolved: ResolvedRun,
     engine: Box<dyn Engine>,
+    _managed_paths: Vec<ManagedPath>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -450,6 +469,7 @@ pub fn prepare_with_config(
 ) -> Result<PreparedTranscription, PrepareError> {
     let env = EnvOptions::read();
     let cache = ModelCache::from_env();
+    let runtime = SpeechRuntimeInventory::from_cache(&cache);
     let model_candidates = [
         overrides.whisper_model.clone(),
         env.whisper_model.clone(),
@@ -458,16 +478,65 @@ pub fn prepare_with_config(
     .into_iter()
     .flatten()
     .collect::<Vec<_>>();
-    let available = EngineAvailabilitySnapshot::from_process(&cache, &model_candidates);
+    let available = EngineAvailabilitySnapshot::from_process(&cache, &runtime, &model_candidates);
     let resolved = resolve_run(&overrides, &env, file, &available)?;
-    let engine: Box<dyn Engine> = match &resolved.engine {
-        ResolvedEngine::Whisper { model, .. } => {
-            Box::new(WhisperEngine::configured(cache, model.clone()))
+    let (engine, managed_paths): (Box<dyn Engine>, Vec<ManagedPath>) = match &resolved.engine {
+        ResolvedEngine::Whisper {
+            model,
+            multilingual,
+            model_path,
+        } => {
+            let binary = runtime.whisper_binary.clone().ok_or_else(|| {
+                PrepareError::EngineMissing("whisper-cli is not installed".to_string())
+            })?;
+            let model_path = model_path.clone().ok_or_else(|| {
+                PrepareError::EngineMissing(format!("Whisper model {model} is not installed"))
+            })?;
+            let vad = runtime.models.vad.first().cloned();
+            let mut selected = vec![binary, model_path];
+            if let Some(vad) = &vad {
+                selected.push(vad.clone());
+            }
+            let locked = runtime
+                .lock_selected(&selected)
+                .map_err(PrepareError::EngineMissing)?;
+            let resolved_vad = (locked.paths.len() == 3).then(|| locked.paths[2].clone());
+            (
+                Box::new(WhisperEngine::with_paths(
+                    model.clone(),
+                    locked.paths[0].clone(),
+                    locked.paths[1].clone(),
+                    resolved_vad,
+                    *multilingual,
+                )),
+                locked.leases,
+            )
         }
-        ResolvedEngine::ParakeetTdt06bV3 => Box::new(ParakeetEngine::with_cache(cache)),
-        ResolvedEngine::Fake => Box::new(FakeEngine::default()),
+        ResolvedEngine::ParakeetTdt06bV3 => {
+            let binary = runtime.parakeet_binary.clone().ok_or_else(|| {
+                PrepareError::EngineMissing("sherpa-onnx-offline is not installed".to_string())
+            })?;
+            let model = runtime.models.parakeet.clone().ok_or_else(|| {
+                PrepareError::EngineMissing("Parakeet model is not installed".to_string())
+            })?;
+            let locked = runtime
+                .lock_selected(&[binary, model])
+                .map_err(PrepareError::EngineMissing)?;
+            (
+                Box::new(ParakeetEngine::with_paths(
+                    locked.paths[0].clone(),
+                    locked.paths[1].clone(),
+                )),
+                locked.leases,
+            )
+        }
+        ResolvedEngine::Fake => (Box::new(FakeEngine::default()), Vec::new()),
     };
-    Ok(PreparedTranscription { resolved, engine })
+    Ok(PreparedTranscription {
+        resolved,
+        engine,
+        _managed_paths: managed_paths,
+    })
 }
 
 pub fn transcribe_file(
@@ -528,6 +597,7 @@ pub struct LanguageCatalog {
 
 pub fn language_catalog(engine: Option<EngineChoice>, file: &Config) -> LanguageCatalog {
     let cache = ModelCache::from_env();
+    let runtime = SpeechRuntimeInventory::from_cache(&cache);
     let env = EnvOptions::read();
     let requested = RequestedRun::new(
         &RunOverrides {
@@ -537,7 +607,8 @@ pub fn language_catalog(engine: Option<EngineChoice>, file: &Config) -> Language
         &env,
         file,
     );
-    let parakeet_available = cache.parakeet_root().is_some() && ParakeetEngine::binary().is_some();
+    let parakeet_available =
+        runtime.models.parakeet.is_some() && runtime.parakeet_binary.is_some();
     let parakeet = projects_parakeet(&requested, parakeet_available);
     if parakeet {
         return LanguageCatalog {
@@ -551,15 +622,23 @@ pub fn language_catalog(engine: Option<EngineChoice>, file: &Config) -> Language
         };
     }
     let model = requested.whisper_model.or_else(|| {
-        cache
-            .inventory()
+        runtime
+            .models
             .best_whisper()
             .map(|model| model.name.clone())
     });
     let multilingual = model.as_deref().and_then(|name| {
-        WhisperEngine::configured(cache.clone(), name)
-            .selected_model()
-            .map(|(_, multilingual)| multilingual)
+        runtime
+            .models
+            .whisper
+            .iter()
+            .find(|model| model.name == name)
+            .map(|model| model.multilingual)
+            .or_else(|| {
+                WhisperEngine::configured(cache.clone(), name)
+                    .selected_model()
+                    .map(|(_, multilingual)| multilingual)
+            })
     });
     if multilingual == Some(false) {
         LanguageCatalog {
@@ -588,6 +667,7 @@ mod tests {
             whisper_models: vec![WhisperModelCapability {
                 name: if multilingual { "small" } else { "base.en" }.to_string(),
                 multilingual,
+                path: None,
             }],
             parakeet,
         }
