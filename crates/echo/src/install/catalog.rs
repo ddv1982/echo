@@ -262,7 +262,10 @@ mod tests {
         for spec in COMPONENTS {
             assert!(spec.url.starts_with("https://"));
             assert_eq!(spec.artifact_sha256.len(), 64);
-            assert!(spec.artifact_sha256.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()));
+            assert!(spec
+                .artifact_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()));
             assert!(spec.artifact_size > 0);
             assert!(spec.installed_bytes > 0);
         }
@@ -271,14 +274,21 @@ mod tests {
     #[test]
     fn grounded_archive_inventory_matches_catalog() {
         assert_eq!(ARCHIVE_INVENTORY.schema_version, 1);
-        for spec in COMPONENTS.iter().filter(|spec| spec.inventory_key.is_some()) {
+        for spec in COMPONENTS
+            .iter()
+            .filter(|spec| spec.inventory_key.is_some())
+        {
             let inventory = archive_component(spec).unwrap();
             assert!(!inventory.archive.is_empty());
             assert!(inventory.entries >= inventory.payload.len());
             assert!(inventory.expanded_bytes >= spec.installed_bytes);
             assert!(!inventory.payload.is_empty());
             assert_eq!(
-                inventory.payload.iter().map(|payload| payload.size).sum::<u64>(),
+                inventory
+                    .payload
+                    .iter()
+                    .map(|payload| payload.size)
+                    .sum::<u64>(),
                 spec.installed_bytes
             );
             for payload in &inventory.payload {
@@ -289,9 +299,29 @@ mod tests {
 
     #[test]
     fn recommendation_never_chooses_turbo_automatically() {
-        assert_eq!(recommended_model(HardwareProfile { total_memory_bytes: None }), ComponentId::WhisperBaseQ51);
-        assert_eq!(recommended_model(HardwareProfile { total_memory_bytes: Some(4 * 1024 * 1024 * 1024 - 1) }), ComponentId::WhisperBaseQ51);
-        assert_eq!(recommended_model(HardwareProfile { total_memory_bytes: Some(4 * 1024 * 1024 * 1024) }), ComponentId::WhisperSmall);
-        assert_eq!(recommended_model(HardwareProfile { total_memory_bytes: Some(64 * 1024 * 1024 * 1024) }), ComponentId::WhisperSmall);
+        assert_eq!(
+            recommended_model(HardwareProfile {
+                total_memory_bytes: None
+            }),
+            ComponentId::WhisperBaseQ51
+        );
+        assert_eq!(
+            recommended_model(HardwareProfile {
+                total_memory_bytes: Some(4 * 1024 * 1024 * 1024 - 1)
+            }),
+            ComponentId::WhisperBaseQ51
+        );
+        assert_eq!(
+            recommended_model(HardwareProfile {
+                total_memory_bytes: Some(4 * 1024 * 1024 * 1024)
+            }),
+            ComponentId::WhisperSmall
+        );
+        assert_eq!(
+            recommended_model(HardwareProfile {
+                total_memory_bytes: Some(64 * 1024 * 1024 * 1024)
+            }),
+            ComponentId::WhisperSmall
+        );
     }
 }

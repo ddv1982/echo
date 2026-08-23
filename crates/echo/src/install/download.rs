@@ -3,6 +3,8 @@ use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -72,6 +74,10 @@ impl Default for UreqTransport {
     fn default() -> Self {
         let agent = ureq::Agent::config_builder()
             .http_status_as_error(false)
+            .https_only(true)
+            .timeout_resolve(Some(Duration::from_secs(30)))
+            .timeout_connect(Some(Duration::from_secs(30)))
+            .timeout_recv_response(Some(Duration::from_secs(30)))
             .build()
             .new_agent();
         Self { agent }
@@ -146,15 +152,19 @@ fn load_metadata(path: &Path) -> Option<PartialMetadata> {
 }
 
 fn save_metadata(path: &Path, metadata: &PartialMetadata) -> Result<(), InstallError> {
-    let raw = serde_json::to_vec_pretty(metadata).map_err(|error| InstallError::State(error.to_string()))?;
+    let raw = serde_json::to_vec_pretty(metadata)
+        .map_err(|error| InstallError::State(error.to_string()))?;
     echo_core::write_atomic(path, &raw).map_err(InstallError::IoMessage)
 }
 
-fn sha256_file(path: &Path) -> Result<String, InstallError> {
+fn sha256_file(path: &Path, cancel: &AtomicBool) -> Result<String, InstallError> {
     let mut file = fs::File::open(path)?;
     let mut hash = Sha256::new();
     let mut buffer = [0u8; BUFFER_SIZE];
     loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(InstallError::Cancelled);
+        }
         let read = file.read(&mut buffer)?;
         if read == 0 {
             break;
@@ -171,6 +181,57 @@ fn parse_content_range(value: Option<&str>) -> Option<(u64, u64)> {
     Some((start.parse().ok()?, total.parse().ok()?))
 }
 
+enum BodyRead {
+    Chunk(Vec<u8>),
+    End,
+    Failed(String),
+}
+
+fn stream_body(
+    mut body: Box<dyn Read + Send>,
+    cancel: &AtomicBool,
+    mut consume: impl FnMut(&[u8]) -> Result<(), InstallError>,
+) -> Result<(), InstallError> {
+    let (send, receive) = mpsc::sync_channel(2);
+    std::thread::Builder::new()
+        .name("echo-download-body".to_string())
+        .spawn(move || loop {
+            let mut buffer = vec![0u8; BUFFER_SIZE];
+            match body.read(&mut buffer) {
+                Ok(0) => {
+                    let _ = send.send(BodyRead::End);
+                    break;
+                }
+                Ok(read) => {
+                    buffer.truncate(read);
+                    if send.send(BodyRead::Chunk(buffer)).is_err() {
+                        break;
+                    }
+                }
+                Err(error) => {
+                    let _ = send.send(BodyRead::Failed(error.to_string()));
+                    break;
+                }
+            }
+        })?;
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(InstallError::Cancelled);
+        }
+        match receive.recv_timeout(Duration::from_millis(100)) {
+            Ok(BodyRead::Chunk(bytes)) => consume(&bytes)?,
+            Ok(BodyRead::End) => return Ok(()),
+            Ok(BodyRead::Failed(error)) => return Err(InstallError::Http(error)),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(InstallError::Http(
+                    "download body ended without a completion signal".to_string(),
+                ))
+            }
+        }
+    }
+}
+
 pub fn download_verified(
     root: &Path,
     spec: &DownloadSpec,
@@ -180,6 +241,9 @@ pub fn download_verified(
     cancel: &AtomicBool,
     mut progress: impl FnMut(InstallProgress),
 ) -> Result<PathBuf, InstallError> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err(InstallError::Cancelled);
+    }
     let (part, metadata_path) = part_paths(root, spec);
     if let Some(parent) = part.parent() {
         fs::create_dir_all(parent)?;
@@ -192,7 +256,8 @@ pub fn download_verified(
         etag,
         last_modified,
     };
-    let mut metadata = load_metadata(&metadata_path).unwrap_or_else(|| expected_metadata(None, None));
+    let mut metadata =
+        load_metadata(&metadata_path).unwrap_or_else(|| expected_metadata(None, None));
     let metadata_matches = metadata.component == spec.component
         && metadata.url == spec.url
         && metadata.expected_bytes == spec.size
@@ -209,7 +274,10 @@ pub fn download_verified(
     let required = required_free_bytes(spec, partial_bytes);
     if let Some(available) = disk.available_bytes(root)? {
         if available < required {
-            return Err(InstallError::InsufficientSpace { required, available });
+            return Err(InstallError::InsufficientSpace {
+                required,
+                available,
+            });
         }
     }
     progress(InstallProgress::new(
@@ -234,16 +302,18 @@ pub fn download_verified(
             url: spec.url.clone(),
             headers,
         })?;
+        if cancel.load(Ordering::Relaxed) {
+            return Err(InstallError::Cancelled);
+        }
         let append = match response.status {
             200 => {
                 partial_bytes = 0;
                 false
             }
             206 => {
-                let (start, total) = parse_content_range(
-                    response.headers.get("content-range").map(String::as_str),
-                )
-                .ok_or_else(|| InstallError::Range("missing Content-Range".to_string()))?;
+                let (start, total) =
+                    parse_content_range(response.headers.get("content-range").map(String::as_str))
+                        .ok_or_else(|| InstallError::Range("missing Content-Range".to_string()))?;
                 if start != partial_bytes || total != spec.size {
                     return Err(InstallError::Range(format!(
                         "server resumed at {start} of {total}, expected {partial_bytes} of {}",
@@ -269,25 +339,17 @@ pub fn download_verified(
                 .append(append)
                 .truncate(!append)
                 .open(&part)?;
-            let mut body = response.body;
             let resumed_from = partial_bytes;
-            let mut buffer = [0u8; BUFFER_SIZE];
-            loop {
-                if cancel.load(Ordering::Relaxed) {
-                    file.flush()?;
-                    return Err(InstallError::Cancelled);
-                }
-                let read = body.read(&mut buffer)?;
-                if read == 0 {
-                    break;
-                }
-                partial_bytes = partial_bytes.saturating_add(read as u64);
+            stream_body(response.body, cancel, |bytes| {
+                partial_bytes = partial_bytes.saturating_add(bytes.len() as u64);
                 if partial_bytes > spec.size {
                     let _ = fs::remove_file(&part);
                     let _ = fs::remove_file(&metadata_path);
-                    return Err(InstallError::Http("response exceeds the pinned size".to_string()));
+                    return Err(InstallError::Http(
+                        "response exceeds the pinned size".to_string(),
+                    ));
                 }
-                file.write_all(&buffer[..read])?;
+                file.write_all(bytes)?;
                 progress(InstallProgress::new(
                     operation,
                     spec.component,
@@ -296,7 +358,8 @@ pub fn download_verified(
                     spec.size,
                     resumed_from,
                 ));
-            }
+                Ok(())
+            })?;
             file.flush()?;
         }
     }
@@ -305,6 +368,9 @@ pub fn download_verified(
             received: partial_bytes,
             expected: spec.size,
         });
+    }
+    if cancel.load(Ordering::Relaxed) {
+        return Err(InstallError::Cancelled);
     }
     progress(InstallProgress::new(
         operation,
@@ -315,7 +381,10 @@ pub fn download_verified(
         partial_bytes,
     ));
     fs::File::options().write(true).open(&part)?.sync_all()?;
-    let actual = sha256_file(&part)?;
+    let actual = sha256_file(&part, cancel)?;
+    if cancel.load(Ordering::Relaxed) {
+        return Err(InstallError::Cancelled);
+    }
     if actual != spec.sha256 {
         let _ = fs::remove_file(&part);
         let _ = fs::remove_file(&metadata_path);
@@ -376,8 +445,32 @@ mod tests {
         }
     }
 
+    struct SlowBody;
+
+    impl Read for SlowBody {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            std::thread::sleep(Duration::from_secs(1));
+            Ok(0)
+        }
+    }
+
+    struct SlowTransport;
+
+    impl HttpTransport for SlowTransport {
+        fn get(&self, _: &HttpRequest) -> Result<HttpResponse, InstallError> {
+            Ok(HttpResponse {
+                status: 200,
+                headers: BTreeMap::new(),
+                body: Box::new(SlowBody),
+            })
+        }
+    }
+
     fn scratch(label: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("echo-install-download-{label}-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "echo-install-download-{label}-{}",
+            std::process::id()
+        ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         root
@@ -399,12 +492,30 @@ mod tests {
         let spec = spec(body);
         let root = scratch("fresh");
         let refused = FakeTransport::new(vec![]);
-        let error = download_verified(&root, &spec, &refused, &FakeDisk(Some(1)), &OperationId::fixture("1"), &AtomicBool::new(false), |_| {}).unwrap_err();
+        let error = download_verified(
+            &root,
+            &spec,
+            &refused,
+            &FakeDisk(Some(1)),
+            &OperationId::fixture("1"),
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap_err();
         assert!(matches!(error, InstallError::InsufficientSpace { .. }));
         assert!(refused.requests.lock().unwrap().is_empty());
 
         let transport = FakeTransport::new(vec![(200, BTreeMap::new(), body.to_vec())]);
-        let path = download_verified(&root, &spec, &transport, &FakeDisk(None), &OperationId::fixture("2"), &AtomicBool::new(false), |_| {}).unwrap();
+        let path = download_verified(
+            &root,
+            &spec,
+            &transport,
+            &FakeDisk(None),
+            &OperationId::fixture("2"),
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
         assert_eq!(fs::read(path).unwrap(), body);
     }
 
@@ -419,18 +530,44 @@ mod tests {
             body[..7].to_vec(),
         )]);
         assert!(matches!(
-            download_verified(&root, &spec, &first, &FakeDisk(None), &OperationId::fixture("1"), &AtomicBool::new(false), |_| {}),
+            download_verified(
+                &root,
+                &spec,
+                &first,
+                &FakeDisk(None),
+                &OperationId::fixture("1"),
+                &AtomicBool::new(false),
+                |_| {}
+            ),
             Err(InstallError::Interrupted { received: 7, .. })
         ));
         let second = FakeTransport::new(vec![(
             206,
-            BTreeMap::from([("content-range".to_string(), format!("bytes 7-{}/{}", body.len() - 1, body.len()))]),
+            BTreeMap::from([(
+                "content-range".to_string(),
+                format!("bytes 7-{}/{}", body.len() - 1, body.len()),
+            )]),
             body[7..].to_vec(),
         )]);
-        download_verified(&root, &spec, &second, &FakeDisk(None), &OperationId::fixture("2"), &AtomicBool::new(false), |_| {}).unwrap();
+        download_verified(
+            &root,
+            &spec,
+            &second,
+            &FakeDisk(None),
+            &OperationId::fixture("2"),
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
         let request = &second.requests.lock().unwrap()[0];
-        assert_eq!(request.headers.get("range").map(String::as_str), Some("bytes=7-"));
-        assert_eq!(request.headers.get("if-range").map(String::as_str), Some("v1"));
+        assert_eq!(
+            request.headers.get("range").map(String::as_str),
+            Some("bytes=7-")
+        );
+        assert_eq!(
+            request.headers.get("if-range").map(String::as_str),
+            Some("v1")
+        );
     }
 
     #[test]
@@ -440,19 +577,62 @@ mod tests {
         let root = scratch("cancel");
         let transport = FakeTransport::new(vec![(200, BTreeMap::new(), body.clone())]);
         let cancel = AtomicBool::new(false);
-        let error = download_verified(&root, &fixture_spec, &transport, &FakeDisk(None), &OperationId::fixture("1"), &cancel, |progress| {
-            if progress.phase == InstallPhase::Downloading {
-                cancel.store(true, Ordering::Relaxed);
-            }
-        }).unwrap_err();
+        let error = download_verified(
+            &root,
+            &fixture_spec,
+            &transport,
+            &FakeDisk(None),
+            &OperationId::fixture("1"),
+            &cancel,
+            |progress| {
+                if progress.phase == InstallPhase::Downloading {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+            },
+        )
+        .unwrap_err();
         assert!(matches!(error, InstallError::Cancelled));
         let (part, _) = part_paths(&root, &fixture_spec);
         assert!(fs::metadata(&part).unwrap().len() > 0);
 
         let bad = spec(b"right");
         let bad_transport = FakeTransport::new(vec![(200, BTreeMap::new(), b"wrong".to_vec())]);
-        let error = download_verified(&scratch("hash"), &bad, &bad_transport, &FakeDisk(None), &OperationId::fixture("2"), &AtomicBool::new(false), |_| {}).unwrap_err();
+        let error = download_verified(
+            &scratch("hash"),
+            &bad,
+            &bad_transport,
+            &FakeDisk(None),
+            &OperationId::fixture("2"),
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap_err();
         assert!(matches!(error, InstallError::Sha256Mismatch { .. }));
+    }
+
+    #[test]
+    fn cancellation_does_not_wait_for_a_stalled_response_body() {
+        let root = scratch("stalled-cancel");
+        let spec = spec(b"one byte");
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let trigger = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            trigger.store(true, Ordering::Relaxed);
+        });
+        let started = std::time::Instant::now();
+        let error = download_verified(
+            &root,
+            &spec,
+            &SlowTransport,
+            &FakeDisk(None),
+            &OperationId::fixture("1"),
+            &cancel,
+            |_| {},
+        )
+        .unwrap_err();
+        assert!(matches!(error, InstallError::Cancelled));
+        assert!(started.elapsed() < Duration::from_millis(500));
     }
 
     #[test]
@@ -461,14 +641,57 @@ mod tests {
         let spec = spec(body);
         let root = scratch("range");
         let first = FakeTransport::new(vec![(200, BTreeMap::new(), body[..3].to_vec())]);
-        let _ = download_verified(&root, &spec, &first, &FakeDisk(None), &OperationId::fixture("1"), &AtomicBool::new(false), |_| {});
+        let _ = download_verified(
+            &root,
+            &spec,
+            &first,
+            &FakeDisk(None),
+            &OperationId::fixture("1"),
+            &AtomicBool::new(false),
+            |_| {},
+        );
         let restart = FakeTransport::new(vec![(200, BTreeMap::new(), body.to_vec())]);
-        download_verified(&root, &spec, &restart, &FakeDisk(None), &OperationId::fixture("2"), &AtomicBool::new(false), |_| {}).unwrap();
+        download_verified(
+            &root,
+            &spec,
+            &restart,
+            &FakeDisk(None),
+            &OperationId::fixture("2"),
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
 
         let root = scratch("bad-range");
         let first = FakeTransport::new(vec![(200, BTreeMap::new(), body[..3].to_vec())]);
-        let _ = download_verified(&root, &spec, &first, &FakeDisk(None), &OperationId::fixture("1"), &AtomicBool::new(false), |_| {});
-        let bad = FakeTransport::new(vec![(206, BTreeMap::from([("content-range".to_string(), format!("bytes 2-{}/{}", body.len() - 1, body.len()))]), body[3..].to_vec())]);
-        assert!(matches!(download_verified(&root, &spec, &bad, &FakeDisk(None), &OperationId::fixture("2"), &AtomicBool::new(false), |_| {}), Err(InstallError::Range(_))));
+        let _ = download_verified(
+            &root,
+            &spec,
+            &first,
+            &FakeDisk(None),
+            &OperationId::fixture("1"),
+            &AtomicBool::new(false),
+            |_| {},
+        );
+        let bad = FakeTransport::new(vec![(
+            206,
+            BTreeMap::from([(
+                "content-range".to_string(),
+                format!("bytes 2-{}/{}", body.len() - 1, body.len()),
+            )]),
+            body[3..].to_vec(),
+        )]);
+        assert!(matches!(
+            download_verified(
+                &root,
+                &spec,
+                &bad,
+                &FakeDisk(None),
+                &OperationId::fixture("2"),
+                &AtomicBool::new(false),
+                |_| {}
+            ),
+            Err(InstallError::Range(_))
+        ));
     }
 }

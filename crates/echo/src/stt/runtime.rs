@@ -38,7 +38,11 @@ impl SpeechRuntimeInventory {
                 path
             })
             .filter(|path| path.is_file())
-            .or_else(|| ["whisper-cli", "whisper-cpp", "whisper"].into_iter().find_map(path_of));
+            .or_else(|| {
+                ["whisper-cli", "whisper-cpp", "whisper"]
+                    .into_iter()
+                    .find_map(path_of)
+            });
         let parakeet_binary = active(ComponentId::SherpaRuntime)
             .map(|root| {
                 let path = root.join("sherpa-onnx-offline");
@@ -46,11 +50,25 @@ impl SpeechRuntimeInventory {
                 path
             })
             .filter(|path| path.is_file())
-            .or_else(|| ["sherpa-onnx-offline", "sherpa-onnx"].into_iter().find_map(path_of));
+            .or_else(|| {
+                ["sherpa-onnx-offline", "sherpa-onnx"]
+                    .into_iter()
+                    .find_map(path_of)
+            });
         let mut models = cache.inventory();
         for (id, name, family, quantisation) in [
-            (ComponentId::WhisperBaseQ51, "base-q5_1", WhisperFamily::Base, Some("q5_1")),
-            (ComponentId::WhisperSmall, "small", WhisperFamily::Small, None),
+            (
+                ComponentId::WhisperBaseQ51,
+                "base-q5_1",
+                WhisperFamily::Base,
+                Some("q5_1"),
+            ),
+            (
+                ComponentId::WhisperSmall,
+                "small",
+                WhisperFamily::Small,
+                None,
+            ),
             (
                 ComponentId::WhisperLargeV3TurboQ50,
                 "large-v3-turbo-q5_0",
@@ -62,6 +80,7 @@ impl SpeechRuntimeInventory {
                 let path = root.join(format!("ggml-{name}.bin"));
                 if path.is_file() {
                     provenance.insert(path.clone(), id);
+                    models.whisper.retain(|model| model.name != name);
                     models.whisper.push(InstalledModel {
                         name: name.to_string(),
                         path: path.clone(),
@@ -107,7 +126,12 @@ impl SpeechRuntimeInventory {
                 .store
                 .active_root_leased(component)
                 .map_err(|error| error.to_string())?
-                .ok_or_else(|| format!("managed {} was removed during resolution", component.as_str()))?;
+                .ok_or_else(|| {
+                    format!(
+                        "managed {} was removed during resolution",
+                        component.as_str()
+                    )
+                })?;
             locked.insert(component, managed);
         }
         let resolved = paths
@@ -151,8 +175,8 @@ fn parakeet_present(root: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::install::{ActivationRecord, InstalledFile};
     use crate::install::catalog::{component, PayloadKind};
+    use crate::install::{ActivationRecord, InstalledFile};
 
     fn install_sparse_managed_model(root: &Path, id: ComponentId) -> PathBuf {
         let spec = component(id);
@@ -198,6 +222,7 @@ mod tests {
             &raw,
         )
         .unwrap();
+        crate::install::trust_payload_fixture(&payload, &record.files);
         model
     }
 
@@ -208,12 +233,17 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("ggml-small.bin"), []).unwrap();
         let inventory = SpeechRuntimeInventory::from_cache(&ModelCache::at(&root));
-        assert!(inventory.models.whisper.iter().any(|model| model.name == "small"));
+        assert!(inventory
+            .models
+            .whisper
+            .iter()
+            .any(|model| model.name == "small"));
     }
 
     #[test]
     fn healthy_managed_model_wins_and_corruption_falls_back_to_manual() {
-        let root = std::env::temp_dir().join(format!("echo-runtime-managed-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("echo-runtime-managed-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let manual = root.join("ggml-small.bin");
@@ -221,7 +251,19 @@ mod tests {
         let managed = install_sparse_managed_model(&root, ComponentId::WhisperSmall);
         let inventory = SpeechRuntimeInventory::from_cache(&ModelCache::at(&root));
         assert_eq!(inventory.models.best_whisper().unwrap().path, managed);
-        let locked = inventory.lock_selected(std::slice::from_ref(&managed)).unwrap();
+        assert_eq!(
+            inventory
+                .models
+                .whisper
+                .iter()
+                .find(|model| model.name == "small")
+                .unwrap()
+                .path,
+            managed
+        );
+        let locked = inventory
+            .lock_selected(std::slice::from_ref(&managed))
+            .unwrap();
         assert_eq!(locked.paths, vec![managed.clone()]);
         assert_eq!(locked.leases.len(), 1);
         drop(locked);

@@ -340,8 +340,24 @@ fn lock_owner_is_alive(path: &Path) -> bool {
     fs::read_to_string(path)
         .ok()
         .and_then(|raw| raw.trim().parse::<u32>().ok())
-        .map(|pid| PathBuf::from("/proc").join(pid.to_string()).exists())
+        .map(process_is_alive)
         .unwrap_or(false)
+}
+
+#[cfg(unix)]
+fn process_is_alive(pid: u32) -> bool {
+    let Some(pid) = rustix::process::Pid::from_raw(pid as rustix::process::RawPid) else {
+        return false;
+    };
+    matches!(
+        rustix::process::test_kill_process(pid),
+        Ok(()) | Err(rustix::io::Errno::PERM)
+    )
+}
+
+#[cfg(not(unix))]
+fn process_is_alive(pid: u32) -> bool {
+    PathBuf::from("/proc").join(pid.to_string()).exists()
 }
 
 /// True while any process holds an active recording session.

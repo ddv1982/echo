@@ -49,16 +49,21 @@ fn safe_relative(raw: &Path) -> Result<PathBuf, InstallError> {
         }
     }
     if safe.as_os_str().is_empty() {
-        return Err(InstallError::UnsafeArchive("empty archive path".to_string()));
+        return Err(InstallError::UnsafeArchive(
+            "empty archive path".to_string(),
+        ));
     }
     Ok(safe)
 }
 
-fn sha256_file(path: &Path) -> Result<String, InstallError> {
+fn sha256_file(path: &Path, cancel: &AtomicBool) -> Result<String, InstallError> {
     let mut file = fs::File::open(path)?;
     let mut hash = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
     loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(InstallError::Cancelled);
+        }
         let read = file.read(&mut buffer)?;
         if read == 0 {
             break;
@@ -98,20 +103,31 @@ fn extract_tar<R: Read>(
     let mut symlinks = Vec::new();
     let mut entries = 0usize;
     let mut expanded = 0u64;
-    for entry in archive.entries().map_err(|error| InstallError::UnsafeArchive(error.to_string()))? {
+    for entry in archive
+        .entries()
+        .map_err(|error| InstallError::UnsafeArchive(error.to_string()))?
+    {
         if cancel.load(Ordering::Relaxed) {
             return Err(InstallError::Cancelled);
         }
         let mut entry = entry.map_err(|error| InstallError::UnsafeArchive(error.to_string()))?;
         entries += 1;
         if entries > plan.max_entries {
-            return Err(InstallError::UnsafeArchive("archive entry limit exceeded".to_string()));
+            return Err(InstallError::UnsafeArchive(
+                "archive entry limit exceeded".to_string(),
+            ));
         }
         expanded = expanded.saturating_add(entry.size());
         if expanded > plan.max_expanded_bytes {
-            return Err(InstallError::UnsafeArchive("archive expanded-byte limit exceeded".to_string()));
+            return Err(InstallError::UnsafeArchive(
+                "archive expanded-byte limit exceeded".to_string(),
+            ));
         }
-        let source = safe_relative(&entry.path().map_err(|error| InstallError::UnsafeArchive(error.to_string()))?)?;
+        let source = safe_relative(
+            &entry
+                .path()
+                .map_err(|error| InstallError::UnsafeArchive(error.to_string()))?,
+        )?;
         if !seen.insert(source.clone()) {
             return Err(InstallError::UnsafeArchive(format!(
                 "duplicate archive path {}",
@@ -119,7 +135,11 @@ fn extract_tar<R: Read>(
             )));
         }
         let kind = entry.header().entry_type();
-        if kind.is_hard_link() || kind.is_block_special() || kind.is_character_special() || kind.is_fifo() {
+        if kind.is_hard_link()
+            || kind.is_block_special()
+            || kind.is_character_special()
+            || kind.is_fifo()
+        {
             return Err(InstallError::UnsafeArchive(format!(
                 "special archive member {}",
                 source.display()
@@ -149,11 +169,24 @@ fn extract_tar<R: Read>(
                 if let Some(parent) = output.parent() {
                     fs::create_dir_all(parent)?;
                 }
-                let mut target = OpenOptions::new().create_new(true).write(true).open(&output)?;
-                std::io::copy(&mut entry, &mut target)?;
+                let mut target = OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .open(&output)?;
+                let mut buffer = [0u8; 64 * 1024];
+                loop {
+                    if cancel.load(Ordering::Relaxed) {
+                        return Err(InstallError::Cancelled);
+                    }
+                    let read = entry.read(&mut buffer)?;
+                    if read == 0 {
+                        break;
+                    }
+                    target.write_all(&buffer[..read])?;
+                }
                 target.flush()?;
                 set_mode(&output, file.mode)?;
-                if sha256_file(&output)? != file.sha256 {
+                if sha256_file(&output, cancel)? != file.sha256 {
                     return Err(InstallError::Payload(format!(
                         "{} failed its payload SHA-256",
                         source.display()
@@ -165,17 +198,30 @@ fn extract_tar<R: Read>(
                 let link = entry
                     .link_name()
                     .map_err(|error| InstallError::UnsafeArchive(error.to_string()))?
-                    .ok_or_else(|| InstallError::UnsafeArchive("symlink has no target".to_string()))?;
+                    .ok_or_else(|| {
+                        InstallError::UnsafeArchive("symlink has no target".to_string())
+                    })?;
                 let expected = file.link_target.as_deref().ok_or_else(|| {
                     InstallError::UnsafeArchive("catalogue symlink has no target".to_string())
                 })?;
-                if link != Path::new(expected) || link.is_absolute() || link.components().any(|part| matches!(part, Component::ParentDir)) {
+                if link != Path::new(expected)
+                    || link.is_absolute()
+                    || link
+                        .components()
+                        .any(|part| matches!(part, Component::ParentDir))
+                {
                     return Err(InstallError::UnsafeArchive(format!(
                         "symlink {} escapes or changed target",
                         source.display()
                     )));
                 }
-                symlinks.push((source, output, expected.to_string(), file.sha256.clone(), file.mode));
+                symlinks.push((
+                    source,
+                    output,
+                    expected.to_string(),
+                    file.sha256.clone(),
+                    file.mode,
+                ));
             }
             _ => {
                 return Err(InstallError::UnsafeArchive(format!(
@@ -186,9 +232,15 @@ fn extract_tar<R: Read>(
         }
     }
     for (source, output, target, expected_sha, _) in symlinks {
-        let target_source = source.parent().unwrap_or_else(|| Path::new("")).join(&target);
+        let target_source = source
+            .parent()
+            .unwrap_or_else(|| Path::new(""))
+            .join(&target);
         let target_spec = selected.get(&target_source).ok_or_else(|| {
-            InstallError::UnsafeArchive(format!("symlink target is not selected for {}", source.display()))
+            InstallError::UnsafeArchive(format!(
+                "symlink target is not selected for {}",
+                source.display()
+            ))
         })?;
         let target_path = destination.join(safe_relative(Path::new(&target_spec.destination))?);
         if !target_path.is_file() {
@@ -206,14 +258,23 @@ fn extract_tar<R: Read>(
         return Err(InstallError::Unsupported(
             "managed archive symlinks require Unix".to_string(),
         ));
-        if sha256_file(&output)? != expected_sha {
-            return Err(InstallError::Payload(format!("materialized symlink {} failed SHA-256", source.display())));
+        if sha256_file(&output, cancel)? != expected_sha {
+            return Err(InstallError::Payload(format!(
+                "materialized symlink {} failed SHA-256",
+                source.display()
+            )));
         }
         written.insert(source);
     }
-    let missing: Vec<_> = selected.keys().filter(|path| !written.contains(*path)).collect();
+    let missing: Vec<_> = selected
+        .keys()
+        .filter(|path| !written.contains(*path))
+        .collect();
     if !missing.is_empty() {
-        return Err(InstallError::Payload(format!("archive is missing {} required members", missing.len())));
+        return Err(InstallError::Payload(format!(
+            "archive is missing {} required members",
+            missing.len()
+        )));
     }
     Ok(())
 }
@@ -227,9 +288,18 @@ pub fn extract_archive(
     fs::create_dir_all(destination)?;
     let file = fs::File::open(artifact)?;
     match plan.format {
-        ArtifactFormat::TarGzip => extract_tar(flate2::read::GzDecoder::new(file), destination, plan, cancel),
-        ArtifactFormat::TarBzip2 => extract_tar(bzip2::read::BzDecoder::new(file), destination, plan, cancel),
-        ArtifactFormat::Direct => Err(InstallError::State("direct files do not use archive extraction".to_string())),
+        ArtifactFormat::TarGzip => extract_tar(
+            flate2::read::GzDecoder::new(file),
+            destination,
+            plan,
+            cancel,
+        ),
+        ArtifactFormat::TarBzip2 => {
+            extract_tar(bzip2::read::BzDecoder::new(file), destination, plan, cancel)
+        }
+        ArtifactFormat::Direct => Err(InstallError::State(
+            "direct files do not use archive extraction".to_string(),
+        )),
     }
 }
 
@@ -259,7 +329,9 @@ mod tests {
             header.set_size(body.len() as u64);
             header.set_mode(0o755);
             header.set_cksum();
-            builder.append_data(&mut header, path, Cursor::new(body)).unwrap();
+            builder
+                .append_data(&mut header, path, Cursor::new(body))
+                .unwrap();
             builder.finish().unwrap();
         }
         bytes
@@ -286,7 +358,13 @@ mod tests {
         let body = b"tiny runner";
         let root = std::env::temp_dir().join(format!("echo-extract-ok-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        extract_tar(Cursor::new(tar_bytes("root/bin/tool", body, tar::EntryType::Regular)), &root, &plan(body), &AtomicBool::new(false)).unwrap();
+        extract_tar(
+            Cursor::new(tar_bytes("root/bin/tool", body, tar::EntryType::Regular)),
+            &root,
+            &plan(body),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
         assert_eq!(fs::read(root.join("tool")).unwrap(), body);
     }
 
@@ -331,11 +409,41 @@ mod tests {
         let body = b"x";
         let root = std::env::temp_dir().join(format!("echo-extract-bad-{}", std::process::id()));
         let special = tar_bytes("root/bin/tool", &[], tar::EntryType::Fifo);
-        assert!(matches!(extract_tar(Cursor::new(special), &root, &plan(body), &AtomicBool::new(false)), Err(InstallError::UnsafeArchive(_))));
-        let limited = ExtractionPlan { max_entries: 0, ..plan(body) };
-        assert!(matches!(extract_tar(Cursor::new(tar_bytes("root/bin/tool", body, tar::EntryType::Regular)), &root, &limited, &AtomicBool::new(false)), Err(InstallError::UnsafeArchive(_))));
-        let limited = ExtractionPlan { max_expanded_bytes: 0, ..plan(body) };
-        assert!(matches!(extract_tar(Cursor::new(tar_bytes("root/bin/tool", body, tar::EntryType::Regular)), &root, &limited, &AtomicBool::new(false)), Err(InstallError::UnsafeArchive(_))));
+        assert!(matches!(
+            extract_tar(
+                Cursor::new(special),
+                &root,
+                &plan(body),
+                &AtomicBool::new(false)
+            ),
+            Err(InstallError::UnsafeArchive(_))
+        ));
+        let limited = ExtractionPlan {
+            max_entries: 0,
+            ..plan(body)
+        };
+        assert!(matches!(
+            extract_tar(
+                Cursor::new(tar_bytes("root/bin/tool", body, tar::EntryType::Regular)),
+                &root,
+                &limited,
+                &AtomicBool::new(false)
+            ),
+            Err(InstallError::UnsafeArchive(_))
+        ));
+        let limited = ExtractionPlan {
+            max_expanded_bytes: 0,
+            ..plan(body)
+        };
+        assert!(matches!(
+            extract_tar(
+                Cursor::new(tar_bytes("root/bin/tool", body, tar::EntryType::Regular)),
+                &root,
+                &limited,
+                &AtomicBool::new(false)
+            ),
+            Err(InstallError::UnsafeArchive(_))
+        ));
     }
 
     #[test]
@@ -344,8 +452,24 @@ mod tests {
         let root = std::env::temp_dir().join(format!("echo-extract-hash-{}", std::process::id()));
         let mut wrong = plan(body);
         wrong.files[0].sha256 = "0".repeat(64);
-        assert!(matches!(extract_tar(Cursor::new(tar_bytes("root/bin/tool", body, tar::EntryType::Regular)), &root, &wrong, &AtomicBool::new(false)), Err(InstallError::Payload(_))));
+        assert!(matches!(
+            extract_tar(
+                Cursor::new(tar_bytes("root/bin/tool", body, tar::EntryType::Regular)),
+                &root,
+                &wrong,
+                &AtomicBool::new(false)
+            ),
+            Err(InstallError::Payload(_))
+        ));
         let empty = tar_bytes("root/other", b"ignored", tar::EntryType::Regular);
-        assert!(matches!(extract_tar(Cursor::new(empty), &root, &plan(body), &AtomicBool::new(false)), Err(InstallError::Payload(_))));
+        assert!(matches!(
+            extract_tar(
+                Cursor::new(empty),
+                &root,
+                &plan(body),
+                &AtomicBool::new(false)
+            ),
+            Err(InstallError::Payload(_))
+        ));
     }
 }

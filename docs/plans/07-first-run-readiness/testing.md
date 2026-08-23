@@ -66,6 +66,6 @@
 
 ## Rerunnable proof
 
-`scripts/verify-first-run-readiness.sh` must use isolated config/model/data/PATH roots, a local Range-aware fixture server, tiny artifacts, and fake runtime executables. It performs an empty-cache Recommended install, cancellation, process restart, resume, SHA-256 verification, activation, managed engine resolution, corruption, Repair, removal, and external-file survival. A fake device adapter proves duplicate-label stable-ID selection and actual fallback projection. It never opens host audio or reaches the public internet.
+`scripts/verify-first-run-readiness.sh` uses isolated config, model, data, and PATH roots. It runs the installer tests with in-memory HTTP, disk, and runtime adapters; the stable-ID microphone tests; managed runtime resolution tests; and the first-run React tests under Node 22. Those suites cover successful activation, disk refusal before HTTP, cancellation of a stalled body and later phases, interrupted Range resume, checksum failure, archive boundaries, persistent corruption state, Repair, removal, external-file survival, cross-process recovery locking, duplicate microphone labels, and fallback projection. The script never opens host audio or reaches the production artifact hosts.
 
 The release gate also runs frontend build, lint, Node 22 tests, clippy, workspace tests on Linux, existing fixed-toggle and transcription verifiers, release build, package assembly, and the tagged release workflow.

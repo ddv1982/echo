@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use echo::install::catalog::{
     component, managed_platform_supported, plan, recommended_model, HardwareProfile,
@@ -89,6 +90,7 @@ pub struct ReadinessDto {
     has_successful_dictation: bool,
     first_run_complete: bool,
     active_operation: Option<OperationId>,
+    active_cancellable: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -176,7 +178,7 @@ fn external_model(inventory: &echo::stt::ModelInventory, name: &str) -> Vec<Exte
     inventory
         .whisper
         .iter()
-        .filter(|model| model.name == name && !model.path.to_string_lossy().contains("/managed/"))
+        .filter(|model| model.name == name)
         .map(|model| ExternalComponent {
             origin: "external",
             path: model.path.to_string_lossy().into_owned(),
@@ -188,14 +190,37 @@ fn managed_ready(state: &ManagedComponentState) -> bool {
     matches!(state, ManagedComponentState::Ready { .. })
 }
 
+fn plan_space(components: impl IntoIterator<Item = (u64, u64, u64)>) -> (u64, u64) {
+    let mut download_bytes = 0u64;
+    let mut retained_growth = 0u64;
+    let mut required_free_bytes = 0u64;
+    for (artifact_bytes, installed_bytes, resumable_bytes) in components {
+        let download = artifact_bytes.saturating_sub(resumable_bytes);
+        let working = download.saturating_add(installed_bytes);
+        let component_required = working.saturating_add((working / 10).max(256 * 1024 * 1024));
+        required_free_bytes =
+            required_free_bytes.max(retained_growth.saturating_add(component_required));
+        retained_growth =
+            retained_growth.saturating_add(installed_bytes.saturating_sub(resumable_bytes));
+        download_bytes = download_bytes.saturating_add(download);
+    }
+    (download_bytes, required_free_bytes)
+}
+
 impl SetupService {
     fn snapshot(&self) -> ReadinessDto {
         let cache = ModelCache::from_env();
         let store = ManagedStore::new(cache.dir());
-        let (active_operation, activity) = {
+        let (active_operation, active_cancellable, activity) = {
             let active = self.active.lock().expect("setup operation lock");
             (
                 active.as_ref().map(|operation| operation.id.clone()),
+                active.as_ref().is_some_and(|operation| {
+                    matches!(
+                        operation.action,
+                        SetupAction::Plan(..) | SetupAction::Repair(..)
+                    )
+                }),
                 active
                     .as_ref()
                     .and_then(|operation| operation.progress.clone()),
@@ -265,10 +290,11 @@ impl SetupService {
                         },
                     )
                 });
-                let remaining: Vec<_> = ids
-                    .iter()
-                    .filter_map(|id| {
-                        let status = components.iter().find(|component| component.id == *id)?;
+                let (download_bytes, required_free_bytes) = plan_space(
+                    ids.iter().filter_map(|component_id| {
+                        let status = components
+                            .iter()
+                            .find(|component| component.id == *component_id)?;
                         if managed_ready(&status.managed) || !status.external.is_empty() {
                             return None;
                         }
@@ -280,20 +306,10 @@ impl SetupService {
                             ManagedComponentState::Ready { .. }
                             | ManagedComponentState::Unsupported { .. } => 0,
                         };
-                        let spec = component(*id);
-                        let download = spec.artifact_size.saturating_sub(resumable);
-                        let working = download.saturating_add(spec.installed_bytes);
-                        let required = working
-                            .saturating_add((working / 10).max(256 * 1024 * 1024));
-                        Some((download, required))
-                    })
-                    .collect();
-                let download_bytes = remaining.iter().map(|(download, _)| *download).sum();
-                let required_free_bytes = remaining
-                    .iter()
-                    .map(|(_, required)| *required)
-                    .max()
-                    .unwrap_or(0);
+                        let spec = component(*component_id);
+                        Some((spec.artifact_size, spec.installed_bytes, resumable))
+                    }),
+                );
                 let disk_ready = available_bytes.is_none_or(|available| available >= required_free_bytes);
                 PlanStatusDto {
                     id,
@@ -342,6 +358,7 @@ impl SetupService {
             has_successful_dictation,
             first_run_complete: microphone_ready && speech_ready && has_successful_dictation,
             active_operation,
+            active_cancellable,
         }
     }
 
@@ -381,7 +398,20 @@ impl SetupService {
                     disk: &disk,
                     probe: &probe,
                 };
+                let mut last_progress_phase = None;
+                let mut last_progress_emit = Instant::now() - Duration::from_secs(1);
                 let mut emit_progress = |progress: InstallProgress| {
+                    let phase_changed = last_progress_phase != Some(progress.phase);
+                    let complete =
+                        progress.total_bytes > 0 && progress.received_bytes >= progress.total_bytes;
+                    if !phase_changed
+                        && !complete
+                        && last_progress_emit.elapsed() < Duration::from_millis(100)
+                    {
+                        return;
+                    }
+                    last_progress_phase = Some(progress.phase);
+                    last_progress_emit = Instant::now();
                     if let Some(active) =
                         worker_state.lock().expect("setup operation lock").as_mut()
                     {
@@ -424,7 +454,13 @@ impl SetupService {
                                 &cancel,
                                 &mut emit_progress,
                             )
-                            .and_then(|_| activate_plan_config(plan_id, hardware))
+                            .and_then(|_| {
+                                if cancel.load(Ordering::Relaxed) {
+                                    Err(echo::install::InstallError::Cancelled)
+                                } else {
+                                    activate_plan_config(plan_id, hardware)
+                                }
+                            })
                     }
                     SetupAction::Repair(component) => installer
                         .ensure_component(
@@ -436,14 +472,7 @@ impl SetupService {
                         )
                         .map(|_| ()),
                     SetupAction::Remove(component) => installer.store.remove(component),
-                    SetupAction::Verify(component) => {
-                        match installer.store.status(component, true) {
-                            ManagedComponentState::Ready { .. } => Ok(()),
-                            state => Err(echo::install::InstallError::State(format!(
-                                "verification found {state:?}"
-                            ))),
-                        }
-                    }
+                    SetupAction::Verify(component) => installer.store.verify(component),
                 };
                 super::health_invalidate();
                 let event = match result {
@@ -483,41 +512,35 @@ fn activate_plan_config(
     plan_id: SetupPlanId,
     hardware: HardwareProfile,
 ) -> Result<(), echo::install::InstallError> {
-    let mut config = echo_core::Config::load().unwrap_or_default();
-    match plan_id {
-        SetupPlanId::Parakeet => config.engine = Some(echo_core::EngineChoice::Parakeet),
-        SetupPlanId::Recommended
-        | SetupPlanId::WhisperBase
-        | SetupPlanId::WhisperSmall
-        | SetupPlanId::WhisperLargeV3Turbo => {
-            config.engine = Some(echo_core::EngineChoice::Whisper);
-            let model = match plan_id {
-                SetupPlanId::Recommended => recommended_model(hardware),
-                SetupPlanId::WhisperBase => ComponentId::WhisperBaseQ51,
-                SetupPlanId::WhisperSmall => ComponentId::WhisperSmall,
-                SetupPlanId::WhisperLargeV3Turbo => ComponentId::WhisperLargeV3TurboQ50,
-                SetupPlanId::Parakeet => unreachable!(),
-            };
-            config.whisper_model = Some(
-                match model {
-                    ComponentId::WhisperBaseQ51 => "base-q5_1",
-                    ComponentId::WhisperSmall => "small",
-                    ComponentId::WhisperLargeV3TurboQ50 => "large-v3-turbo-q5_0",
-                    _ => {
-                        return Err(echo::install::InstallError::State(
-                            "invalid Whisper model plan".to_string(),
-                        ))
+    super::update_file_config(|config| {
+        match plan_id {
+            SetupPlanId::Parakeet => config.engine = Some(echo_core::EngineChoice::Parakeet),
+            SetupPlanId::Recommended
+            | SetupPlanId::WhisperBase
+            | SetupPlanId::WhisperSmall
+            | SetupPlanId::WhisperLargeV3Turbo => {
+                config.engine = Some(echo_core::EngineChoice::Whisper);
+                let model = match plan_id {
+                    SetupPlanId::Recommended => recommended_model(hardware),
+                    SetupPlanId::WhisperBase => ComponentId::WhisperBaseQ51,
+                    SetupPlanId::WhisperSmall => ComponentId::WhisperSmall,
+                    SetupPlanId::WhisperLargeV3Turbo => ComponentId::WhisperLargeV3TurboQ50,
+                    SetupPlanId::Parakeet => unreachable!(),
+                };
+                config.whisper_model = Some(
+                    match model {
+                        ComponentId::WhisperBaseQ51 => "base-q5_1",
+                        ComponentId::WhisperSmall => "small",
+                        ComponentId::WhisperLargeV3TurboQ50 => "large-v3-turbo-q5_0",
+                        _ => return Err("invalid Whisper model plan".to_string()),
                     }
-                }
-                .to_string(),
-            );
+                    .to_string(),
+                );
+            }
         }
-    }
-    config
-        .save()
-        .map_err(echo::install::InstallError::IoMessage)?;
-    echo::settings::reload();
-    Ok(())
+        Ok(())
+    })
+    .map_err(echo::install::InstallError::IoMessage)
 }
 
 #[tauri::command]
@@ -575,4 +598,27 @@ pub fn cancel_setup(operation: OperationId, state: State<'_, SetupService>) -> b
             true
         })
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::plan_space;
+
+    #[test]
+    fn plan_disk_check_includes_payloads_retained_by_earlier_components() {
+        let runtime = (10, 20, 0);
+        let model = (100, 100, 0);
+        let (_, one_component) = plan_space([model]);
+        let (download, plan_required) = plan_space([runtime, model]);
+        assert_eq!(download, 110);
+        assert!(plan_required >= one_component + runtime.1);
+    }
+
+    #[test]
+    fn resumable_bytes_reduce_download_and_retained_growth() {
+        let (download, required) = plan_space([(100, 100, 40), (20, 20, 0)]);
+        assert_eq!(download, 80);
+        let (_, without_resume) = plan_space([(100, 100, 0), (20, 20, 0)]);
+        assert!(required < without_resume);
+    }
 }

@@ -557,6 +557,8 @@
   .home-grid { grid-template-columns: 1fr; }
   .dictionary-form { grid-template-columns: 1fr; }
   .mapping-arrow { display: none; }
+  .speech-setup .setting-row { align-items: flex-start; flex-direction: column; }
+  .speech-setup .setting-actions { justify-content: flex-start; }
 }
 
 @media (max-width: 520px) {

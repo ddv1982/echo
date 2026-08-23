@@ -52,6 +52,7 @@ import type {
   LanguageOptions,
   ModelInventory,
   Readiness,
+  SetupEvent,
   MicrophoneSnapshot,
   MicrophoneTestResult,
   SettingSource,
@@ -726,6 +727,10 @@ function SetupChecklist({
     void getReadiness().then(setReadiness).catch((reason: unknown) => setSetupError(messageFrom(reason)))
     void getMicrophones().then(setMicrophones).catch((reason: unknown) => setSetupError(messageFrom(reason)))
     void onSetupEvent((event) => {
+      if (event.kind === 'progress') {
+        setReadiness((current) => current && applySetupProgress(current, event))
+        return
+      }
       if (event.kind === 'failed') setSetupError(event.error)
       void getReadiness().then(setReadiness).catch((reason: unknown) => setSetupError(messageFrom(reason)))
     }).then((next) => {
@@ -988,9 +993,21 @@ function SettingsView({
     let unlisten: (() => void) | undefined
     const timer = window.setTimeout(() => {
       void onSetupEvent((event) => {
+        if (event.kind === 'progress') {
+          setReadiness((current) => current && applySetupProgress(current, event))
+          return
+        }
         if (event.kind === 'failed') onError(event.error)
-        void getReadiness().then(setReadiness)
-        if (event.kind !== 'progress') void listModels().then(setInventory)
+        void Promise.all([getReadiness(), listModels(), getSettings(), listLanguages()])
+          .then(([nextReadiness, nextInventory, nextSettings, nextLanguages]) => {
+            setReadiness(nextReadiness)
+            setInventory(nextInventory)
+            settingsRef.current = nextSettings
+            setLocalSettings(nextSettings)
+            setLanguages(nextLanguages)
+            void onStatusChange()
+          })
+          .catch((reason: unknown) => onError(messageFrom(reason)))
       }).then((fn) => {
         unlisten = fn
       })
@@ -999,7 +1016,7 @@ function SettingsView({
       window.clearTimeout(timer)
       unlisten?.()
     }
-  }, [onError])
+  }, [onError, onStatusChange])
 
   useEffect(() => {
     settingsRef.current = settings
@@ -1303,15 +1320,31 @@ function managedStateLabel(component: Readiness['components'][number]) {
   }
   switch (component.managed.kind) {
     case 'absent':
+      if (component.activeOrigin === 'system') return 'Ready · system runtime'
+      if (component.activeOrigin === 'external') return 'Ready · manually installed'
       return component.managed.resumableBytes > 0
         ? `Partial · ${formatSize(component.managed.resumableBytes)} ready to resume`
         : 'Not installed by Echo'
     case 'ready':
       return `Ready · managed by Echo · ${component.managed.version}`
     case 'needs-repair':
-      return `Needs repair · ${component.managed.reason}`
+      return component.activeOrigin === 'external' || component.activeOrigin === 'system'
+        ? `Managed copy needs repair · using ${component.activeOrigin} fallback`
+        : `Needs repair · ${component.managed.reason}`
     case 'unsupported':
       return component.managed.reason
+  }
+}
+
+function applySetupProgress(readiness: Readiness, event: Extract<SetupEvent, { kind: 'progress' }>) {
+  return {
+    ...readiness,
+    activeOperation: event.progress.operationId,
+    activeCancellable: true,
+    components: readiness.components.map((component) => ({
+      ...component,
+      activity: component.id === event.progress.component ? event.progress : null,
+    })),
   }
 }
 
@@ -1329,6 +1362,9 @@ function SpeechSetupSection({
   }
   const recommended = readiness.plans.find((plan) => plan.id === 'recommended')
   const parakeet = readiness.plans.find((plan) => plan.id === 'parakeet')
+  const recommendedModel = readiness.components.find(
+    (component) => component.id === readiness.recommendedModel,
+  )
   const activeOperation = readiness.activeOperation
   return (
     <div className="speech-setup" aria-label="Speech setup">
@@ -1338,6 +1374,12 @@ function SpeechSetupSection({
           <span>
             Downloads stay in Echo's managed cache, use SHA-256, and never change PATH or external files.
           </span>
+          <span>
+            Recommended chooses {recommendedModel?.label ?? 'the low-memory model'}
+            {readiness.totalMemoryBytes == null
+              ? ' because system memory could not be detected.'
+              : ` for ${formatSize(readiness.totalMemoryBytes)} system memory.`}
+          </span>
           <span>Parakeet setup selects Parakeet. Auto also prefers an available Parakeet setup.</span>
         </div>
         <div className="setting-actions">
@@ -1345,29 +1387,37 @@ function SpeechSetupSection({
             <button
               type="button"
               className="compact-button"
-              disabled={!recommended.diskReady}
+              disabled={activeOperation != null || !recommended.diskReady}
               onClick={() => run(startSetup('recommended'))}
             >
               Set up recommended · {formatSize(recommended.downloadBytes)}
             </button>
           ) : null}
           {readiness.managedSupported && parakeet && !parakeet.satisfied ? (
-            <button type="button" className="compact-button" onClick={() => run(startSetup('parakeet'))}>
+            <button
+              type="button"
+              className="compact-button"
+              disabled={activeOperation != null || !parakeet.diskReady}
+              onClick={() => run(startSetup('parakeet'))}
+            >
               Set up Parakeet
             </button>
           ) : null}
-          {activeOperation ? (
+          {activeOperation && readiness.activeCancellable ? (
             <button type="button" className="compact-button" onClick={() => run(cancelSetup(activeOperation))}>
               Cancel setup
             </button>
           ) : null}
         </div>
         {recommended && !recommended.diskReady && recommended.diskReason ? (
-          <span className="status-note" data-tone="attention">{recommended.diskReason}</span>
+          <span className="status-note" data-tone="attention">Recommended: {recommended.diskReason}</span>
         ) : recommended && recommended.availableBytes != null ? (
           <span className="status-note">
-            Needs {formatSize(recommended.requiredFreeBytes)} free · {formatSize(recommended.availableBytes)} available
+            Recommended needs {formatSize(recommended.requiredFreeBytes)} free · {formatSize(recommended.availableBytes)} available
           </span>
+        ) : null}
+        {parakeet && !parakeet.satisfied && !parakeet.diskReady && parakeet.diskReason ? (
+          <span className="status-note" data-tone="attention">Parakeet: {parakeet.diskReason}</span>
         ) : null}
       </div>
       {!readiness.managedSupported && readiness.unsupportedReason ? (
@@ -1407,12 +1457,26 @@ function SpeechSetupSection({
               </div>
             ) : null}
             {component.managed.kind === 'needs-repair' ? (
-              <button type="button" className="compact-button" onClick={() => run(repairManaged(component.id))}>
-                Repair
-              </button>
+              <>
+                <button type="button" className="compact-button" disabled={activeOperation != null} onClick={() => run(repairManaged(component.id))}>
+                  Repair
+                </button>
+                <button
+                  type="button"
+                  className="compact-button danger-button"
+                  disabled={activeOperation != null}
+                  onClick={() => {
+                    if (window.confirm(`Remove damaged Echo-managed ${component.label}? External files stay untouched.`)) {
+                      run(removeManaged(component.id))
+                    }
+                  }}
+                >
+                  Remove damaged copy
+                </button>
+              </>
             ) : null}
             {component.managed.kind === 'absent' && readiness.managedSupported ? (
-              <button type="button" className="compact-button" onClick={() => run(repairManaged(component.id))}>
+              <button type="button" className="compact-button" disabled={activeOperation != null} onClick={() => run(repairManaged(component.id))}>
                 {component.managed.resumableBytes > 0
                   ? `Resume · ${formatSize(component.managed.resumableBytes)} saved`
                   : component.external.length > 0
@@ -1422,12 +1486,13 @@ function SpeechSetupSection({
             ) : null}
             {component.managed.kind === 'ready' ? (
               <>
-                <button type="button" className="compact-button" onClick={() => run(verifyManaged(component.id))}>
+                <button type="button" className="compact-button" disabled={activeOperation != null} onClick={() => run(verifyManaged(component.id))}>
                   Verify
                 </button>
                 <button
                   type="button"
                   className="compact-button danger-button"
+                  disabled={activeOperation != null}
                   onClick={() => {
                     if (window.confirm(`Remove Echo-managed ${component.label}? External files stay untouched.`)) {
                       run(removeManaged(component.id))

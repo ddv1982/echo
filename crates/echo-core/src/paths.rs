@@ -1,5 +1,6 @@
 use std::env;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[must_use]
@@ -94,8 +95,24 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> Result<(), String> {
         .and_then(|n| n.to_str())
         .ok_or_else(|| format!("{} has no file name", path.display()))?;
     let tmp = parent.join(format!(".{name}.tmp-{}-{seq}", std::process::id()));
-    fs::write(&tmp, contents).map_err(|err| err.to_string())?;
-    fs::rename(&tmp, path).map_err(|err| err.to_string())
+    let result = (|| {
+        let mut file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&tmp)
+            .map_err(|err| err.to_string())?;
+        file.write_all(contents).map_err(|err| err.to_string())?;
+        file.sync_all().map_err(|err| err.to_string())?;
+        drop(file);
+        fs::rename(&tmp, path).map_err(|err| err.to_string())?;
+        fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|err| err.to_string())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
 }
 
 #[cfg(test)]

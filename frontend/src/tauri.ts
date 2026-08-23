@@ -362,6 +362,7 @@ export function resetPreviewSettings() {
   previewRemoveStaleError = null
   previewLanguages = defaultPreviewLanguages()
   previewInventory = defaultPreviewInventory()
+  previewDevices = defaultPreviewDevices()
   previewMicrophones = {
     source: 'default',
     devices: previewDevices,
@@ -371,41 +372,45 @@ export function resetPreviewSettings() {
   previewReadiness = defaultPreviewReadiness()
 }
 
-const previewDevices: InputDevice[] = [
-  {
-    id: 'alsa:default',
-    label: 'Built-in Audio Analog Stereo',
-    isDefault: true,
-    manufacturer: 'Intel',
-    deviceType: 'Microphone',
-    interfaceType: 'Built-in',
-    address: null,
-    driver: 'PipeWire',
-    extended: [],
-  },
-  {
-    id: 'alsa:usb-one',
-    label: 'USB Microphone',
-    isDefault: false,
-    manufacturer: 'Focusrite',
-    deviceType: 'Microphone',
-    interfaceType: 'USB',
-    address: '1-2',
-    driver: 'PipeWire',
-    extended: [],
-  },
-  {
-    id: 'alsa:usb-two',
-    label: 'USB Microphone',
-    isDefault: false,
-    manufacturer: 'Logitech',
-    deviceType: 'Headset',
-    interfaceType: 'USB',
-    address: '1-3',
-    driver: 'PipeWire',
-    extended: [],
-  },
-]
+function defaultPreviewDevices(): InputDevice[] {
+  return [
+    {
+      id: 'alsa:default',
+      label: 'Built-in Audio Analog Stereo',
+      isDefault: true,
+      manufacturer: 'Intel',
+      deviceType: 'Microphone',
+      interfaceType: 'Built-in',
+      address: null,
+      driver: 'PipeWire',
+      extended: [],
+    },
+    {
+      id: 'alsa:usb-one',
+      label: 'USB Microphone',
+      isDefault: false,
+      manufacturer: 'Focusrite',
+      deviceType: 'Microphone',
+      interfaceType: 'USB',
+      address: '1-2',
+      driver: 'PipeWire',
+      extended: [],
+    },
+    {
+      id: 'alsa:usb-two',
+      label: 'USB Microphone',
+      isDefault: false,
+      manufacturer: 'Logitech',
+      deviceType: 'Headset',
+      interfaceType: 'USB',
+      address: '1-3',
+      driver: 'PipeWire',
+      extended: [],
+    },
+  ]
+}
+
+let previewDevices = defaultPreviewDevices()
 
 let previewMicrophones: MicrophoneSnapshot = {
   source: 'default',
@@ -467,6 +472,7 @@ export function testMicrophoneFallback(): Promise<MicrophoneTestResult> {
 }
 
 export function seedPreviewMicrophones(snapshot: MicrophoneSnapshot) {
+  previewDevices = snapshot.devices
   previewMicrophones = snapshot
 }
 
@@ -500,6 +506,7 @@ function defaultPreviewReadiness(): Readiness {
     hasSuccessfulDictation: true,
     firstRunComplete: true,
     activeOperation: null,
+    activeCancellable: false,
   }
 }
 
@@ -514,7 +521,7 @@ export function getReadiness(): Promise<Readiness> {
 export function startSetup(plan: SetupPlanId, managedCopy = false): Promise<string> {
   if (isTauri()) return invoke('start_setup', { plan, managedCopy })
   const operationId = `preview-${plan}`
-  previewReadiness = { ...previewReadiness, activeOperation: operationId }
+  previewReadiness = { ...previewReadiness, activeOperation: operationId, activeCancellable: true }
   const selected = previewReadiness.plans.find((candidate) => candidate.id === plan)
   const component = selected?.components[0] ?? 'whisper-runtime'
   previewSetupListeners.forEach((listener) => listener({
@@ -526,6 +533,7 @@ export function startSetup(plan: SetupPlanId, managedCopy = false): Promise<stri
       ...previewReadiness,
       speechReady: true,
       activeOperation: null,
+      activeCancellable: false,
       plans: previewReadiness.plans.map((candidate) =>
         candidate.id === plan ? { ...candidate, satisfied: true } : candidate,
       ),
@@ -560,7 +568,7 @@ export function removeManaged(component: ComponentId): Promise<string> {
 
 export function cancelSetup(operation: string): Promise<boolean> {
   if (isTauri()) return invoke('cancel_setup', { operation })
-  previewReadiness = { ...previewReadiness, activeOperation: null }
+  previewReadiness = { ...previewReadiness, activeOperation: null, activeCancellable: false }
   previewSetupListeners.forEach((listener) => listener({ kind: 'cancelled', operationId: operation }))
   return Promise.resolve(true)
 }

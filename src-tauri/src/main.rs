@@ -27,6 +27,19 @@ mod setup;
 
 const APP_ID: &str = "io.github.ddv1982.echo";
 const GNOME_MEDIA_KEYS_SCHEMA: &str = "org.gnome.settings-daemon.plugins.media-keys";
+static CONFIG_WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+fn update_file_config(
+    update: impl FnOnce(&mut echo_core::Config) -> Result<(), String>,
+) -> Result<(), String> {
+    let _write = CONFIG_WRITE_LOCK.lock().expect("config write lock");
+    let mut config = echo_core::Config::load().unwrap_or_default();
+    update(&mut config)?;
+    config.save()?;
+    echo::settings::reload();
+    health_invalidate();
+    Ok(())
+}
 const GNOME_CUSTOM_KEY_SCHEMA: &str =
     "org.gnome.settings-daemon.plugins.media-keys.custom-keybinding";
 const ECHO_CUSTOM_KEY_PATH: &str =
@@ -1255,11 +1268,10 @@ fn set_microphone(id: Option<String>) -> Result<echo::microphone::MicrophoneSnap
             Some((id, device.label.clone()))
         }
     };
-    let mut config = echo_core::Config::load().unwrap_or_default();
-    update_microphone_config(&mut config, selection);
-    config.save()?;
-    echo::settings::reload();
-    health_invalidate();
+    update_file_config(|config| {
+        update_microphone_config(config, selection);
+        Ok(())
+    })?;
     Ok(echo::audio::microphone_snapshot())
 }
 
@@ -1348,9 +1360,10 @@ fn read_settings() -> Result<Settings, String> {
 }
 
 fn write_settings(settings: Settings) -> Result<Settings, String> {
-    config_from_values(&settings)?.save()?;
-    echo::settings::reload();
-    health_invalidate();
+    update_file_config(|config| {
+        *config = config_from_values_with_base(&settings, config.clone())?;
+        Ok(())
+    })?;
     read_settings()
 }
 
@@ -1412,8 +1425,15 @@ fn settings_from(
     })
 }
 
+#[cfg(test)]
 fn config_from_values(settings: &Settings) -> Result<echo_core::Config, String> {
-    let mut config = echo_core::Config::load().unwrap_or_default();
+    config_from_values_with_base(settings, echo_core::Config::load().unwrap_or_default())
+}
+
+fn config_from_values_with_base(
+    settings: &Settings,
+    mut config: echo_core::Config,
+) -> Result<echo_core::Config, String> {
     config.engine = match settings.engine.value.as_deref() {
         None => None,
         Some(raw) => Some(
@@ -2863,6 +2883,21 @@ mod settings_tests {
         );
         update_microphone_config(&mut config, None);
         assert_eq!(config.microphone, None);
+    }
+
+    #[test]
+    fn settings_patch_preserves_concurrently_owned_microphone_field() {
+        let microphone = echo_core::MicrophoneSelection::Device {
+            id: "alsa:buds".into(),
+            last_seen_label: "Earbuds".into(),
+        };
+        let base = Config {
+            microphone: Some(microphone.clone()),
+            ..Config::default()
+        };
+        let incoming = settings_from(&SettingsEnv::default(), &base, "en").unwrap();
+        let updated = config_from_values_with_base(&incoming, base).unwrap();
+        assert_eq!(updated.microphone, Some(microphone));
     }
 
     #[test]

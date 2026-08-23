@@ -251,6 +251,7 @@ export interface Readiness {
   hasSuccessfulDictation: boolean
   firstRunComplete: boolean
   activeOperation: string | null
+  activeCancellable: boolean
 }
 
 export type SetupEvent =

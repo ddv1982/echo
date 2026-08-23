@@ -46,7 +46,7 @@ The runtime and Parakeet archives are official, versioned GitHub release assets.
 | --- | --- | ---: | --- |
 | Whisper runtime 1.9.2 | `whisper-bin-ubuntu-x64.tar.gz` | 9,497,583 | `46811a3ecf584307480a220b9ef5ff81b7b22dc41577cbc274ce3afc61f753b1` |
 | sherpa-onnx runtime 1.13.6 | `sherpa-onnx-v1.13.6-linux-x64-static-no-tts.tar.bz2` | 361,356,492 | `ba2c35a3f6ca889e6c31fe12eba292fb13eeca5cb13687e6b04ccdc23649c954` |
-| Parakeet TDT 0.6b v3 INT8 | `sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2` | 487,170,055 | `5793d0fd397c5778d2cf2126994d58e9d56b1be7c04d13c7a15bb1b4eafb16b` |
+| Parakeet TDT 0.6b v3 INT8 | `sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2` | 487,170,055 | `5793d0fd397c5778d2cf2126994d58e9d56b1be7c04d13c7a15bb1b4eafb16bf` |
 
 The Whisper archive contains `whisper-cli` plus its `$ORIGIN` shared libraries. The sherpa archive contains a 34 MiB `bin/sherpa-onnx-offline` whose remaining dependencies are standard glibc libraries. The Parakeet model provides `encoder.int8.onnx`, `decoder.int8.onnx`, `joiner.int8.onnx`, and `tokens.txt` for 25 European languages.
 

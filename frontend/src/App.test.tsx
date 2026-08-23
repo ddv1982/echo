@@ -618,7 +618,9 @@ describe('Echo desktop shell', () => {
       plans: readiness.plans.map((plan) =>
         plan.id === 'recommended'
           ? { ...plan, satisfied: false, diskReady: false, diskReason: 'Needs 900 bytes free; 400 bytes are available' }
-          : plan,
+          : plan.id === 'parakeet'
+            ? { ...plan, satisfied: false, diskReady: false, diskReason: 'Needs 1200 bytes free; 400 bytes are available' }
+            : plan,
       ),
       components: readiness.components.map((component) =>
         component.id === 'whisper-small'
@@ -642,8 +644,10 @@ describe('Echo desktop shell', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     expect(await screen.findByRole('progressbar', { name: 'Small multilingual downloading' })).toHaveAttribute('aria-valuenow', '50')
     expect(screen.getByRole('button', { name: /Resume/ })).toBeInTheDocument()
-    expect(screen.getByText('Needs 900 bytes free; 400 bytes are available')).toBeInTheDocument()
+    expect(screen.getByText('Recommended: Needs 900 bytes free; 400 bytes are available')).toBeInTheDocument()
+    expect(screen.getByText('Parakeet: Needs 1200 bytes free; 400 bytes are available')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Set up recommended/ })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Set up Parakeet' })).toBeDisabled()
   })
 
   it('shows microphone then speech as guided Home steps', async () => {
