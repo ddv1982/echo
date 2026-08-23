@@ -7,6 +7,10 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
     steps:
       - uses: actions/checkout@v7
 
@@ -61,13 +65,19 @@ jobs:
 
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: Reclaim clippy artifacts
+        run: cargo clean
+
       - run: xvfb-run -a cargo test --workspace
+
+      - name: Reclaim test artifacts
+        run: cargo clean
 
       - run: cargo build --release
 
       - name: Check icon raster drift
         run: |
-          cargo run -p xtask
+          ./target/release/xtask
           git diff --exit-code -- src-tauri/icons frontend/public assets/icons
 
       - name: Validate desktop entry
