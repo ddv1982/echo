@@ -5,7 +5,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use echo_core::{
-    Dictionary, FailReason, History, HistoryRow, InjectReport, Injector, Session, SessionState,
+    Dictionary, FailReason, History, HistoryRow, InjectReport, Injector, RecordingLimit,
+    ResolvedRecordingLimit, Session, SessionState,
 };
 
 use crate::audio::{self, AudioCapture, CancellationToken};
@@ -81,18 +82,27 @@ pub fn toggle_managed_recording() -> Result<(), String> {
     }
 }
 
-fn run_record(mut stop: StopWhen) -> i32 {
+pub fn stop_managed_recording_if_active() -> Result<bool, String> {
+    ToggleSession::request_stop_if_active_in(&echo_core::data_dir())
+}
+
+fn run_record(stop: StopWhen) -> i32 {
+    let limit = recording_limit_from_process().limit;
+    run_record_with_limit(stop, limit)
+}
+
+fn run_record_with_limit(mut stop: StopWhen, limit: RecordingLimit) -> i32 {
     let mut session = Session::new();
     log_state(&session);
     let _ = status::write_status(session.state(), None, None);
     apply_edge(&mut session, HotkeyEvent::Down);
-    let _ = status::write_status(session.state(), None, None);
+    let _ = status::write_recording(limit);
     // The HUD lives until after injection: the longest wait in the session
     // (transcription) gets an indicator, and the outcome gets a state.
     let _in_process = InProcessSession::start();
     let meter = audio::process_meter();
     let hud = crate::ui::hud::RecordingHud::start(meter.clone());
-    let capture = match capture_pcm(&mut stop, &meter) {
+    let capture = match capture_pcm(&mut stop, limit, &meter) {
         Ok(capture) => capture,
         Err(reason) => {
             hud.set_state(crate::ui::hud::HudState::Failed);
@@ -230,14 +240,16 @@ fn apply_edge(session: &mut Session, event: HotkeyEvent) {
 
 fn capture_pcm(
     stop: &mut StopWhen,
+    limit: RecordingLimit,
     meter: &audio::LevelMeter,
 ) -> Result<audio::CaptureResult, FailReason> {
-    capture_from(fixture_path(), stop, meter)
+    capture_from(fixture_path(), stop, limit, meter)
 }
 
 fn capture_from(
     fixture: Option<PathBuf>,
     stop: &mut StopWhen,
+    limit: RecordingLimit,
     meter: &audio::LevelMeter,
 ) -> Result<audio::CaptureResult, FailReason> {
     if let Some(path) = fixture {
@@ -253,25 +265,30 @@ fn capture_from(
         audio::AudioError::NoDevice => FailReason::NoInputDevice,
         _ => FailReason::CaptureFailed,
     })?;
-    let result = match stop {
-        StopWhen::Timer => capture.record(recording_duration(), Some(meter)),
-        StopWhen::ToggleFile(toggle) => {
+    record_device(&capture, stop, limit, meter).map_err(|_| FailReason::CaptureFailed)
+}
+
+fn record_device(
+    capture: &AudioCapture,
+    stop: &mut StopWhen,
+    limit: RecordingLimit,
+    meter: &audio::LevelMeter,
+) -> Result<audio::CaptureResult, audio::AudioError> {
+    std::thread::scope(|scope| {
+        if let StopWhen::ToggleFile(toggle) = stop {
             let cancel = capture.cancel.clone();
             let stop_path = &toggle.stop_path;
-            std::thread::scope(|scope| {
-                scope.spawn(|| {
-                    while !cancel.is_cancelled() && !stop_path.exists() {
-                        std::thread::sleep(Duration::from_millis(20));
-                    }
-                    cancel.cancel();
-                });
-                let result = capture.record(Duration::from_secs(MAX_RECORD_SECONDS), Some(meter));
-                capture.cancel.cancel();
-                result
-            })
+            scope.spawn(move || {
+                while !cancel.is_cancelled() && !stop_path.exists() {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                cancel.cancel();
+            });
         }
-    };
-    result.map_err(|_| FailReason::CaptureFailed)
+        let result = capture.record(limit.duration(), Some(meter));
+        capture.cancel.cancel();
+        result
+    })
 }
 
 enum ToggleAction {
@@ -295,6 +312,18 @@ impl ToggleSession {
         }
         fs::write(dir.join("recording.stop"), b"stop\n").map_err(|err| err.to_string())?;
         Ok(ToggleAction::Stop)
+    }
+
+    fn request_stop_if_active_in(dir: &Path) -> Result<bool, String> {
+        let lock_path = dir.join("recording.lock");
+        let stop_path = dir.join("recording.stop");
+        if !lock_owner_is_alive(&lock_path) {
+            let _ = fs::remove_file(lock_path);
+            let _ = fs::remove_file(stop_path);
+            return Ok(false);
+        }
+        fs::write(stop_path, b"stop\n").map_err(|err| err.to_string())?;
+        Ok(true)
     }
 
     fn try_start_in(dir: &Path) -> Result<Option<Self>, String> {
@@ -366,21 +395,15 @@ pub fn session_active() -> bool {
     lock_owner_is_alive(&echo_core::data_dir().join("recording.lock"))
 }
 
-/// Ceiling for any recording, in seconds.
-pub const MAX_RECORD_SECONDS: u64 = 60;
+pub const MAX_RECORD_SECONDS: u64 = RecordingLimit::MAX.seconds() as u64;
 
-fn record_seconds(env: Option<u64>, file: Option<u32>) -> u64 {
-    echo_core::resolve(env, file.map(u64::from), 3).clamp(1, MAX_RECORD_SECONDS)
-}
-
-fn recording_duration() -> Duration {
-    let env = std::env::var("ECHO_RECORD_SECONDS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok());
-    Duration::from_secs(record_seconds(
-        env,
+#[must_use]
+pub fn recording_limit_from_process() -> ResolvedRecordingLimit {
+    let environment = std::env::var("ECHO_RECORD_SECONDS").ok();
+    echo_core::resolve_recording_limit(
+        environment.as_deref(),
         crate::settings::file_config().record_seconds,
-    ))
+    )
 }
 
 fn fixture_path() -> Option<PathBuf> {
@@ -407,20 +430,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn record_seconds_prefers_env_then_file_and_clamps() {
-        assert_eq!(record_seconds(Some(8), Some(12)), 8);
-        assert_eq!(record_seconds(None, Some(12)), 12);
-        assert_eq!(record_seconds(None, None), 3);
-        assert_eq!(record_seconds(Some(0), None), 1);
-        assert_eq!(record_seconds(Some(90), None), MAX_RECORD_SECONDS);
+    fn stop_only_never_starts_a_recording() {
+        let dir = std::env::temp_dir().join(format!("echo-stop-only-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+
+        assert!(!ToggleSession::request_stop_if_active_in(&dir).unwrap());
+        assert!(!dir.join("recording.lock").exists());
+        assert!(!dir.join("recording.stop").exists());
+
+        let session = ToggleSession::try_start_in(&dir).unwrap().unwrap();
+        assert!(ToggleSession::request_stop_if_active_in(&dir).unwrap());
+        assert!(ToggleSession::request_stop_if_active_in(&dir).unwrap());
+        assert!(dir.join("recording.lock").exists());
+        assert!(dir.join("recording.stop").exists());
+
+        drop(session);
+        assert!(!ToggleSession::request_stop_if_active_in(&dir).unwrap());
+        assert!(!dir.join("recording.lock").exists());
+        assert!(!dir.join("recording.stop").exists());
     }
 
     #[test]
     fn fixture_returns_wav_without_opening_host() {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude_code.wav");
         let mut stop = StopWhen::Timer;
-        let capture =
-            capture_from(Some(path), &mut stop, &audio::LevelMeter::new()).expect("fixture wav");
+        let capture = capture_from(
+            Some(path),
+            &mut stop,
+            RecordingLimit::DEFAULT,
+            &audio::LevelMeter::new(),
+        )
+        .expect("fixture wav");
         assert!(capture.pcm.duration_ms() >= 300);
         assert!(capture.peak_rms > 0.05);
     }
@@ -439,7 +479,8 @@ mod tests {
             }
             peak
         });
-        let _ = capture_from(Some(path), &mut stop, &meter).expect("fixture wav");
+        let _ = capture_from(Some(path), &mut stop, RecordingLimit::DEFAULT, &meter)
+            .expect("fixture wav");
         let peak = peak.join().expect("probe thread");
         assert!(peak > 0.01, "fixture playback moved the meter: {peak}");
     }

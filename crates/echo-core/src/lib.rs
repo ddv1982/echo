@@ -8,6 +8,7 @@ mod language;
 mod language_table;
 mod nonspeech;
 mod paths;
+mod recording;
 mod session;
 mod types;
 
@@ -21,6 +22,9 @@ pub use language::{Language, LanguageChoice, PARAKEET_LANGUAGES};
 pub use nonspeech::strip_nonspeech;
 pub use paths::{
     config_dir, config_path, data_dir, dictionary_path, history_path, status_path, write_atomic,
+};
+pub use recording::{
+    resolve_recording_limit, RecordingLimit, RecordingLimitSource, ResolvedRecordingLimit,
 };
 pub use session::{Session, SessionError, SessionState};
 pub use types::{EngineId, FailReason, Pcm16kMono, SAMPLE_RATE_HZ};
