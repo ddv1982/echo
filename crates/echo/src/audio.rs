@@ -561,7 +561,7 @@ impl AudioCapture {
         if let Some(msg) = err_slot.lock().expect("stream error lock").take() {
             return Err(msg);
         }
-        let samples = collected.lock().expect("pcm lock").clone();
+        let samples = std::mem::take(&mut *collected.lock().expect("pcm lock"));
         Ok(CaptureResult::from_pcm(resample_to_16k_mono(
             &samples, src_hz, channels,
         )))
@@ -613,17 +613,20 @@ where
 pub fn resample_to_16k_mono(interleaved: &[f32], src_hz: u32, channels: u16) -> Pcm16kMono {
     let ch = usize::from(channels.max(1));
     let frames = interleaved.len() / ch;
-    let mut mono = Vec::with_capacity(frames);
-    for frame in 0..frames {
+    let average_frame = |frame: usize| {
         let mut sum = 0.0f32;
         for channel in 0..ch {
             sum += interleaved[frame * ch + channel];
         }
-        mono.push(sum / ch as f32);
-    }
+        sum / ch as f32
+    };
     let src_hz = src_hz.max(1);
     if src_hz == SAMPLE_RATE_HZ {
-        return Pcm16kMono::from_samples(mono.into_iter().map(f32_to_i16).collect());
+        return Pcm16kMono::from_samples(
+            (0..frames)
+                .map(|frame| f32_to_i16(average_frame(frame)))
+                .collect(),
+        );
     }
     let out_len = (frames as u64)
         .saturating_mul(u64::from(SAMPLE_RATE_HZ))
@@ -637,8 +640,8 @@ pub fn resample_to_16k_mono(interleaved: &[f32], src_hz: u32, channels: u16) -> 
         let src_pos = i as f64 * f64::from(src_hz) / f64::from(SAMPLE_RATE_HZ);
         let idx = src_pos.floor() as usize;
         let frac = src_pos.fract() as f32;
-        let a = mono[idx.min(last)];
-        let b = mono[(idx + 1).min(last)];
+        let a = average_frame(idx.min(last));
+        let b = average_frame((idx + 1).min(last));
         out.push(f32_to_i16(a + (b - a) * frac));
     }
     Pcm16kMono::from_samples(out)
@@ -676,6 +679,44 @@ pub fn load_wav(path: &Path) -> Result<CaptureResult, AudioError> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    fn previous_resample_to_16k_mono(
+        interleaved: &[f32],
+        src_hz: u32,
+        channels: u16,
+    ) -> Pcm16kMono {
+        let ch = usize::from(channels.max(1));
+        let frames = interleaved.len() / ch;
+        let mut mono = Vec::with_capacity(frames);
+        for frame in 0..frames {
+            let mut sum = 0.0f32;
+            for channel in 0..ch {
+                sum += interleaved[frame * ch + channel];
+            }
+            mono.push(sum / ch as f32);
+        }
+        let src_hz = src_hz.max(1);
+        if src_hz == SAMPLE_RATE_HZ {
+            return Pcm16kMono::from_samples(mono.into_iter().map(f32_to_i16).collect());
+        }
+        let out_len = (frames as u64)
+            .saturating_mul(u64::from(SAMPLE_RATE_HZ))
+            .saturating_div(u64::from(src_hz)) as usize;
+        if frames == 0 {
+            return Pcm16kMono::from_samples(Vec::new());
+        }
+        let mut out = Vec::with_capacity(out_len);
+        let last = frames - 1;
+        for i in 0..out_len {
+            let src_pos = i as f64 * f64::from(src_hz) / f64::from(SAMPLE_RATE_HZ);
+            let idx = src_pos.floor() as usize;
+            let frac = src_pos.fract() as f32;
+            let a = mono[idx.min(last)];
+            let b = mono[(idx + 1).min(last)];
+            out.push(f32_to_i16(a + (b - a) * frac));
+        }
+        Pcm16kMono::from_samples(out)
+    }
 
     fn fixture() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude_code.wav")
@@ -767,5 +808,47 @@ mod tests {
         assert!((pcm.len() as i32 - (SAMPLE_RATE_HZ as i32 / 10)).abs() <= 1);
         assert!(pcm.peak_rms() > 0.0);
         assert!(pcm.samples().iter().all(|s| s.abs() < i16::MAX));
+    }
+
+    #[test]
+    fn direct_conversion_matches_previous_short_recordings_exactly() {
+        for (interleaved, src_hz, channels) in [
+            (Vec::new(), 48_000, 2),
+            (vec![-1.0, -0.5, 0.0, 0.25, 0.5, 1.0], 16_000, 1),
+            (
+                vec![-1.0, 1.0, -0.5, 0.25, 0.0, 0.75, 0.5, -0.25],
+                48_000,
+                2,
+            ),
+            (
+                vec![
+                    -1.0, -0.5, 0.0, 0.5, -0.75, -0.25, 0.25, 0.75, -0.5, 0.0, 0.5, 1.0,
+                ],
+                44_100,
+                4,
+            ),
+        ] {
+            let expected = previous_resample_to_16k_mono(&interleaved, src_hz, channels);
+            let actual = resample_to_16k_mono(&interleaved, src_hz, channels);
+            assert_eq!(actual.samples(), expected.samples());
+        }
+    }
+
+    #[test]
+    fn ten_minute_stereo_capture_has_two_logical_sample_buffers() {
+        let seconds = 600usize;
+        let native_bytes = seconds
+            .checked_mul(48_000)
+            .and_then(|samples| samples.checked_mul(2))
+            .and_then(|samples| samples.checked_mul(size_of::<f32>()))
+            .unwrap();
+        let output_bytes = seconds
+            .checked_mul(SAMPLE_RATE_HZ as usize)
+            .and_then(|samples| samples.checked_mul(size_of::<i16>()))
+            .unwrap();
+
+        assert_eq!(native_bytes, 230_400_000);
+        assert_eq!(output_bytes, 19_200_000);
+        assert_eq!(native_bytes + output_bytes, 249_600_000);
     }
 }
