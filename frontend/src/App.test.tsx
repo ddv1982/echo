@@ -287,16 +287,32 @@ describe('Echo desktop shell', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     const choices = await screen.findAllByRole('radio', { name: /USB Microphone/ })
     expect(choices).toHaveLength(2)
-    expect(screen.getByText(/Focusrite · USB · Microphone/)).toBeInTheDocument()
-    expect(screen.getByText(/Logitech · USB · Headset/)).toBeInTheDocument()
+    expect(screen.getByText('USB · Microphone · Focusrite')).toBeInTheDocument()
+    expect(screen.getByText('USB · Headset · Logitech')).toBeInTheDocument()
     fireEvent.click(choices[1])
     await waitFor(async () => {
       const snapshot = await getMicrophones()
       expect(snapshot.selection).toMatchObject({
         kind: 'selected',
-        device: { id: 'alsa:usb-two' },
+        device: { id: 'pipewire:alsa_input.usb-Logitech_USB_Headset-00.mono-fallback' },
       })
     })
+  })
+
+  it('shows recognizable sources before collapsed technical endpoints', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+
+    expect(await screen.findByRole('radio', { name: /Jabra Elite 8 Active/ })).toBeVisible()
+    expect(screen.getByText('Bluetooth · Headset · Jabra')).toBeVisible()
+    expect(screen.getByText('Currently Built-in Audio')).toBeVisible()
+    const advanced = screen.getByText('Advanced audio endpoints').closest('details')!
+    expect(advanced).not.toHaveAttribute('open')
+    expect(screen.getByText('PipeWire Sound Server')).not.toBeVisible()
+    fireEvent.click(screen.getByText('Advanced audio endpoints'))
+    expect(screen.getByText('PipeWire Sound Server')).toBeVisible()
+    expect(screen.getByText('alsa:pipewire')).toBeVisible()
   })
 
   it('names a missing selection and tests fallback only through the explicit action', async () => {
@@ -318,7 +334,7 @@ describe('Echo desktop shell', () => {
     expect(screen.queryByRole('button', { name: 'Test selected' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Test system fallback' }))
     expect(await screen.findByRole('status')).toHaveTextContent(
-      'Input heard on Built-in Audio Analog Stereo',
+      'Input heard on Built-in Audio',
     )
   })
 
@@ -633,14 +649,17 @@ describe('Echo desktop shell', () => {
     expect(screen.queryByLabelText('Language')).not.toBeInTheDocument()
   })
 
-  it('shows always-visible managed and external component rows', async () => {
+  it('keeps component paths collapsed until Installed components opens', async () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    expect(await screen.findByText('Whisper runtime')).toBeInTheDocument()
-    expect(screen.getByText('Small multilingual')).toBeInTheDocument()
-    expect(screen.getByText(/System · \/usr\/bin\/whisper-cli/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Set up Parakeet' })).toBeInTheDocument()
+    expect(await screen.findByText('Ready to dictate')).toBeInTheDocument()
+    const components = screen.getByText('Installed components').closest('details')!
+    expect(components).not.toHaveAttribute('open')
+    expect(screen.getByText(/System · \/usr\/bin\/whisper-cli/)).not.toBeVisible()
+    fireEvent.click(screen.getByText('Installed components'))
+    expect(components).toHaveAttribute('open')
+    expect(screen.getByText(/System · \/usr\/bin\/whisper-cli/)).toBeVisible()
   })
 
   it('runs recommended setup and refreshes terminal state', async () => {
@@ -677,6 +696,7 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByText('Installed components'))
     expect(await screen.findByRole('button', { name: 'Repair' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Remove ·/ })).toBeInTheDocument()
   })
@@ -686,6 +706,7 @@ describe('Echo desktop shell', () => {
     seedPreviewReadiness({
       ...readiness,
       managedSupported: false,
+      speechReady: false,
       unsupportedReason: 'Managed setup is available on Linux x86_64.',
       components: readiness.components.map((component) => ({
         ...component,
@@ -695,6 +716,7 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByText('Installed components'))
     expect(await screen.findByText('Managed setup is available on Linux x86_64.')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Set up recommended/ })).not.toBeInTheDocument()
   })
@@ -703,6 +725,7 @@ describe('Echo desktop shell', () => {
     const readiness = await getReadiness()
     seedPreviewReadiness({
       ...readiness,
+      speechReady: false,
       plans: readiness.plans.map((plan) =>
         plan.id === 'recommended'
           ? { ...plan, satisfied: false, diskReady: false, diskReason: 'Needs 900 bytes free; 400 bytes are available' }
@@ -735,7 +758,7 @@ describe('Echo desktop shell', () => {
     expect(screen.getByText('Recommended: Needs 900 bytes free; 400 bytes are available')).toBeInTheDocument()
     expect(screen.getByText('Parakeet: Needs 1200 bytes free; 400 bytes are available')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Set up recommended/ })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Set up Parakeet' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Use Parakeet instead' })).toBeDisabled()
   })
 
   it('shows microphone then speech as guided Home steps', async () => {
