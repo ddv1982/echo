@@ -49,7 +49,7 @@ No new report variant is required. Existing history rows remain compatible.
 
 ```text
 RAM unknown or < 8 GiB -> Base multilingual Q5_1
-RAM >= 8 GiB             -> Large v3 Turbo Q5_0
+reported RAM within 512 MiB of 8 GiB or higher -> Large v3 Turbo Q5_0
 ```
 
 Small remains catalogued, discoverable, repairable, removable, and explicitly installable. It is removed only from the primary recommendation.

@@ -445,6 +445,25 @@ describe('Echo desktop shell', () => {
     expect(screen.queryByLabelText('Speech model')).not.toBeInTheDocument()
   })
 
+  it('honors a backend Whisper projection over a file-backed Parakeet choice', async () => {
+    const defaults = await getSettings()
+    seedPreviewSettings({
+      ...defaults,
+      engine: { value: 'parakeet', effective: 'parakeet', source: 'file' },
+      whisperModel: { value: null, effective: 'small', source: 'env' },
+    })
+    seedPreviewLanguages({
+      mode: 'multilingual',
+      model: 'small',
+      options: [{ code: 'en', englishName: 'english', group: 'common' }],
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(await screen.findByLabelText('Speech model')).toBeDisabled()
+    expect(screen.queryByText('Parakeet TDT 0.6B v3')).not.toBeInTheDocument()
+  })
+
   it('pins the General surface and keeps Advanced collapsed until asked', async () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })

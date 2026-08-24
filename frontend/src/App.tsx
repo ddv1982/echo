@@ -1104,6 +1104,7 @@ function SettingsView({
   const [micTest, setMicTest] = useState<MicrophoneTestResult | null>(null)
   const [testingMic, setTestingMic] = useState(false)
   const [repairingLegacyShortcut, setRepairingLegacyShortcut] = useState(false)
+  const [settingsWritePending, setSettingsWritePending] = useState(false)
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -1182,13 +1183,18 @@ function SettingsView({
   }, [onError, onStatusChange])
 
   const updateSettings = useCallback(async (update: (current: AppSettings) => AppSettings) => {
+    setSettingsWritePending(true)
     const queued = writeChainRef.current.then(async () => {
       const current = settingsRef.current
       if (!current) return
       await commit(update(current))
     })
     writeChainRef.current = queued
-    await queued
+    try {
+      await queued
+    } finally {
+      if (writeChainRef.current === queued) setSettingsWritePending(false)
+    }
   }, [commit])
 
   const patch = useCallback(async <K extends keyof AppSettings>(key: K, value: AppSettings[K]['value']) => {
@@ -1220,9 +1226,7 @@ function SettingsView({
     }
   }
 
-  const parakeetRuns =
-    settings?.engine.effective === 'parakeet' ||
-    (settings?.engine.effective === 'auto' && languages?.mode === 'parakeet')
+  const parakeetRuns = languages?.mode === 'parakeet'
   const whisperRuns = settings?.engine.effective !== 'fake' && !parakeetRuns
 
   return (
@@ -1289,7 +1293,7 @@ function SettingsView({
             <select
               aria-label="Speech model"
               value={settings.whisperModel.effective}
-              disabled={settings.whisperModel.source === 'env'}
+              disabled={settings.whisperModel.source === 'env' || settingsWritePending}
               onChange={(event) => void patch('whisperModel', event.target.value || null)}
             >
               <option value="">Auto · best installed</option>
@@ -1367,7 +1371,7 @@ function SettingsView({
                       type="button"
                       key={option.value}
                       data-active={settings.engine.effective === option.value}
-                      disabled={settings.engine.source === 'env'}
+                      disabled={settings.engine.source === 'env' || settingsWritePending}
                       onClick={() => void selectEngine(option.value)}
                     >
                       {option.label}

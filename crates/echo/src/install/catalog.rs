@@ -209,8 +209,11 @@ pub struct HardwareProfile {
 #[must_use]
 pub fn recommended_model(profile: HardwareProfile) -> ComponentId {
     const EIGHT_GIB: u64 = 8 * 1024 * 1024 * 1024;
+    const RESERVED_MEMORY_TOLERANCE: u64 = 512 * 1024 * 1024;
     match profile.total_memory_bytes {
-        Some(bytes) if bytes >= EIGHT_GIB => ComponentId::WhisperLargeV3TurboQ50,
+        Some(bytes) if bytes.saturating_add(RESERVED_MEMORY_TOLERANCE) >= EIGHT_GIB => {
+            ComponentId::WhisperLargeV3TurboQ50
+        }
         Some(_) | None => ComponentId::WhisperBaseQ51,
     }
 }
@@ -313,13 +316,13 @@ mod tests {
         );
         assert_eq!(
             recommended_model(HardwareProfile {
-                total_memory_bytes: Some(8 * 1024 * 1024 * 1024 - 1)
+                total_memory_bytes: Some(8 * 1024 * 1024 * 1024 - 512 * 1024 * 1024 - 1)
             }),
             ComponentId::WhisperBaseQ51
         );
         assert_eq!(
             recommended_model(HardwareProfile {
-                total_memory_bytes: Some(8 * 1024 * 1024 * 1024)
+                total_memory_bytes: Some(8 * 1024 * 1024 * 1024 - 512 * 1024 * 1024)
             }),
             ComponentId::WhisperLargeV3TurboQ50
         );
