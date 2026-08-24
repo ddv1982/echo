@@ -12,6 +12,8 @@ use crate::microphone::{
     AudioHost, InputDeviceInfo, InputSelectionStatus, MicrophoneFailure, MicrophoneId,
     MicrophoneSnapshot, RawInputDescriptor,
 };
+#[cfg(any(target_os = "linux", test))]
+use crate::microphone::EndpointTier;
 
 /// The microphone's RMS level, shared between the capture callback and
 /// whoever renders it. f32 bits in one atomic; publishing is a few
@@ -391,9 +393,10 @@ fn first_usable_or_first<T>(
 
 #[cfg(any(target_os = "linux", test))]
 fn has_usable_input<'a>(devices: impl IntoIterator<Item = &'a InputDeviceInfo>) -> bool {
-    devices
-        .into_iter()
-        .any(|device| !is_system_default_proxy(device))
+    devices.into_iter().any(|device| {
+        !is_system_default_proxy(device)
+            && (device.host == AudioHost::Alsa || device.tier == EndpointTier::Primary)
+    })
 }
 
 fn preferred_discovery() -> InputDiscovery {
@@ -892,6 +895,19 @@ mod tests {
             extended: Vec::new(),
         }
         .into();
+        let playback: InputDeviceInfo = RawInputDescriptor {
+            id: MicrophoneId::parse("pipewire:alsa_output.pci-card.analog-stereo").unwrap(),
+            host: AudioHost::PipeWire,
+            label: "Built-in Audio".to_string(),
+            is_default: false,
+            manufacturer: None,
+            device_type: Some("Speaker".to_string()),
+            interface_type: None,
+            address: None,
+            driver: None,
+            extended: Vec::new(),
+        }
+        .into();
         let real: InputDeviceInfo = RawInputDescriptor {
             id: MicrophoneId::parse("alsa:hw:CARD=USB,DEV=0").unwrap(),
             host: AudioHost::Alsa,
@@ -905,9 +921,24 @@ mod tests {
             extended: Vec::new(),
         }
         .into();
+        let alsa_alias: InputDeviceInfo = RawInputDescriptor {
+            id: MicrophoneId::parse("alsa:default").unwrap(),
+            host: AudioHost::Alsa,
+            label: "Default ALSA input".to_string(),
+            is_default: true,
+            manufacturer: None,
+            device_type: None,
+            interface_type: None,
+            address: None,
+            driver: None,
+            extended: Vec::new(),
+        }
+        .into();
 
         assert!(!has_usable_input([&proxy]));
+        assert!(!has_usable_input([&proxy, &playback]));
         assert!(has_usable_input([&proxy, &real]));
+        assert!(has_usable_input([&alsa_alias]));
     }
 
     #[test]
