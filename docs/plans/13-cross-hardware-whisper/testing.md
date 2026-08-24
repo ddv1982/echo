@@ -26,6 +26,10 @@ Drive the real file CLI with the pinned Vulkan runtime and confirm JSON plus Adv
 
 Stop and quarantine on unknown backend, software rasterizer, driver change, p95 or quality regression, or a win that disappears after reset.
 
+### Current host slice
+
+The pinned FLEURS clean-read subset ran 400 optimized shipping-boundary transcriptions for Base Q5_1: twenty fixtures, two modes, and ten repeats after one warmup per fixture. Every accelerated row resolved Iris Xe Vulkan and every control row resolved CPU. The measured warmed latency gates pass, but the Dutch quality delta is +9.459 percentage points, so the identity stops. Coverage, fresh-cache and reset repeats, explicit driver/ICD identity, Turbo, memory/power behavior, and other GPU families remain incomplete.
+
 ## Residency gate
 
 Compare with the best warmed one-shot runtime for the same identity:
@@ -52,6 +56,7 @@ npm run build --prefix frontend
 npm run test:responsive --prefix frontend
 ./scripts/verify-transcribe-cli.sh
 ./scripts/verify-stt-benchmark.sh
+./scripts/verify-stt-corpus.sh
 ./scripts/verify-whisper-acceleration.sh
 ./scripts/verify-whisper-runtime-archive.sh
 cargo build --release

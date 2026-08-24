@@ -21,6 +21,31 @@ from dataclasses import dataclass
 from pathlib import Path
 
 CHARACTER_ERROR_LANGUAGES = {"ja", "zh", "yue", "th", "lo", "km", "my"}
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def portable_path(path: Path) -> str:
+    resolved = path.resolve()
+    for label, root in (("$REPO", REPO_ROOT), ("$HOME", Path.home())):
+        try:
+            relative = resolved.relative_to(root.resolve())
+        except ValueError:
+            continue
+        return str(Path(label) / relative)
+    return str(resolved)
+
+
+def portable_whisper_telemetry(value: object) -> dict[str, object] | None:
+    if not isinstance(value, dict):
+        return None
+    telemetry = dict(value)
+    runtime = telemetry.get("runtime")
+    if isinstance(runtime, dict):
+        portable_runtime = dict(runtime)
+        if isinstance(portable_runtime.get("binary"), str):
+            portable_runtime["binary"] = portable_path(Path(portable_runtime["binary"]))
+        telemetry["runtime"] = portable_runtime
+    return telemetry
 
 
 @dataclass(frozen=True)
@@ -32,6 +57,7 @@ class Candidate:
     beam_size: int | None = None
     best_of: int | None = None
     no_fallback: bool = False
+    force_cpu: bool = False
 
 
 def normalized_words(text: str) -> list[str]:
@@ -69,7 +95,7 @@ def parse_candidate(raw: str) -> Candidate:
         if option_separator:
             for entry in option_text.split(","):
                 key, value_separator, value = entry.partition("=")
-                if key == "no-fallback" and not value_separator:
+                if key in {"no-fallback", "cpu-only"} and not value_separator:
                     values[key] = True
                     continue
                 if key not in {"threads", "beam", "best-of", "no-fallback"} or not value_separator:
@@ -98,9 +124,11 @@ def parse_candidate(raw: str) -> Candidate:
             beam_size=values.get("beam"),
             best_of=values.get("best-of"),
             no_fallback=bool(values.get("no-fallback", False)),
+            force_cpu=bool(values.get("cpu-only", False)),
         )
     raise argparse.ArgumentTypeError(
-        "candidate must be fake, parakeet, or whisper:MODEL[@threads=N,beam=N,best-of=N,no-fallback]"
+        "candidate must be fake, parakeet, or "
+        "whisper:MODEL[@threads=N,beam=N,best-of=N,no-fallback,cpu-only]"
     )
 
 
@@ -175,6 +203,8 @@ def command_for(binary: Path, candidate: Candidate, utterance: dict[str, object]
             command.extend([flag, str(value)])
     if candidate.no_fallback:
         command.append("--whisper-no-fallback")
+    if candidate.force_cpu:
+        command.append("--whisper-no-gpu")
     return command
 
 
@@ -198,7 +228,7 @@ def artifact_identity(
         return cache[raw_path]
     path = Path(raw_path)
     identity = {
-        "path": str(path),
+        "path": portable_path(path),
         "sha256": sha256(path) if path.is_file() else None,
     }
     cache[raw_path] = identity
@@ -241,7 +271,7 @@ def run_benchmark(args: argparse.Namespace) -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, object]] = []
     host = host_metadata()
-    binary_identity = {"path": str(binary), "sha256": sha256(binary)}
+    binary_identity = {"path": portable_path(binary), "sha256": sha256(binary)}
     artifact_identities: dict[str, dict[str, object]] = {}
     rng = random.Random(args.seed)
     with tempfile.TemporaryDirectory(prefix="echo-stt-benchmark-") as temporary:
@@ -261,6 +291,20 @@ def run_benchmark(args: argparse.Namespace) -> None:
             text=True,
             env=environment,
         ).stdout.strip()
+        echo_commit = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        echo_dirty = bool(
+            subprocess.run(
+                ["git", "-C", str(REPO_ROOT), "status", "--porcelain"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+        )
         environments: dict[str, dict[str, str]] = {}
         for candidate in args.candidate:
             candidate_environment = environment.copy()
@@ -296,11 +340,17 @@ def run_benchmark(args: argparse.Namespace) -> None:
                     engine = payload.get("engine")
                     if not isinstance(engine, dict):
                         raise ValueError("Echo JSON output has no engine object")
+                    portable_engine = dict(engine)
+                    for key in ("binary", "modelPath"):
+                        if isinstance(portable_engine.get(key), str):
+                            portable_engine[key] = portable_path(Path(portable_engine[key]))
                     whisper = payload.get("whisper")
                     rows.append(
                         {
                             "schemaVersion": 2,
                             "echoVersion": version,
+                            "echoCommit": echo_commit,
+                            "echoDirty": echo_dirty,
                             "echoBinary": binary_identity,
                             "host": host,
                             "seed": args.seed,
@@ -309,7 +359,7 @@ def run_benchmark(args: argparse.Namespace) -> None:
                             "utterance": utterance["id"],
                             "language": utterance["language"],
                             "repeat": repeat + 1,
-                            "audio": str(utterance["audio"]),
+                            "audio": portable_path(Path(utterance["audio"])),
                             "audioSha256": utterance["audioSha256"],
                             "reference": utterance["reference"],
                             "text": transcript,
@@ -324,14 +374,14 @@ def run_benchmark(args: argparse.Namespace) -> None:
                             "inferMs": infer_ms,
                             "outerMs": round(outer_ms, 3),
                             "rtf": infer_ms / audio_ms if audio_ms else None,
-                            "engine": engine,
+                            "engine": portable_engine,
                             "runtimeArtifact": artifact_identity(
                                 engine.get("binary"), artifact_identities
                             ),
                             "modelArtifact": artifact_identity(
                                 engine.get("modelPath"), artifact_identities
                             ),
-                            "whisper": whisper if isinstance(whisper, dict) else None,
+                            "whisper": portable_whisper_telemetry(whisper),
                             "warmups": args.warmups,
                         }
                     )
@@ -370,6 +420,11 @@ def render_summary(rows: list[dict[str, object]]) -> str:
 
 
 def self_test() -> None:
+    assert portable_path(REPO_ROOT / "target" / "fixture.wav") == "$REPO/target/fixture.wav"
+    portable = portable_whisper_telemetry(
+        {"runtime": {"binary": str(REPO_ROOT / "target" / "whisper-cli")}}
+    )
+    assert portable == {"runtime": {"binary": "$REPO/target/whisper-cli"}}
     assert normalized_words(" Héllo, WORLD! ") == ["héllo", "world"]
     assert normalized_words("ＡＢＣ 123") == ["abc", "123"]
     assert edit_distance(["one", "two"], ["one", "too"]) == 1
@@ -384,14 +439,14 @@ def self_test() -> None:
     )
     assert parakeet_command[parakeet_command.index("--language") + 1] == "auto"
     tuned = parse_candidate(
-        "whisper:large-v3-turbo-q5_0@threads=4,beam=1,best-of=2,no-fallback"
+        "whisper:large-v3-turbo-q5_0@threads=4,beam=1,best-of=2,no-fallback,cpu-only"
     )
     tuned_command = command_for(
         Path("echo-desktop"),
         tuned,
         {"audio": Path("speech.wav"), "language": "nl"},
     )
-    assert tuned_command[-7:] == [
+    assert tuned_command[-8:] == [
         "--whisper-threads",
         "4",
         "--whisper-beam-size",
@@ -399,6 +454,7 @@ def self_test() -> None:
         "--whisper-best-of",
         "2",
         "--whisper-no-fallback",
+        "--whisper-no-gpu",
     ]
     try:
         parse_candidate("whisper:small@no-fallback=false")

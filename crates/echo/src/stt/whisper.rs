@@ -13,8 +13,8 @@ use echo_core::{
 use serde::Deserialize;
 
 use super::cache::{parse_whisper_filename, ModelCache};
-use super::write_temp_wav;
 use super::whisper_probe::observe_runtime;
+use super::write_temp_wav;
 use super::{
     WhisperExecutionPlan, WhisperModelAsset, WhisperProtocol, WhisperRuntimeCandidate,
     WhisperTuning,
@@ -181,6 +181,10 @@ impl WhisperEngine {
             WhisperFiles::Discover(_) => WhisperProtocol::OneShotCli,
         }
     }
+
+    fn force_cpu(&self) -> bool {
+        matches!(&self.files, WhisperFiles::Explicit(plan) if plan.force_cpu)
+    }
 }
 
 impl Engine for WhisperEngine {
@@ -211,7 +215,14 @@ impl Engine for WhisperEngine {
         let tuning = self.tuning();
         let (first, mut first_telemetry) = run_attempt(
             &bin,
-            whisper_args_with_tuning(&model, wav.path(), vad.as_deref(), options, tuning),
+            whisper_args_with_tuning(
+                &model,
+                wav.path(),
+                vad.as_deref(),
+                options,
+                tuning,
+                self.force_cpu(),
+            ),
             vad.is_some(),
         )?;
         let retry_without_vad = !first.status.success()
@@ -221,7 +232,14 @@ impl Engine for WhisperEngine {
             first_telemetry.retry_reason = Some(WhisperRetryReason::VadRejected);
             let (retry, retry_telemetry) = run_attempt(
                 &bin,
-                whisper_args_with_tuning(&model, wav.path(), None, options, tuning),
+                whisper_args_with_tuning(
+                    &model,
+                    wav.path(),
+                    None,
+                    options,
+                    tuning,
+                    self.force_cpu(),
+                ),
                 false,
             )?;
             (
@@ -380,7 +398,14 @@ fn whisper_args(
     vad: Option<&Path>,
     options: &DecodeOptions,
 ) -> Vec<String> {
-    whisper_args_with_tuning(model, wav, vad, options, WhisperTuning::runtime_defaults())
+    whisper_args_with_tuning(
+        model,
+        wav,
+        vad,
+        options,
+        WhisperTuning::runtime_defaults(),
+        false,
+    )
 }
 
 fn whisper_args_with_tuning(
@@ -389,6 +414,7 @@ fn whisper_args_with_tuning(
     vad: Option<&Path>,
     options: &DecodeOptions,
     tuning: WhisperTuning,
+    force_cpu: bool,
 ) -> Vec<String> {
     let mut args = vec![
         "-m".into(),
@@ -416,6 +442,9 @@ fn whisper_args_with_tuning(
     }
     if tuning.no_fallback == Some(true) {
         args.push("-nf".into());
+    }
+    if force_cpu {
+        args.push("--no-gpu".into());
     }
     if !options.hints.is_empty() {
         args.push("--prompt".into());
@@ -729,6 +758,20 @@ mod tests {
         assert!(args
             .iter()
             .all(|arg| !matches!(arg.as_str(), "-t" | "-bs" | "-bo" | "-nf")));
+        assert!(args.iter().all(|arg| arg != "--no-gpu"));
+    }
+
+    #[test]
+    fn cpu_only_benchmark_plan_passes_the_upstream_flag() {
+        let args = whisper_args_with_tuning(
+            Path::new("model.bin"),
+            Path::new("in.wav"),
+            None,
+            &options(LanguageChoice::Auto),
+            WhisperTuning::runtime_defaults(),
+            true,
+        );
+        assert!(args.iter().any(|arg| arg == "--no-gpu"));
     }
 
     #[test]

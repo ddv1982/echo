@@ -10,6 +10,7 @@ pub struct WhisperExecutionPlan {
     pub vad: Option<PathBuf>,
     pub tuning: WhisperTuning,
     pub protocol: WhisperProtocol,
+    pub force_cpu: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,6 +87,7 @@ impl WhisperExecutionPlan {
             vad,
             tuning: WhisperTuning::runtime_defaults(),
             protocol: WhisperProtocol::OneShotCli,
+            force_cpu: false,
         }
     }
 }
@@ -133,6 +135,16 @@ mod tests {
         assert_eq!(tuning.beam_size, None);
         assert_eq!(tuning.best_of, None);
         assert_eq!(tuning.no_fallback, None);
+        let plan = WhisperExecutionPlan::one_shot(
+            candidate(WhisperRuntimeSource::Managed, "managed"),
+            WhisperModelAsset {
+                name: "base".to_string(),
+                path: PathBuf::from("model.bin"),
+                multilingual: true,
+            },
+            None,
+        );
+        assert!(!plan.force_cpu);
     }
 
     #[test]
