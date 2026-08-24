@@ -3,7 +3,12 @@ import type { ComponentStatus, Readiness, SetupEvent, SetupPlan } from './types'
 export type SpeechSetupState =
   | { kind: 'ready'; title: 'Ready to dictate'; detail: string }
   | { kind: 'needs-setup'; title: 'Speech setup needed'; detail: string }
-  | { kind: 'in-progress'; title: 'Setting up speech'; detail: string; component: ComponentStatus | null }
+  | {
+      kind: 'in-progress'
+      title: 'Setting up speech' | 'Speech maintenance in progress'
+      detail: string
+      component: ComponentStatus | null
+    }
   | { kind: 'needs-repair'; title: 'Speech setup needs attention'; detail: string; component: ComponentStatus }
   | { kind: 'unsupported'; title: 'Managed setup unavailable'; detail: string }
 
@@ -40,8 +45,10 @@ export function presentSpeechSetup(readiness: Readiness): SpeechSetupPresentatio
   if (readiness.activeOperation != null) {
     state = {
       kind: 'in-progress',
-      title: 'Setting up speech',
-      detail: active == null ? 'Preparing the next component' : setupActivityLabel(active),
+      title: active == null ? 'Speech maintenance in progress' : 'Setting up speech',
+      detail: active == null
+        ? 'Please wait for this operation to finish.'
+        : setupActivityLabel(active),
       component: active,
     }
   } else if (!readiness.managedSupported && !readiness.speechReady) {

@@ -120,6 +120,19 @@ describe('speech setup presentation', () => {
     })
   })
 
+  it('uses neutral maintenance copy when an operation has no setup progress', () => {
+    const presented = presentSpeechSetup(
+      readiness({ activeOperation: 'verify-runtime', activeCancellable: false }),
+    )
+
+    expect(presented.state).toEqual({
+      kind: 'in-progress',
+      title: 'Speech maintenance in progress',
+      detail: 'Please wait for this operation to finish.',
+      component: null,
+    })
+  })
+
   it('keeps unsupported and repair errors in the summary state', () => {
     expect(
       presentSpeechSetup(
