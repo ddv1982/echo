@@ -337,6 +337,75 @@ mod tests {
         bytes
     }
 
+    fn reversed_symlink_chain_tar(body: &[u8]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut bytes);
+            for (path, target) in [
+                ("root/libtool.so", "libtool.so.1"),
+                ("root/libtool.so.1", "libtool.so.1.2"),
+            ] {
+                let mut header = tar::Header::new_gnu();
+                header.set_entry_type(tar::EntryType::Symlink);
+                header.set_size(0);
+                header.set_mode(0o777);
+                header.set_link_name(target).unwrap();
+                header.set_cksum();
+                builder
+                    .append_data(&mut header, path, std::io::empty())
+                    .unwrap();
+            }
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Regular);
+            header.set_size(body.len() as u64);
+            header.set_mode(0o755);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, "root/libtool.so.1.2", Cursor::new(body))
+                .unwrap();
+            builder.finish().unwrap();
+        }
+        bytes
+    }
+
+    fn reversed_symlink_chain_plan(body: &[u8]) -> ExtractionPlan {
+        let sha256 = format!("{:x}", Sha256::digest(body));
+        ExtractionPlan {
+            format: ArtifactFormat::TarGzip,
+            files: vec![
+                ExtractFile {
+                    source: "root/libtool.so".to_string(),
+                    destination: "libtool.so".to_string(),
+                    kind: PayloadKind::Symlink,
+                    link_target: Some("libtool.so.1".to_string()),
+                    size: 0,
+                    mode: 0o777,
+                    sha256: sha256.clone(),
+                },
+                ExtractFile {
+                    source: "root/libtool.so.1".to_string(),
+                    destination: "libtool.so.1".to_string(),
+                    kind: PayloadKind::Symlink,
+                    link_target: Some("libtool.so.1.2".to_string()),
+                    size: 0,
+                    mode: 0o777,
+                    sha256: sha256.clone(),
+                },
+                ExtractFile {
+                    source: "root/libtool.so.1.2".to_string(),
+                    destination: "libtool.so.1.2".to_string(),
+                    kind: PayloadKind::File,
+                    link_target: None,
+                    size: body.len() as u64,
+                    mode: 0o755,
+                    sha256,
+                },
+            ],
+            max_entries: 3,
+            max_expanded_bytes: body.len() as u64,
+        }
+    }
+
     fn plan(body: &[u8]) -> ExtractionPlan {
         ExtractionPlan {
             format: ArtifactFormat::TarGzip,
@@ -366,6 +435,32 @@ mod tests {
         )
         .unwrap();
         assert_eq!(fs::read(root.join("tool")).unwrap(), body);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn chained_symlinks_do_not_depend_on_archive_order() {
+        let body = b"shared library";
+        let root = std::env::temp_dir().join(format!("echo-extract-chain-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+
+        extract_tar(
+            Cursor::new(reversed_symlink_chain_tar(body)),
+            &root,
+            &reversed_symlink_chain_plan(body),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read_link(root.join("libtool.so")).unwrap(),
+            Path::new("libtool.so.1")
+        );
+        assert_eq!(
+            fs::read_link(root.join("libtool.so.1")).unwrap(),
+            Path::new("libtool.so.1.2")
+        );
+        assert_eq!(fs::read(root.join("libtool.so")).unwrap(), body);
     }
 
     #[test]
