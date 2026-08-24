@@ -42,3 +42,5 @@ python3 scripts/benchmark-stt.py \
 Evaluate the paired rows with `scripts/analyze-stt-host-matrix.py`. This subset covers clean read speech only. It cannot pass the production corpus gate until project-owned dictation, technical identifiers, fast and quiet speech, noise, false starts, silence, and nonspeech are added.
 
 Keep fresh-cache first-use and populated-cache measurements in separate output directories. Record reset/reboot runs separately; a warmed run must never be presented as first-use evidence.
+
+Pass `--cache-state`, `--reset-cycle`, `--driver-identity`, and `--icd-identity` to every production-gate benchmark. Concatenate the JSONL rows from fresh and populated runs across at least two reset cycles before analysis. The analyzer fails closed when any of this evidence is absent or changes between rows.

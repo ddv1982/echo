@@ -271,6 +271,8 @@ def run_benchmark(args: argparse.Namespace) -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, object]] = []
     host = host_metadata()
+    host["driverIdentity"] = args.driver_identity
+    host["icdIdentity"] = args.icd_identity
     binary_identity = {"path": portable_path(binary), "sha256": sha256(binary)}
     artifact_identities: dict[str, dict[str, object]] = {}
     rng = random.Random(args.seed)
@@ -354,6 +356,8 @@ def run_benchmark(args: argparse.Namespace) -> None:
                             "echoBinary": binary_identity,
                             "host": host,
                             "seed": args.seed,
+                            "cacheState": args.cache_state,
+                            "resetCycle": args.reset_cycle,
                             "candidate": candidate.label,
                             "candidateOrder": order_index + 1,
                             "utterance": utterance["id"],
@@ -484,6 +488,14 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--repeats", type=int, default=3)
     value.add_argument("--warmups", type=int, default=1)
     value.add_argument("--seed", type=int, default=20260824)
+    value.add_argument(
+        "--cache-state",
+        choices=("fresh", "populated", "unverified"),
+        default="unverified",
+    )
+    value.add_argument("--reset-cycle", default="unverified")
+    value.add_argument("--driver-identity")
+    value.add_argument("--icd-identity")
     value.add_argument("--output-dir", required=True, type=Path)
     return value
 

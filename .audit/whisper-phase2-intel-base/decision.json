@@ -12,6 +12,8 @@
     "backendTruth": true,
     "completePairs": true,
     "coverageComplete": false,
+    "driverIcdIdentity": false,
+    "freshAndPopulatedCacheEvidence": false,
     "hardwareDevice": true,
     "identityMatch": true,
     "medianReduction": true,
@@ -20,6 +22,7 @@
     "p95Improved": true,
     "pairIntegrity": true,
     "perLanguageQuality": false,
+    "resetEvidence": false,
     "sampleSize": true
   },
   "languages": {

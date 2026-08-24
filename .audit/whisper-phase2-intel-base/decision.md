@@ -23,6 +23,9 @@ Median reduction: **761.251 ms (54.209%)**.
 - PASS: `backendTruth`
 - PASS: `identityMatch`
 - PASS: `hardwareDevice`
+- FAIL: `driverIcdIdentity`
+- FAIL: `freshAndPopulatedCacheEvidence`
+- FAIL: `resetEvidence`
 - PASS: `medianReduction`
 - PASS: `medianSpeedup`
 - PASS: `p95Improved`

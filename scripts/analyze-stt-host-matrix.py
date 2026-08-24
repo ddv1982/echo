@@ -35,8 +35,13 @@ def candidate_rows(rows: list[dict[str, object]], label: str) -> list[dict[str, 
     return selected
 
 
-def pair_key(row: dict[str, object]) -> tuple[str, int]:
-    return str(row["utterance"]), int(row["repeat"])
+def pair_key(row: dict[str, object]) -> tuple[str, str, str, int]:
+    return (
+        str(row.get("resetCycle") or "unverified"),
+        str(row.get("cacheState") or "unverified"),
+        str(row["utterance"]),
+        int(row["repeat"]),
+    )
 
 
 def execution_identities(rows: list[dict[str, object]]) -> set[str]:
@@ -131,6 +136,7 @@ def summarize(
 ) -> dict[str, object]:
     cpu = candidate_rows(rows, cpu_label)
     accelerated = candidate_rows(rows, accelerated_label)
+    selected_rows = cpu + accelerated
     cpu_by_key = {pair_key(row): row for row in cpu}
     accelerated_by_key = {pair_key(row): row for row in accelerated}
     complete_pairs = (
@@ -152,13 +158,15 @@ def summarize(
                 "audioSha256",
                 "reference",
                 "referenceWords",
+                "cacheState",
+                "resetCycle",
             )
         )
         for control, candidate in pairs
     )
-    counts: dict[str, int] = defaultdict(int)
-    for utterance, _repeat in cpu_by_key:
-        counts[utterance] += 1
+    counts: dict[tuple[str, str, str], int] = defaultdict(int)
+    for reset_cycle, cache_state, utterance, _repeat in cpu_by_key:
+        counts[(reset_cycle, cache_state, utterance)] += 1
     sample_size = complete_pairs and bool(counts) and all(count >= 10 for count in counts.values())
     reductions = [float(control["outerMs"]) - float(candidate["outerMs"]) for control, candidate in pairs]
     speedups = [
@@ -169,7 +177,7 @@ def summarize(
     accelerated_outer = [float(row["outerMs"]) for row in accelerated]
     language_rows: dict[str, dict[str, object]] = {}
     quality_ok = True
-    for language in sorted({str(row["language"]) for row in rows}):
+    for language in sorted({str(row["language"]) for row in selected_rows}):
         control = [row for row in cpu if row["language"] == language]
         candidate = [row for row in accelerated if row["language"] == language]
         control_words = sum(int(row["referenceWords"]) for row in control)
@@ -207,13 +215,25 @@ def summarize(
     identity_match = (
         len(cpu_identities) == 1
         and cpu_identities == accelerated_identities
-        and all(execution_identity_complete(row) for row in rows)
+        and all(execution_identity_complete(row) for row in selected_rows)
     )
     hardware_device = bool(devices) and all(
         device
         and not any(name in str(device).casefold() for name in ("lavapipe", "llvmpipe", "swiftshader"))
         for device in devices
     ) and len({str(device) for device in devices}) == 1
+    cache_states = {str(row.get("cacheState") or "unverified") for row in selected_rows}
+    reset_cycles = {str(row.get("resetCycle") or "unverified") for row in selected_rows}
+    driver_icd_identities = {
+        (
+            str((row.get("host") or {}).get("driverIdentity") or ""),
+            str((row.get("host") or {}).get("icdIdentity") or ""),
+        )
+        for row in selected_rows
+    }
+    driver_icd_identity = len(driver_icd_identities) == 1 and all(
+        all(identity) for identity in driver_icd_identities
+    )
     new_hallucinations = sum(
         not bool(control.get("hallucinatedSilence"))
         and bool(candidate.get("hallucinatedSilence"))
@@ -228,6 +248,9 @@ def summarize(
         "backendTruth": backend_truth,
         "identityMatch": identity_match,
         "hardwareDevice": hardware_device,
+        "driverIcdIdentity": driver_icd_identity,
+        "freshAndPopulatedCacheEvidence": {"fresh", "populated"}.issubset(cache_states),
+        "resetEvidence": "unverified" not in reset_cycles and len(reset_cycles) >= 2,
         "medianReduction": median_reduction >= 500,
         "medianSpeedup": median_speedup >= 20,
         "p95Improved": percentile(accelerated_outer, 0.95) < percentile(cpu_outer, 0.95),
@@ -296,39 +319,67 @@ def render(summary: dict[str, object]) -> str:
 
 def self_test() -> None:
     rows = []
-    for repeat in range(10):
-        for label, elapsed, errors, backend, device in [
-            ("cpu", 1000, 1, "cpu", None),
-            ("gpu", 400, 1, "vulkan", "Test GPU"),
-        ]:
-            rows.append(
-                {
-                    "candidate": label,
-                    "utterance": "sample",
-                    "repeat": repeat,
-                    "language": "en",
-                    "referenceWords": 10,
-                    "wordErrors": errors,
-                    "hallucinatedSilence": False,
-                    "outerMs": elapsed,
-                    "echoVersion": "echo-desktop 1.0.0",
-                    "echoCommit": "c" * 40,
-                    "echoDirty": False,
-                    "echoBinary": {"sha256": "d" * 64},
-                    "host": {"system": "Linux", "machine": "x86_64"},
-                    "seed": 1,
-                    "warmups": 1,
-                    "engine": {"model": "base-q5_1"},
-                    "runtimeArtifact": {"sha256": "a" * 64},
-                    "modelArtifact": {"sha256": "b" * 64},
-                    "whisper": {
-                        "runtime": {"backend": backend, "device": device},
-                        "tuning": {"threads": 4, "beamSize": 1},
-                    },
-                }
-            )
+    for reset_cycle in ("before-reset", "after-reset"):
+        for cache_state in ("fresh", "populated"):
+            for repeat in range(10):
+                for label, elapsed, errors, backend, device in [
+                    ("cpu", 1000, 1, "cpu", None),
+                    ("gpu", 400, 1, "vulkan", "Test GPU"),
+                ]:
+                    rows.append(
+                        {
+                            "candidate": label,
+                            "utterance": "sample",
+                            "repeat": repeat,
+                            "language": "en",
+                            "reference": "ten reference words are represented by this test fixture row",
+                            "referenceWords": 10,
+                            "wordErrors": errors,
+                            "hallucinatedSilence": False,
+                            "outerMs": elapsed,
+                            "cacheState": cache_state,
+                            "resetCycle": reset_cycle,
+                            "echoVersion": "echo-desktop 1.0.0",
+                            "echoCommit": "c" * 40,
+                            "echoDirty": False,
+                            "echoBinary": {"sha256": "d" * 64},
+                            "host": {
+                                "system": "Linux",
+                                "machine": "x86_64",
+                                "driverIdentity": "test-driver-1",
+                                "icdIdentity": "test-icd-1",
+                            },
+                            "seed": 1,
+                            "warmups": 1,
+                            "audioSha256": "e" * 64,
+                            "engine": {"model": "base-q5_1"},
+                            "runtimeArtifact": {"sha256": "a" * 64},
+                            "modelArtifact": {"sha256": "b" * 64},
+                            "whisper": {
+                                "runtime": {"backend": backend, "device": device},
+                                "tuning": {"threads": 4, "beamSize": 1},
+                            },
+                        }
+                    )
+    rows.append({"candidate": "unrelated", "language": "it"})
     passed = summarize(rows, "cpu", "gpu", "vulkan", True)
     assert passed["decision"] == "proceed"
+    assert passed["gates"]["driverIcdIdentity"]
+    assert passed["gates"]["freshAndPopulatedCacheEvidence"]
+    assert passed["gates"]["resetEvidence"]
+    unverified = json.loads(json.dumps(rows))
+    for row in unverified:
+        if row.get("candidate") not in {"cpu", "gpu"}:
+            continue
+        row["cacheState"] = "populated"
+        row["resetCycle"] = "unverified"
+        row["host"]["driverIdentity"] = None
+        row["host"]["icdIdentity"] = None
+    evidence_failed = summarize(unverified, "cpu", "gpu", "vulkan", True)
+    assert evidence_failed["decision"] == "stop"
+    assert not evidence_failed["gates"]["driverIcdIdentity"]
+    assert not evidence_failed["gates"]["freshAndPopulatedCacheEvidence"]
+    assert not evidence_failed["gates"]["resetEvidence"]
     for row in rows:
         if row["candidate"] == "gpu":
             row["hallucinatedSilence"] = True
