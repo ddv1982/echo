@@ -1,6 +1,6 @@
 # Whisper runtime symlink extraction hotfix
 
-**Status: implementation in progress for v0.9.1.**
+**Status: implemented and locally verified for v0.9.1; PR pending.**
 
 Echo 0.9.0 cannot install the pinned Whisper 1.9.2 runtime because the archive stores `libwhisper.so` before its immediate symlink target. Runtime extraction incorrectly treats archive order as dependency order. The archive digest, inventory, and immediate link targets are correct.
 

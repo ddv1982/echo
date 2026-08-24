@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.9.1
+
+- Managed Whisper setup now installs the pinned 1.9.2 runtime even when its shared-library symlinks appear before their targets in the archive.
+- Extraction validates the complete selected symlink graph, including cycles, missing targets, escapes, and flattened destination mismatches, before any staged link can reach activation.
+- CI downloads the exact pinned Whisper archive and drives it through digest verification, extraction, payload verification, the real Linux runtime probe, immutable activation, receipt checks, and post-install Verify.
+
 ## v0.9.0
 
 - Echo now discovers Linux microphones through native PipeWire or PulseAudio before falling back to ALSA, so Bluetooth, USB, and built-in sources use the same recognizable names exposed by the desktop sound server.
