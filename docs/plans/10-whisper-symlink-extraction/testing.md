@@ -21,9 +21,9 @@ The extraction plan maps these to flat payload destinations. Before the fix, the
 - Link cycle.
 - Link terminal that is not a regular file.
 - Flattened destination mismatch.
-- Cancellation during post-scan validation, creation, or hashing.
+- Cancellation before extraction and before activation through the installer lifecycle.
 
-Every failure must occur before activation. Tests inspect staging and the active pointer rather than relying only on the error text.
+Every failure must occur before activation. Extractor tests assert the boundary error. Installer lifecycle tests inspect staging cleanup, the active pointer, and survival of external files.
 
 ## Real artifact lever
 

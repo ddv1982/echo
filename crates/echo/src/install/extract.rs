@@ -556,9 +556,10 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn cyclic_and_unselected_symlink_targets_are_rejected() {
+    fn unsafe_symlink_graphs_are_rejected() {
         let root =
             std::env::temp_dir().join(format!("echo-extract-link-bad-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
         let sha256 = "0".repeat(64);
         let cycle = ExtractionPlan {
             format: ArtifactFormat::TarGzip,
@@ -593,6 +594,46 @@ mod tests {
         assert!(
             matches!(error, InstallError::UnsafeArchive(message) if message.contains("not selected"))
         );
+
+        let body = b"shared library";
+        let sha256 = format!("{:x}", Sha256::digest(body));
+        let mut target_plan = ExtractionPlan {
+            format: ArtifactFormat::TarGzip,
+            files: vec![
+                planned_symlink("root/a", "a", "file", &sha256),
+                planned_file("root/file", "file", body),
+            ],
+            max_entries: 2,
+            max_expanded_bytes: body.len() as u64,
+        };
+        let _ = fs::remove_dir_all(&root);
+        let changed = extract_tar(
+            Cursor::new(tar_with_links(
+                &[("root/a", "other")],
+                &[("root/file", body)],
+            )),
+            &root,
+            &target_plan,
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(changed, InstallError::UnsafeArchive(message) if message.contains("changed target"))
+        );
+
+        target_plan.files[0].link_target = Some("../file".to_string());
+        let _ = fs::remove_dir_all(&root);
+        let escaping = extract_tar(
+            Cursor::new(tar_with_links(
+                &[("root/a", "../file")],
+                &[("root/file", body)],
+            )),
+            &root,
+            &target_plan,
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+        assert!(matches!(escaping, InstallError::UnsafeArchive(_)));
     }
 
     #[cfg(unix)]
