@@ -11,6 +11,12 @@ rg -q '"depends": \["libpipewire-0.3-0", "libpulse0"\]' src-tauri/tauri.conf.jso
 rg -q '"depends": \["pipewire-libs", "pulseaudio-libs"\]' src-tauri/tauri.conf.json
 rg -q 'rpm Requires is missing' .github/workflows/release.yml
 rg -q 'deb Depends is missing' .github/workflows/release.yml
+rg -Fq 'libayatana-appindicator3-1' .github/workflows/release.yml
+rg -Fq 'libwebkit2gtk-4.1-0' .github/workflows/release.yml
+rg -Fq 'libgtk-3-0' .github/workflows/release.yml
+rg -Fq "'libayatana-appindicator3.so.1()(64bit)'" .github/workflows/release.yml
+rg -Fq "'libwebkit2gtk-4.1.so.0()(64bit)'" .github/workflows/release.yml
+rg -Fq "'libgtk-3.so.0()(64bit)'" .github/workflows/release.yml
 rg -q 'Jabra Elite 8 Active' frontend/src/tauri.ts
 rg -q 'Advanced audio endpoints' frontend/src/settings/MicrophoneChooser.tsx
 rg -q 'Installed components' frontend/src/settings/SpeechSetupSection.tsx

@@ -147,7 +147,11 @@ function selectedMicrophoneId(snapshot: MicrophoneSnapshot): string | null | und
 }
 
 function systemDefaultLabel(snapshot: MicrophoneSnapshot): string {
-  if (snapshot.systemDefault == null) return 'No default input'
+  if (snapshot.systemDefault == null) {
+    return snapshot.selection.kind === 'system-default' && snapshot.selection.active != null
+      ? `Using ${snapshot.selection.active.label} because Linux has no default input`
+      : 'No default input'
+  }
   return snapshot.systemDefaultIsProxy
     ? 'Follows the current Linux input automatically'
     : `Currently ${snapshot.systemDefault.label}`

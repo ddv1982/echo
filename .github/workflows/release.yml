@@ -128,13 +128,23 @@ jobs:
           fi
           deb_depends=$(dpkg-deb -f "$deb" Depends | tr ',' '\n' | sed -E 's/^ *//; s/ *\(.*\)$//')
           rpm_requires=$(rpm -qp --requires "$rpm_pkg" | awk '{print $1}')
-          for dependency in libpipewire-0.3-0 libpulse0; do
+          for dependency in \
+            libpipewire-0.3-0 \
+            libpulse0 \
+            libayatana-appindicator3-1 \
+            libwebkit2gtk-4.1-0 \
+            libgtk-3-0; do
             if ! grep -Fxq "$dependency" <<< "$deb_depends"; then
               printf 'deb Depends is missing %s: %s\n' "$dependency" "$(dpkg-deb -f "$deb" Depends)"
               exit 1
             fi
           done
-          for dependency in pipewire-libs pulseaudio-libs; do
+          for dependency in \
+            pipewire-libs \
+            pulseaudio-libs \
+            'libayatana-appindicator3.so.1()(64bit)' \
+            'libwebkit2gtk-4.1.so.0()(64bit)' \
+            'libgtk-3.so.0()(64bit)'; do
             if ! grep -Fxq "$dependency" <<< "$rpm_requires"; then
               printf 'rpm Requires is missing %s\n' "$dependency"
               rpm -qp --requires "$rpm_pkg"

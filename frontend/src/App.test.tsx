@@ -316,6 +316,21 @@ describe('Echo desktop shell', () => {
     expect(screen.getByText('alsa:pipewire')).toBeVisible()
   })
 
+  it('names the active input when Linux has no declared default', async () => {
+    const snapshot = await getMicrophones()
+    const active = snapshot.devices[0]
+    seedPreviewMicrophones({
+      ...snapshot,
+      systemDefault: null,
+      systemDefaultIsProxy: false,
+      selection: { kind: 'system-default', active },
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(await screen.findByText(`Using ${active.label} because Linux has no default input`)).toBeVisible()
+  })
+
   it('names a missing selection and tests fallback only through the explicit action', async () => {
     const snapshot = await getMicrophones()
     seedPreviewMicrophones({
