@@ -229,6 +229,22 @@ def runtime_environment(
     return environment
 
 
+def prepare_mesa_shader_cache(path: Path, reuse: bool) -> None:
+    if reuse:
+        if not path.is_dir():
+            raise ValueError(
+                f"populated Mesa shader cache directory must already exist: {path}"
+            )
+        if not any(candidate.is_file() for candidate in path.rglob("*")):
+            raise ValueError(
+                f"populated Mesa shader cache directory must contain files: {path}"
+            )
+        return
+    if path.exists() and (not path.is_dir() or any(path.iterdir())):
+        raise ValueError(f"Mesa shader cache directory must be empty: {path}")
+    path.mkdir(parents=True, exist_ok=True)
+
+
 def runtime_version(binary: Path, timeout: int) -> str:
     completed = subprocess.run(
         [str(binary), "--version"],
@@ -463,6 +479,8 @@ def invoke(
         "text": text,
         "language": language,
         "timings": parse_timings(completed.stderr),
+        "rawStdout": completed.stdout,
+        "rawStderr": completed.stderr,
         "evidence": [
             line.strip()
             for line in completed.stderr.splitlines()
@@ -665,6 +683,7 @@ def run_probe(args: argparse.Namespace) -> int:
                 if args.mesa_shader_cache_dir is not None
                 else None
             ),
+            "mesaShaderCacheReuse": args.reuse_mesa_shader_cache,
             "tuning": {
                 "threads": args.threads,
                 "beamSize": args.beam_size,
@@ -675,13 +694,9 @@ def run_probe(args: argparse.Namespace) -> int:
             },
         }
         if args.mesa_shader_cache_dir is not None:
-            if args.mesa_shader_cache_dir.exists() and any(
-                args.mesa_shader_cache_dir.iterdir()
-            ):
-                raise ValueError(
-                    f"Mesa shader cache directory must be empty: {args.mesa_shader_cache_dir}"
-                )
-            args.mesa_shader_cache_dir.mkdir(parents=True, exist_ok=True)
+            prepare_mesa_shader_cache(
+                args.mesa_shader_cache_dir, args.reuse_mesa_shader_cache
+            )
         warmup_rows = []
         for audio in args.audio:
             for candidate in ("cpu", "accelerated"):
@@ -894,6 +909,18 @@ whisper_backend_init_gpu: using Vulkan0 backend
         status = json.loads((output / "status.json").read_text(encoding="utf-8"))
         assert status["state"] == "failed" and status["errorType"] == "ValueError"
         assert all(not (output / name).exists() for name in REPORT_FILES)
+    with tempfile.TemporaryDirectory(prefix="echo-acceleration-cache-") as temporary:
+        cache = Path(temporary) / "mesa"
+        prepare_mesa_shader_cache(cache, False)
+        assert cache.is_dir()
+        (cache / "entry").write_text("cache", encoding="utf-8")
+        prepare_mesa_shader_cache(cache, True)
+        try:
+            prepare_mesa_shader_cache(cache, False)
+        except ValueError as error:
+            assert "must be empty" in str(error)
+        else:
+            raise AssertionError("fresh cache mode should reject populated cache")
     print("whisper acceleration probe self-test passed")
 
 
@@ -918,6 +945,11 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--min-speedup-percent", type=float, default=20.0)
     result.add_argument("--min-speedup-ms", type=float, default=500.0)
     result.add_argument("--mesa-shader-cache-dir", type=Path)
+    result.add_argument(
+        "--reuse-mesa-shader-cache",
+        action="store_true",
+        help="reuse an existing non-empty Mesa cache without deleting or modifying it first",
+    )
     result.add_argument("--require-gate", action="store_true")
     result.add_argument("--output-dir", type=Path)
     return result
@@ -945,6 +977,8 @@ def main() -> int:
         raise ValueError(
             "timeout must be positive and speedup gates must be non-negative"
         )
+    if args.reuse_mesa_shader_cache and args.mesa_shader_cache_dir is None:
+        raise ValueError("--reuse-mesa-shader-cache requires --mesa-shader-cache-dir")
     return run_probe(args)
 
 

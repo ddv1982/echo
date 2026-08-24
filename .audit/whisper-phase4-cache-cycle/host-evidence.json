@@ -1,0 +1,211 @@
+{
+  "bootId": "f4fd3d6f-e34d-4da7-a540-97426cc4ce67",
+  "capturedAt": "2026-08-25T00:03:59.873511+00:00",
+  "drmDevices": [
+    {
+      "device": "0x46a6",
+      "driver": "i915",
+      "driverModuleVersion": null,
+      "renderNode": "/dev/dri/renderD128",
+      "revision": "0x0c",
+      "vendor": "0x8086"
+    }
+  ],
+  "kernel": {
+    "machine": "x86_64",
+    "release": "7.0.0-30-generic",
+    "system": "Linux",
+    "version": "#30~24.04.1-Ubuntu SMP PREEMPT_DYNAMIC Fri Aug  7 13:27:52 UTC 2"
+  },
+  "loader": {
+    "defaultIcdEnumeration": {
+      "manifests": [
+        {
+          "bytes": 137,
+          "path": "/usr/share/vulkan/icd.d/asahi_icd.json",
+          "sha256": "1fb3806fdfcd22fa8bce4b0731f4ed4fc29873b8f5c81cd35842cd1ff5a27697"
+        },
+        {
+          "bytes": 141,
+          "path": "/usr/share/vulkan/icd.d/gfxstream_vk_icd.json",
+          "sha256": "8e16c2df8e110ce422b712a03f3ff4e76c98bc3a30634922fc88e2402c6673d2"
+        },
+        {
+          "bytes": 143,
+          "path": "/usr/share/vulkan/icd.d/intel_hasvk_icd.json",
+          "sha256": "99c37873336d391b5e62ed594dae60b4355c0ea71463904a2b9d6c0cbe275c0c"
+        },
+        {
+          "bytes": 137,
+          "path": "/usr/share/vulkan/icd.d/intel_icd.json",
+          "sha256": "09e7ca55461c3f2d65e5df6a6b8f06a7ce2c86fc58a93a18d2dbe3575623de83"
+        },
+        {
+          "bytes": 135,
+          "path": "/usr/share/vulkan/icd.d/lvp_icd.json",
+          "sha256": "70d49f7fd41a7593a4e283543ed4855c139c700e5c1b31792f56e9576ede2398"
+        },
+        {
+          "bytes": 139,
+          "path": "/usr/share/vulkan/icd.d/nouveau_icd.json",
+          "sha256": "10971c0a767543fa071fd53958ede312f0fd3a3c7caae509d6bae62c894c5f53"
+        },
+        {
+          "bytes": 140,
+          "path": "/usr/share/vulkan/icd.d/nvidia_icd.json",
+          "sha256": "7bdb6f27d35b66fc848df6f94b8773bba30ea3a7f06f114100d14154a235a34b"
+        },
+        {
+          "bytes": 138,
+          "path": "/usr/share/vulkan/icd.d/radeon_icd.json",
+          "sha256": "bc0e4f88754ce48b429c05fc8c691438c5f04a4170d482c925bc5998159db299"
+        },
+        {
+          "bytes": 138,
+          "path": "/usr/share/vulkan/icd.d/virtio_icd.json",
+          "sha256": "2269530452f17a9133717e35b8926b7c4ecd3a458bc2bd530c1aedd2114f4ecb"
+        }
+      ],
+      "searchRoots": [
+        "$HOME/.config/vulkan/icd.d",
+        "/etc/vulkan/icd.d",
+        "/usr/local/etc/vulkan/icd.d",
+        "/etc/xdg/xdg-zorin/vulkan/icd.d",
+        "/etc/xdg/vulkan/icd.d",
+        "$HOME/.local/share/vulkan/icd.d",
+        "/tmp/.mount_T3-CodBQmqgd/usr/share/vulkan/icd.d",
+        "/usr/share/zorin/vulkan/icd.d",
+        "/usr/share/gnome/vulkan/icd.d",
+        "$HOME/.local/share/flatpak/exports/share/vulkan/icd.d",
+        "/var/lib/flatpak/exports/share/vulkan/icd.d",
+        "/usr/local/share/vulkan/icd.d",
+        "/usr/share/vulkan/icd.d",
+        "/var/lib/snapd/desktop/vulkan/icd.d"
+      ]
+    },
+    "selectedIcd": {
+      "environmentVariable": "VK_DRIVER_FILES",
+      "library": {
+        "bytes": 21174784,
+        "path": "/usr/lib/x86_64-linux-gnu/libvulkan_intel.so",
+        "sha256": "9ecefd82942c76e227075e01a6dc78318cbb210e7fd86d2bde145501539422e4"
+      },
+      "libraryPath": "libvulkan_intel.so",
+      "libraryResolution": "ldconfig",
+      "manifest": {
+        "bytes": 137,
+        "path": "/usr/share/vulkan/icd.d/intel_icd.json",
+        "sha256": "09e7ca55461c3f2d65e5df6a6b8f06a7ce2c86fc58a93a18d2dbe3575623de83"
+      },
+      "value": "/usr/share/vulkan/icd.d/intel_icd.json"
+    }
+  },
+  "memory": {
+    "MemAvailable": "19209948 kB",
+    "MemTotal": "32577060 kB",
+    "SwapFree": "1451188 kB",
+    "SwapTotal": "9388024 kB"
+  },
+  "power": {
+    "cpuGovernors": [
+      {
+        "cpu": "cpu0",
+        "governor": "powersave"
+      },
+      {
+        "cpu": "cpu1",
+        "governor": "powersave"
+      },
+      {
+        "cpu": "cpu10",
+        "governor": "powersave"
+      },
+      {
+        "cpu": "cpu11",
+        "governor": "powersave"
+      },
+      {
+        "cpu": "cpu12",
+        "governor": "powersave"
+      },
+      {
+        "cpu": "cpu13",
+        "governor": "powersave"
+      },
+      {
+        "cpu": "cpu14",
+        "governor": "powersave"
+      },
+      {
+        "cpu": "cpu15",
+        "governor": "powersave"
+      },
+      {
+        "cpu": "cpu16",
+        "governor": "powersave"
+      },
+      {
+        "cpu": "cpu17",
+        "governor": "powersave"
+      },
+      {
+        "cpu": "cpu18",
+        "governor": "powersave"
+      },
+      {
+        "cpu": "cpu19",
+        "governor": "powersave"
+      },
+      {
+        "cpu": "cpu2",
+        "governor": "powersave"
+      },
+      {
+        "cpu": "cpu3",
+        "governor": "powersave"
+      },
+      {
+        "cpu": "cpu4",
+        "governor": "powersave"
+      },
+      {
+        "cpu": "cpu5",
+        "governor": "powersave"
+      },
+      {
+        "cpu": "cpu6",
+        "governor": "powersave"
+      },
+      {
+        "cpu": "cpu7",
+        "governor": "powersave"
+      },
+      {
+        "cpu": "cpu8",
+        "governor": "powersave"
+      },
+      {
+        "cpu": "cpu9",
+        "governor": "powersave"
+      }
+    ],
+    "platformProfile": "balanced",
+    "supplies": [
+      {
+        "capacity": null,
+        "name": "ADP1",
+        "online": "1",
+        "status": null,
+        "type": "Mains"
+      },
+      {
+        "capacity": "100",
+        "name": "BAT0",
+        "online": null,
+        "status": "Charging",
+        "type": "Battery"
+      }
+    ]
+  },
+  "schemaVersion": 1
+}
