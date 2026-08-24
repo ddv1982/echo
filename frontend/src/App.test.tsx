@@ -10,6 +10,7 @@ import {
   resetPreviewSettings,
   retryShortcut,
   seedPreviewLanguages,
+  seedPreviewLanguagesError,
   seedPreviewMicrophones,
   seedPreviewMicTestError,
   seedPreviewRemoveStaleError,
@@ -396,19 +397,19 @@ describe('Echo desktop shell', () => {
     expect(await screen.findByRole('button', { name: 'Fake' })).toBeInTheDocument()
   })
 
-  it('shows the model picker while Whisper runs, and hides it for Parakeet', async () => {
+  it('shows the Whisper picker and the fixed Parakeet speech model', async () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
 
     // Default fixture: engine auto with Whisper available, so the picker shows.
-    const picker = await screen.findByLabelText('Model quality')
+    const picker = await screen.findByLabelText('Speech model')
     expect(screen.getByRole('option', { name: 'Auto · best installed' })).toBeInTheDocument()
     expect(
-      screen.getByRole('option', { name: 'small · multilingual · full precision · 466 MiB' }),
+      screen.getByRole('option', { name: 'Lower memory, lower accuracy · small · multilingual · full precision · 466 MiB' }),
     ).toBeInTheDocument()
     expect(
-      screen.getByRole('option', { name: 'large-v3-turbo-q8_0 · multilingual · q8_0 · 834 MiB' }),
+      screen.getByRole('option', { name: 'Recommended balance · large-v3-turbo-q8_0 · multilingual · q8_0 · 834 MiB' }),
     ).toBeInTheDocument()
 
     fireEvent.change(picker, { target: { value: 'small' } })
@@ -423,7 +424,59 @@ describe('Echo desktop shell', () => {
     // The engine override lives in Advanced.
     fireEvent.click(await screen.findByText('Advanced'))
     fireEvent.click(await screen.findByRole('button', { name: 'Parakeet' }))
-    await waitFor(() => expect(screen.queryByLabelText('Model quality')).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByLabelText('Speech model')).not.toBeInTheDocument())
+    expect(screen.getByText('Parakeet TDT 0.6B v3')).toBeInTheDocument()
+    await waitFor(async () => expect((await getSettings()).whisperModel.value).toBeNull())
+  })
+
+  it('projects Auto as Parakeet when the backend language mode resolves Parakeet', async () => {
+    seedPreviewLanguages({
+      mode: 'parakeet',
+      model: null,
+      options: Array.from({ length: 25 }, (_, index) => ({
+        code: `p${index}`,
+        englishName: `parakeet language ${index}`,
+        group: 'all',
+      })),
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(await screen.findByText('Parakeet TDT 0.6B v3')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Speech model')).not.toBeInTheDocument()
+  })
+
+  it('honors a backend Whisper projection over a file-backed Parakeet choice', async () => {
+    const defaults = await getSettings()
+    seedPreviewSettings({
+      ...defaults,
+      engine: { value: 'parakeet', effective: 'parakeet', source: 'file' },
+      whisperModel: { value: null, effective: 'small', source: 'env' },
+    })
+    seedPreviewLanguages({
+      mode: 'multilingual',
+      model: 'small',
+      options: [{ code: 'en', englishName: 'english', group: 'common' }],
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(await screen.findByLabelText('Speech model')).toBeDisabled()
+    expect(screen.queryByText('Parakeet TDT 0.6B v3')).not.toBeInTheDocument()
+  })
+
+  it('shows a saved engine change when its projection refresh fails', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await screen.findByLabelText('Speech model')
+    seedPreviewLanguagesError('language projection failed')
+    fireEvent.click(await screen.findByText('Advanced'))
+    const parakeet = await screen.findByRole('button', { name: 'Parakeet' })
+    fireEvent.click(parakeet)
+    await waitFor(() => expect(parakeet).toHaveAttribute('data-active', 'true'))
+    expect(screen.queryByLabelText('Speech model')).not.toBeInTheDocument()
+    expect(await screen.findByText('language projection failed')).toBeInTheDocument()
   })
 
   it('pins the General surface and keeps Advanced collapsed until asked', async () => {
@@ -433,7 +486,7 @@ describe('Echo desktop shell', () => {
 
     await screen.findByLabelText('Microphone')
     await screen.findByLabelText('Language')
-    await screen.findByLabelText('Model quality')
+    await screen.findByLabelText('Speech model')
     expect(await screen.findAllByText('Super+Alt+Space')).not.toHaveLength(0)
     expect(screen.getByRole('group', { name: 'Application theme' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Test shortcut' })).toBeInTheDocument()
@@ -642,7 +695,7 @@ describe('Echo desktop shell', () => {
     expect(screen.queryByLabelText('Language')).not.toBeInTheDocument()
   })
 
-  it('reports Parakeet as automatic without a picker', async () => {
+  it('reports Parakeet as an automatic fixed speech model', async () => {
     const defaults = await getSettings()
     seedPreviewSettings({
       ...defaults,
@@ -663,6 +716,7 @@ describe('Echo desktop shell', () => {
     expect(
       await screen.findByText('Automatic across 25 languages · not reported'),
     ).toBeInTheDocument()
+    expect(screen.getByText('Parakeet TDT 0.6B v3')).toBeInTheDocument()
     expect(screen.queryByLabelText('Language')).not.toBeInTheDocument()
   })
 
@@ -692,7 +746,7 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    fireEvent.click(await screen.findByRole('button', { name: /Set up recommended/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /Set up Large v3 Turbo Q5_0/ }))
     await waitFor(async () => {
       expect((await getReadiness()).plans.find((plan) => plan.id === 'recommended')?.satisfied).toBe(true)
     })
@@ -704,11 +758,14 @@ describe('Echo desktop shell', () => {
       ...readiness,
       speechReady: false,
       firstRunComplete: false,
+      plans: readiness.plans.map((plan) =>
+        plan.id === 'recommended' ? { ...plan, satisfied: true, downloadBytes: 0 } : plan,
+      ),
     })
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Use recommended setup' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Use Large v3 Turbo Q5_0' }))
     await waitFor(async () => expect((await getReadiness()).speechReady).toBe(true))
   })
 
@@ -740,9 +797,9 @@ describe('Echo desktop shell', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     fireEvent.click(await screen.findByText('Advanced speech options'))
     const advanced = screen.getByText('Advanced speech options').closest('details')!
-    expect(within(advanced).getByText('Parakeet')).toBeVisible()
-    expect(within(advanced).getByRole('button', { name: 'Use' })).toBeEnabled()
-    expect(within(advanced).queryByText('Whisper small')).not.toBeInTheDocument()
+    const parakeetRow = within(advanced).getByText('Parakeet').closest<HTMLElement>('.setting-row')!
+    expect(within(parakeetRow).getByRole('button', { name: 'Use' })).toBeEnabled()
+    expect(within(advanced).queryByText('Whisper Large v3 Turbo Q5_0')).not.toBeInTheDocument()
   })
 
   it('shows repair and managed-only removal actions', async () => {
@@ -782,7 +839,7 @@ describe('Echo desktop shell', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     fireEvent.click(await screen.findByText('Installed components'))
     expect(await screen.findByText('Managed setup is available on Linux x86_64.')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Set up recommended/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Set up Large v3 Turbo Q5_0/ })).not.toBeInTheDocument()
   })
 
   it('renders component progress, resume, and low-space admission truthfully', async () => {
@@ -798,7 +855,7 @@ describe('Echo desktop shell', () => {
             : plan,
       ),
       components: readiness.components.map((component) =>
-        component.id === 'whisper-small'
+        component.id === 'whisper-large-v3-turbo-q5-0'
           ? {
               ...component,
               managed: { kind: 'absent', resumableBytes: 42 },
@@ -817,11 +874,11 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    expect(await screen.findByRole('progressbar', { name: 'Small multilingual downloading' })).toHaveAttribute('aria-valuenow', '50')
+    expect(await screen.findByRole('progressbar', { name: 'Large v3 Turbo Q5_0 downloading' })).toHaveAttribute('aria-valuenow', '50')
     expect(screen.getByRole('button', { name: /Resume/ })).toBeInTheDocument()
     expect(screen.getByText('Recommended: Needs 900 bytes free; 400 bytes are available')).toBeInTheDocument()
     expect(screen.getByText('Parakeet: Needs 1200 bytes free; 400 bytes are available')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Set up recommended/ })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /Set up Large v3 Turbo Q5_0/ })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Use Parakeet instead' })).toBeDisabled()
   })
 

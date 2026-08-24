@@ -27,6 +27,10 @@ export function SpeechSetupSection({
   }
   const setup = presentSpeechSetup(readiness)
   const { recommended, parakeet } = setup
+  const recommendedModel = readiness.components.find(
+    (component) => component.id === readiness.recommendedModel,
+  )
+  const recommendedLabel = recommendedModel?.label ?? 'recommended setup'
   const activeOperation = readiness.activeOperation
   const tone = setup.state.kind === 'ready'
     ? 'ok'
@@ -58,8 +62,8 @@ export function SpeechSetupSection({
               onClick={() => run(startSetup('recommended'))}
             >
               {recommended.satisfied
-                ? 'Use recommended setup'
-                : `Set up recommended · ${formatSize(recommended.downloadBytes)}`}
+                ? `Use ${recommendedLabel}`
+                : `Set up ${recommendedLabel} · ${formatSize(recommended.downloadBytes)}`}
             </button>
           ) : null}
           {activeOperation == null && !readiness.speechReady && readiness.managedSupported && parakeet ? (

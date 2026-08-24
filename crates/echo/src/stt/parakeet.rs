@@ -7,6 +7,7 @@ use echo_core::{
     strip_nonspeech, DecodeOptions, Engine, EngineError, EngineId, LanguageChoice, Pcm16kMono,
     RunDetail, Transcript,
 };
+use serde::Deserialize;
 
 use super::cache::ModelCache;
 use super::write_temp_wav;
@@ -60,7 +61,9 @@ impl ParakeetEngine {
     }
 
     fn model_root(&self) -> Option<PathBuf> {
-        self.root.clone().or_else(|| self.cache.as_ref()?.parakeet_root())
+        self.root
+            .clone()
+            .or_else(|| self.cache.as_ref()?.parakeet_root())
     }
 
     pub(crate) fn binary() -> Option<PathBuf> {
@@ -105,6 +108,7 @@ impl Engine for ParakeetEngine {
             .arg(format!("--decoder={}", decoder.display()))
             .arg(format!("--joiner={}", joiner.display()))
             .arg(format!("--tokens={}", tokens.display()))
+            .arg("--model-type=nemo_transducer")
             .arg(wav.as_os_str())
             .output()
             .map_err(|err| EngineError::Infer(err.to_string()))?;
@@ -117,6 +121,7 @@ impl Engine for ParakeetEngine {
             infer_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
             detail: RunDetail {
                 binary: Some(bin.to_string_lossy().into_owned()),
+                model_path: Some(root.to_string_lossy().into_owned()),
                 ..RunDetail::default()
             },
         })
@@ -124,10 +129,10 @@ impl Engine for ParakeetEngine {
 }
 
 fn finish_output(success: bool, stdout: &[u8], stderr: &[u8]) -> Result<String, EngineError> {
-    let raw = String::from_utf8_lossy(stdout).trim().to_string();
     if success {
-        return Ok(raw);
+        return parse_successful_output(stdout);
     }
+    let raw = String::from_utf8_lossy(stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(stderr).trim().to_string();
     let message = if stderr.is_empty() {
         if raw.is_empty() {
@@ -139,6 +144,38 @@ fn finish_output(success: bool, stdout: &[u8], stderr: &[u8]) -> Result<String, 
         stderr
     };
     Err(EngineError::Infer(message))
+}
+
+#[derive(Debug, Deserialize)]
+struct SherpaOutput {
+    text: String,
+}
+
+fn parse_successful_output(stdout: &[u8]) -> Result<String, EngineError> {
+    let raw = std::str::from_utf8(stdout)
+        .map_err(|error| EngineError::Infer(format!("Parakeet output is not UTF-8: {error}")))?
+        .trim();
+    if raw.is_empty() {
+        return Err(EngineError::Infer(
+            "Parakeet returned no result".to_string(),
+        ));
+    }
+    if let Some(json) = raw
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| line.starts_with('{'))
+    {
+        let output: SherpaOutput = serde_json::from_str(json)
+            .map_err(|error| EngineError::Infer(format!("Parakeet JSON: {error}")))?;
+        return Ok(output.text.trim().to_string());
+    }
+    if raw.lines().count() == 1 {
+        return Ok(raw.to_string());
+    }
+    Err(EngineError::Infer(
+        "Parakeet returned unexpected multi-line output".to_string(),
+    ))
 }
 
 fn raw_text(text: &str) -> String {
@@ -191,6 +228,49 @@ mod tests {
     #[test]
     fn blank_audio_raw_is_empty() {
         assert!(raw_text("[BLANK_AUDIO]").is_empty());
+    }
+
+    #[test]
+    fn successful_sherpa_json_returns_only_transcript_text() {
+        let stdout = br#"{"lang":"","emotion":"","event":"","text":" Ask not what your country can do for you.","timestamps":[],"tokens":[],"words":[]}"#;
+        assert_eq!(
+            finish_output(true, stdout, b"runtime diagnostics stay on stderr"),
+            Ok("Ask not what your country can do for you.".to_string())
+        );
+    }
+
+    #[test]
+    fn successful_sherpa_json_can_report_silence() {
+        assert_eq!(
+            finish_output(true, br#"{"text":""}"#, b""),
+            Ok(String::new())
+        );
+    }
+
+    #[test]
+    fn empty_success_is_a_protocol_error() {
+        assert_eq!(
+            finish_output(true, b"", b""),
+            Err(EngineError::Infer(
+                "Parakeet returned no result".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn malformed_json_is_not_returned_as_transcript_text() {
+        assert!(matches!(
+            finish_output(true, br#"{"text": broken}"#, b""),
+            Err(EngineError::Infer(message)) if message.starts_with("Parakeet JSON:")
+        ));
+    }
+
+    #[test]
+    fn legacy_plain_text_output_stays_compatible() {
+        assert_eq!(
+            finish_output(true, b"legacy transcript\n", b""),
+            Ok("legacy transcript".to_string())
+        );
     }
 
     #[test]

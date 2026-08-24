@@ -318,7 +318,7 @@ impl SetupService {
                         SetupPlanId::Parakeet => "Parakeet",
                         SetupPlanId::WhisperBase => "Whisper Base",
                         SetupPlanId::WhisperSmall => "Whisper Small",
-                        SetupPlanId::WhisperLargeV3Turbo => "Whisper Large Turbo",
+                        SetupPlanId::WhisperLargeV3Turbo => "Whisper Large v3 Turbo Q5_0",
                     },
                     download_bytes,
                     required_free_bytes,
@@ -512,35 +512,44 @@ fn activate_plan_config(
     plan_id: SetupPlanId,
     hardware: HardwareProfile,
 ) -> Result<(), echo::install::InstallError> {
-    super::update_file_config(|config| {
-        match plan_id {
-            SetupPlanId::Parakeet => config.engine = Some(echo_core::EngineChoice::Parakeet),
-            SetupPlanId::Recommended
-            | SetupPlanId::WhisperBase
-            | SetupPlanId::WhisperSmall
-            | SetupPlanId::WhisperLargeV3Turbo => {
-                config.engine = Some(echo_core::EngineChoice::Whisper);
-                let model = match plan_id {
-                    SetupPlanId::Recommended => recommended_model(hardware),
-                    SetupPlanId::WhisperBase => ComponentId::WhisperBaseQ51,
-                    SetupPlanId::WhisperSmall => ComponentId::WhisperSmall,
-                    SetupPlanId::WhisperLargeV3Turbo => ComponentId::WhisperLargeV3TurboQ50,
-                    SetupPlanId::Parakeet => unreachable!(),
-                };
-                config.whisper_model = Some(
-                    match model {
-                        ComponentId::WhisperBaseQ51 => "base-q5_1",
-                        ComponentId::WhisperSmall => "small",
-                        ComponentId::WhisperLargeV3TurboQ50 => "large-v3-turbo-q5_0",
-                        _ => return Err("invalid Whisper model plan".to_string()),
-                    }
-                    .to_string(),
-                );
-            }
+    super::update_file_config(|config| apply_plan_config(config, plan_id, hardware))
+        .map_err(echo::install::InstallError::IoMessage)
+}
+
+fn apply_plan_config(
+    config: &mut echo_core::Config,
+    plan_id: SetupPlanId,
+    hardware: HardwareProfile,
+) -> Result<(), String> {
+    match plan_id {
+        SetupPlanId::Parakeet => {
+            config.engine = Some(echo_core::EngineChoice::Parakeet);
+            config.whisper_model = None;
         }
-        Ok(())
-    })
-    .map_err(echo::install::InstallError::IoMessage)
+        SetupPlanId::Recommended
+        | SetupPlanId::WhisperBase
+        | SetupPlanId::WhisperSmall
+        | SetupPlanId::WhisperLargeV3Turbo => {
+            config.engine = Some(echo_core::EngineChoice::Whisper);
+            let model = match plan_id {
+                SetupPlanId::Recommended => recommended_model(hardware),
+                SetupPlanId::WhisperBase => ComponentId::WhisperBaseQ51,
+                SetupPlanId::WhisperSmall => ComponentId::WhisperSmall,
+                SetupPlanId::WhisperLargeV3Turbo => ComponentId::WhisperLargeV3TurboQ50,
+                SetupPlanId::Parakeet => unreachable!(),
+            };
+            config.whisper_model = Some(
+                match model {
+                    ComponentId::WhisperBaseQ51 => "base-q5_1",
+                    ComponentId::WhisperSmall => "small",
+                    ComponentId::WhisperLargeV3TurboQ50 => "large-v3-turbo-q5_0",
+                    _ => return Err("invalid Whisper model plan".to_string()),
+                }
+                .to_string(),
+            );
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -602,7 +611,10 @@ pub fn cancel_setup(operation: OperationId, state: State<'_, SetupService>) -> b
 
 #[cfg(test)]
 mod tests {
-    use super::plan_space;
+    use super::{apply_plan_config, plan_space};
+    use echo::install::catalog::HardwareProfile;
+    use echo::install::SetupPlanId;
+    use echo_core::{Config, EngineChoice};
 
     #[test]
     fn plan_disk_check_includes_payloads_retained_by_earlier_components() {
@@ -620,5 +632,24 @@ mod tests {
         assert_eq!(download, 80);
         let (_, without_resume) = plan_space([(100, 100, 0), (20, 20, 0)]);
         assert!(required < without_resume);
+    }
+
+    #[test]
+    fn parakeet_activation_clears_a_dormant_whisper_pin() {
+        let mut config = Config {
+            engine: Some(EngineChoice::Whisper),
+            whisper_model: Some("small".to_string()),
+            ..Config::default()
+        };
+        apply_plan_config(
+            &mut config,
+            SetupPlanId::Parakeet,
+            HardwareProfile {
+                total_memory_bytes: Some(16 * 1024 * 1024 * 1024),
+            },
+        )
+        .unwrap();
+        assert_eq!(config.engine, Some(EngineChoice::Parakeet));
+        assert_eq!(config.whisper_model, None);
     }
 }

@@ -6,7 +6,6 @@ use echo_core::{FailReason, FocusTarget, InjectBackend, InjectReport, Injector};
 use crate::which::on_path;
 
 pub trait Pasteboard {
-    fn get(&self) -> Result<String, String>;
     fn set(&self, text: &str) -> Result<(), String>;
 }
 
@@ -22,13 +21,14 @@ impl FakePasteboard {
             inner: Arc::new(Mutex::new(initial.into())),
         }
     }
+
+    #[must_use]
+    pub fn text(&self) -> String {
+        self.inner.lock().expect("pasteboard").clone()
+    }
 }
 
 impl Pasteboard for FakePasteboard {
-    fn get(&self) -> Result<String, String> {
-        Ok(self.inner.lock().expect("pasteboard").clone())
-    }
-
     fn set(&self, text: &str) -> Result<(), String> {
         *self.inner.lock().expect("pasteboard") = text.to_string();
         Ok(())
@@ -39,29 +39,16 @@ impl Pasteboard for FakePasteboard {
 pub struct SysClipboard;
 
 impl Pasteboard for SysClipboard {
-    fn get(&self) -> Result<String, String> {
-        if let Ok(out) = Command::new("xclip")
-            .args(["-selection", "clipboard", "-o"])
-            .output()
-        {
-            if out.status.success() {
-                return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
-            }
-        }
-        if let Ok(out) = Command::new("wl-paste").arg("--no-newline").output() {
-            if out.status.success() {
-                return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
-            }
-        }
-        Err("no clipboard tool".to_string())
-    }
-
     fn set(&self, text: &str) -> Result<(), String> {
-        if pipe_in("xclip", &["-selection", "clipboard"], text).is_ok() {
-            return Ok(());
-        }
-        if pipe_in("wl-copy", &[], text).is_ok() {
-            return Ok(());
+        let commands: [(&str, &[&str]); 2] = if is_wayland_session() {
+            [("wl-copy", &[]), ("xclip", &["-selection", "clipboard"])]
+        } else {
+            [("xclip", &["-selection", "clipboard"]), ("wl-copy", &[])]
+        };
+        for (bin, args) in commands {
+            if pipe_in(bin, args, text).is_ok() {
+                return Ok(());
+            }
         }
         Err("no clipboard tool".to_string())
     }
@@ -87,18 +74,6 @@ fn pipe_in(bin: &str, args: &[&str], text: &str) -> Result<(), String> {
     } else {
         Err(format!("{bin} failed"))
     }
-}
-
-pub fn with_restored_clipboard<C: Pasteboard>(
-    board: &C,
-    during: impl FnOnce() -> InjectReport,
-) -> InjectReport {
-    let previous = board.get().ok();
-    let report = during();
-    if let Some(prev) = previous {
-        let _ = board.set(&prev);
-    }
-    report
 }
 
 pub struct LinuxInjector<C> {
@@ -183,27 +158,31 @@ impl<C: Pasteboard> LinuxInjector<C> {
     }
 
     fn paste_text(&self, text: &str, window: Option<&str>) -> InjectReport {
+        self.paste_with(text, || {
+            if is_wayland_session() && window.is_none() && run_simple("ydotool", &["key", "ctrl+v"])
+            {
+                return Some(InjectBackend::Ydotool);
+            }
+            if paste_key(window) {
+                return Some(InjectBackend::Xdotool);
+            }
+            run_simple("ydotool", &["key", "ctrl+v"]).then_some(InjectBackend::Ydotool)
+        })
+    }
+
+    fn paste_with(
+        &self,
+        text: &str,
+        dispatch: impl FnOnce() -> Option<InjectBackend>,
+    ) -> InjectReport {
         if self.clipboard.set(text).is_err() {
             return InjectReport::Failed {
                 reason: FailReason::InjectPermission,
             };
         }
-        if is_wayland_session() && window.is_none() && run_simple("ydotool", &["key", "ctrl+v"]) {
-            return InjectReport::Pasted {
-                backend: InjectBackend::Ydotool,
-            };
-        }
-        if paste_key(window) {
-            return InjectReport::Pasted {
-                backend: InjectBackend::Xdotool,
-            };
-        }
-        if run_simple("ydotool", &["key", "ctrl+v"]) {
-            return InjectReport::Pasted {
-                backend: InjectBackend::Ydotool,
-            };
-        }
-        InjectReport::ClipboardOnly
+        dispatch()
+            .map(|backend| InjectReport::Pasted { backend })
+            .unwrap_or(InjectReport::ClipboardOnly)
     }
 }
 
@@ -249,12 +228,10 @@ impl<C: Pasteboard> Injector for LinuxInjector<C> {
             };
         }
         let window = target.window_id.as_deref();
-        with_restored_clipboard(&self.clipboard, || {
-            if let Some(backend) = Self::type_text(text, window) {
-                return InjectReport::Typed { backend };
-            }
-            self.paste_text(text, window)
-        })
+        if let Some(backend) = Self::type_text(text, window) {
+            return InjectReport::Typed { backend };
+        }
+        self.paste_text(text, window)
     }
 }
 
@@ -312,15 +289,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn clipboard_save_restore_after_paste() {
+    fn clipboard_only_keeps_transcript_available() {
         let board = FakePasteboard::new("secret");
-        let report = with_restored_clipboard(&board, || {
-            board.set("transcript").unwrap();
-            InjectReport::Pasted {
-                backend: InjectBackend::Xdotool,
-            }
-        });
-        assert_eq!(board.get().unwrap(), "secret");
+        let injector = LinuxInjector::with_clipboard(board.clone());
+        let report = injector.paste_with("transcript", || None);
+        assert_eq!(board.text(), "transcript");
+        assert_eq!(report, InjectReport::ClipboardOnly);
+    }
+
+    #[test]
+    fn pasted_text_stays_available_after_key_dispatch() {
+        let board = FakePasteboard::new("secret");
+        let injector = LinuxInjector::with_clipboard(board.clone());
+        let report = injector.paste_with("transcript", || Some(InjectBackend::Xdotool));
+        assert_eq!(board.text(), "transcript");
         assert_eq!(
             report,
             InjectReport::Pasted {
@@ -339,6 +321,6 @@ mod tests {
                 reason: FailReason::NoFocus
             }
         );
-        assert_eq!(injector.clipboard.get().unwrap(), "secret");
+        assert_eq!(injector.clipboard.text(), "secret");
     }
 }

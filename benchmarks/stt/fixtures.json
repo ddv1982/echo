@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "utterances": [
+    {
+      "id": "claude-code-en",
+      "file": "../../crates/echo/tests/fixtures/claude_code.wav",
+      "language": "en",
+      "reference": "claude code"
+    },
+    {
+      "id": "silence",
+      "file": "../../crates/echo/tests/fixtures/silence.wav",
+      "language": "auto",
+      "reference": ""
+    }
+  ]
+}

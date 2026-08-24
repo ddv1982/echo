@@ -1,9 +1,12 @@
 /target
 /frontend/dist
 /frontend/node_modules
+/node_modules
 /frontend/playwright-report
 /frontend/test-results
 /src-tauri/gen
 **/*.rs.bk
+__pycache__/
+*.pyc
 .idea
 .vscode

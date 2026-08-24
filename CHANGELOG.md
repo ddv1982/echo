@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.10.0
+
+- Recommended setup now installs Large v3 Turbo Q5_0 on machines with at least 8 GiB RAM. The 547 MiB quantized model replaces Small as the normal high-quality multilingual choice, while Base Q5_1 remains the low-memory fallback and existing Small or manual models stay supported.
+- Settings uses one Speech model row: Whisper exposes installed choices with honest quality guidance, while Parakeet shows its fixed TDT 0.6B v3 model and automatic 25-language capability instead of making the control disappear.
+- Parakeet now parses the pinned sherpa-onnx JSON protocol, passes only transcript text to cleanup and insertion, reports its model path, and uses the required NeMo transducer model type.
+- Linux clipboard fallback leaves the dictated text available after paste instead of racing the target by immediately restoring old clipboard contents. Wayland clipboard tools are preferred in Wayland sessions and direct typing remains clipboard-free.
+- A manifest-driven benchmark runs installed speech candidates through the shipping CLI, fails on missing or broken candidates, and reports per-language WER, real-time factor, and silence hallucinations in JSON Lines and Markdown.
+
 ## v0.9.1
 
 - Managed Whisper setup now installs the pinned 1.9.2 runtime even when its shared-library symlinks appear before their targets in the archive.
