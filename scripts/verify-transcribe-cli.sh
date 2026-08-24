@@ -149,4 +149,37 @@ assert parakeet["selection"] == "automatic-only"
 assert len(parakeet["languages"]) == 25
 PY
 
+PARAKEET_MODEL="$MODEL_DIR/parakeet-tdt-0.6b-v3"
+mkdir -p "$PARAKEET_MODEL"
+for name in encoder.int8.onnx decoder.int8.onnx joiner.int8.onnx tokens.txt; do
+  printf '%s' fixture > "$PARAKEET_MODEL/$name"
+done
+cat > "$VERIFY_ROOT/bin/sherpa-onnx-offline" <<'SH'
+#!/bin/sh
+for arg in "$@"; do printf '%s\n' "$arg"; done > "$ECHO_PARAKEET_ARGV_LOG"
+printf '%s\n' '{"lang":"","emotion":"","event":"","text":" parakeet transcript","timestamps":[],"tokens":[],"words":[]}'
+SH
+chmod +x "$VERIFY_ROOT/bin/sherpa-onnx-offline"
+
+PATH="$VERIFY_ROOT/bin:$PATH" \
+ECHO_PARAKEET_ARGV_LOG="$VERIFY_ROOT/parakeet-argv.log" \
+ECHO_CONFIG_DIR="$CONFIG_DIR" \
+ECHO_DATA_DIR="$DATA_DIR" \
+ECHO_MODEL_DIR="$MODEL_DIR" \
+"$BIN" transcribe "$WAV" --engine parakeet --language auto --format json > "$VERIFY_ROOT/parakeet.json"
+
+grep -Fxq -- '--model-type=nemo_transducer' "$VERIFY_ROOT/parakeet-argv.log"
+python3 - "$VERIFY_ROOT/parakeet.json" "$PARAKEET_MODEL" <<'PY'
+import json
+import pathlib
+import sys
+
+value = json.loads(pathlib.Path(sys.argv[1]).read_bytes())
+assert value["raw"] == "parakeet transcript"
+assert value["text"] == "parakeet transcript"
+assert value["engine"]["id"] == "parakeet"
+assert value["engine"]["modelPath"] == sys.argv[2]
+assert "{" not in value["raw"]
+PY
+
 printf '%s\n' 'verify-transcribe-cli: ok'
