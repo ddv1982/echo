@@ -12,6 +12,9 @@ if [ -z "$archive_path" ]; then
   curl --fail --location --retry 3 \
     --output "$archive_path" \
     https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.2/whisper-bin-ubuntu-x64.tar.gz
+else
+  archive_dir=$(cd "$(dirname "$archive_path")" && pwd)
+  archive_path="$archive_dir/$(basename "$archive_path")"
 fi
 
 test -f "$archive_path"
