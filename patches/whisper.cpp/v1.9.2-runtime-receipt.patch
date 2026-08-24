@@ -1,0 +1,42 @@
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -17643 +17643,28 @@ static ggml_backend_t ggml_backend_vk_device_init(ggml_backend_dev_t dev, const
++static std::string ggml_vk_uuid_hex(const uint8_t uuid[VK_UUID_SIZE]) {
++    std::ostringstream value;
++    value << std::hex << std::nouppercase << std::setfill('0');
++    for (size_t i = 0; i < VK_UUID_SIZE; ++i) {
++        value << std::setw(2) << static_cast<unsigned int>(uuid[i]);
++    }
++    return value.str();
++}
++
++static void ggml_backend_vk_emit_runtime_receipt(size_t selected_index, const vk_device & device) {
++    vk::PhysicalDeviceProperties2 properties = {};
++    vk::PhysicalDeviceIDProperties identifiers = {};
++    properties.pNext = &identifiers;
++    device->physical_device.getProperties2(&properties);
++
++    std::cerr
++        << "echo_whisper_runtime_receipt: {\"schemaVersion\":1,\"backend\":\"vulkan\",\"selectedIndex\":" << selected_index
++        << ",\"vendorId\":" << properties.properties.vendorID
++        << ",\"deviceId\":" << properties.properties.deviceID
++        << ",\"apiVersion\":" << properties.properties.apiVersion
++        << ",\"driverVersion\":" << properties.properties.driverVersion
++        << ",\"deviceUUID\":\"" << ggml_vk_uuid_hex(identifiers.deviceUUID.data())
++        << "\",\"driverUUID\":\"" << ggml_vk_uuid_hex(identifiers.driverUUID.data())
++        << "\",\"pipelineCacheUUID\":\"" << ggml_vk_uuid_hex(properties.properties.pipelineCacheUUID.data())
++        << "\"}" << std::endl;
++}
++
+ static ggml_backend_t ggml_backend_vk_device_init(ggml_backend_dev_t dev, const char * params) {
+@@ -17644,4 +17671,8 @@ static ggml_backend_t ggml_backend_vk_device_init(ggml_backend_dev_t dev, const
+     UNUSED(params);
+     ggml_backend_vk_device_context * ctx = (ggml_backend_vk_device_context *)dev->context;
+-    return ggml_backend_vk_init(ctx->device);
++    ggml_backend_t backend = ggml_backend_vk_init(ctx->device);
++    if (backend != nullptr) {
++        ggml_backend_vk_emit_runtime_receipt(ctx->device, ggml_vk_get_device(ctx->device));
++    }
++    return backend;
+ }

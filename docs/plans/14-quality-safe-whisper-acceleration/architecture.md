@@ -26,10 +26,11 @@ The inference process emits one machine-readable receipt after backend creation.
 - The observed backend and selected index.
 - Vendor ID, device ID, API version, and driver version.
 - Device UUID, driver UUID, and pipeline cache UUID when the backend exposes them.
-- The selected ICD manifest and driver-library digests.
-- The loaded non-driver runtime-library digests.
 
-Loader logs and `vulkaninfo` corroborate the receipt. They do not replace it. A normal upstream runtime without enough proof remains ineligible.
+Loader logs bind the receipt to the selected backend index; `vulkaninfo` can
+corroborate it. Neither replaces the receipt. The receipt does not prove a
+selected ICD manifest or loaded runtime-library digests: those are launch
+evidence. A normal upstream runtime without enough proof remains ineligible.
 
 The instrumentation patch stays narrow, reproducible, and pinned to the whisper.cpp source revision. If upstream gains an equivalent receipt, Echo deletes the patch.
 
