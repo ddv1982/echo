@@ -85,6 +85,8 @@ See [architecture.md](architecture.md).
 
 Phase 6 is a stop gate. If residency misses its threshold, skip Phases 7 and 8. Phase 10 is also conditional. It proceeds only when Phase 5 identifies one backend with enough coverage and benefit to justify a pinned artifact.
 
+The Linux GPU continuation is recorded in [gpu-research.md](gpu-research.md). Phase 5 now advances through measurement, host bakeoff, same-model fallback integration, and only then packaging. Its decisions are per model and cache state: first-use Iris Xe Vulkan carried a large penalty, while steady one-shot smoke runs made multilingual Base and Turbo faster.
+
 ## Verification
 
 Project checks:
@@ -99,6 +101,7 @@ npm run build --prefix frontend
 npm run test:responsive --prefix frontend
 ./scripts/verify-transcribe-cli.sh
 ./scripts/verify-stt-benchmark.sh
+./scripts/verify-whisper-acceleration.sh
 ./scripts/verify-whisper-runtime-archive.sh
 cargo build --release
 ```

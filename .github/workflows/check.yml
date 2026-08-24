@@ -72,6 +72,8 @@ jobs:
 
       - run: ./scripts/verify-stt-benchmark.sh
 
+      - run: ./scripts/verify-whisper-acceleration.sh
+
       - run: ./scripts/verify-whisper-runtime-archive.sh
 
       - name: Reclaim test artifacts
