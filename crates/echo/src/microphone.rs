@@ -129,6 +129,7 @@ pub fn classify_input(raw: &RawInputDescriptor) -> EndpointTier {
     let id = raw.id.as_str().to_ascii_lowercase();
     if matches!(raw.host, AudioHost::PipeWire | AudioHost::PulseAudio) {
         let device_type = raw.device_type.as_deref().unwrap_or_default();
+        let label = raw.label.trim_start().to_ascii_lowercase();
         let playback_endpoint = contains_any(
             &id,
             &[
@@ -136,11 +137,15 @@ pub fn classify_input(raw: &RawInputDescriptor) -> EndpointTier {
                 ":output_default",
                 ":alsa_output",
                 ":bluez_output",
+                ":monitor",
+                ".monitor",
+                "_monitor",
+                "-monitor",
             ],
         ) || matches!(
             device_type.to_ascii_lowercase().as_str(),
             "speaker" | "headphones"
-        );
+        ) || label.starts_with("monitor of ");
         return if playback_endpoint {
             EndpointTier::Advanced
         } else {
@@ -539,10 +544,11 @@ mod tests {
     }
 
     #[test]
-    fn pipewire_playback_sinks_are_advanced_even_when_duplex() {
+    fn native_playback_sinks_and_monitors_are_advanced() {
         for (id, label, device_type) in [
             ("pipewire:sink_default", "default_sink", None),
             ("pipewire:output_default", "default_output", None),
+            ("pulseaudio:42", "Monitor of Built-in Audio", None),
             (
                 "pipewire:alsa_output.pci-0000_00_1f.3.analog-stereo",
                 "Built-in Audio",
