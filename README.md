@@ -103,7 +103,7 @@ The shortcut setup row distinguishes the desktop portal, X11, a ready GNOME cust
 | X11 | The production global-hotkey path runs in nested Xephyr. Hardware-level ydotool input reaches the toggle handler while another inner application owns focus; a separate check proves conflict rejection and unregister cleanup. | Native X11 routing and ownership, not Wayland behavior. |
 | GNOME 46 Wayland | This host proves the GlobalShortcuts interface is absent, the production status IPC exposes explicit setup/repair, and repair changes only the confirmed Echo-owned custom binding. | Older-GNOME fallback only; desktop settings are never changed at startup. |
 
-Models live under `$XDG_CACHE_HOME/echo` (normally `~/.cache/echo`) or `ECHO_MODEL_DIR`. On Linux x86_64, Home and Settings can install a complete managed setup without a package manager. Recommended uses multilingual Base Q5_1 below 4 GiB RAM or when memory is unknown, and Small on machines with at least 4 GiB. Large v3 Turbo stays an explicit advanced choice. Parakeet setup installs the pinned sherpa-onnx runtime and its four model files.
+Models live under `$XDG_CACHE_HOME/echo` (normally `~/.cache/echo`) or `ECHO_MODEL_DIR`. On Linux x86_64, Home and Settings can install a complete managed setup without a package manager. Recommended uses multilingual Base Q5_1 below 8 GiB RAM or when memory is unknown, and the 547 MiB Large v3 Turbo Q5_0 model on machines with at least 8 GiB. Small remains an explicit advanced and compatibility choice. Parakeet setup installs the pinned sherpa-onnx runtime and its four model files.
 
 Managed downloads resume after cancellation or interruption, check free disk space before HTTP, verify SHA-256, extract only catalogued archive payloads, and activate one immutable component generation at a time. Verify hashes every managed file. Repair replaces missing or corrupt generations. Remove deletes only files recorded under Echo's managed directory. System runtimes on `PATH` and models copied into the existing flat cache remain external inputs; Echo labels and uses them but never repairs or removes them.
 
@@ -112,6 +112,8 @@ Settings stores the selected microphone by CPAL device ID and keeps its last lab
 If the selected engine or its model is missing, recording ends with `EngineMissing`. Auto picks the first installed real engine (Parakeet, then Whisper) and fails with `EngineMissing` when neither is installed. The deterministic fake engine runs only when you set `ECHO_ENGINE=fake`; it transcribes any non-silent audio as `claude code` and exists for smoke tests, so it stays out of the Settings selector unless `ECHO_SHOW_FAKE=1` is set.
 
 With no `ECHO_WHISPER_MODEL` setting, Whisper runs the best installed model: multilingual over `.en`, then the larger family. Pin one with `ECHO_WHISPER_MODEL=small` or the `whisper_model` config key.
+
+Model comparisons can be rerun through the shipping CLI with `scripts/benchmark-stt.py`. See `benchmarks/stt/README.md` for the manifest format and Small, Large v3 Turbo Q5_0, and Parakeet example.
 
 With a multilingual model, Echo detects the language automatically. Set `ECHO_LANGUAGE=de` (or the `language` config key) to pin any of the 100 languages whisper.cpp supports; pinning skips detection's extra encoder pass, and after a confident auto-detection Settings offers to pin the detected language in one click. An English-only (`.en`) model pins English, the only thing it can do, and combining one with a non-English language or `auto` is refused before recording, because whisper-cli would silently transcribe English and exit 0. Parakeet identifies its 25 supported languages automatically and reports none.
 
@@ -171,7 +173,7 @@ The brand colors, declared for Flathub metainfo when packaging catches up: light
 
 ## Inject
 
-On X11 the cascade is `xdotool type`, then clipboard plus Ctrl+V, then restore the clipboard. On Wayland it uses `ydotool` or `wtype` when those tools exist. A log line that says the insert worked is not enough. `cargo test -p echo --test inject_linux` types a nonce into a widget this repo compiles and reads that nonce back.
+On X11 the cascade is `xdotool type`, then clipboard plus Ctrl+V. On Wayland it uses `ydotool` or `wtype` when those tools exist, with the same clipboard fallback. Clipboard fallback leaves the transcript on the clipboard because restoring the previous value before the target requests it can paste the wrong text; direct typing never changes the clipboard. A log line that says the insert worked is not enough. `cargo test -p echo --test inject_linux` types a nonce into a widget this repo compiles and reads that nonce back.
 
 ## Live checks
 
