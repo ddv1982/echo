@@ -1,16 +1,23 @@
 use std::fs;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
 use std::time::Instant;
 
 use echo_core::{
     strip_nonspeech, DecodeOptions, Engine, EngineError, EngineId, Language, LanguageChoice,
-    Pcm16kMono, RunDetail, Transcript,
+    Pcm16kMono, RunDetail, Transcript, WhisperAttemptTelemetry, WhisperRetryReason, WhisperRunMode,
+    WhisperRunTelemetry, WhisperRuntimeBackend, WhisperRuntimeSource, WhisperRuntimeTelemetry,
+    WhisperTuningTelemetry,
 };
 use serde::Deserialize;
 
 use super::cache::{parse_whisper_filename, ModelCache};
 use super::write_temp_wav;
+use super::{
+    WhisperExecutionPlan, WhisperModelAsset, WhisperProtocol, WhisperRuntimeCandidate,
+    WhisperTuning,
+};
 use crate::which::path_of;
 
 pub struct WhisperEngine {
@@ -20,12 +27,7 @@ pub struct WhisperEngine {
 
 enum WhisperFiles {
     Discover(ModelCache),
-    Explicit {
-        binary: PathBuf,
-        model: PathBuf,
-        vad: Option<PathBuf>,
-        multilingual: bool,
-    },
+    Explicit(WhisperExecutionPlan),
 }
 
 impl WhisperEngine {
@@ -38,6 +40,14 @@ impl WhisperEngine {
     }
 
     #[must_use]
+    pub fn with_plan(plan: WhisperExecutionPlan) -> Self {
+        Self {
+            model: plan.model.name.clone(),
+            files: WhisperFiles::Explicit(plan),
+        }
+    }
+
+    #[must_use]
     pub fn with_paths(
         model_name: impl Into<String>,
         binary: PathBuf,
@@ -45,15 +55,21 @@ impl WhisperEngine {
         vad: Option<PathBuf>,
         multilingual: bool,
     ) -> Self {
-        Self {
-            model: model_name.into(),
-            files: WhisperFiles::Explicit {
-                binary,
-                model,
-                vad,
+        let model_name = model_name.into();
+        Self::with_plan(WhisperExecutionPlan::one_shot(
+            WhisperRuntimeCandidate {
+                source: WhisperRuntimeSource::Unknown,
+                backend: WhisperRuntimeBackend::Unknown,
+                cli: binary,
+                server: None,
+            },
+            WhisperModelAsset {
+                name: model_name,
+                path: model,
                 multilingual,
             },
-        }
+            vad,
+        ))
     }
 
     /// True when both the runner binary and a model file are installed.
@@ -76,13 +92,8 @@ impl WhisperEngine {
     /// is a pre-flight guess used to refuse impossible language choices; the
     /// authoritative value is `model.multilingual` in the engine's JSON.
     pub(crate) fn selected_model(&self) -> Option<(PathBuf, bool)> {
-        if let WhisperFiles::Explicit {
-            model,
-            multilingual,
-            ..
-        } = &self.files
-        {
-            return Some((model.clone(), *multilingual));
+        if let WhisperFiles::Explicit(plan) = &self.files {
+            return Some((plan.model.path.clone(), plan.model.multilingual));
         }
         let WhisperFiles::Discover(cache) = &self.files else {
             return None;
@@ -122,15 +133,44 @@ impl WhisperEngine {
 
     fn resolved_binary(&self) -> Option<PathBuf> {
         match &self.files {
-            WhisperFiles::Explicit { binary, .. } => Some(binary.clone()),
+            WhisperFiles::Explicit(plan) => Some(plan.runtime.cli.clone()),
             WhisperFiles::Discover(_) => Self::binary(),
         }
     }
 
     fn vad_model(&self) -> Option<PathBuf> {
         match &self.files {
-            WhisperFiles::Explicit { vad, .. } => vad.clone(),
+            WhisperFiles::Explicit(plan) => plan.vad.clone(),
             WhisperFiles::Discover(cache) => cache.vad_model(),
+        }
+    }
+
+    fn tuning(&self) -> WhisperTuning {
+        match &self.files {
+            WhisperFiles::Explicit(plan) => plan.tuning,
+            WhisperFiles::Discover(_) => WhisperTuning::runtime_defaults(),
+        }
+    }
+
+    fn runtime_identity(&self, binary: String) -> WhisperRuntimeTelemetry {
+        match &self.files {
+            WhisperFiles::Explicit(plan) => WhisperRuntimeTelemetry {
+                binary,
+                source: plan.runtime.source,
+                backend: plan.runtime.backend,
+            },
+            WhisperFiles::Discover(_) => WhisperRuntimeTelemetry {
+                binary,
+                source: WhisperRuntimeSource::System,
+                backend: WhisperRuntimeBackend::Unknown,
+            },
+        }
+    }
+
+    fn protocol(&self) -> WhisperProtocol {
+        match &self.files {
+            WhisperFiles::Explicit(plan) => plan.protocol,
+            WhisperFiles::Discover(_) => WhisperProtocol::OneShotCli,
         }
     }
 }
@@ -147,48 +187,157 @@ impl Engine for WhisperEngine {
         pcm: &Pcm16kMono,
         options: &DecodeOptions,
     ) -> Result<Transcript, EngineError> {
+        if !matches!(self.protocol(), WhisperProtocol::OneShotCli) {
+            return Err(EngineError::Infer(
+                "resident Whisper execution is not available".to_string(),
+            ));
+        }
         let (model, multilingual) = self.selected_model().ok_or(EngineError::Missing)?;
         refuse_impossible_language(&model, multilingual, options.language)?;
         let bin = self.resolved_binary().ok_or(EngineError::Missing)?;
         let started = Instant::now();
-        let wav = write_temp_wav(pcm).map_err(EngineError::Infer)?;
+        let encode_started = Instant::now();
+        let wav = TempWav::new(write_temp_wav(pcm).map_err(EngineError::Infer)?);
+        let audio_encode_ms = elapsed_ms(encode_started);
         let vad = self.vad_model();
-        let first = Command::new(&bin)
-            .args(whisper_args(&model, &wav, vad.as_deref(), options))
-            .output()
-            .map_err(|err| EngineError::Infer(err.to_string()))?;
-        let (status, vad_active) = if !first.status.success() && vad.is_some() {
-            let retry = Command::new(&bin)
-                .args(whisper_args(&model, &wav, None, options))
-                .output()
-                .map_err(|err| EngineError::Infer(err.to_string()))?;
-            (retry, false)
+        let tuning = self.tuning();
+        let (first, mut first_telemetry) = run_attempt(
+            &bin,
+            whisper_args_with_tuning(&model, wav.path(), vad.as_deref(), options, tuning),
+            vad.is_some(),
+        )?;
+        let retry_without_vad = !first.status.success()
+            && vad.is_some()
+            && should_retry_without_vad(&String::from_utf8_lossy(&first.stderr));
+        let (status, vad_active, mode, attempts) = if retry_without_vad {
+            first_telemetry.retry_reason = Some(WhisperRetryReason::VadRejected);
+            let (retry, retry_telemetry) = run_attempt(
+                &bin,
+                whisper_args_with_tuning(&model, wav.path(), None, options, tuning),
+                false,
+            )?;
+            (
+                retry,
+                false,
+                WhisperRunMode::ColdFallback,
+                vec![first_telemetry, retry_telemetry],
+            )
         } else {
-            (first, vad.is_some())
+            (
+                first,
+                vad.is_some(),
+                WhisperRunMode::ColdCli,
+                vec![first_telemetry],
+            )
         };
-        let _ = fs::remove_file(&wav);
+        let _ = fs::remove_file(wav.path());
+        let parse_started = Instant::now();
         let parsed = finish_whisper(
             status.status.success(),
             &status.stdout,
             &String::from_utf8_lossy(&status.stderr),
         )?;
+        let parse_ms = elapsed_ms(parse_started);
+        let total_ms = elapsed_ms(started);
+        let binary = bin.to_string_lossy().into_owned();
         Ok(Transcript {
             raw: raw_text(&parsed.text),
             engine: EngineId::Whisper {
                 model: parsed.model,
             },
             audio_ms: pcm.duration_ms(),
-            infer_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            infer_ms: total_ms,
             detail: RunDetail {
-                binary: Some(bin.to_string_lossy().into_owned()),
+                binary: Some(binary.clone()),
                 model_path: Some(model.to_string_lossy().into_owned()),
                 multilingual: Some(parsed.multilingual),
                 vad: Some(vad_active),
                 language: parsed.language.clone(),
                 language_probability: parsed.language_probability,
+                whisper: Some(WhisperRunTelemetry {
+                    mode,
+                    total_ms,
+                    audio_encode_ms,
+                    parse_ms,
+                    runtime: self.runtime_identity(binary),
+                    tuning: WhisperTuningTelemetry {
+                        threads: tuning.threads.map(NonZeroUsize::get),
+                        beam_size: tuning.beam_size,
+                        best_of: tuning.best_of,
+                        no_fallback: tuning.no_fallback,
+                    },
+                    attempts,
+                }),
             },
         })
     }
+}
+
+struct TempWav(PathBuf);
+
+impl TempWav {
+    fn new(path: PathBuf) -> Self {
+        Self(path)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempWav {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+fn run_attempt(
+    binary: &Path,
+    args: Vec<String>,
+    vad: bool,
+) -> Result<(Output, WhisperAttemptTelemetry), EngineError> {
+    let wall_started = Instant::now();
+    let spawn_started = Instant::now();
+    let child = Command::new(binary)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| EngineError::Infer(error.to_string()))?;
+    let process_start_ms = elapsed_ms(spawn_started);
+    let output = child
+        .wait_with_output()
+        .map_err(|error| EngineError::Infer(error.to_string()))?;
+    let telemetry = WhisperAttemptTelemetry {
+        vad,
+        process_start_ms,
+        child_wall_ms: elapsed_ms(wall_started),
+        success: output.status.success(),
+        exit_code: output.status.code(),
+        retry_reason: None,
+    };
+    Ok((output, telemetry))
+}
+
+fn should_retry_without_vad(stderr: &str) -> bool {
+    stderr.lines().any(|line| {
+        let line = line.to_ascii_lowercase();
+        let runtime_failure = line.contains("failed to")
+            && (line.contains("vad context")
+                || line.contains("vad model")
+                || line.contains("compute vad"));
+        let unsupported_flag = ["unknown", "unrecognized", "unsupported", "invalid"]
+            .iter()
+            .any(|word| line.contains(word))
+            && ["--vad", "--vad-model", "-vm"]
+                .iter()
+                .any(|flag| line.contains(flag));
+        runtime_failure || unsupported_flag
+    })
 }
 
 /// Refuse before spawning when the model cannot honour the language choice.
@@ -219,11 +368,22 @@ fn refuse_impossible_language(
     )))
 }
 
+#[cfg(test)]
 fn whisper_args(
     model: &Path,
     wav: &Path,
     vad: Option<&Path>,
     options: &DecodeOptions,
+) -> Vec<String> {
+    whisper_args_with_tuning(model, wav, vad, options, WhisperTuning::runtime_defaults())
+}
+
+fn whisper_args_with_tuning(
+    model: &Path,
+    wav: &Path,
+    vad: Option<&Path>,
+    options: &DecodeOptions,
+    tuning: WhisperTuning,
 ) -> Vec<String> {
     let mut args = vec![
         "-m".into(),
@@ -240,6 +400,18 @@ fn whisper_args(
             LanguageChoice::Pinned(language) => language.code().to_string(),
         },
     ];
+    if let Some(threads) = tuning.threads {
+        args.extend(["-t".into(), threads.get().to_string()]);
+    }
+    if let Some(beam_size) = tuning.beam_size {
+        args.extend(["-bs".into(), beam_size.to_string()]);
+    }
+    if let Some(best_of) = tuning.best_of {
+        args.extend(["-bo".into(), best_of.to_string()]);
+    }
+    if tuning.no_fallback == Some(true) {
+        args.push("-nf".into());
+    }
     if !options.hints.is_empty() {
         args.push("--prompt".into());
         args.push(options.hints.terms().join(", "));
@@ -542,6 +714,19 @@ mod tests {
     }
 
     #[test]
+    fn normal_runs_preserve_runtime_tuning_defaults() {
+        let args = whisper_args(
+            Path::new("model.bin"),
+            Path::new("in.wav"),
+            None,
+            &options(LanguageChoice::Auto),
+        );
+        assert!(args
+            .iter()
+            .all(|arg| !matches!(arg.as_str(), "-t" | "-bs" | "-bo" | "-nf")));
+    }
+
+    #[test]
     fn args_never_contain_dl_or_a_translate_task() {
         // `-dl` bypasses the multilingual guard through an upstream bug, and
         // turbo models are not trained for translation and would silently
@@ -669,5 +854,19 @@ mod tests {
         let err = finish_whisper(false, fixture("english.json").as_bytes(), "decoder crashed")
             .unwrap_err();
         assert_eq!(err, EngineError::Infer("decoder crashed".into()));
+    }
+
+    #[test]
+    fn only_vad_failures_allow_the_no_vad_retry() {
+        assert!(should_retry_without_vad("failed to load VAD model"));
+        assert!(should_retry_without_vad(
+            "whisper_vad: failed to initialize VAD context"
+        ));
+        assert!(should_retry_without_vad("error: unknown argument: --vad"));
+        assert!(!should_retry_without_vad("decoder crashed"));
+        assert!(!should_retry_without_vad("model allocation failed"));
+        assert!(!should_retry_without_vad(
+            "decoder crashed after loading ggml-silero-v6.2.0.bin"
+        ));
     }
 }

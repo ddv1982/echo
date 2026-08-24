@@ -368,8 +368,14 @@ impl ManagedStore {
             .join("releases")
             .join(&record.release);
         ensure_contained(&self.component_dir(id), &root)?;
+        let expected = expected_files(id);
+        if !receipt_files_compatible(id, &record.files, &expected) {
+            return Err(InstallError::State(
+                "activation record does not match the compiled catalogue".to_string(),
+            ));
+        }
         if let Err(error) = verify_receipt(&root, &record)
-            .and_then(|_| verify_payload_cached(&root.join("payload"), &expected_files(id), false))
+            .and_then(|_| verify_payload_cached(&root.join("payload"), &record.files, false))
         {
             self.mark_needs_repair(id, &error);
             return Err(error);
@@ -408,7 +414,9 @@ impl ManagedStore {
                 }
             }
         };
-        if record.artifact_sha256 != spec.artifact_sha256 || record.files != expected {
+        if record.artifact_sha256 != spec.artifact_sha256
+            || !receipt_files_compatible(id, &record.files, expected)
+        {
             return ManagedComponentState::NeedsRepair {
                 reason: "activation record does not match the compiled catalogue".to_string(),
                 resumable_bytes,
@@ -430,7 +438,9 @@ impl ManagedStore {
                 resumable_bytes,
             };
         }
-        if let Err(error) = verify_payload_cached(&release.join("payload"), expected, full_verify) {
+        if let Err(error) =
+            verify_payload_cached(&release.join("payload"), &record.files, full_verify)
+        {
             self.mark_needs_repair(id, &error);
             return ManagedComponentState::NeedsRepair {
                 reason: error.to_string(),
@@ -439,7 +449,7 @@ impl ManagedStore {
         }
         ManagedComponentState::Ready {
             version: record.version,
-            bytes: expected.iter().map(|file| file.size).sum(),
+            bytes: record.files.iter().map(|file| file.size).sum(),
             root: release.join("payload").to_string_lossy().into_owned(),
         }
     }
@@ -501,7 +511,13 @@ impl ManagedStore {
                 .join("releases")
                 .join(&record.release);
             verify_receipt(&root, &record)?;
-            verify_payload_cached(&root.join("payload"), &expected_files(id), true)
+            let expected = expected_files(id);
+            if !receipt_files_compatible(id, &record.files, &expected) {
+                return Err(InstallError::State(
+                    "activation record does not match the compiled catalogue".to_string(),
+                ));
+            }
+            verify_payload_cached(&root.join("payload"), &record.files, true)
         })();
         match result {
             Ok(()) => self.clear_repair_marker(id),
@@ -517,7 +533,7 @@ impl ManagedStore {
         let _lease = self.lock_exclusive(id)?;
         if let Some(record) = self.read_active(id)? {
             validate_release_name(id, &record.release)?;
-            if record.files != expected_files(id) {
+            if !receipt_files_compatible(id, &record.files, &expected_files(id)) {
                 return Err(InstallError::State(
                     "refusing removal because the receipt differs from the compiled catalogue"
                         .to_string(),
@@ -562,16 +578,22 @@ impl ManagedStore {
             let release = entry.path();
             ensure_contained(&self.component_dir(id), &release)?;
             let receipt_path = release.join("receipt.json");
-            if receipt_path.exists() {
+            let owned_files = if receipt_path.exists() {
                 let record: ActivationRecord = serde_json::from_slice(&fs::read(&receipt_path)?)
                     .map_err(|error| InstallError::State(error.to_string()))?;
-                if record.component != id || record.release != name || record.files != expected {
+                if record.component != id
+                    || record.release != name
+                    || !receipt_files_compatible(id, &record.files, expected)
+                {
                     return Err(InstallError::State(format!(
                         "refusing unknown managed release {name}"
                     )));
                 }
-            }
-            cleanup_payload_subset(&release.join("payload"), expected)?;
+                record.files
+            } else {
+                expected.to_vec()
+            };
+            cleanup_payload_subset(&release.join("payload"), &owned_files)?;
             let verification_path = release.join("verified.json");
             if verification_path.exists() {
                 fs::remove_file(verification_path)?;
@@ -649,6 +671,23 @@ impl Drop for ComponentLease {
 
 fn expected_files(id: ComponentId) -> Vec<InstalledFile> {
     expected_files_for(component(id))
+}
+
+fn receipt_files_compatible(
+    id: ComponentId,
+    actual: &[InstalledFile],
+    expected: &[InstalledFile],
+) -> bool {
+    if actual == expected {
+        return true;
+    }
+    if id != ComponentId::WhisperRuntime {
+        return false;
+    }
+    expected
+        .iter()
+        .filter(|file| file.relative_path != "whisper-server")
+        .eq(actual.iter())
 }
 
 fn expected_files_for(spec: &catalog::ComponentSpec) -> Vec<InstalledFile> {

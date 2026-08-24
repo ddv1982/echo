@@ -7,11 +7,14 @@ import argparse
 import hashlib
 import json
 import os
+import platform
+import random
 import re
 import statistics
 import subprocess
 import sys
 import tempfile
+import time
 import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass
@@ -25,6 +28,10 @@ class Candidate:
     label: str
     engine: str
     model: str | None
+    threads: int | None = None
+    beam_size: int | None = None
+    best_of: int | None = None
+    no_fallback: bool = False
 
 
 def normalized_words(text: str) -> list[str]:
@@ -55,11 +62,41 @@ def hallucinated_silence(reference_words: list[str], transcript: str) -> bool:
 def parse_candidate(raw: str) -> Candidate:
     if raw in {"fake", "parakeet"}:
         return Candidate(label=raw, engine=raw, model=None)
-    engine, separator, model = raw.partition(":")
+    base, option_separator, option_text = raw.partition("@")
+    engine, separator, model = base.partition(":")
     if engine == "whisper" and separator and model:
-        return Candidate(label=raw, engine=engine, model=model)
+        values: dict[str, int | bool] = {}
+        if option_separator:
+            for entry in option_text.split(","):
+                key, value_separator, value = entry.partition("=")
+                if key == "no-fallback" and not value_separator:
+                    values[key] = True
+                    continue
+                if key not in {"threads", "beam", "best-of", "no-fallback"} or not value_separator:
+                    raise argparse.ArgumentTypeError(f"invalid Whisper candidate option: {entry}")
+                if key == "no-fallback":
+                    if value not in {"true", "false"}:
+                        raise argparse.ArgumentTypeError("no-fallback must be true or false")
+                    values[key] = value == "true"
+                    continue
+                try:
+                    parsed = int(value)
+                except ValueError as error:
+                    raise argparse.ArgumentTypeError(f"{key} must be an integer") from error
+                if parsed < 1:
+                    raise argparse.ArgumentTypeError(f"{key} must be at least 1")
+                values[key] = parsed
+        return Candidate(
+            label=raw,
+            engine=engine,
+            model=model,
+            threads=values.get("threads"),
+            beam_size=values.get("beam"),
+            best_of=values.get("best-of"),
+            no_fallback=bool(values.get("no-fallback", False)),
+        )
     raise argparse.ArgumentTypeError(
-        "candidate must be fake, parakeet, or whisper:MODEL"
+        "candidate must be fake, parakeet, or whisper:MODEL[@threads=N,beam=N,best-of=N,no-fallback]"
     )
 
 
@@ -125,7 +162,68 @@ def command_for(binary: Path, candidate: Candidate, utterance: dict[str, object]
         command.extend(["--engine", candidate.engine])
     if candidate.model is not None:
         command.extend(["--model", candidate.model])
+    for flag, value in [
+        ("--whisper-threads", candidate.threads),
+        ("--whisper-beam-size", candidate.beam_size),
+        ("--whisper-best-of", candidate.best_of),
+    ]:
+        if value is not None:
+            command.extend([flag, str(value)])
+    if candidate.no_fallback:
+        command.append("--whisper-no-fallback")
     return command
+
+
+def host_metadata() -> dict[str, object]:
+    uname = platform.uname()
+    return {
+        "system": uname.system,
+        "release": uname.release,
+        "machine": uname.machine,
+        "processor": uname.processor,
+        "cpuCount": os.cpu_count(),
+    }
+
+
+def artifact_identity(
+    raw_path: object, cache: dict[str, dict[str, object]]
+) -> dict[str, object] | None:
+    if not isinstance(raw_path, str) or not raw_path:
+        return None
+    if raw_path in cache:
+        return cache[raw_path]
+    path = Path(raw_path)
+    identity = {
+        "path": str(path),
+        "sha256": sha256(path) if path.is_file() else None,
+    }
+    cache[raw_path] = identity
+    return identity
+
+
+def invoke_candidate(
+    binary: Path,
+    candidate: Candidate,
+    utterance: dict[str, object],
+    environment: dict[str, str],
+) -> tuple[subprocess.CompletedProcess[str], dict[str, object], float]:
+    command = command_for(binary, candidate, utterance)
+    started = time.perf_counter_ns()
+    completed = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    outer_ms = (time.perf_counter_ns() - started) / 1_000_000
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise RuntimeError(f"{candidate.label} failed for {utterance['id']}: {detail}")
+    payload = json.loads(completed.stdout)
+    if not isinstance(payload, dict):
+        raise ValueError("Echo JSON output must be an object")
+    return completed, payload, outer_ms
 
 
 def run_benchmark(args: argparse.Namespace) -> None:
@@ -133,8 +231,15 @@ def run_benchmark(args: argparse.Namespace) -> None:
     if not binary.is_file():
         raise ValueError(f"Echo binary is missing: {binary}")
     utterances = load_manifest(args.manifest.resolve())
+    labels = [candidate.label for candidate in args.candidate]
+    if len(labels) != len(set(labels)):
+        raise ValueError("candidate labels must be unique")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, object]] = []
+    host = host_metadata()
+    binary_identity = {"path": str(binary), "sha256": sha256(binary)}
+    artifact_identities: dict[str, dict[str, object]] = {}
+    rng = random.Random(args.seed)
     with tempfile.TemporaryDirectory(prefix="echo-stt-benchmark-") as temporary:
         root = Path(temporary)
         environment = os.environ.copy()
@@ -152,37 +257,51 @@ def run_benchmark(args: argparse.Namespace) -> None:
             text=True,
             env=environment,
         ).stdout.strip()
+        environments: dict[str, dict[str, str]] = {}
         for candidate in args.candidate:
             candidate_environment = environment.copy()
             if candidate.engine == "fake":
                 candidate_environment["ECHO_ENGINE"] = "fake"
-            for repeat in range(args.repeats):
-                for utterance in utterances:
-                    command = command_for(binary, candidate, utterance)
-                    completed = subprocess.run(
-                        command,
-                        check=False,
-                        capture_output=True,
-                        text=True,
-                        env=candidate_environment,
+            environments[candidate.label] = candidate_environment
+            for utterance in utterances:
+                for _ in range(args.warmups):
+                    _, payload, _ = invoke_candidate(
+                        binary, candidate, utterance, candidate_environment
                     )
-                    if completed.returncode != 0:
-                        detail = completed.stderr.strip() or completed.stdout.strip()
-                        raise RuntimeError(
-                            f"{candidate.label} failed for {utterance['id']}: {detail}"
-                        )
-                    payload = json.loads(completed.stdout)
+                    engine = payload.get("engine")
+                    if isinstance(engine, dict):
+                        artifact_identity(engine.get("binary"), artifact_identities)
+                        artifact_identity(engine.get("modelPath"), artifact_identities)
+        for repeat in range(args.repeats):
+            for utterance in utterances:
+                ordered = list(args.candidate)
+                rng.shuffle(ordered)
+                for order_index, candidate in enumerate(ordered):
+                    _, payload, outer_ms = invoke_candidate(
+                        binary,
+                        candidate,
+                        utterance,
+                        environments[candidate.label],
+                    )
                     reference_words = normalized_words(str(utterance["reference"]))
                     transcript = str(payload["text"])
                     output_words = normalized_words(transcript)
                     errors = edit_distance(reference_words, output_words)
                     audio_ms = int(payload["audioMs"])
                     infer_ms = int(payload["inferMs"])
+                    engine = payload.get("engine")
+                    if not isinstance(engine, dict):
+                        raise ValueError("Echo JSON output has no engine object")
+                    whisper = payload.get("whisper")
                     rows.append(
                         {
-                            "schemaVersion": 1,
+                            "schemaVersion": 2,
                             "echoVersion": version,
+                            "echoBinary": binary_identity,
+                            "host": host,
+                            "seed": args.seed,
                             "candidate": candidate.label,
+                            "candidateOrder": order_index + 1,
                             "utterance": utterance["id"],
                             "language": utterance["language"],
                             "repeat": repeat + 1,
@@ -199,7 +318,17 @@ def run_benchmark(args: argparse.Namespace) -> None:
                             ),
                             "audioMs": audio_ms,
                             "inferMs": infer_ms,
+                            "outerMs": round(outer_ms, 3),
                             "rtf": infer_ms / audio_ms if audio_ms else None,
+                            "engine": engine,
+                            "runtimeArtifact": artifact_identity(
+                                engine.get("binary"), artifact_identities
+                            ),
+                            "modelArtifact": artifact_identity(
+                                engine.get("modelPath"), artifact_identities
+                            ),
+                            "whisper": whisper if isinstance(whisper, dict) else None,
+                            "warmups": args.warmups,
                         }
                     )
     jsonl = args.output_dir / "runs.jsonl"
@@ -217,18 +346,20 @@ def render_summary(rows: list[dict[str, object]]) -> str:
     lines = [
         "# Echo speech benchmark",
         "",
-        "| Candidate | Language | WER | Median RTF | Silence hallucinations | Runs |",
-        "| --- | --- | ---: | ---: | ---: | ---: |",
+        "| Candidate | Language | WER | Median outer ms | Median RTF | Silence hallucinations | Runs |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
     ]
     for (candidate, language), values in sorted(grouped.items()):
         errors = sum(int(row["wordErrors"]) for row in values if int(row["referenceWords"]) > 0)
         words = sum(int(row["referenceWords"]) for row in values)
         rtf_values = [float(row["rtf"]) for row in values if row["rtf"] is not None]
+        outer_values = [float(row["outerMs"]) for row in values]
         hallucinations = sum(bool(row["hallucinatedSilence"]) for row in values)
         wer = f"{errors / words:.2%}" if words else "n/a"
         rtf = f"{statistics.median(rtf_values):.3f}" if rtf_values else "n/a"
+        outer = f"{statistics.median(outer_values):.1f}"
         lines.append(
-            f"| {candidate} | {language} | {wer} | {rtf} | {hallucinations} | {len(values)} |"
+            f"| {candidate} | {language} | {wer} | {outer} | {rtf} | {hallucinations} | {len(values)} |"
         )
     lines.extend(["", "RTF is `inferMs / audioMs`. Lower is faster.", ""])
     return "\n".join(lines)
@@ -248,17 +379,35 @@ def self_test() -> None:
         {"audio": Path("speech.wav"), "language": "nl"},
     )
     assert parakeet_command[parakeet_command.index("--language") + 1] == "auto"
+    tuned = parse_candidate(
+        "whisper:large-v3-turbo-q5_0@threads=4,beam=1,best-of=2,no-fallback"
+    )
+    tuned_command = command_for(
+        Path("echo-desktop"),
+        tuned,
+        {"audio": Path("speech.wav"), "language": "nl"},
+    )
+    assert tuned_command[-7:] == [
+        "--whisper-threads",
+        "4",
+        "--whisper-beam-size",
+        "1",
+        "--whisper-best-of",
+        "2",
+        "--whisper-no-fallback",
+    ]
     fake_rows = [
         {
             "candidate": "fake",
             "language": "en",
             "wordErrors": 0,
             "referenceWords": 2,
+            "outerMs": 1.0,
             "rtf": 0.0,
             "hallucinatedSilence": False,
         }
     ]
-    assert "| fake | en | 0.00% | 0.000 | 0 | 1 |" in render_summary(fake_rows)
+    assert "| fake | en | 0.00% | 1.0 | 0.000 | 0 | 1 |" in render_summary(fake_rows)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -267,6 +416,8 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--manifest", required=True, type=Path)
     value.add_argument("--candidate", required=True, action="append", type=parse_candidate)
     value.add_argument("--repeats", type=int, default=3)
+    value.add_argument("--warmups", type=int, default=1)
+    value.add_argument("--seed", type=int, default=20260824)
     value.add_argument("--output-dir", required=True, type=Path)
     return value
 
@@ -279,6 +430,8 @@ def main() -> int:
     args = parser().parse_args()
     if args.repeats < 1:
         parser().error("--repeats must be at least 1")
+    if args.warmups < 0:
+        parser().error("--warmups cannot be negative")
     try:
         run_benchmark(args)
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, json.JSONDecodeError) as error:

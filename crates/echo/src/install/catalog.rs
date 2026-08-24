@@ -70,7 +70,7 @@ pub const COMPONENTS: &[ComponentSpec] = &[
         artifact_name: "whisper-bin-ubuntu-x64.tar.gz",
         artifact_size: 9_497_583,
         artifact_sha256: "46811a3ecf584307480a220b9ef5ff81b7b22dc41577cbc274ce3afc61f753b1",
-        installed_bytes: 16_977_592,
+        installed_bytes: 18_284_400,
         format: ArtifactFormat::TarGzip,
         inventory_key: Some("whisper-runtime"),
     },

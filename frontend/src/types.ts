@@ -169,6 +169,24 @@ export interface LastRun {
   inferMs: number
   language: string | null
   languageProbability: number | null
+  performance?: LastRunPerformance | null
+}
+
+export interface LastRunPerformance {
+  mode: 'coldCli' | 'coldFallback'
+  runtimeSource: 'managed' | 'system' | 'unknown'
+  backend: 'cpu' | 'cuda' | 'vulkan' | 'openVino' | 'rocm' | 'unknown'
+  totalMs: number
+  audioEncodeMs: number
+  childWallMs: number
+  parseMs: number
+  attemptCount: number
+  tuning: {
+    threads: number | null
+    beamSize: number | null
+    bestOf: number | null
+    noFallback: boolean | null
+  }
 }
 
 export interface WhisperModelInfo {

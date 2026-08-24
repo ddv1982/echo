@@ -49,6 +49,7 @@ import type {
   AppStatus,
   DictionaryItem,
   HistoryItem,
+  LastRun,
   LanguageOptions,
   ModelInventory,
   Readiness,
@@ -1450,6 +1451,26 @@ function SettingsView({
             {status.lastRun.vad != null ? (
               <SettingLine label="VAD" value={status.lastRun.vad ? 'On' : 'Off'} />
             ) : null}
+            {status.lastRun.performance ? (
+              <>
+                <SettingLine label="Whisper mode" value={whisperModeLabel(status.lastRun.performance.mode)} />
+                <SettingLine
+                  label="Runtime"
+                  value={`${runtimeSourceLabel(status.lastRun.performance.runtimeSource)} · ${backendLabel(status.lastRun.performance.backend)}`}
+                />
+                <SettingLine
+                  label="Whisper timing"
+                  value={`WAV ${status.lastRun.performance.audioEncodeMs} ms · process ${status.lastRun.performance.childWallMs} ms · parse ${status.lastRun.performance.parseMs} ms`}
+                />
+                <SettingLine
+                  label="Decoding"
+                  value={whisperTuningLabel(status.lastRun.performance.tuning)}
+                />
+                {status.lastRun.performance.attemptCount > 1 ? (
+                  <SettingLine label="Whisper attempts" value={`${status.lastRun.performance.attemptCount} · VAD retry`} tone="attention" />
+                ) : null}
+              </>
+            ) : null}
             <SettingLine label="Version" value={status.version} />
           </>
         ) : null}
@@ -1459,6 +1480,32 @@ function SettingsView({
       </details>
     </div>
   )
+}
+
+function whisperModeLabel(mode: 'coldCli' | 'coldFallback') {
+  return mode === 'coldFallback' ? 'Cold CLI after VAD retry' : 'Cold CLI'
+}
+
+function runtimeSourceLabel(source: 'managed' | 'system' | 'unknown') {
+  if (source === 'managed') return 'Managed'
+  if (source === 'system') return 'System'
+  return 'Unknown source'
+}
+
+function backendLabel(backend: 'cpu' | 'cuda' | 'vulkan' | 'openVino' | 'rocm' | 'unknown') {
+  if (backend === 'openVino') return 'OpenVINO'
+  if (backend === 'rocm') return 'ROCm'
+  if (backend === 'unknown') return 'Unknown backend'
+  return backend.toUpperCase()
+}
+
+function whisperTuningLabel(tuning: NonNullable<LastRun['performance']>['tuning']) {
+  const values: string[] = []
+  if (tuning.threads != null) values.push(`${tuning.threads} threads`)
+  if (tuning.beamSize != null) values.push(`beam ${tuning.beamSize}`)
+  if (tuning.bestOf != null) values.push(`best of ${tuning.bestOf}`)
+  if (tuning.noFallback != null) values.push(`fallback ${tuning.noFallback ? 'off' : 'on'}`)
+  return values.length ? values.join(' · ') : 'Runtime defaults'
 }
 
 function selectedModelMeta(models: WhisperModelInfo[], current: string) {

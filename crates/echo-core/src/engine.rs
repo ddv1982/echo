@@ -23,6 +23,83 @@ pub struct RunDetail {
     pub language: Option<String>,
     #[serde(default)]
     pub language_probability: Option<f32>,
+    /// Whisper-only timing and attempt detail. Rows written before split
+    /// telemetry deserialize with this field absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub whisper: Option<WhisperRunTelemetry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WhisperRunTelemetry {
+    pub mode: WhisperRunMode,
+    pub total_ms: u64,
+    pub audio_encode_ms: u64,
+    pub parse_ms: u64,
+    pub runtime: WhisperRuntimeTelemetry,
+    pub tuning: WhisperTuningTelemetry,
+    pub attempts: Vec<WhisperAttemptTelemetry>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WhisperTuningTelemetry {
+    pub threads: Option<usize>,
+    pub beam_size: Option<u8>,
+    pub best_of: Option<u8>,
+    pub no_fallback: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WhisperRunMode {
+    ColdCli,
+    ColdFallback,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WhisperRuntimeTelemetry {
+    pub binary: String,
+    pub source: WhisperRuntimeSource,
+    pub backend: WhisperRuntimeBackend,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WhisperRuntimeSource {
+    Managed,
+    System,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WhisperRuntimeBackend {
+    Cpu,
+    Cuda,
+    Vulkan,
+    OpenVino,
+    Rocm,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WhisperAttemptTelemetry {
+    pub vad: bool,
+    pub process_start_ms: u64,
+    pub child_wall_ms: u64,
+    pub success: bool,
+    pub exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_reason: Option<WhisperRetryReason>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WhisperRetryReason {
+    VadRejected,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -71,4 +148,18 @@ pub trait Engine {
         pcm: &Pcm16kMono,
         options: &DecodeOptions,
     ) -> Result<Transcript, EngineError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_run_detail_json_remains_compatible() {
+        let detail: RunDetail =
+            serde_json::from_str(r#"{"binary":"whisper-cli","model_path":"model.bin","vad":true}"#)
+                .unwrap();
+        assert_eq!(detail.binary.as_deref(), Some("whisper-cli"));
+        assert!(detail.whisper.is_none());
+    }
 }

@@ -15,7 +15,11 @@ mod types;
 pub use cleanup::{Cleanup, CleanupError, CleanupMode, OffCleanup, RulesCleanup};
 pub use config::{resolve, Config, EngineChoice, MicrophoneSelection};
 pub use dictionary::{DictEntry, Dictionary, RecognitionHints, Rewrite};
-pub use engine::{DecodeOptions, Engine, EngineError, RunDetail, Transcript};
+pub use engine::{
+    DecodeOptions, Engine, EngineError, RunDetail, Transcript, WhisperAttemptTelemetry,
+    WhisperRetryReason, WhisperRunMode, WhisperRunTelemetry, WhisperRuntimeBackend,
+    WhisperRuntimeSource, WhisperRuntimeTelemetry, WhisperTuningTelemetry,
+};
 pub use history::{History, HistoryRow};
 pub use inject::{FocusTarget, InjectBackend, InjectReport, Injector};
 pub use language::{Language, LanguageChoice, PARAKEET_LANGUAGES};

@@ -35,7 +35,7 @@ fn fake_whisper_proves_model_language_prompt_and_vad_retry_arguments() {
 } >> "$ECHO_ARGV_LOG"
 if [ ! -f "$ECHO_ATTEMPT_FILE" ]; then
   : > "$ECHO_ATTEMPT_FILE"
-  printf 'vad failed\n' >&2
+  printf 'failed to initialize VAD context\n' >&2
   exit 1
 fi
 printf '%s\n' '{"model":{"type":"small","multilingual":true},"result":{"language":"de"},"transcription":[{"text":" claude code"}]}'
@@ -61,6 +61,13 @@ printf '%s\n' 'whisper_full: auto-detected language: de (p = 0.958162)' >&2
             "de",
             "--format",
             "json",
+            "--whisper-threads",
+            "2",
+            "--whisper-beam-size",
+            "1",
+            "--whisper-best-of",
+            "3",
+            "--whisper-no-fallback",
         ])
         .env("PATH", &bin_dir)
         .env("ECHO_ARGV_LOG", &log)
@@ -86,6 +93,11 @@ printf '%s\n' 'whisper_full: auto-detected language: de (p = 0.958162)' >&2
     for run in &runs {
         assert!(run.contains("ggml-small.bin\n"), "run={run}");
         assert!(run.contains("-l\nde\n"), "run={run}");
+        assert!(run.contains("-t\n"), "run={run}");
+        assert!(run.contains("-t\n2\n"), "run={run}");
+        assert!(run.contains("-bs\n1\n"), "run={run}");
+        assert!(run.contains("-bo\n3\n"), "run={run}");
+        assert!(run.contains("-nf\n"), "run={run}");
         assert!(run.contains("--prompt\nClaude Code\n"), "run={run}");
         assert!(!run.contains("clawed code"), "run={run}");
     }
@@ -101,4 +113,19 @@ printf '%s\n' 'whisper_full: auto-detected language: de (p = 0.958162)' >&2
     assert_eq!(json["language"]["observed"], "de");
     assert_eq!(json["language"]["probability"], 0.958_162);
     assert_eq!(json["hintCount"], 1);
+    assert_eq!(json["whisper"]["mode"], "coldFallback");
+    assert_eq!(json["whisper"]["attempts"].as_array().unwrap().len(), 2);
+    assert_eq!(json["whisper"]["attempts"][0]["vad"], true);
+    assert_eq!(json["whisper"]["attempts"][0]["retryReason"], "vadRejected");
+    assert_eq!(json["whisper"]["attempts"][1]["vad"], false);
+    assert_eq!(
+        json["whisper"]["runtime"]["binary"],
+        runner.display().to_string()
+    );
+    assert_eq!(json["whisper"]["runtime"]["source"], "system");
+    assert_eq!(json["whisper"]["runtime"]["backend"], "unknown");
+    assert_eq!(json["whisper"]["tuning"]["threads"], 2);
+    assert_eq!(json["whisper"]["tuning"]["beamSize"], 1);
+    assert_eq!(json["whisper"]["tuning"]["bestOf"], 3);
+    assert_eq!(json["whisper"]["tuning"]["noFallback"], true);
 }
