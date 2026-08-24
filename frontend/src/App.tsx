@@ -1173,22 +1173,40 @@ function SettingsView({
     try {
       const written = await setSettings(next)
       settingsRef.current = written
+      const [, nextLanguages] = await Promise.all([onStatusChange(), listLanguages()])
       setLocalSettings(written)
-      await onStatusChange()
+      setLanguages(nextLanguages)
     } catch (reason) {
       onError(messageFrom(reason))
     }
   }, [onError, onStatusChange])
 
-  const patch = useCallback(async <K extends keyof AppSettings>(key: K, value: AppSettings[K]['value']) => {
+  const updateSettings = useCallback(async (update: (current: AppSettings) => AppSettings) => {
     const queued = writeChainRef.current.then(async () => {
       const current = settingsRef.current
       if (!current) return
-      await commit({ ...current, [key]: { ...current[key], value } })
+      await commit(update(current))
     })
     writeChainRef.current = queued
     await queued
   }, [commit])
+
+  const patch = useCallback(async <K extends keyof AppSettings>(key: K, value: AppSettings[K]['value']) => {
+    await updateSettings((current) => ({ ...current, [key]: { ...current[key], value } }))
+  }, [updateSettings])
+
+  const selectEngine = useCallback(async (engine: string) => {
+    await updateSettings((current) => {
+      if (engine !== 'parakeet') {
+        return { ...current, engine: { ...current.engine, value: engine } }
+      }
+      return {
+        ...current,
+        engine: { ...current.engine, value: engine },
+        whisperModel: { ...current.whisperModel, value: null },
+      }
+    })
+  }, [updateSettings])
 
   const repairLegacy = async () => {
     setRepairingLegacyShortcut(true)
@@ -1202,12 +1220,10 @@ function SettingsView({
     }
   }
 
-  const whisperRuns =
-    settings != null &&
-    (settings.engine.effective === 'whisper' ||
-      (settings.engine.effective === 'auto' &&
-        (inventory?.engines.some((engine) => engine.id === 'whisper' && engine.available) ??
-          false)))
+  const parakeetRuns =
+    settings?.engine.effective === 'parakeet' ||
+    (settings?.engine.effective === 'auto' && languages?.mode === 'parakeet')
+  const whisperRuns = settings?.engine.effective !== 'fake' && !parakeetRuns
 
   return (
     <div className="view-stack settings-view" data-settings-surface>
@@ -1252,17 +1268,26 @@ function SettingsView({
             </span>
           </div>
         ) : null}
-        {settings && whisperRuns && inventory ? (
+        {settings && parakeetRuns ? (
           <div className="setting-row">
             <div>
-              <strong>Model quality</strong>
-              <span>{overrideHintPlain(settings.whisperModel.source, 'Auto runs the best installed model.')}</span>
+              <strong>Speech model</strong>
+              <span>Fixed for Parakeet. Switch the speech engine in Advanced to use Whisper models.</span>
+              <span className="model-meta">Fixed model · automatic across 25 European languages</span>
+            </div>
+            <span className="status-note chip">Parakeet TDT 0.6B v3</span>
+          </div>
+        ) : settings && whisperRuns && inventory ? (
+          <div className="setting-row">
+            <div>
+              <strong>Speech model</strong>
+              <span>{overrideHintPlain(settings.whisperModel.source, 'Auto runs the best installed Whisper model.')}</span>
               {selectedModelMeta(inventory.whisper, settings.whisperModel.effective) ? (
                 <span className="model-meta">{selectedModelMeta(inventory.whisper, settings.whisperModel.effective)}</span>
               ) : null}
             </div>
             <select
-              aria-label="Model quality"
+              aria-label="Speech model"
               value={settings.whisperModel.effective}
               disabled={settings.whisperModel.source === 'env'}
               onChange={(event) => void patch('whisperModel', event.target.value || null)}
@@ -1343,7 +1368,7 @@ function SettingsView({
                       key={option.value}
                       data-active={settings.engine.effective === option.value}
                       disabled={settings.engine.source === 'env'}
-                      onClick={() => void patch('engine', option.value)}
+                      onClick={() => void selectEngine(option.value)}
                     >
                       {option.label}
                     </button>
@@ -1426,6 +1451,7 @@ function selectedModelMeta(models: WhisperModelInfo[], current: string) {
   const model = models.find((candidate) => candidate.name === current)
   if (!model) return null
   return [
+    modelQualitySummary(model),
     model.family,
     model.multilingual ? 'multilingual' : 'English-only',
     model.quantisation ?? 'full precision',
@@ -1437,6 +1463,7 @@ function modelOptions(models: WhisperModelInfo[], current: string) {
   const options = models.map((model) => ({
     value: model.name,
     label: [
+      modelQualitySummary(model),
       model.name,
       model.multilingual ? 'multilingual' : 'English-only',
       model.quantisation ?? 'full precision',
@@ -1447,6 +1474,24 @@ function modelOptions(models: WhisperModelInfo[], current: string) {
     options.push({ value: current, label: `${current} · not on disk` })
   }
   return options
+}
+
+function modelQualitySummary(model: WhisperModelInfo) {
+  switch (model.family) {
+    case 'large-v3':
+      return 'Highest accuracy'
+    case 'large-v3-turbo':
+      return 'Recommended balance'
+    case 'medium':
+      return 'High accuracy'
+    case 'small':
+      return 'Lower memory, lower accuracy'
+    case 'tiny':
+    case 'base':
+      return 'Low memory'
+    default:
+      return 'Installed model'
+  }
 }
 
 const COMMON_LANGUAGE_ORDER = ['en', 'de', 'es', 'fr']

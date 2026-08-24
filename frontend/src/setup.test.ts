@@ -18,7 +18,7 @@ function component(
 
 function plan(id: SetupPlan['id'], satisfied = false): SetupPlan {
   const components: Record<SetupPlan['id'], ComponentStatus['id'][]> = {
-    recommended: ['whisper-runtime', 'whisper-small'],
+    recommended: ['whisper-runtime', 'whisper-large-v3-turbo-q5-0'],
     parakeet: ['sherpa-runtime', 'parakeet-tdt-06b-v3-int8'],
     'whisper-base': ['whisper-runtime', 'whisper-base-q5-1'],
     'whisper-small': ['whisper-runtime', 'whisper-small'],
@@ -42,7 +42,7 @@ function readiness(overrides: Partial<Readiness> = {}): Readiness {
     managedSupported: true,
     unsupportedReason: null,
     totalMemoryBytes: null,
-    recommendedModel: 'whisper-small',
+    recommendedModel: 'whisper-large-v3-turbo-q5-0',
     components: [component('whisper-runtime', 'Whisper runtime')],
     plans: [plan('recommended'), plan('parakeet'), plan('whisper-base')],
     microphoneReady: true,
@@ -87,6 +87,7 @@ describe('speech setup presentation', () => {
       plans: [
         plan('recommended'),
         plan('parakeet'),
+        plan('whisper-large-v3-turbo'),
         plan('whisper-small'),
         plan('whisper-base'),
       ],
@@ -94,6 +95,7 @@ describe('speech setup presentation', () => {
 
     expect(presented.alternativePlans.map((candidate) => candidate.id)).toEqual([
       'parakeet',
+      'whisper-small',
       'whisper-base',
     ])
   })

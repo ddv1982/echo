@@ -136,7 +136,7 @@ pub const COMPONENTS: &[ComponentSpec] = &[
     },
     ComponentSpec {
         id: ComponentId::ParakeetTdt06bV3Int8,
-        label: "Parakeet TDT 0.6b v3 INT8",
+        label: "Parakeet TDT 0.6b v3",
         version: "0.6b-v3-int8",
         url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2",
         artifact_name: "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2",
@@ -208,9 +208,9 @@ pub struct HardwareProfile {
 
 #[must_use]
 pub fn recommended_model(profile: HardwareProfile) -> ComponentId {
-    const FOUR_GIB: u64 = 4 * 1024 * 1024 * 1024;
+    const EIGHT_GIB: u64 = 8 * 1024 * 1024 * 1024;
     match profile.total_memory_bytes {
-        Some(bytes) if bytes >= FOUR_GIB => ComponentId::WhisperSmall,
+        Some(bytes) if bytes >= EIGHT_GIB => ComponentId::WhisperLargeV3TurboQ50,
         Some(_) | None => ComponentId::WhisperBaseQ51,
     }
 }
@@ -298,7 +298,7 @@ mod tests {
     }
 
     #[test]
-    fn recommendation_never_chooses_turbo_automatically() {
+    fn recommendation_uses_turbo_only_on_capable_machines() {
         assert_eq!(
             recommended_model(HardwareProfile {
                 total_memory_bytes: None
@@ -313,15 +313,21 @@ mod tests {
         );
         assert_eq!(
             recommended_model(HardwareProfile {
-                total_memory_bytes: Some(4 * 1024 * 1024 * 1024)
+                total_memory_bytes: Some(8 * 1024 * 1024 * 1024 - 1)
             }),
-            ComponentId::WhisperSmall
+            ComponentId::WhisperBaseQ51
+        );
+        assert_eq!(
+            recommended_model(HardwareProfile {
+                total_memory_bytes: Some(8 * 1024 * 1024 * 1024)
+            }),
+            ComponentId::WhisperLargeV3TurboQ50
         );
         assert_eq!(
             recommended_model(HardwareProfile {
                 total_memory_bytes: Some(64 * 1024 * 1024 * 1024)
             }),
-            ComponentId::WhisperSmall
+            ComponentId::WhisperLargeV3TurboQ50
         );
     }
 }
