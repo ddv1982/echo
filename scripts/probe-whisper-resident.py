@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import platform
 import secrets
 import socket
 import subprocess
@@ -17,6 +19,29 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def artifact_identity(path: Path) -> dict[str, object]:
+    return {"path": str(path.resolve()), "sha256": sha256(path), "bytes": path.stat().st_size}
+
+
+def host_metadata() -> dict[str, object]:
+    uname = platform.uname()
+    return {
+        "system": uname.system,
+        "release": uname.release,
+        "machine": uname.machine,
+        "processor": uname.processor,
+        "cpuCount": os.cpu_count(),
+    }
 
 
 def reserve_port() -> int:
@@ -202,6 +227,21 @@ def run_probe(args: argparse.Namespace) -> None:
                     )
             finally:
                 stop_process(process)
+        artifacts = {
+            "server": artifact_identity(args.server),
+            "model": artifact_identity(args.model),
+            "vad": artifact_identity(args.vad) if args.vad is not None else None,
+            "audio": artifact_identity(args.audio),
+        }
+        prompt = {
+            "length": len(args.prompt),
+            "sha256": hashlib.sha256(args.prompt.encode("utf-8")).hexdigest(),
+        }
+        host = host_metadata()
+        for row in rows:
+            row["artifacts"] = artifacts
+            row["prompt"] = prompt
+            row["host"] = host
         (args.output_dir / "resident-runs.jsonl").write_text(
             "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
             encoding="utf-8",
@@ -326,6 +366,10 @@ ThreadingHTTPServer(('127.0.0.1', args.port), Handler).serve_forever()
             .splitlines()
         ]
         assert [row["kind"] for row in rows] == ["residentFirst", "residentWarm"]
+        assert rows[0]["artifacts"]["model"]["path"] == str(success_model.resolve())
+        assert len(rows[0]["artifacts"]["audio"]["sha256"]) == 64
+        assert rows[0]["prompt"]["length"] == 0
+        assert rows[0]["host"]["system"]
         assert_reaped(success_model)
 
         exit_model = Path(temporary) / "exit-ready.bin"

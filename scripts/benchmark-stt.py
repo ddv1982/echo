@@ -77,7 +77,11 @@ def parse_candidate(raw: str) -> Candidate:
                 if key == "no-fallback":
                     if value not in {"true", "false"}:
                         raise argparse.ArgumentTypeError("no-fallback must be true or false")
-                    values[key] = value == "true"
+                    if value == "false":
+                        raise argparse.ArgumentTypeError(
+                            "omit no-fallback to keep the runtime fallback default"
+                        )
+                    values[key] = True
                     continue
                 try:
                     parsed = int(value)
@@ -396,6 +400,12 @@ def self_test() -> None:
         "2",
         "--whisper-no-fallback",
     ]
+    try:
+        parse_candidate("whisper:small@no-fallback=false")
+    except argparse.ArgumentTypeError as error:
+        assert "omit no-fallback" in str(error)
+    else:
+        raise AssertionError("explicit fallback-enabled candidate was accepted")
     fake_rows = [
         {
             "candidate": "fake",
