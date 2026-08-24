@@ -1,0 +1,48 @@
+{
+  "candidates": {
+    "accelerated": {
+      "devices": [
+        "Intel(R) Iris(R) Xe Graphics (ADL GT2) (Intel open-source Mesa driver)"
+      ],
+      "medianOuterMs": 5708.163,
+      "p95OuterMs": 5989.485,
+      "resolvedBackends": [
+        "vulkan"
+      ],
+      "runs": 10
+    },
+    "cpu": {
+      "devices": [],
+      "medianOuterMs": 21515.149,
+      "p95OuterMs": 21802.81,
+      "resolvedBackends": [
+        "cpu"
+      ],
+      "runs": 10
+    }
+  },
+  "claimBoundary": "This probe proves backend use, paired latency, and exact transcript parity only. It does not replace the multilingual WER/CER and silence corpus gate.",
+  "decision": "proceed",
+  "gates": {
+    "backendTruth": true,
+    "hardwareDevice": true,
+    "medianReduction": true,
+    "medianSpeedup": true,
+    "pairedCompleteness": true,
+    "p95Improved": true,
+    "sampleSize": true,
+    "transcriptParity": true
+  },
+  "medianReductionMs": 15811.148,
+  "minimumReductionMs": 500.0,
+  "minimumSpeedupPercent": 20.0,
+  "speedupPercent": 73.564,
+  "warmups": {
+    "accelerated": [
+      11515.578
+    ],
+    "cpu": [
+      20350.04
+    ]
+  }
+}

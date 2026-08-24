@@ -16,6 +16,16 @@ Every raw observation records:
 
 Do not combine cold and warm observations. Do not compare different hardware in one ranking. Publish raw JSONL beside every summary.
 
+## Acceleration contract
+
+Run `scripts/probe-whisper-acceleration.py` against an accelerated whisper.cpp binary. The same binary with `--no-gpu` is the negative control, so library version and CPU implementation stay constant. Every accelerated row must resolve the expected backend index and physical device; every control row must resolve CPU. Unknown, software rasterizer, missing device identity, incomplete pair, fewer than ten pairs per fixture, or silent CPU resolution fails the gate. Installed ICD manifests are retained as environment identity but do not prove which device ran; the production probe in Phase 5C must bind the selected device to its effective driver and ICD identity.
+
+Evaluate each model independently. At least ten paired observations per fixture use randomized candidate order and explicit threads, beam, best-of, fallback, language, prompt, and VAD. The accelerated candidate needs at least 20 percent and 500 ms lower paired median, lower p95, exact transcript parity on the smoke probe, the normal multilingual WER/CER gate, and no new silence hallucination. Repeat after reboot or power-policy reset.
+
+For Mesa Vulkan, point `--mesa-shader-cache-dir` at a new experiment directory. Retain the first CPU and Vulkan warmup rows separately, then rank only timed rows after cache population. This exposes the one-time shader compilation penalty without mixing it into steady one-shot claims. Mesa documents the cache override in its [environment-variable reference](https://docs.mesa3d.org/envvars.html#envvar-MESA_SHADER_CACHE_DIR).
+
+The probe summary's `proceed` decision covers backend truth, paired latency, and exact transcript parity only. It never replaces the full quality corpus.
+
 ## Corpus
 
 Use at least twenty project-owned or appropriately licensed dictation fixtures. Cover Dutch, English, German, French, and Spanish first, then every language used to justify a runtime policy. Include normal speech, fast speech, technical identifiers, short commands, long paragraphs, quiet input, noise, false starts, silence, and nonspeech audio.
