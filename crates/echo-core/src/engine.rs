@@ -63,6 +63,8 @@ pub struct WhisperRuntimeTelemetry {
     pub binary: String,
     pub source: WhisperRuntimeSource,
     pub backend: WhisperRuntimeBackend,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -161,5 +163,15 @@ mod tests {
                 .unwrap();
         assert_eq!(detail.binary.as_deref(), Some("whisper-cli"));
         assert!(detail.whisper.is_none());
+    }
+
+    #[test]
+    fn old_runtime_telemetry_without_device_remains_compatible() {
+        let runtime: WhisperRuntimeTelemetry = serde_json::from_str(
+            r#"{"binary":"whisper-cli","source":"system","backend":"cpu"}"#,
+        )
+        .unwrap();
+        assert_eq!(runtime.backend, WhisperRuntimeBackend::Cpu);
+        assert!(runtime.device.is_none());
     }
 }

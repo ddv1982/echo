@@ -14,6 +14,7 @@ use serde::Deserialize;
 
 use super::cache::{parse_whisper_filename, ModelCache};
 use super::write_temp_wav;
+use super::whisper_probe::observe_runtime;
 use super::{
     WhisperExecutionPlan, WhisperModelAsset, WhisperProtocol, WhisperRuntimeCandidate,
     WhisperTuning,
@@ -152,19 +153,26 @@ impl WhisperEngine {
         }
     }
 
-    fn runtime_identity(&self, binary: String) -> WhisperRuntimeTelemetry {
-        match &self.files {
+    fn runtime_identity(&self, binary: String, stderr: &str) -> WhisperRuntimeTelemetry {
+        let mut runtime = match &self.files {
             WhisperFiles::Explicit(plan) => WhisperRuntimeTelemetry {
                 binary,
                 source: plan.runtime.source,
                 backend: plan.runtime.backend,
+                device: None,
             },
             WhisperFiles::Discover(_) => WhisperRuntimeTelemetry {
                 binary,
                 source: WhisperRuntimeSource::System,
                 backend: WhisperRuntimeBackend::Unknown,
+                device: None,
             },
+        };
+        if let Some(observed) = observe_runtime(stderr) {
+            runtime.backend = observed.backend;
+            runtime.device = observed.device;
         }
+        runtime
     }
 
     fn protocol(&self) -> WhisperProtocol {
@@ -232,11 +240,8 @@ impl Engine for WhisperEngine {
         };
         let _ = fs::remove_file(wav.path());
         let parse_started = Instant::now();
-        let parsed = finish_whisper(
-            status.status.success(),
-            &status.stdout,
-            &String::from_utf8_lossy(&status.stderr),
-        )?;
+        let stderr = String::from_utf8_lossy(&status.stderr);
+        let parsed = finish_whisper(status.status.success(), &status.stdout, &stderr)?;
         let parse_ms = elapsed_ms(parse_started);
         let total_ms = elapsed_ms(started);
         let binary = bin.to_string_lossy().into_owned();
@@ -259,7 +264,7 @@ impl Engine for WhisperEngine {
                     total_ms,
                     audio_encode_ms,
                     parse_ms,
-                    runtime: self.runtime_identity(binary),
+                    runtime: self.runtime_identity(binary, &stderr),
                     tuning: WhisperTuningTelemetry {
                         threads: tuning.threads.map(NonZeroUsize::get),
                         beam_size: tuning.beam_size,

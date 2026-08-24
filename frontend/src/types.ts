@@ -176,6 +176,7 @@ export interface LastRunPerformance {
   mode: 'coldCli' | 'coldFallback'
   runtimeSource: 'managed' | 'system' | 'unknown'
   backend: 'cpu' | 'cuda' | 'vulkan' | 'openVino' | 'rocm' | 'unknown'
+  device: string | null
   totalMs: number
   audioEncodeMs: number
   childWallMs: number

@@ -519,7 +519,7 @@ describe('Echo desktop shell', () => {
     expect(screen.getByText('/usr/local/bin/whisper-cli')).toBeInTheDocument()
     expect(screen.getByText('Yes')).toBeInTheDocument()
     expect(screen.getByText('Cold CLI')).toBeInTheDocument()
-    expect(screen.getByText('System · CPU')).toBeInTheDocument()
+    expect(screen.getByText('System · VULKAN · Intel Iris Xe')).toBeInTheDocument()
     expect(screen.getByText('WAV 3 ms · process 1032 ms · parse 1 ms')).toBeInTheDocument()
     expect(screen.getByText('4 threads · beam 5 · best of 5 · fallback on')).toBeInTheDocument()
     expect(screen.getByText(__APP_VERSION__)).toBeInTheDocument()

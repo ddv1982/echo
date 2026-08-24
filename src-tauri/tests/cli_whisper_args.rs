@@ -39,6 +39,8 @@ if [ ! -f "$ECHO_ATTEMPT_FILE" ]; then
   exit 1
 fi
 printf '%s\n' '{"model":{"type":"small","multilingual":true},"result":{"language":"de"},"transcription":[{"text":" claude code"}]}'
+printf '%s\n' 'ggml_vulkan: 0 = Test Vulkan GPU (driver) | uma: 0' >&2
+printf '%s\n' 'whisper_backend_init_gpu: using Vulkan0 backend' >&2
 printf '%s\n' 'whisper_full: auto-detected language: de (p = 0.958162)' >&2
 "#,
     )
@@ -123,7 +125,11 @@ printf '%s\n' 'whisper_full: auto-detected language: de (p = 0.958162)' >&2
         runner.display().to_string()
     );
     assert_eq!(json["whisper"]["runtime"]["source"], "system");
-    assert_eq!(json["whisper"]["runtime"]["backend"], "unknown");
+    assert_eq!(json["whisper"]["runtime"]["backend"], "vulkan");
+    assert_eq!(
+        json["whisper"]["runtime"]["device"],
+        "Test Vulkan GPU (driver)"
+    );
     assert_eq!(json["whisper"]["tuning"]["threads"], 2);
     assert_eq!(json["whisper"]["tuning"]["beamSize"], 1);
     assert_eq!(json["whisper"]["tuning"]["bestOf"], 3);

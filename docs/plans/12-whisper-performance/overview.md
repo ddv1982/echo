@@ -126,3 +126,7 @@ See [testing.md](testing.md) for the full matrix and failure cases.
 ## Implementation guidance
 
 Deliver one small, green unit at a time. Re-run the phase's target check before starting the next phase. Keep benchmark and probe code as rerunnable artifacts. Do not convert an experimental candidate into a durable setting. Do not claim a speedup without naming cold or warm mode, runtime backend, model identity, corpus, quality delta, and host.
+
+## Continuation
+
+Cross-hardware caching, residency, backend truth, and specialized accelerator ordering continue in [Plan 13](../13-cross-hardware-whisper/overview.md).

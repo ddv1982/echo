@@ -1456,7 +1456,7 @@ function SettingsView({
                 <SettingLine label="Whisper mode" value={whisperModeLabel(status.lastRun.performance.mode)} />
                 <SettingLine
                   label="Runtime"
-                  value={`${runtimeSourceLabel(status.lastRun.performance.runtimeSource)} · ${backendLabel(status.lastRun.performance.backend)}`}
+                  value={whisperRuntimeLabel(status.lastRun.performance)}
                 />
                 <SettingLine
                   label="Whisper timing"
@@ -1497,6 +1497,12 @@ function backendLabel(backend: 'cpu' | 'cuda' | 'vulkan' | 'openVino' | 'rocm' |
   if (backend === 'rocm') return 'ROCm'
   if (backend === 'unknown') return 'Unknown backend'
   return backend.toUpperCase()
+}
+
+function whisperRuntimeLabel(performance: NonNullable<LastRun['performance']>) {
+  const values = [runtimeSourceLabel(performance.runtimeSource), backendLabel(performance.backend)]
+  if (performance.device) values.push(performance.device)
+  return values.join(' · ')
 }
 
 function whisperTuningLabel(tuning: NonNullable<LastRun['performance']>['tuning']) {

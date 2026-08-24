@@ -215,6 +215,7 @@ struct LastRunPerformance {
     mode: WhisperRunMode,
     runtime_source: WhisperRuntimeSource,
     backend: WhisperRuntimeBackend,
+    device: Option<String>,
     total_ms: u64,
     audio_encode_ms: u64,
     child_wall_ms: u64,
@@ -229,6 +230,7 @@ fn project_last_run_performance(detail: &RunDetail) -> Option<LastRunPerformance
         mode: whisper.mode,
         runtime_source: whisper.runtime.source,
         backend: whisper.runtime.backend,
+        device: whisper.runtime.device.clone(),
         total_ms: whisper.total_ms,
         audio_encode_ms: whisper.audio_encode_ms,
         child_wall_ms: whisper
@@ -3329,6 +3331,7 @@ mod settings_tests {
                     binary: "/usr/bin/whisper-cli".to_string(),
                     source: WhisperRuntimeSource::System,
                     backend: WhisperRuntimeBackend::Cpu,
+                    device: Some("Test CPU".to_string()),
                 },
                 tuning: WhisperTuningTelemetry {
                     threads: Some(4),
@@ -3362,6 +3365,7 @@ mod settings_tests {
         assert_eq!(projected.child_wall_ms, 1_210);
         assert_eq!(projected.attempt_count, 2);
         assert_eq!(projected.tuning.threads, Some(4));
+        assert_eq!(projected.device.as_deref(), Some("Test CPU"));
     }
 
     #[test]
