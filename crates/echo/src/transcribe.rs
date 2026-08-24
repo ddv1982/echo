@@ -17,6 +17,7 @@ pub struct RunOverrides {
     pub whisper_model: Option<String>,
     pub language: Option<LanguageChoice>,
     pub whisper_tuning: Option<WhisperTuningOverride>,
+    pub whisper_force_cpu: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -482,11 +483,11 @@ pub fn prepare_with_config(
     .collect::<Vec<_>>();
     let available = EngineAvailabilitySnapshot::from_process(&cache, &runtime, &model_candidates);
     let resolved = resolve_run(&overrides, &env, file, &available)?;
-    if overrides.whisper_tuning.is_some()
+    if (overrides.whisper_tuning.is_some() || overrides.whisper_force_cpu)
         && !matches!(resolved.engine, ResolvedEngine::Whisper { .. })
     {
         return Err(PrepareError::InvalidRequest(
-            "Whisper tuning options require the Whisper engine".to_string(),
+            "Whisper-only performance options require the Whisper engine".to_string(),
         ));
     }
     let (engine, managed_paths): (Box<dyn Engine>, Vec<ManagedPath>) = match &resolved.engine {
@@ -536,6 +537,7 @@ pub fn prepare_with_config(
             if let Some(overrides) = overrides.whisper_tuning {
                 plan.tuning = overrides.apply(plan.tuning);
             }
+            plan.force_cpu = overrides.whisper_force_cpu;
             (Box::new(WhisperEngine::with_plan(plan)), locked.leases)
         }
         ResolvedEngine::ParakeetTdt06bV3 => {

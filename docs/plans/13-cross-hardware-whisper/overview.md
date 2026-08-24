@@ -36,6 +36,10 @@ The answer is conditional. Managed CPU one-shot remains the universal floor. Sam
 
 Phases are stop-gated. Phase 1 may merge because it changes observation only. Phase 3 cannot change selection before Phase 2 passes. Phase 5 does not begin for the measured Iris Xe identities.
 
+## Phase 2 result
+
+The first host slice is implemented with a pinned twenty-recording FLEURS subset and a same-binary CPU control. Through the optimized Echo binary, warmed Base Q5_1 on Iris Xe Vulkan is 54.2 percent and 761 ms faster at the paired median with lower p95, but Dutch WER regresses from 33.78 to 43.24 percent. The exact observed identity stops on quality. Corpus coverage, fresh-cache and reset repeats, explicit driver/ICD identity, Turbo, and AMD/NVIDIA hosts remain pending rather than inferred.
+
 ## Verification
 
 See [testing.md](testing.md). Research and comparator evidence are in [research.md](research.md); the selected system shape is in [architecture.md](architecture.md).

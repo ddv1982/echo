@@ -1,0 +1,75 @@
+{
+  "acceleratedCandidate": "whisper:base-q5_1@threads=4,beam=1,best-of=1,no-fallback",
+  "acceleratedMedianOuterMs": 645.537,
+  "acceleratedP95OuterMs": 819.285,
+  "claimBoundary": "This warmed, populated-cache clean-read slice cannot satisfy production coverage for dictation, silence, nonspeech, noise, fast speech, quiet speech, technical identifiers, and false starts. Fresh-cache, reset-repeat, explicit driver/ICD, other-hardware, Turbo, memory, power, and failure-path evidence also remain pending.",
+  "cpuCandidate": "whisper:base-q5_1@threads=4,beam=1,best-of=1,no-fallback,cpu-only",
+  "cpuMedianOuterMs": 1399.561,
+  "cpuP95OuterMs": 1626.493,
+  "decision": "stop",
+  "expectedBackend": "vulkan",
+  "gates": {
+    "backendTruth": true,
+    "completePairs": true,
+    "coverageComplete": false,
+    "driverIcdIdentity": false,
+    "freshAndPopulatedCacheEvidence": false,
+    "hardwareDevice": true,
+    "identityMatch": true,
+    "medianReduction": true,
+    "medianSpeedup": true,
+    "noNewHallucinations": true,
+    "p95Improved": true,
+    "pairIntegrity": true,
+    "perLanguageQuality": false,
+    "resetEvidence": false,
+    "sampleSize": true
+  },
+  "languages": {
+    "de": {
+      "acceleratedMedianOuterMs": 661.456,
+      "acceleratedWer": 0.182796,
+      "cpuMedianOuterMs": 1418.575,
+      "cpuWer": 0.182796,
+      "deltaPercentagePoints": 0.0,
+      "qualityGate": true
+    },
+    "en": {
+      "acceleratedMedianOuterMs": 592.429,
+      "acceleratedWer": 0.102273,
+      "cpuMedianOuterMs": 1347.762,
+      "cpuWer": 0.102273,
+      "deltaPercentagePoints": 0.0,
+      "qualityGate": true
+    },
+    "es": {
+      "acceleratedMedianOuterMs": 646.031,
+      "acceleratedWer": 0.059829,
+      "cpuMedianOuterMs": 1407.854,
+      "cpuWer": 0.059829,
+      "deltaPercentagePoints": 0.0,
+      "qualityGate": true
+    },
+    "fr": {
+      "acceleratedMedianOuterMs": 661.363,
+      "acceleratedWer": 0.333333,
+      "cpuMedianOuterMs": 1435.951,
+      "cpuWer": 0.333333,
+      "deltaPercentagePoints": 0.0,
+      "qualityGate": true
+    },
+    "nl": {
+      "acceleratedMedianOuterMs": 649.686,
+      "acceleratedWer": 0.432432,
+      "cpuMedianOuterMs": 1383.226,
+      "cpuWer": 0.337838,
+      "deltaPercentagePoints": 9.459,
+      "qualityGate": false
+    }
+  },
+  "medianReductionMs": 761.251,
+  "medianSpeedupPercent": 54.209,
+  "newHallucinations": 0,
+  "runsPerCandidate": 200,
+  "schemaVersion": 1
+}

@@ -1,0 +1,142 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "name": "FLEURS test subset",
+    "homepage": "https://huggingface.co/datasets/google/fleurs",
+    "repository": "https://huggingface.co/datasets/FluidInference/fleurs",
+    "revision": "8944693da251acbaf2f9686bddc4fedce8bd2edd",
+    "allowedHosts": ["huggingface.co"],
+    "redirectAllowedHostSuffixes": [".hf.co"],
+    "license": "CC-BY-4.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+    "attribution": "FLEURS: Few-shot Learning Evaluation of Universal Representations of Speech. Alexis Conneau, Min Ma, Simran Khanuja, Yu Zhang, Vera Axelrod, Siddharth Dalmia, Jason Riesa, Clara Rivera, and Ankur Bapna (2022), arXiv:2205.12446. Individual files are fetched from FluidInference/fleurs, a file-oriented reorganization of the Google FLEURS test split."
+  },
+  "coverage": {
+    "included": ["clean read speech", "English", "Dutch", "German", "French", "Spanish"],
+    "requiredLanguages": ["en", "nl", "de", "fr", "es"],
+    "requiredClasses": ["dictation", "technical-identifiers", "fast-speech", "quiet-speech", "noise", "false-starts", "silence", "nonspeech"],
+    "pending": ["project-owned dictation", "technical identifiers", "fast speech", "quiet speech", "noise", "false starts", "silence", "nonspeech"]
+  },
+  "utterances": [
+    {
+      "id": "en_us_0000", "language": "en", "class": "clean-read",
+      "reference": "however due to the slow communication channels styles in the west could lag behind by 25 to 30 year",
+      "sourceUrl": "https://huggingface.co/datasets/FluidInference/fleurs/resolve/8944693da251acbaf2f9686bddc4fedce8bd2edd/en_us/en_us_0000.wav",
+      "bytes": 337964, "sha256": "7835bd6ffb54ce38a2a9bcde3905ba424faed94d50a474f21a9cbe9209b869df"
+    },
+    {
+      "id": "en_us_0001", "language": "en", "class": "clean-read",
+      "reference": "all nouns alongside the word sie for you always begin with a capital letter even in the middle of a sentence",
+      "sourceUrl": "https://huggingface.co/datasets/FluidInference/fleurs/resolve/8944693da251acbaf2f9686bddc4fedce8bd2edd/en_us/en_us_0001.wav",
+      "bytes": 280364, "sha256": "ffd32e9953ffb14bed7f4e3a2d037ea7ac7de1ba5ad25d4c0f678fd06b24aab0"
+    },
+    {
+      "id": "en_us_0002", "language": "en", "class": "clean-read",
+      "reference": "to the north and within easy reach is the romantic and fascinating town of sintra and which was made famous to foreigners after a glowing account of its splendours recorded by lord byron",
+      "sourceUrl": "https://huggingface.co/datasets/FluidInference/fleurs/resolve/8944693da251acbaf2f9686bddc4fedce8bd2edd/en_us/en_us_0002.wav",
+      "bytes": 366764, "sha256": "b722d537c7eac36e3438f45e609676732ce4526b415d829347485a61030d6922"
+    },
+    {
+      "id": "en_us_0003", "language": "en", "class": "clean-read",
+      "reference": "the cabbage juice changes color depending on how acidic or basic alkaline the chemical is",
+      "sourceUrl": "https://huggingface.co/datasets/FluidInference/fleurs/resolve/8944693da251acbaf2f9686bddc4fedce8bd2edd/en_us/en_us_0003.wav",
+      "bytes": 184364, "sha256": "f4e95852e336403001191b6dbfc9f00c5263cea304c10761608d6d5fce23da3f"
+    },
+    {
+      "id": "nl_nl_0000", "language": "nl", "class": "clean-read",
+      "reference": "volgens angel 2006 kunnen organisaties beter presteren met een aanpak op basis van het continuümmodel",
+      "sourceUrl": "https://huggingface.co/datasets/FluidInference/fleurs/resolve/8944693da251acbaf2f9686bddc4fedce8bd2edd/nl_nl/nl_nl_0000.wav",
+      "bytes": 207404, "sha256": "ec8db57b89a679fc211e0daf300f6f5d8fa5dec38109071b24de5c26dba9aaa7"
+    },
+    {
+      "id": "nl_nl_0001", "language": "nl", "class": "clean-read",
+      "reference": "varkens dragen de ziekte bij zich en dragen het via muggen over op mensen",
+      "sourceUrl": "https://huggingface.co/datasets/FluidInference/fleurs/resolve/8944693da251acbaf2f9686bddc4fedce8bd2edd/nl_nl/nl_nl_0001.wav",
+      "bytes": 140204, "sha256": "54e69704c04b4aae7b506a4074acf5985496229d00aa752df8dc7b8fa8348de2"
+    },
+    {
+      "id": "nl_nl_0002", "language": "nl", "class": "clean-read",
+      "reference": "bij een verkeersstroom wordt gekeken naar de bewegingen van individuele bestuurders en voertuigen tussen twee punten en de interacties die plaatsvinden tussen de individuen",
+      "sourceUrl": "https://huggingface.co/datasets/FluidInference/fleurs/resolve/8944693da251acbaf2f9686bddc4fedce8bd2edd/nl_nl/nl_nl_0002.wav",
+      "bytes": 309164, "sha256": "2c8f7937bd19d9e0b8edb4d8f1681a4c58f3fcb574ab40fa596ec3eac9c5b723"
+    },
+    {
+      "id": "nl_nl_0003", "language": "nl", "class": "clean-read",
+      "reference": "vanaf boekjaar 2005 financierde het congres het initiatief tegen obsceniteit en verklaarde dat de fbi tien agenten moet inzetten op volwassenenpornografie",
+      "sourceUrl": "https://huggingface.co/datasets/FluidInference/fleurs/resolve/8944693da251acbaf2f9686bddc4fedce8bd2edd/nl_nl/nl_nl_0003.wav",
+      "bytes": 328364, "sha256": "3c0b8345929fe8378284cfdfd33d594dff9108d290a91a58c253edc67fcb9c7e"
+    },
+    {
+      "id": "de_de_0000", "language": "de", "class": "clean-read",
+      "reference": "für die besten aussichten auf hongkong sollten sie die insel verlassen und zum gegenüberliegenden ufer von kowloon fahren",
+      "sourceUrl": "https://huggingface.co/datasets/FluidInference/fleurs/resolve/8944693da251acbaf2f9686bddc4fedce8bd2edd/de_de/de_de_0000.wav",
+      "bytes": 574124, "sha256": "7131c007c5c5c7b72c2fae333c9bccf5e2c02a4abb32b740f314e58b1488f149"
+    },
+    {
+      "id": "de_de_0001", "language": "de", "class": "clean-read",
+      "reference": "er griff auch alles an was ins wasser kam selbst ein großer dinosaurier wie der t rex war ihm nicht gewachsen",
+      "sourceUrl": "https://huggingface.co/datasets/FluidInference/fleurs/resolve/8944693da251acbaf2f9686bddc4fedce8bd2edd/de_de/de_de_0001.wav",
+      "bytes": 357164, "sha256": "5ced4640ec223bd9f59601722534acbb2f47087c71167529c513741a86cdae01"
+    },
+    {
+      "id": "de_de_0002", "language": "de", "class": "clean-read",
+      "reference": "wenn sie den film das vermächtnis der tempelritter gesehen haben denken sie vielleicht dass auf die rückseite der unabhängigkeitserklärung eine schatzkarte gezeichnet wurde",
+      "sourceUrl": "https://huggingface.co/datasets/FluidInference/fleurs/resolve/8944693da251acbaf2f9686bddc4fedce8bd2edd/de_de/de_de_0002.wav",
+      "bytes": 397484, "sha256": "d0859482db2b8461ba8726bce55e00f54760b3aae48aba674e67c893804d8d51"
+    },
+    {
+      "id": "de_de_0003", "language": "de", "class": "clean-read",
+      "reference": "es leben noch viele männer und frauen die ihre zeit hier überlebt haben und viele weitere mit angehörigen die dort ermordet wurden oder sich zu tode arbeiteten juden und nichtjuden gleichermaßen",
+      "sourceUrl": "https://huggingface.co/datasets/FluidInference/fleurs/resolve/8944693da251acbaf2f9686bddc4fedce8bd2edd/de_de/de_de_0003.wav",
+      "bytes": 341804, "sha256": "bd345ef2d18cd274fb955cf510cb7f223c9ac6bb52c62fc4280eade47f9a56ee"
+    },
+    {
+      "id": "fr_fr_0000", "language": "fr", "class": "clean-read",
+      "reference": "l'accident a eu lieu en terrain montagneux et il semblerait que cela ait été causé par un incendie malveillant",
+      "sourceUrl": "https://huggingface.co/datasets/FluidInference/fleurs/resolve/8944693da251acbaf2f9686bddc4fedce8bd2edd/fr_fr/fr_fr_0000.wav",
+      "bytes": 326444, "sha256": "f3bcc73d77ba26bb9c312383cc1a56a84a2c3a8eaa93ff321783c2353c6f9790"
+    },
+    {
+      "id": "fr_fr_0001", "language": "fr", "class": "clean-read",
+      "reference": "nous sommes d'accord avec la déclaration de l'usoc comité olympique des états-unis selon laquelle les intérêts de nos athlètes et de nos clubs ainsi que de leur sport pourraient être mieux servis. cela peut être fait en allant de l'avant et en procédant plutôt à des changements significatifs au sein de notre organisation qu'à la révocation d'accréditation",
+      "sourceUrl": "https://huggingface.co/datasets/FluidInference/fleurs/resolve/8944693da251acbaf2f9686bddc4fedce8bd2edd/fr_fr/fr_fr_0001.wav",
+      "bytes": 748844, "sha256": "f1d3ef454b67e638388c6406c57ff7ec9768d2ab4c5d8e8356c630024e1543a5"
+    },
+    {
+      "id": "fr_fr_0002", "language": "fr", "class": "clean-read",
+      "reference": "il a ajouté qu’« on ne devrait cependant pas leur demander d’assumer des obligations qui dépassent leur stade de développement leur responsabilité et leurs capacités. »",
+      "sourceUrl": "https://huggingface.co/datasets/FluidInference/fleurs/resolve/8944693da251acbaf2f9686bddc4fedce8bd2edd/fr_fr/fr_fr_0002.wav",
+      "bytes": 265004, "sha256": "aecaf5d68bee13052e2c9f48702e2c4c66cc3b3a359c181e4f730058d1ca23bb"
+    },
+    {
+      "id": "fr_fr_0003", "language": "fr", "class": "clean-read",
+      "reference": "le rugissement du tigre ne ressemble pas au rugissement ample du lion mais plutôt à une phrase dont les mots seraient des cris et des grondements",
+      "sourceUrl": "https://huggingface.co/datasets/FluidInference/fleurs/resolve/8944693da251acbaf2f9686bddc4fedce8bd2edd/fr_fr/fr_fr_0003.wav",
+      "bytes": 326444, "sha256": "1ceae93b04e9e3b1a82869dee422804334a3791f5da0054a9decdf8fe5685d0a"
+    },
+    {
+      "id": "es_419_0000", "language": "es", "class": "clean-read",
+      "reference": "se recomienda enfáticamente a los viajeros que se informen sobre cualquier riesgo de clima extremo en el área que visitan dado que ello puede afectar sus planes de viaje",
+      "sourceUrl": "https://huggingface.co/datasets/FluidInference/fleurs/resolve/8944693da251acbaf2f9686bddc4fedce8bd2edd/es_419/es_419_0000.wav",
+      "bytes": 410924, "sha256": "518e4998d7fc4cb32bf9cb6c479b4cfe632bc68c6a2db376eeff98b68fea2bd1"
+    },
+    {
+      "id": "es_419_0001", "language": "es", "class": "clean-read",
+      "reference": "el uso adecuado de los blogs «puede empoderar a los alumnos para que sean más analíticos y críticos a través de la respuesta activa a los contenidos de internet pueden definir sus posturas en el contexto de los escritos de otros además de establecer sus perspectivas sobre temas específicos» oravec 2002",
+      "sourceUrl": "https://huggingface.co/datasets/FluidInference/fleurs/resolve/8944693da251acbaf2f9686bddc4fedce8bd2edd/es_419/es_419_0001.wav",
+      "bytes": 683564, "sha256": "2c87d0b144fb5cd37b91058c4e7cbb92a2e423216c56f1f4cd7a39189bbd5e63"
+    },
+    {
+      "id": "es_419_0002", "language": "es", "class": "clean-read",
+      "reference": "fue tanta la cantidad de gente que se concentró que no todos pudieron acceder al funeral en la plaza de san pedro",
+      "sourceUrl": "https://huggingface.co/datasets/FluidInference/fleurs/resolve/8944693da251acbaf2f9686bddc4fedce8bd2edd/es_419/es_419_0002.wav",
+      "bytes": 311084, "sha256": "24624100418fb70f3947df1912c4b64c6a7ae67a84936c98e3eb9e0162055a6f"
+    },
+    {
+      "id": "es_419_0003", "language": "es", "class": "clean-read",
+      "reference": "esto parece tener sentido ya que en la tierra no se percibe su movimiento ¿cierto?",
+      "sourceUrl": "https://huggingface.co/datasets/FluidInference/fleurs/resolve/8944693da251acbaf2f9686bddc4fedce8bd2edd/es_419/es_419_0003.wav",
+      "bytes": 274604, "sha256": "54f941743dbd5d484a3f4b2b72a5621d4ebb00c0e2c65d8a896bc05adc95a205"
+    }
+  ]
+}

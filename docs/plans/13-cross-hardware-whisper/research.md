@@ -50,6 +50,12 @@ whisper.cpp supports cross-vendor Vulkan and a separate CUDA build for NVIDIA. O
 
 The shared policy is therefore layered: managed CPU for everyone, identity-proven whisper.cpp accelerators next, conditional residency after that, and specialized engines last.
 
+## Phase 2 corpus source
+
+The first host slice uses twenty files from FLEURS, four each for English, Dutch, German, French, and Spanish. FLEURS covers 102 languages and is published under CC-BY-4.0. The manifest pins a file-oriented test-set redistribution by full repository revision, source URL, byte size, and SHA-256; acquisition also validates 16 kHz mono PCM16. [Google FLEURS dataset](https://huggingface.co/datasets/google/fleurs), [FLEURS paper](https://research.google/pubs/fleurs-few-shot-learning-evaluation-of-universal-representations-of-speech/), [pinned file redistribution](https://huggingface.co/datasets/FluidInference/fleurs/tree/8944693da251acbaf2f9686bddc4fedce8bd2edd).
+
+This is a clean-read baseline, not the complete product corpus. Its manifest names missing classes explicitly, and the analyzer refuses production passage while any remain pending.
+
 ## Independent architecture arena
 
 The judge scored demonstrated benefit, product-path coverage, quality safety, failure correctness, packaging fit, maintainability, and memory behavior:

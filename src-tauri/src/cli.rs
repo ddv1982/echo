@@ -59,6 +59,8 @@ struct TranscribeArgs {
     whisper_best_of: Option<u8>,
     #[arg(long)]
     whisper_no_fallback: bool,
+    #[arg(long, hide = true)]
+    whisper_no_gpu: bool,
 }
 
 #[derive(Debug, Args)]
@@ -217,6 +219,16 @@ fn run_transcribe(args: TranscribeArgs) -> Result<(), CliFailure> {
             "Parakeet supports automatic language selection only",
         ));
     }
+    let has_whisper_performance_options = args.whisper_threads.is_some()
+        || args.whisper_beam_size.is_some()
+        || args.whisper_best_of.is_some()
+        || args.whisper_no_fallback
+        || args.whisper_no_gpu;
+    if args.engine == Some(CliEngine::Parakeet) && has_whisper_performance_options {
+        return Err(CliFailure::argument(
+            "Whisper performance options require the Whisper engine",
+        ));
+    }
     if args.output != Path::new("-") && paths_alias(&args.file, &args.output) {
         return Err(CliFailure::argument(
             "the output path must differ from the input WAV",
@@ -240,6 +252,7 @@ fn run_transcribe(args: TranscribeArgs) -> Result<(), CliFailure> {
         whisper_model: args.model,
         language: args.language,
         whisper_tuning,
+        whisper_force_cpu: args.whisper_no_gpu,
     };
     let prepared =
         echo::transcribe::prepare_with_config(overrides, &config).map_err(|error| match error {
