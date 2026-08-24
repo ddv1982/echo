@@ -28,6 +28,13 @@ pub struct ExtractionPlan {
     pub max_expanded_bytes: u64,
 }
 
+#[derive(Debug)]
+struct PendingSymlink {
+    output_relative: PathBuf,
+    target: PathBuf,
+    expected_sha256: String,
+}
+
 fn safe_relative(raw: &Path) -> Result<PathBuf, InstallError> {
     if raw.as_os_str().is_empty() || raw.is_absolute() {
         return Err(InstallError::UnsafeArchive(format!(
@@ -85,6 +92,74 @@ fn set_mode(_: &Path, _: u32) -> Result<(), InstallError> {
     Ok(())
 }
 
+fn validate_symlink_graph(
+    selected: &BTreeMap<PathBuf, &ExtractFile>,
+    regular_files: &BTreeSet<PathBuf>,
+    symlinks: &BTreeMap<PathBuf, PendingSymlink>,
+    cancel: &AtomicBool,
+) -> Result<(), InstallError> {
+    for source in symlinks.keys() {
+        let mut current = source.clone();
+        let mut chain = BTreeSet::new();
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(InstallError::Cancelled);
+            }
+            if !chain.insert(current.clone()) {
+                return Err(InstallError::UnsafeArchive(format!(
+                    "symlink cycle at {}",
+                    source.display()
+                )));
+            }
+            let link = symlinks.get(&current).ok_or_else(|| {
+                InstallError::UnsafeArchive(format!(
+                    "symlink target was not extracted for {}",
+                    source.display()
+                ))
+            })?;
+            let target_source = safe_relative(
+                &current
+                    .parent()
+                    .unwrap_or_else(|| Path::new(""))
+                    .join(&link.target),
+            )?;
+            let target_spec = selected.get(&target_source).ok_or_else(|| {
+                InstallError::UnsafeArchive(format!(
+                    "symlink target is not selected for {}",
+                    source.display()
+                ))
+            })?;
+            let output_target = safe_relative(
+                &link
+                    .output_relative
+                    .parent()
+                    .unwrap_or_else(|| Path::new(""))
+                    .join(&link.target),
+            )?;
+            let selected_target = safe_relative(Path::new(&target_spec.destination))?;
+            if output_target != selected_target {
+                return Err(InstallError::UnsafeArchive(format!(
+                    "symlink target destination changed for {}",
+                    source.display()
+                )));
+            }
+            match target_spec.kind {
+                PayloadKind::File => {
+                    if !regular_files.contains(&target_source) {
+                        return Err(InstallError::UnsafeArchive(format!(
+                            "symlink target was not extracted for {}",
+                            source.display()
+                        )));
+                    }
+                    break;
+                }
+                PayloadKind::Symlink => current = target_source,
+            }
+        }
+    }
+    Ok(())
+}
+
 fn extract_tar<R: Read>(
     reader: R,
     destination: &Path,
@@ -100,7 +175,7 @@ fn extract_tar<R: Read>(
     let mut archive = tar::Archive::new(reader);
     let mut seen = BTreeSet::new();
     let mut written = BTreeSet::new();
-    let mut symlinks = Vec::new();
+    let mut symlinks = BTreeMap::new();
     let mut entries = 0usize;
     let mut expanded = 0u64;
     for entry in archive
@@ -155,7 +230,7 @@ fn extract_tar<R: Read>(
             )));
         };
         let output_relative = safe_relative(Path::new(&file.destination))?;
-        let output = destination.join(output_relative);
+        let output = destination.join(&output_relative);
         match file.kind {
             PayloadKind::File if kind.is_file() => {
                 if entry.size() != file.size {
@@ -215,13 +290,14 @@ fn extract_tar<R: Read>(
                         source.display()
                     )));
                 }
-                symlinks.push((
+                symlinks.insert(
                     source,
-                    output,
-                    expected.to_string(),
-                    file.sha256.clone(),
-                    file.mode,
-                ));
+                    PendingSymlink {
+                        output_relative,
+                        target: PathBuf::from(expected),
+                        expected_sha256: file.sha256.clone(),
+                    },
+                );
             }
             _ => {
                 return Err(InstallError::UnsafeArchive(format!(
@@ -231,49 +307,50 @@ fn extract_tar<R: Read>(
             }
         }
     }
-    for (source, output, target, expected_sha, _) in symlinks {
-        let target_source = source
-            .parent()
-            .unwrap_or_else(|| Path::new(""))
-            .join(&target);
-        let target_spec = selected.get(&target_source).ok_or_else(|| {
-            InstallError::UnsafeArchive(format!(
-                "symlink target is not selected for {}",
-                source.display()
-            ))
-        })?;
-        let target_path = destination.join(safe_relative(Path::new(&target_spec.destination))?);
-        if !target_path.is_file() {
-            return Err(InstallError::UnsafeArchive(format!(
-                "symlink target was not extracted for {}",
-                source.display()
-            )));
-        }
-        if let Some(parent) = output.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&target, &output)?;
-        #[cfg(not(unix))]
-        return Err(InstallError::Unsupported(
-            "managed archive symlinks require Unix".to_string(),
-        ));
-        if sha256_file(&output, cancel)? != expected_sha {
-            return Err(InstallError::Payload(format!(
-                "materialized symlink {} failed SHA-256",
-                source.display()
-            )));
-        }
-        written.insert(source);
-    }
     let missing: Vec<_> = selected
         .keys()
-        .filter(|path| !written.contains(*path))
+        .filter(|path| !seen.contains(*path))
         .collect();
     if !missing.is_empty() {
         return Err(InstallError::Payload(format!(
             "archive is missing {} required members",
             missing.len()
+        )));
+    }
+    validate_symlink_graph(&selected, &written, &symlinks, cancel)?;
+    for link in symlinks.values() {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(InstallError::Cancelled);
+        }
+        let output = destination.join(&link.output_relative);
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&link.target, &output)?;
+        #[cfg(not(unix))]
+        return Err(InstallError::Unsupported(
+            "managed archive symlinks require Unix".to_string(),
+        ));
+    }
+    for (source, link) in &symlinks {
+        let output = destination.join(&link.output_relative);
+        if sha256_file(&output, cancel)? != link.expected_sha256 {
+            return Err(InstallError::Payload(format!(
+                "materialized symlink {} failed SHA-256",
+                source.display()
+            )));
+        }
+        written.insert(source.clone());
+    }
+    let unwritten: Vec<_> = selected
+        .keys()
+        .filter(|path| !written.contains(*path))
+        .collect();
+    if !unwritten.is_empty() {
+        return Err(InstallError::Payload(format!(
+            "archive is missing {} required members",
+            unwritten.len()
         )));
     }
     Ok(())
@@ -320,6 +397,30 @@ mod tests {
         }
     }
 
+    fn planned_file(source: &str, destination: &str, body: &[u8]) -> ExtractFile {
+        ExtractFile {
+            source: source.to_string(),
+            destination: destination.to_string(),
+            kind: PayloadKind::File,
+            link_target: None,
+            size: body.len() as u64,
+            mode: 0o755,
+            sha256: format!("{:x}", Sha256::digest(body)),
+        }
+    }
+
+    fn planned_symlink(source: &str, destination: &str, target: &str, sha256: &str) -> ExtractFile {
+        ExtractFile {
+            source: source.to_string(),
+            destination: destination.to_string(),
+            kind: PayloadKind::Symlink,
+            link_target: Some(target.to_string()),
+            size: 0,
+            mode: 0o777,
+            sha256: sha256.to_string(),
+        }
+    }
+
     fn tar_bytes(path: &str, body: &[u8], entry_type: tar::EntryType) -> Vec<u8> {
         let mut bytes = Vec::new();
         {
@@ -335,6 +436,65 @@ mod tests {
             builder.finish().unwrap();
         }
         bytes
+    }
+
+    fn tar_with_links(links: &[(&str, &str)], files: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut bytes);
+            for (path, target) in links {
+                let mut header = tar::Header::new_gnu();
+                header.set_entry_type(tar::EntryType::Symlink);
+                header.set_size(0);
+                header.set_mode(0o777);
+                header.set_link_name(target).unwrap();
+                header.set_cksum();
+                builder
+                    .append_data(&mut header, path, std::io::empty())
+                    .unwrap();
+            }
+            for (path, body) in files {
+                let mut header = tar::Header::new_gnu();
+                header.set_entry_type(tar::EntryType::Regular);
+                header.set_size(body.len() as u64);
+                header.set_mode(0o755);
+                header.set_cksum();
+                builder
+                    .append_data(&mut header, path, Cursor::new(body))
+                    .unwrap();
+            }
+            builder.finish().unwrap();
+        }
+        bytes
+    }
+
+    fn reversed_symlink_chain_tar(body: &[u8]) -> Vec<u8> {
+        tar_with_links(
+            &[
+                ("root/libtool.so", "libtool.so.1"),
+                ("root/libtool.so.1", "libtool.so.1.2"),
+            ],
+            &[("root/libtool.so.1.2", body)],
+        )
+    }
+
+    fn reversed_symlink_chain_plan(body: &[u8]) -> ExtractionPlan {
+        let sha256 = format!("{:x}", Sha256::digest(body));
+        ExtractionPlan {
+            format: ArtifactFormat::TarGzip,
+            files: vec![
+                planned_symlink("root/libtool.so", "libtool.so", "libtool.so.1", &sha256),
+                planned_symlink(
+                    "root/libtool.so.1",
+                    "libtool.so.1",
+                    "libtool.so.1.2",
+                    &sha256,
+                ),
+                planned_file("root/libtool.so.1.2", "libtool.so.1.2", body),
+            ],
+            max_entries: 3,
+            max_expanded_bytes: body.len() as u64,
+        }
     }
 
     fn plan(body: &[u8]) -> ExtractionPlan {
@@ -366,6 +526,152 @@ mod tests {
         )
         .unwrap();
         assert_eq!(fs::read(root.join("tool")).unwrap(), body);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn chained_symlinks_do_not_depend_on_archive_order() {
+        let body = b"shared library";
+        let root = std::env::temp_dir().join(format!("echo-extract-chain-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+
+        extract_tar(
+            Cursor::new(reversed_symlink_chain_tar(body)),
+            &root,
+            &reversed_symlink_chain_plan(body),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+
+        assert_eq!(
+            fs::read_link(root.join("libtool.so")).unwrap(),
+            Path::new("libtool.so.1")
+        );
+        assert_eq!(
+            fs::read_link(root.join("libtool.so.1")).unwrap(),
+            Path::new("libtool.so.1.2")
+        );
+        assert_eq!(fs::read(root.join("libtool.so")).unwrap(), body);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unsafe_symlink_graphs_are_rejected() {
+        let root =
+            std::env::temp_dir().join(format!("echo-extract-link-bad-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let sha256 = "0".repeat(64);
+        let cycle = ExtractionPlan {
+            format: ArtifactFormat::TarGzip,
+            files: vec![
+                planned_symlink("root/a", "a", "b", &sha256),
+                planned_symlink("root/b", "b", "a", &sha256),
+            ],
+            max_entries: 2,
+            max_expanded_bytes: 0,
+        };
+        let error = extract_tar(
+            Cursor::new(tar_with_links(&[("root/a", "b"), ("root/b", "a")], &[])),
+            &root,
+            &cycle,
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+        assert!(matches!(error, InstallError::UnsafeArchive(message) if message.contains("cycle")));
+
+        let unselected = ExtractionPlan {
+            files: vec![planned_symlink("root/a", "a", "missing", &sha256)],
+            max_entries: 1,
+            ..cycle
+        };
+        let error = extract_tar(
+            Cursor::new(tar_with_links(&[("root/a", "missing")], &[])),
+            &root,
+            &unselected,
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, InstallError::UnsafeArchive(message) if message.contains("not selected"))
+        );
+
+        let body = b"shared library";
+        let sha256 = format!("{:x}", Sha256::digest(body));
+        let mut target_plan = ExtractionPlan {
+            format: ArtifactFormat::TarGzip,
+            files: vec![
+                planned_symlink("root/a", "a", "file", &sha256),
+                planned_file("root/file", "file", body),
+            ],
+            max_entries: 2,
+            max_expanded_bytes: body.len() as u64,
+        };
+        let _ = fs::remove_dir_all(&root);
+        let changed = extract_tar(
+            Cursor::new(tar_with_links(
+                &[("root/a", "other")],
+                &[("root/file", body)],
+            )),
+            &root,
+            &target_plan,
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(changed, InstallError::UnsafeArchive(message) if message.contains("changed target"))
+        );
+
+        target_plan.files[0].link_target = Some("../file".to_string());
+        let _ = fs::remove_dir_all(&root);
+        let escaping = extract_tar(
+            Cursor::new(tar_with_links(
+                &[("root/a", "../file")],
+                &[("root/file", body)],
+            )),
+            &root,
+            &target_plan,
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+        assert!(matches!(escaping, InstallError::UnsafeArchive(_)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn flattened_symlink_target_must_match_selected_destination() {
+        let body = b"shared library";
+        let sha256 = format!("{:x}", Sha256::digest(body));
+        let plan = ExtractionPlan {
+            format: ArtifactFormat::TarGzip,
+            files: vec![
+                planned_symlink(
+                    "root/libtool.so",
+                    "aliases/libtool.so",
+                    "libtool.so.1",
+                    &sha256,
+                ),
+                planned_file("root/libtool.so.1", "libtool.so.1", body),
+            ],
+            max_entries: 2,
+            max_expanded_bytes: body.len() as u64,
+        };
+        let root = std::env::temp_dir().join(format!(
+            "echo-extract-link-destination-{}",
+            std::process::id()
+        ));
+        let error = extract_tar(
+            Cursor::new(tar_with_links(
+                &[("root/libtool.so", "libtool.so.1")],
+                &[("root/libtool.so.1", body)],
+            )),
+            &root,
+            &plan,
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, InstallError::UnsafeArchive(message) if message.contains("destination changed"))
+        );
     }
 
     #[test]

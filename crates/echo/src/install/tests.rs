@@ -55,6 +55,58 @@ fn operation_ids_do_not_reuse_generation_names() {
     assert!(first.as_str().contains(&std::process::id().to_string()));
 }
 
+#[cfg(unix)]
+#[test]
+#[ignore = "downloads the pinned Whisper runtime archive"]
+fn pinned_whisper_runtime_archive_installs() {
+    let archive = std::env::var_os("ECHO_PINNED_WHISPER_ARCHIVE")
+        .map(PathBuf::from)
+        .expect("ECHO_PINNED_WHISPER_ARCHIVE");
+    let body = fs::read(&archive).unwrap();
+    let spec = component(ComponentId::WhisperRuntime);
+    assert_eq!(body.len() as u64, spec.artifact_size);
+    assert_eq!(format!("{:x}", Sha256::digest(&body)), spec.artifact_sha256);
+
+    let root = scratch("pinned-whisper-runtime");
+    let transport = FixtureTransport(Mutex::new(VecDeque::from([body])));
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    let probe = CommandRuntimeProbe;
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+    let probe = AcceptProbe;
+    let installer = Installer {
+        store: ManagedStore::new(&root),
+        transport: &transport,
+        disk: &UnlimitedDisk,
+        probe: &probe,
+    };
+    let record = installer
+        .ensure_component(
+            ComponentId::WhisperRuntime,
+            false,
+            &OperationId::fixture("91"),
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
+    assert_eq!(record.version, spec.version);
+    assert_eq!(record.artifact_sha256, spec.artifact_sha256);
+
+    let payload = installer
+        .store
+        .active_root(ComponentId::WhisperRuntime)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        fs::read_link(payload.join("libwhisper.so")).unwrap(),
+        Path::new("libwhisper.so.1")
+    );
+    assert_eq!(
+        fs::read_link(payload.join("libwhisper.so.1")).unwrap(),
+        Path::new("libwhisper.so.1.9.2")
+    );
+    installer.store.verify(ComponentId::WhisperRuntime).unwrap();
+}
+
 #[test]
 fn direct_install_repairs_same_size_corruption_and_removes_only_managed_files() {
     let body = b"tiny verified model".to_vec();
