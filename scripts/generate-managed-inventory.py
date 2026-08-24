@@ -12,6 +12,7 @@ ARCHIVES = {
         "whisper.tar.gz",
         [
             "whisper-bin-ubuntu-x64/whisper-cli",
+            "whisper-bin-ubuntu-x64/whisper-server",
             "whisper-bin-ubuntu-x64/libwhisper*",
             "whisper-bin-ubuntu-x64/libggml*",
         ],

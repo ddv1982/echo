@@ -119,6 +119,14 @@
           "kind": "file",
           "linkTarget": null,
           "mode": 493,
+          "path": "whisper-bin-ubuntu-x64/whisper-server",
+          "sha256": "f83e389b2361f5c6abe2728ecbe4627649071e394b5bf6c393896c19bded643a",
+          "size": 1306808
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
           "path": "whisper-bin-ubuntu-x64/libggml-cpu-cannonlake.so",
           "sha256": "b28b1ac4709a87c8868921b30eae141aaf8f4d8fb620b584d453cfef5eb698f0",
           "size": 1074912

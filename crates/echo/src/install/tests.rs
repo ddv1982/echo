@@ -104,7 +104,64 @@ fn pinned_whisper_runtime_archive_installs() {
         fs::read_link(payload.join("libwhisper.so.1")).unwrap(),
         Path::new("libwhisper.so.1.9.2")
     );
+    assert!(payload.join("whisper-server").is_file());
     installer.store.verify(ComponentId::WhisperRuntime).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn legacy_whisper_runtime_without_server_stays_usable_and_removable() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    let root = scratch("legacy-whisper-runtime");
+    let store = ManagedStore::new(&root);
+    let id = ComponentId::WhisperRuntime;
+    let spec = component(id);
+    let release_name = format!("{}-1e9ac", spec.artifact_sha256);
+    let release = root
+        .join("managed/components")
+        .join(id.as_str())
+        .join("releases")
+        .join(&release_name);
+    let payload = release.join("payload");
+    fs::create_dir_all(&payload).unwrap();
+    let files = expected_files(id)
+        .into_iter()
+        .filter(|file| file.relative_path != "whisper-server")
+        .collect::<Vec<_>>();
+    for file in &files {
+        let path = payload.join(&file.relative_path);
+        match file.kind {
+            PayloadKind::File => {
+                fs::File::create(&path).unwrap().set_len(file.size).unwrap();
+                fs::set_permissions(&path, fs::Permissions::from_mode(file.mode)).unwrap();
+            }
+            PayloadKind::Symlink => {
+                symlink(file.link_target.as_deref().unwrap(), &path).unwrap();
+            }
+        }
+    }
+    let record = ActivationRecord {
+        schema_version: 1,
+        component: id,
+        version: spec.version.to_string(),
+        release: release_name,
+        artifact_sha256: spec.artifact_sha256.to_string(),
+        files,
+    };
+    let raw = serde_json::to_vec_pretty(&record).unwrap();
+    echo_core::write_atomic(&release.join("receipt.json"), &raw).unwrap();
+    echo_core::write_atomic(&store.active_path(id), &raw).unwrap();
+    trust_payload_fixture(&payload, &record.files);
+
+    assert!(matches!(
+        store.status(id, false),
+        ManagedComponentState::Ready { .. }
+    ));
+    assert!(store.candidate_root(id).is_some());
+    assert!(store.active_root_leased(id).unwrap().is_some());
+    store.remove(id).unwrap();
+    assert!(store.candidate_root(id).is_none());
 }
 
 #[test]

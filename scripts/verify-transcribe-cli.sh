@@ -94,7 +94,7 @@ cat > "$VERIFY_ROOT/bin/whisper-cli" <<'SH'
 } >> "$ECHO_ARGV_LOG"
 if [ ! -f "$ECHO_ATTEMPT_FILE" ]; then
   : > "$ECHO_ATTEMPT_FILE"
-  printf 'vad failed\n' >&2
+  printf 'failed to initialize VAD context\n' >&2
   exit 1
 fi
 printf '%s\n' '{"model":{"type":"small","multilingual":true},"result":{"language":"de"},"transcription":[{"text":" claude code"}]}'

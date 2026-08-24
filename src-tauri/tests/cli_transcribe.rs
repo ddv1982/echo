@@ -169,6 +169,18 @@ fn syntax_and_runtime_failures_use_distinct_exit_codes_and_stderr() {
         vec![
             "transcribe",
             wav.to_str().unwrap(),
+            "--whisper-threads",
+            "2",
+        ],
+        vec![
+            "transcribe",
+            wav.to_str().unwrap(),
+            "--whisper-beam-size",
+            "0",
+        ],
+        vec![
+            "transcribe",
+            wav.to_str().unwrap(),
             "--engine",
             "parakeet",
             "--language",

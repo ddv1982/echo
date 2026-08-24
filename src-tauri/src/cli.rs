@@ -1,5 +1,6 @@
 use std::ffi::OsString;
 use std::io::Write;
+use std::num::NonZeroUsize;
 use std::path::{Component, Path, PathBuf};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -50,6 +51,14 @@ struct TranscribeArgs {
     output: PathBuf,
     #[arg(long)]
     raw: bool,
+    #[arg(long)]
+    whisper_threads: Option<NonZeroUsize>,
+    #[arg(long, value_parser = positive_u8)]
+    whisper_beam_size: Option<u8>,
+    #[arg(long, value_parser = positive_u8)]
+    whisper_best_of: Option<u8>,
+    #[arg(long)]
+    whisper_no_fallback: bool,
 }
 
 #[derive(Debug, Args)]
@@ -216,10 +225,21 @@ fn run_transcribe(args: TranscribeArgs) -> Result<(), CliFailure> {
 
     let config = Config::load_read_only().map_err(CliFailure::runtime)?;
     let dictionary = Dictionary::load_read_only().map_err(CliFailure::runtime)?;
+    let whisper_tuning = (args.whisper_threads.is_some()
+        || args.whisper_beam_size.is_some()
+        || args.whisper_best_of.is_some()
+        || args.whisper_no_fallback)
+        .then_some(echo::stt::WhisperTuningOverride {
+            threads: args.whisper_threads,
+            beam_size: args.whisper_beam_size,
+            best_of: args.whisper_best_of,
+            no_fallback: args.whisper_no_fallback.then_some(true),
+        });
     let overrides = RunOverrides {
         engine: args.engine.map(Into::into),
         whisper_model: args.model,
         language: args.language,
+        whisper_tuning,
     };
     let prepared =
         echo::transcribe::prepare_with_config(overrides, &config).map_err(|error| match error {
@@ -325,6 +345,8 @@ struct TranscriptionJsonV1<'a> {
     engine: EngineJsonV1<'a>,
     language: LanguageJsonV1<'a>,
     hint_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    whisper: Option<&'a echo_core::WhisperRunTelemetry>,
 }
 
 impl<'a> TranscriptionJsonV1<'a> {
@@ -357,6 +379,7 @@ impl<'a> TranscriptionJsonV1<'a> {
                 probability: result.detail.language_probability,
             },
             hint_count: result.hint_count,
+            whisper: result.detail.whisper.as_ref(),
         }
     }
 }
@@ -458,6 +481,17 @@ fn nonempty_model(raw: &str) -> Result<String, String> {
         Err("model name cannot be empty".to_string())
     } else {
         Ok(raw.to_string())
+    }
+}
+
+fn positive_u8(raw: &str) -> Result<u8, String> {
+    let value = raw
+        .parse::<u8>()
+        .map_err(|_| format!("{raw} is not an integer from 1 through 255"))?;
+    if value == 0 {
+        Err("value must be at least 1".to_string())
+    } else {
+        Ok(value)
     }
 }
 

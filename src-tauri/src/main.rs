@@ -12,7 +12,10 @@ use ashpd::desktop::global_shortcuts::{
 use ashpd::desktop::CreateSessionOptions;
 use echo::audio::AudioCapture;
 use echo::inject::{Pasteboard, SysClipboard};
-use echo_core::{DictEntry, Dictionary, History};
+use echo_core::{
+    DictEntry, Dictionary, History, RunDetail, WhisperRunMode, WhisperRuntimeBackend,
+    WhisperRuntimeSource, WhisperTuningTelemetry,
+};
 use futures_util::StreamExt;
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
@@ -203,6 +206,40 @@ struct LastRun {
     infer_ms: u64,
     language: Option<String>,
     language_probability: Option<f32>,
+    performance: Option<LastRunPerformance>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LastRunPerformance {
+    mode: WhisperRunMode,
+    runtime_source: WhisperRuntimeSource,
+    backend: WhisperRuntimeBackend,
+    total_ms: u64,
+    audio_encode_ms: u64,
+    child_wall_ms: u64,
+    parse_ms: u64,
+    attempt_count: usize,
+    tuning: WhisperTuningTelemetry,
+}
+
+fn project_last_run_performance(detail: &RunDetail) -> Option<LastRunPerformance> {
+    let whisper = detail.whisper.as_ref()?;
+    Some(LastRunPerformance {
+        mode: whisper.mode,
+        runtime_source: whisper.runtime.source,
+        backend: whisper.runtime.backend,
+        total_ms: whisper.total_ms,
+        audio_encode_ms: whisper.audio_encode_ms,
+        child_wall_ms: whisper
+            .attempts
+            .iter()
+            .map(|attempt| attempt.child_wall_ms)
+            .sum(),
+        parse_ms: whisper.parse_ms,
+        attempt_count: whisper.attempts.len(),
+        tuning: whisper.tuning,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -880,6 +917,7 @@ fn get_app_status() -> AppStatus {
             infer_ms: row.infer_ms,
             language: row.detail.language.clone(),
             language_probability: row.detail.language_probability,
+            performance: project_last_run_performance(&row.detail),
         })
     });
     let recording_in_process = status.state == "Recording" && echo::rec::recording_in_process();
@@ -3277,6 +3315,53 @@ mod settings_tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         after.unregister(released).unwrap();
+    }
+
+    #[test]
+    fn last_run_performance_projects_split_whisper_detail() {
+        let detail = RunDetail {
+            whisper: Some(echo_core::WhisperRunTelemetry {
+                mode: WhisperRunMode::ColdFallback,
+                total_ms: 1_230,
+                audio_encode_ms: 10,
+                parse_ms: 4,
+                runtime: echo_core::WhisperRuntimeTelemetry {
+                    binary: "/usr/bin/whisper-cli".to_string(),
+                    source: WhisperRuntimeSource::System,
+                    backend: WhisperRuntimeBackend::Cpu,
+                },
+                tuning: WhisperTuningTelemetry {
+                    threads: Some(4),
+                    beam_size: Some(5),
+                    best_of: Some(5),
+                    no_fallback: Some(false),
+                },
+                attempts: vec![
+                    echo_core::WhisperAttemptTelemetry {
+                        vad: true,
+                        process_start_ms: 1,
+                        child_wall_ms: 500,
+                        success: false,
+                        exit_code: Some(1),
+                        retry_reason: Some(echo_core::WhisperRetryReason::VadRejected),
+                    },
+                    echo_core::WhisperAttemptTelemetry {
+                        vad: false,
+                        process_start_ms: 1,
+                        child_wall_ms: 710,
+                        success: true,
+                        exit_code: Some(0),
+                        retry_reason: None,
+                    },
+                ],
+            }),
+            ..RunDetail::default()
+        };
+        let projected = project_last_run_performance(&detail).unwrap();
+        assert_eq!(projected.mode, WhisperRunMode::ColdFallback);
+        assert_eq!(projected.child_wall_ms, 1_210);
+        assert_eq!(projected.attempt_count, 2);
+        assert_eq!(projected.tuning.threads, Some(4));
     }
 
     #[test]

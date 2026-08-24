@@ -1,10 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use echo_core::{WhisperRuntimeBackend, WhisperRuntimeSource};
+
 use crate::install::{ComponentId, ManagedPath, ManagedStore};
 use crate::which::path_of;
 
-use super::{InstalledModel, ModelCache, ModelInventory, WhisperFamily};
+use super::{InstalledModel, ModelCache, ModelInventory, WhisperFamily, WhisperRuntimeCandidate};
 
 pub struct ManagedSelection {
     pub paths: Vec<PathBuf>,
@@ -13,7 +15,7 @@ pub struct ManagedSelection {
 
 pub struct SpeechRuntimeInventory {
     pub models: ModelInventory,
-    pub whisper_binary: Option<PathBuf>,
+    pub whisper_runtimes: Vec<WhisperRuntimeCandidate>,
     pub parakeet_binary: Option<PathBuf>,
     store: ManagedStore,
     managed_roots: BTreeMap<ComponentId, PathBuf>,
@@ -31,18 +33,44 @@ impl SpeechRuntimeInventory {
             managed_roots.insert(id, root.clone());
             Some(root)
         };
-        let whisper_binary = active(ComponentId::WhisperRuntime)
-            .map(|root| {
-                let path = root.join("whisper-cli");
-                provenance.insert(path.clone(), ComponentId::WhisperRuntime);
-                path
-            })
-            .filter(|path| path.is_file())
-            .or_else(|| {
-                ["whisper-cli", "whisper-cpp", "whisper"]
-                    .into_iter()
-                    .find_map(path_of)
-            });
+        let mut whisper_runtimes = Vec::new();
+        if let Some(root) = active(ComponentId::WhisperRuntime) {
+            let cli = root.join("whisper-cli");
+            let server = root.join("whisper-server");
+            if cli.is_file() {
+                provenance.insert(cli.clone(), ComponentId::WhisperRuntime);
+                let server = server.is_file().then(|| {
+                    provenance.insert(server.clone(), ComponentId::WhisperRuntime);
+                    server
+                });
+                whisper_runtimes.push(WhisperRuntimeCandidate {
+                    source: WhisperRuntimeSource::Managed,
+                    backend: WhisperRuntimeBackend::Cpu,
+                    cli,
+                    server,
+                });
+            }
+        }
+        if let Some(cli) = ["whisper-cli", "whisper-cpp", "whisper"]
+            .into_iter()
+            .find_map(path_of)
+        {
+            let sibling = cli.parent().map(|parent| parent.join("whisper-server"));
+            let server = sibling
+                .filter(|path| path.is_file())
+                .or_else(|| path_of("whisper-server"));
+            if whisper_runtimes
+                .iter()
+                .all(|candidate| candidate.cli != cli)
+            {
+                whisper_runtimes.push(WhisperRuntimeCandidate {
+                    source: WhisperRuntimeSource::System,
+                    backend: WhisperRuntimeBackend::Unknown,
+                    cli,
+                    server,
+                });
+            }
+        }
         let parakeet_binary = active(ComponentId::SherpaRuntime)
             .map(|root| {
                 let path = root.join("sherpa-onnx-offline");
@@ -107,7 +135,7 @@ impl SpeechRuntimeInventory {
         }
         Self {
             models,
-            whisper_binary,
+            whisper_runtimes,
             parakeet_binary,
             store,
             managed_roots,

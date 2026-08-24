@@ -3,12 +3,17 @@ mod fake;
 mod parakeet;
 mod runtime;
 mod whisper;
+mod whisper_plan;
 
 pub use cache::{InstalledModel, ModelCache, ModelInventory, WhisperFamily};
 pub use fake::FakeEngine;
 pub use parakeet::ParakeetEngine;
 pub use runtime::SpeechRuntimeInventory;
 pub use whisper::WhisperEngine;
+pub use whisper_plan::{
+    preferred_runtime, WhisperExecutionPlan, WhisperModelAsset, WhisperProtocol,
+    WhisperRuntimeCandidate, WhisperTuning, WhisperTuningOverride,
+};
 
 use std::path::PathBuf;
 
@@ -119,7 +124,7 @@ pub fn engine_availability() -> Vec<EngineAvailability> {
     let cache = ModelCache::from_env();
     let runtime = SpeechRuntimeInventory::from_cache(&cache);
     let whisper_reason = match (
-        runtime.whisper_binary.is_some(),
+        !runtime.whisper_runtimes.is_empty(),
         runtime.models.whisper.is_empty(),
     ) {
         (true, false) => None,

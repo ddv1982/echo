@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.11.0
+
+- Whisper runs now report separate WAV encoding, child-process, parsing, runtime, backend, decoding, and attempt detail while keeping the existing `inferMs` boundary compatible with old history and CLI consumers.
+- One typed execution plan owns the selected Whisper runtime, model, VAD, protocol, and any explicit decoding overrides. Normal runs preserve the runtime's own tuning defaults, managed CPU keeps its existing precedence, and system or manually imported assets remain supported.
+- The file CLI adds unsaved Whisper tuning overrides for reproducible experiments. The benchmark records outer wall time, artifact hashes, host identity, seeds, warmups, randomized candidate order, resolved tuning, and every VAD retry.
+- New managed Whisper installs include the matching `whisper-server` from the already verified upstream archive. Existing one-shot installations remain valid without repair. A separate loopback-only probe measures model load, first request, warm requests, memory, and cleanup without enabling resident dictation before it passes the quality and latency gates.
+- Advanced diagnostics show the actual cold path, runtime source, backend, split timing, decoding values, and VAD retries. General Settings gains no performance knobs.
+- Echo retries without VAD only when Whisper reports a VAD model or context failure, failed VAD computation, or an exact unsupported VAD flag. Decoder and model failures now preserve their original error instead of paying for an unrelated second inference.
+
 ## v0.10.0
 
 - Recommended setup now installs Large v3 Turbo Q5_0 on machines with at least 8 GiB RAM. The 547 MiB quantized model replaces Small as the normal high-quality multilingual choice, while Base Q5_1 remains the low-memory fallback and existing Small or manual models stay supported.

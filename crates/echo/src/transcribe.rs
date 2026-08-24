@@ -7,7 +7,8 @@ use echo_core::{
 
 use crate::install::ManagedPath;
 use crate::stt::{
-    FakeEngine, ModelCache, ParakeetEngine, SpeechRuntimeInventory, WhisperEngine,
+    preferred_runtime, FakeEngine, ModelCache, ParakeetEngine, SpeechRuntimeInventory,
+    WhisperEngine, WhisperExecutionPlan, WhisperModelAsset, WhisperTuningOverride,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -15,6 +16,7 @@ pub struct RunOverrides {
     pub engine: Option<EngineChoice>,
     pub whisper_model: Option<String>,
     pub language: Option<LanguageChoice>,
+    pub whisper_tuning: Option<WhisperTuningOverride>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -123,7 +125,7 @@ impl EngineAvailabilitySnapshot {
             }
         }
         Self {
-            whisper_binary: runtime.whisper_binary.is_some(),
+            whisper_binary: !runtime.whisper_runtimes.is_empty(),
             whisper_models,
             parakeet: runtime.parakeet_binary.is_some() && runtime.models.parakeet.is_some(),
         }
@@ -480,37 +482,61 @@ pub fn prepare_with_config(
     .collect::<Vec<_>>();
     let available = EngineAvailabilitySnapshot::from_process(&cache, &runtime, &model_candidates);
     let resolved = resolve_run(&overrides, &env, file, &available)?;
+    if overrides.whisper_tuning.is_some()
+        && !matches!(resolved.engine, ResolvedEngine::Whisper { .. })
+    {
+        return Err(PrepareError::InvalidRequest(
+            "Whisper tuning options require the Whisper engine".to_string(),
+        ));
+    }
     let (engine, managed_paths): (Box<dyn Engine>, Vec<ManagedPath>) = match &resolved.engine {
         ResolvedEngine::Whisper {
             model,
             multilingual,
             model_path,
         } => {
-            let binary = runtime.whisper_binary.clone().ok_or_else(|| {
-                PrepareError::EngineMissing("whisper-cli is not installed".to_string())
-            })?;
+            let runtime_candidate = preferred_runtime(&runtime.whisper_runtimes)
+                .cloned()
+                .ok_or_else(|| {
+                    PrepareError::EngineMissing("whisper-cli is not installed".to_string())
+                })?;
             let model_path = model_path.clone().ok_or_else(|| {
                 PrepareError::EngineMissing(format!("Whisper model {model} is not installed"))
             })?;
             let vad = runtime.models.vad.first().cloned();
-            let mut selected = vec![binary, model_path];
+            let mut selected = vec![runtime_candidate.cli.clone()];
+            if let Some(server) = &runtime_candidate.server {
+                selected.push(server.clone());
+            }
+            selected.push(model_path.clone());
             if let Some(vad) = &vad {
                 selected.push(vad.clone());
             }
             let locked = runtime
                 .lock_selected(&selected)
                 .map_err(PrepareError::EngineMissing)?;
-            let resolved_vad = (locked.paths.len() == 3).then(|| locked.paths[2].clone());
-            (
-                Box::new(WhisperEngine::with_paths(
-                    model.clone(),
-                    locked.paths[0].clone(),
-                    locked.paths[1].clone(),
-                    resolved_vad,
-                    *multilingual,
-                )),
-                locked.leases,
-            )
+            let mut paths = locked.paths.into_iter();
+            let mut locked_runtime = runtime_candidate;
+            locked_runtime.cli = paths.next().expect("selected runtime has a CLI");
+            locked_runtime.server = locked_runtime
+                .server
+                .as_ref()
+                .map(|_| paths.next().expect("selected server was locked"));
+            let locked_model = paths.next().expect("selected model was locked");
+            let resolved_vad = vad.map(|_| paths.next().expect("selected VAD was locked"));
+            let mut plan = WhisperExecutionPlan::one_shot(
+                locked_runtime,
+                WhisperModelAsset {
+                    name: model.clone(),
+                    path: locked_model,
+                    multilingual: *multilingual,
+                },
+                resolved_vad,
+            );
+            if let Some(overrides) = overrides.whisper_tuning {
+                plan.tuning = overrides.apply(plan.tuning);
+            }
+            (Box::new(WhisperEngine::with_plan(plan)), locked.leases)
         }
         ResolvedEngine::ParakeetTdt06bV3 => {
             let binary = runtime.parakeet_binary.clone().ok_or_else(|| {
@@ -607,8 +633,7 @@ pub fn language_catalog(engine: Option<EngineChoice>, file: &Config) -> Language
         &env,
         file,
     );
-    let parakeet_available =
-        runtime.models.parakeet.is_some() && runtime.parakeet_binary.is_some();
+    let parakeet_available = runtime.models.parakeet.is_some() && runtime.parakeet_binary.is_some();
     let parakeet = projects_parakeet(&requested, parakeet_available);
     if parakeet {
         return LanguageCatalog {
