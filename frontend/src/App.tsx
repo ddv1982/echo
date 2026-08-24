@@ -1174,9 +1174,18 @@ function SettingsView({
     try {
       const written = await setSettings(next)
       settingsRef.current = written
-      const [, nextLanguages] = await Promise.all([onStatusChange(), listLanguages()])
       setLocalSettings(written)
-      setLanguages(nextLanguages)
+      setLanguages(null)
+      const [statusResult, languageResult] = await Promise.allSettled([
+        onStatusChange(),
+        listLanguages(),
+      ])
+      if (statusResult.status === 'rejected') onError(messageFrom(statusResult.reason))
+      if (languageResult.status === 'fulfilled') {
+        setLanguages(languageResult.value)
+      } else {
+        onError(messageFrom(languageResult.reason))
+      }
     } catch (reason) {
       onError(messageFrom(reason))
     }
@@ -1227,7 +1236,8 @@ function SettingsView({
   }
 
   const parakeetRuns = languages?.mode === 'parakeet'
-  const whisperRuns = settings?.engine.effective !== 'fake' && !parakeetRuns
+  const whisperRuns =
+    languages != null && settings?.engine.effective !== 'fake' && !parakeetRuns
 
   return (
     <div className="view-stack settings-view" data-settings-surface>

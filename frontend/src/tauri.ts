@@ -356,9 +356,11 @@ function defaultPreviewLanguages(): LanguageOptions {
 }
 
 let previewLanguages: LanguageOptions = defaultPreviewLanguages()
+let previewLanguagesError: string | null = null
 
 export function listLanguages(): Promise<LanguageOptions> {
   if (isTauri()) return invoke('list_languages')
+  if (previewLanguagesError) return Promise.reject(new Error(previewLanguagesError))
   return Promise.resolve(
     preview ? { ...previewLanguages } : { mode: 'multilingual', model: null, options: [] },
   )
@@ -366,6 +368,10 @@ export function listLanguages(): Promise<LanguageOptions> {
 
 export function seedPreviewLanguages(languages: LanguageOptions) {
   previewLanguages = languages
+}
+
+export function seedPreviewLanguagesError(message: string) {
+  previewLanguagesError = message
 }
 
 
@@ -417,6 +423,7 @@ export function resetPreviewSettings() {
   previewMicTestError = null
   previewRemoveStaleError = null
   previewLanguages = defaultPreviewLanguages()
+  previewLanguagesError = null
   previewInventory = defaultPreviewInventory()
   previewDevices = defaultPreviewDevices()
   previewMicrophones = defaultPreviewMicrophones(previewDevices)

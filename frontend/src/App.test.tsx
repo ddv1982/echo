@@ -10,6 +10,7 @@ import {
   resetPreviewSettings,
   retryShortcut,
   seedPreviewLanguages,
+  seedPreviewLanguagesError,
   seedPreviewMicrophones,
   seedPreviewMicTestError,
   seedPreviewRemoveStaleError,
@@ -462,6 +463,20 @@ describe('Echo desktop shell', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     expect(await screen.findByLabelText('Speech model')).toBeDisabled()
     expect(screen.queryByText('Parakeet TDT 0.6B v3')).not.toBeInTheDocument()
+  })
+
+  it('shows a saved engine change when its projection refresh fails', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await screen.findByLabelText('Speech model')
+    seedPreviewLanguagesError('language projection failed')
+    fireEvent.click(await screen.findByText('Advanced'))
+    const parakeet = await screen.findByRole('button', { name: 'Parakeet' })
+    fireEvent.click(parakeet)
+    await waitFor(() => expect(parakeet).toHaveAttribute('data-active', 'true'))
+    expect(screen.queryByLabelText('Speech model')).not.toBeInTheDocument()
+    expect(await screen.findByText('language projection failed')).toBeInTheDocument()
   })
 
   it('pins the General surface and keeps Advanced collapsed until asked', async () => {
