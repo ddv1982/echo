@@ -4,6 +4,7 @@ mod parakeet;
 mod runtime;
 mod whisper;
 mod whisper_plan;
+mod whisper_probe;
 
 pub use cache::{InstalledModel, ModelCache, ModelInventory, WhisperFamily};
 pub use fake::FakeEngine;

@@ -70,7 +70,8 @@ function richPreviewStatus(): AppStatus {
       performance: {
         mode: 'coldCli',
         runtimeSource: 'system',
-        backend: 'cpu',
+        backend: 'vulkan',
+        device: 'Intel Iris Xe',
         totalMs: 1038,
         audioEncodeMs: 3,
         childWallMs: 1032,
