@@ -15,6 +15,7 @@ Research and the independent architecture decision are recorded in [gpu-research
 - Compare one accelerated runtime with its own `--no-gpu` CPU control.
 - Require a real JSON transcription and parse the selected backend and physical device from runtime evidence.
 - Record binary, model, audio, driver/device, tuning, upstream timing, randomized order, outer timing, and raw evidence in JSONL.
+- Invalidate stale reports before each run and publish atomic running, failed, or complete status.
 - Report a machine-readable proceed or stop decision without turning a smoke fixture into a production claim.
 
 Acceptance: self-tests run in normal CI, and the probe rejects unknown or silently CPU backends. This phase may merge without a performance win because the tool is the deliverable.

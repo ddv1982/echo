@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import hashlib
 import json
 import math
@@ -14,6 +15,7 @@ import re
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 from collections import defaultdict
@@ -27,6 +29,7 @@ TIMING_PATTERN = re.compile(
 VULKAN_DEVICE_PATTERN = re.compile(r"ggml_vulkan:\s*(\d+)\s*=\s*(.+?)(?:\s*\||$)")
 VULKAN_BACKEND_PATTERN = re.compile(r"using Vulkan(\d+) backend")
 REPO_ROOT = Path(__file__).resolve().parent.parent
+REPORT_FILES = ("warmups.jsonl", "runs.jsonl", "summary.json", "summary.md")
 
 
 def portable_path(path: Path) -> str:
@@ -70,6 +73,37 @@ def repo_metadata() -> dict[str, object]:
     with (REPO_ROOT / "Cargo.toml").open("rb") as source:
         version = tomllib.load(source)["workspace"]["package"]["version"]
     return {"commit": commit, "dirty": dirty, "version": version}
+
+
+def write_atomic(path: Path, value: str) -> None:
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(value, encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def write_status(output_dir: Path, state: str, **detail: object) -> None:
+    payload = {
+        "schemaVersion": 1,
+        "state": state,
+        "updatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        **detail,
+    }
+    write_atomic(
+        output_dir / "status.json", json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    )
+
+
+def prepare_output(output_dir: Path) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for name in REPORT_FILES:
+        path = output_dir / name
+        if path.is_dir():
+            raise ValueError(f"report path is a directory: {path}")
+        path.unlink(missing_ok=True)
+    write_status(output_dir, "running")
 
 
 def read_optional(path: Path) -> str | None:
@@ -431,85 +465,100 @@ def render_summary(summary: dict[str, object]) -> str:
 
 
 def run_probe(args: argparse.Namespace) -> int:
-    required = [("binary", args.binary), ("model", args.model)]
-    required.extend(("audio", audio) for audio in args.audio)
-    if args.vad is not None:
-        required.append(("VAD", args.vad))
-    for label, path in required:
-        if not path.is_file():
-            raise ValueError(f"{label} is missing: {path}")
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    environment = {
-        "echo": repo_metadata(),
-        "host": host_metadata(),
-        "binary": artifact(args.binary),
-        "runtimeVersion": runtime_version(args.binary, args.timeout),
-        "librarySearchPath": portable_path(args.binary.parent),
-        "adjacentLibraries": adjacent_libraries(args.binary),
-        "vulkanIcds": vulkan_icds(),
-        "model": artifact(args.model),
-        "vad": artifact(args.vad) if args.vad is not None else None,
-        "backend": args.backend,
-        "seed": args.seed,
-        "warmups": args.warmups,
-        "repeats": args.repeats,
-        "mesaShaderCacheDir": (
-            portable_path(args.mesa_shader_cache_dir)
-            if args.mesa_shader_cache_dir is not None
-            else None
-        ),
-        "tuning": {
-            "threads": args.threads,
-            "beamSize": args.beam_size,
-            "bestOf": args.best_of,
-            "noFallback": args.no_fallback,
-            "language": args.language,
-            "promptLength": len(args.prompt),
-        },
-    }
-    if args.mesa_shader_cache_dir is not None:
-        if args.mesa_shader_cache_dir.exists() and any(args.mesa_shader_cache_dir.iterdir()):
-            raise ValueError(
-                f"Mesa shader cache directory must be empty: {args.mesa_shader_cache_dir}"
-            )
-        args.mesa_shader_cache_dir.mkdir(parents=True, exist_ok=True)
-    warmup_rows = []
-    for audio in args.audio:
-        for candidate in ("cpu", "accelerated"):
-            for warmup in range(args.warmups):
-                row = invoke(args, audio, candidate, -(warmup + 1), 0)
-                row["environment"] = environment
-                warmup_rows.append(row)
-    rng = random.Random(args.seed)
-    rows: list[dict[str, object]] = []
-    for repeat in range(1, args.repeats + 1):
+    prepare_output(args.output_dir)
+    try:
+        required = [("binary", args.binary), ("model", args.model)]
+        required.extend(("audio", audio) for audio in args.audio)
+        if args.vad is not None:
+            required.append(("VAD", args.vad))
+        for label, path in required:
+            if not path.is_file():
+                raise ValueError(f"{label} is missing: {path}")
+        environment = {
+            "echo": repo_metadata(),
+            "host": host_metadata(),
+            "binary": artifact(args.binary),
+            "runtimeVersion": runtime_version(args.binary, args.timeout),
+            "librarySearchPath": portable_path(args.binary.parent),
+            "adjacentLibraries": adjacent_libraries(args.binary),
+            "vulkanIcds": vulkan_icds(),
+            "model": artifact(args.model),
+            "vad": artifact(args.vad) if args.vad is not None else None,
+            "backend": args.backend,
+            "seed": args.seed,
+            "warmups": args.warmups,
+            "repeats": args.repeats,
+            "mesaShaderCacheDir": (
+                portable_path(args.mesa_shader_cache_dir)
+                if args.mesa_shader_cache_dir is not None
+                else None
+            ),
+            "tuning": {
+                "threads": args.threads,
+                "beamSize": args.beam_size,
+                "bestOf": args.best_of,
+                "noFallback": args.no_fallback,
+                "language": args.language,
+                "promptLength": len(args.prompt),
+            },
+        }
+        if args.mesa_shader_cache_dir is not None:
+            if args.mesa_shader_cache_dir.exists() and any(
+                args.mesa_shader_cache_dir.iterdir()
+            ):
+                raise ValueError(
+                    f"Mesa shader cache directory must be empty: {args.mesa_shader_cache_dir}"
+                )
+            args.mesa_shader_cache_dir.mkdir(parents=True, exist_ok=True)
+        warmup_rows = []
         for audio in args.audio:
-            order = ["cpu", "accelerated"]
-            rng.shuffle(order)
-            for index, candidate in enumerate(order, start=1):
-                row = invoke(args, audio, candidate, repeat, index)
-                row["environment"] = environment
-                rows.append(row)
-    summary = summarize(
-        rows, args.backend, args.min_speedup_percent, args.min_speedup_ms
-    )
-    summary["warmups"] = {
-        candidate: [row["outerMs"] for row in warmup_rows if row["candidate"] == candidate]
-        for candidate in ("cpu", "accelerated")
-    }
-    (args.output_dir / "warmups.jsonl").write_text(
-        "".join(json.dumps(row, sort_keys=True) + "\n" for row in warmup_rows),
-        encoding="utf-8",
-    )
-    (args.output_dir / "runs.jsonl").write_text(
-        "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
-        encoding="utf-8",
-    )
-    (args.output_dir / "summary.json").write_text(
-        json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
-    rendered = render_summary(summary)
-    (args.output_dir / "summary.md").write_text(rendered, encoding="utf-8")
+            for candidate in ("cpu", "accelerated"):
+                for warmup in range(args.warmups):
+                    row = invoke(args, audio, candidate, -(warmup + 1), 0)
+                    row["environment"] = environment
+                    warmup_rows.append(row)
+        rng = random.Random(args.seed)
+        rows: list[dict[str, object]] = []
+        for repeat in range(1, args.repeats + 1):
+            for audio in args.audio:
+                order = ["cpu", "accelerated"]
+                rng.shuffle(order)
+                for index, candidate in enumerate(order, start=1):
+                    row = invoke(args, audio, candidate, repeat, index)
+                    row["environment"] = environment
+                    rows.append(row)
+        summary = summarize(
+            rows, args.backend, args.min_speedup_percent, args.min_speedup_ms
+        )
+        summary["warmups"] = {
+            candidate: [
+                row["outerMs"] for row in warmup_rows if row["candidate"] == candidate
+            ]
+            for candidate in ("cpu", "accelerated")
+        }
+        write_atomic(
+            args.output_dir / "warmups.jsonl",
+            "".join(json.dumps(row, sort_keys=True) + "\n" for row in warmup_rows),
+        )
+        write_atomic(
+            args.output_dir / "runs.jsonl",
+            "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
+        )
+        write_atomic(
+            args.output_dir / "summary.json",
+            json.dumps(summary, indent=2, sort_keys=True) + "\n",
+        )
+        rendered = render_summary(summary)
+        write_atomic(args.output_dir / "summary.md", rendered)
+        write_status(args.output_dir, "complete", decision=summary["decision"])
+    except Exception as error:
+        write_status(
+            args.output_dir,
+            "failed",
+            errorType=type(error).__name__,
+            error=str(error),
+        )
+        raise
     print(rendered)
     return 1 if args.require_gate and summary["decision"] != "proceed" else 0
 
@@ -569,6 +618,32 @@ whisper_backend_init_gpu: using Vulkan0 backend
     rows[-1]["device"] = "llvmpipe (LLVM)"
     software = summarize(rows, "vulkan", 20.0, 20.0)
     assert not software["gates"]["hardwareDevice"]
+    with tempfile.TemporaryDirectory(prefix="echo-acceleration-output-") as temporary:
+        output = Path(temporary)
+        for name in REPORT_FILES:
+            (output / name).write_text("stale", encoding="utf-8")
+        prepare_output(output)
+        assert all(not (output / name).exists() for name in REPORT_FILES)
+        status = json.loads((output / "status.json").read_text(encoding="utf-8"))
+        assert status["state"] == "running"
+        for name in REPORT_FILES:
+            (output / name).write_text("stale again", encoding="utf-8")
+        failure_args = argparse.Namespace(
+            output_dir=output,
+            binary=output / "missing-whisper-cli",
+            model=output / "missing-model.bin",
+            audio=[output / "missing.wav"],
+            vad=None,
+        )
+        try:
+            run_probe(failure_args)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("missing probe inputs should fail")
+        status = json.loads((output / "status.json").read_text(encoding="utf-8"))
+        assert status["state"] == "failed" and status["errorType"] == "ValueError"
+        assert all(not (output / name).exists() for name in REPORT_FILES)
     print("whisper acceleration probe self-test passed")
 
 
