@@ -1356,6 +1356,10 @@ fn microphone_test(
                 address: None,
                 driver: None,
                 extended: Vec::new(),
+                host: echo::microphone::AudioHost::Other,
+                transport: echo::microphone::InputTransport::Unknown,
+                tier: echo::microphone::EndpointTier::Primary,
+                hint: String::new(),
             }),
             peak_rms: result.peak_rms,
             outcome: if result.peak_rms > 0.001 {

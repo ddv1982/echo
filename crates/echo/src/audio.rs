@@ -8,9 +8,12 @@ use cpal::{Sample, SampleFormat, SizedSample, I24, U24};
 use echo_core::{MicrophoneSelection, Pcm16kMono, SAMPLE_RATE_HZ};
 
 use crate::microphone::{
-    resolve_selection, selection_from_sources, InputDeviceInfo, InputSelectionStatus,
-    MicrophoneFailure, MicrophoneId, MicrophoneSnapshot,
+    is_system_default_proxy, resolve_selection, selectable_inputs, selection_from_sources,
+    AudioHost, InputDeviceInfo, InputSelectionStatus, MicrophoneFailure, MicrophoneId,
+    MicrophoneSnapshot, RawInputDescriptor,
 };
+#[cfg(any(target_os = "linux", test))]
+use crate::microphone::EndpointTier;
 
 /// The microphone's RMS level, shared between the capture callback and
 /// whoever renders it. f32 bits in one atomic; publishing is a few
@@ -125,6 +128,7 @@ struct DiscoveredInput {
 }
 
 struct InputDiscovery {
+    host: AudioHost,
     devices: Vec<DiscoveredInput>,
     warning: Option<String>,
 }
@@ -209,15 +213,20 @@ fn map_cpal_error(error: cpal::Error) -> AudioError {
     }
 }
 
-fn describe_device(device: &cpal::Device, is_default: bool) -> Result<InputDeviceInfo, AudioError> {
+fn describe_device(
+    device: &cpal::Device,
+    host: AudioHost,
+    is_default: bool,
+) -> Result<InputDeviceInfo, AudioError> {
     let id = device.id().map_err(map_cpal_error)?.to_string();
     let description = device.description().ok();
     let label = description
         .as_ref()
         .map(|value| value.name().to_string())
         .unwrap_or_else(|| id.clone());
-    Ok(InputDeviceInfo {
+    Ok(RawInputDescriptor {
         id: MicrophoneId::parse(id).map_err(AudioError::Selection)?,
+        host,
         label,
         is_default,
         manufacturer: description
@@ -241,7 +250,8 @@ fn describe_device(device: &cpal::Device, is_default: bool) -> Result<InputDevic
             .as_ref()
             .map(|value| value.extended().map(str::to_string).collect())
             .unwrap_or_default(),
-    })
+    }
+    .into())
 }
 
 fn merge_default_handle<T>(
@@ -264,6 +274,7 @@ fn merge_default_handle<T>(
 }
 
 fn discover_inputs(host: &cpal::Host) -> InputDiscovery {
+    let audio_host = AudioHost::from_cpal_name(host.id().name());
     let default = host.default_input_device();
     let default_id = default
         .as_ref()
@@ -286,7 +297,7 @@ fn discover_inputs(host: &cpal::Host) -> InputDiscovery {
             .id()
             .ok()
             .is_some_and(|id| default_id.as_deref() == Some(id.to_string().as_str()));
-        match describe_device(&handle, is_default) {
+        match describe_device(&handle, audio_host, is_default) {
             Ok(info)
                 if !devices
                     .iter()
@@ -308,30 +319,108 @@ fn discover_inputs(host: &cpal::Host) -> InputDiscovery {
             .then_with(|| left.info.label.cmp(&right.info.label))
             .then_with(|| left.info.id.as_str().cmp(right.info.id.as_str()))
     });
-    InputDiscovery { devices, warning }
+    InputDiscovery {
+        host: audio_host,
+        devices,
+        warning,
+    }
 }
 
 fn process_snapshot_from(discovery: &InputDiscovery) -> MicrophoneSnapshot {
-    let devices: Vec<_> = discovery
+    let discovered: Vec<_> = discovery
         .devices
         .iter()
         .map(|device| device.info.clone())
         .collect();
+    let system_default = discovered.iter().find(|device| device.is_default).cloned();
+    let system_default_is_proxy = system_default.as_ref().is_some_and(is_system_default_proxy);
+    let devices = selectable_inputs(&discovered);
     let file = crate::settings::file_config();
     let environment = std::env::var("ECHO_MICROPHONE").ok();
     let (selection, source) =
         selection_from_sources(environment.as_deref(), file.microphone.as_ref(), &devices);
+    let selection = match selection {
+        None => InputSelectionStatus::SystemDefault {
+            active: system_default.clone().or_else(|| devices.first().cloned()),
+        },
+        Some(ref requested) => {
+            let resolved = resolve_selection(Some(requested), &discovered);
+            match resolved {
+                InputSelectionStatus::Selected { ref device }
+                    if is_system_default_proxy(device) =>
+                {
+                    InputSelectionStatus::SystemDefault {
+                        active: Some(device.clone()),
+                    }
+                }
+                other => other,
+            }
+        }
+    };
     MicrophoneSnapshot {
+        host: discovery.host,
         source,
-        selection: resolve_selection(selection.as_ref(), &devices),
+        system_default,
+        system_default_is_proxy,
+        selection,
         devices,
         enumeration_warning: discovery.warning.clone(),
     }
 }
 
+#[cfg(any(target_os = "linux", test))]
+fn linux_host_priority(name: &str) -> usize {
+    match name {
+        "PipeWire" => 0,
+        "PulseAudio" => 1,
+        "ALSA" => 2,
+        _ => usize::MAX,
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn first_usable_or_first<T>(
+    candidates: impl IntoIterator<Item = T>,
+    mut is_usable: impl FnMut(&T) -> bool,
+) -> Option<T> {
+    let mut candidates = candidates.into_iter();
+    let first = candidates.next()?;
+    if is_usable(&first) {
+        return Some(first);
+    }
+    candidates.find(|candidate| is_usable(candidate)).or(Some(first))
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn has_usable_input<'a>(devices: impl IntoIterator<Item = &'a InputDeviceInfo>) -> bool {
+    devices.into_iter().any(|device| {
+        !is_system_default_proxy(device)
+            && (device.host == AudioHost::Alsa || device.tier == EndpointTier::Primary)
+    })
+}
+
+fn preferred_discovery() -> InputDiscovery {
+    #[cfg(target_os = "linux")]
+    {
+        let mut available = cpal::available_hosts();
+        available.sort_by_key(|host| linux_host_priority(host.name()));
+        let discoveries = available
+            .into_iter()
+            .filter(|host| linux_host_priority(host.name()) != usize::MAX)
+            .filter_map(|host| cpal::host_from_id(host).ok())
+            .map(|host| discover_inputs(&host));
+        if let Some(discovery) = first_usable_or_first(discoveries, |candidate| {
+            has_usable_input(candidate.devices.iter().map(|device| &device.info))
+        }) {
+            return discovery;
+        }
+    }
+    discover_inputs(&cpal::default_host())
+}
+
 #[must_use]
 pub fn microphone_snapshot() -> MicrophoneSnapshot {
-    process_snapshot_from(&discover_inputs(&cpal::default_host()))
+    process_snapshot_from(&preferred_discovery())
 }
 
 impl AudioCapture {
@@ -345,13 +434,13 @@ impl AudioCapture {
     }
 
     pub fn open_default() -> Result<Self, AudioError> {
-        let discovery = discover_inputs(&cpal::default_host());
+        let discovery = preferred_discovery();
         let snapshot = process_snapshot_from(&discovery);
         Self::open_snapshot(discovery, &snapshot.selection, true)
     }
 
     pub fn open(requested: Option<&str>) -> Result<Self, AudioError> {
-        let discovery = discover_inputs(&cpal::default_host());
+        let discovery = preferred_discovery();
         let devices: Vec<_> = discovery
             .devices
             .iter()
@@ -374,7 +463,7 @@ impl AudioCapture {
     }
 
     pub fn open_exact(id: Option<&MicrophoneId>) -> Result<Self, AudioError> {
-        let discovery = discover_inputs(&cpal::default_host());
+        let discovery = preferred_discovery();
         let devices: Vec<_> = discovery
             .devices
             .iter()
@@ -770,6 +859,86 @@ mod tests {
             Some((*value).to_string())
         });
         assert_eq!(already_present, vec!["default"]);
+    }
+
+    #[test]
+    fn linux_host_priority_is_pipewire_then_pulse_then_alsa() {
+        assert!(linux_host_priority("PipeWire") < linux_host_priority("PulseAudio"));
+        assert!(linux_host_priority("PulseAudio") < linux_host_priority("ALSA"));
+        assert_eq!(linux_host_priority("JACK"), usize::MAX);
+    }
+
+    #[test]
+    fn linux_host_falls_through_empty_discoveries() {
+        assert_eq!(
+            first_usable_or_first([0, 0, 3], |device_count| *device_count > 0),
+            Some(3)
+        );
+        assert_eq!(
+            first_usable_or_first([0, 0, 0], |device_count| *device_count > 0),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn synthetic_default_alone_does_not_stop_host_fallback() {
+        let proxy: InputDeviceInfo = RawInputDescriptor {
+            id: MicrophoneId::parse("pipewire:input_default").unwrap(),
+            host: AudioHost::PipeWire,
+            label: "System default".to_string(),
+            is_default: true,
+            manufacturer: None,
+            device_type: None,
+            interface_type: None,
+            address: None,
+            driver: None,
+            extended: Vec::new(),
+        }
+        .into();
+        let playback: InputDeviceInfo = RawInputDescriptor {
+            id: MicrophoneId::parse("pipewire:alsa_output.pci-card.analog-stereo").unwrap(),
+            host: AudioHost::PipeWire,
+            label: "Built-in Audio".to_string(),
+            is_default: false,
+            manufacturer: None,
+            device_type: Some("Speaker".to_string()),
+            interface_type: None,
+            address: None,
+            driver: None,
+            extended: Vec::new(),
+        }
+        .into();
+        let real: InputDeviceInfo = RawInputDescriptor {
+            id: MicrophoneId::parse("alsa:hw:CARD=USB,DEV=0").unwrap(),
+            host: AudioHost::Alsa,
+            label: "USB Microphone".to_string(),
+            is_default: true,
+            manufacturer: None,
+            device_type: None,
+            interface_type: None,
+            address: None,
+            driver: None,
+            extended: Vec::new(),
+        }
+        .into();
+        let alsa_alias: InputDeviceInfo = RawInputDescriptor {
+            id: MicrophoneId::parse("alsa:default").unwrap(),
+            host: AudioHost::Alsa,
+            label: "Default ALSA input".to_string(),
+            is_default: true,
+            manufacturer: None,
+            device_type: None,
+            interface_type: None,
+            address: None,
+            driver: None,
+            extended: Vec::new(),
+        }
+        .into();
+
+        assert!(!has_usable_input([&proxy]));
+        assert!(!has_usable_input([&proxy, &playback]));
+        assert!(has_usable_input([&proxy, &real]));
+        assert!(has_usable_input([&alsa_alias]));
     }
 
     #[test]

@@ -7,6 +7,10 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
     steps:
       - uses: actions/checkout@v7
 
@@ -21,11 +25,16 @@ jobs:
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
             build-essential \
+            clang \
+            libclang-dev \
             pkg-config \
             libasound2-dev \
+            libpipewire-0.3-dev \
+            libpulse-dev \
             libwebkit2gtk-4.1-dev \
             libdbus-1-dev \
             libayatana-appindicator3-dev \
+            ripgrep \
             xdotool \
             desktop-file-utils \
             xvfb
@@ -39,6 +48,15 @@ jobs:
 
       - run: npm ci --prefix frontend
 
+      - run: npx --prefix frontend playwright install --with-deps chromium
+
+      - run: ./scripts/verify-settings-ux.sh
+
+      - name: Reclaim browser test space
+        run: |
+          rm -rf "$HOME/.cache/ms-playwright"
+          sudo apt-get clean
+
       - run: npm run build --prefix frontend
 
       - run: npm run lint --prefix frontend
@@ -47,13 +65,19 @@ jobs:
 
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: Reclaim clippy artifacts
+        run: cargo clean
+
       - run: xvfb-run -a cargo test --workspace
+
+      - name: Reclaim test artifacts
+        run: cargo clean
 
       - run: cargo build --release
 
       - name: Check icon raster drift
         run: |
-          cargo run -p xtask
+          ./target/release/xtask
           git diff --exit-code -- src-tauri/icons frontend/public assets/icons
 
       - name: Validate desktop entry

@@ -287,16 +287,48 @@ describe('Echo desktop shell', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     const choices = await screen.findAllByRole('radio', { name: /USB Microphone/ })
     expect(choices).toHaveLength(2)
-    expect(screen.getByText(/Focusrite · USB · Microphone/)).toBeInTheDocument()
-    expect(screen.getByText(/Logitech · USB · Headset/)).toBeInTheDocument()
+    expect(screen.getByText('USB · Microphone · Focusrite')).toBeInTheDocument()
+    expect(screen.getByText('USB · Headset · Logitech')).toBeInTheDocument()
     fireEvent.click(choices[1])
     await waitFor(async () => {
       const snapshot = await getMicrophones()
       expect(snapshot.selection).toMatchObject({
         kind: 'selected',
-        device: { id: 'alsa:usb-two' },
+        device: { id: 'pipewire:alsa_input.usb-Logitech_USB_Headset-00.mono-fallback' },
       })
     })
+  })
+
+  it('shows recognizable sources before collapsed technical endpoints', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+
+    expect(await screen.findByRole('radio', { name: /Jabra Elite 8 Active/ })).toBeVisible()
+    expect(screen.getByText('Bluetooth · Headset · Jabra')).toBeVisible()
+    expect(screen.getByText('Follows the current Linux input automatically')).toBeVisible()
+    expect(screen.queryByText('pipewire:input_default')).not.toBeInTheDocument()
+    const advanced = screen.getByText('Advanced audio endpoints').closest('details')!
+    expect(advanced).not.toHaveAttribute('open')
+    expect(screen.getByText('PipeWire Sound Server')).not.toBeVisible()
+    fireEvent.click(screen.getByText('Advanced audio endpoints'))
+    expect(screen.getByText('PipeWire Sound Server')).toBeVisible()
+    expect(screen.getByText('alsa:pipewire')).toBeVisible()
+  })
+
+  it('names the active input when Linux has no declared default', async () => {
+    const snapshot = await getMicrophones()
+    const active = snapshot.devices[0]
+    seedPreviewMicrophones({
+      ...snapshot,
+      systemDefault: null,
+      systemDefaultIsProxy: false,
+      selection: { kind: 'system-default', active },
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(await screen.findByText(`Using ${active.label} because Linux has no default input`)).toBeVisible()
   })
 
   it('names a missing selection and tests fallback only through the explicit action', async () => {
@@ -308,17 +340,18 @@ describe('Echo desktop shell', () => {
         kind: 'missing-with-fallback',
         requestedId: 'alsa:travel',
         requestedLabel: 'Travel Mic',
-        fallback: snapshot.devices[0],
+        fallback: snapshot.systemDefault!,
       },
     })
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     expect(await screen.findByText(/Travel Mic is disconnected/)).toBeInTheDocument()
+    expect(screen.getByText(/current input from Linux Sound Settings/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Test selected' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Test system fallback' }))
     expect(await screen.findByRole('status')).toHaveTextContent(
-      'Input heard on Built-in Audio Analog Stereo',
+      'Input heard on System default',
     )
   })
 
@@ -633,14 +666,17 @@ describe('Echo desktop shell', () => {
     expect(screen.queryByLabelText('Language')).not.toBeInTheDocument()
   })
 
-  it('shows always-visible managed and external component rows', async () => {
+  it('keeps component paths collapsed until Installed components opens', async () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    expect(await screen.findByText('Whisper runtime')).toBeInTheDocument()
-    expect(screen.getByText('Small multilingual')).toBeInTheDocument()
-    expect(screen.getByText(/System · \/usr\/bin\/whisper-cli/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Set up Parakeet' })).toBeInTheDocument()
+    expect(await screen.findByText('Ready to dictate')).toBeInTheDocument()
+    const components = screen.getByText('Installed components').closest('details')!
+    expect(components).not.toHaveAttribute('open')
+    expect(screen.getByText(/System · \/usr\/bin\/whisper-cli/)).not.toBeVisible()
+    fireEvent.click(screen.getByText('Installed components'))
+    expect(components).toHaveAttribute('open')
+    expect(screen.getByText(/System · \/usr\/bin\/whisper-cli/)).toBeVisible()
   })
 
   it('runs recommended setup and refreshes terminal state', async () => {
@@ -662,6 +698,53 @@ describe('Echo desktop shell', () => {
     })
   })
 
+  it('can activate an already available recommended setup', async () => {
+    const readiness = await getReadiness()
+    seedPreviewReadiness({
+      ...readiness,
+      speechReady: false,
+      firstRunComplete: false,
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Use recommended setup' }))
+    await waitFor(async () => expect((await getReadiness()).speechReady).toBe(true))
+  })
+
+  it('does not start setup while a non-cancellable operation is active', async () => {
+    const readiness = await getReadiness()
+    seedPreviewReadiness({
+      ...readiness,
+      speechReady: false,
+      activeOperation: 'verify-whisper',
+      activeCancellable: false,
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await screen.findByRole('heading', { name: 'Settings' })
+    expect(screen.queryByRole('button', { name: /recommended setup/i })).not.toBeInTheDocument()
+  })
+
+  it('offers Use for an already available alternative without duplicating Recommended', async () => {
+    const readiness = await getReadiness()
+    seedPreviewReadiness({
+      ...readiness,
+      plans: readiness.plans.map((plan) =>
+        plan.id === 'parakeet' ? { ...plan, satisfied: true } : plan,
+      ),
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByText('Advanced speech options'))
+    const advanced = screen.getByText('Advanced speech options').closest('details')!
+    expect(within(advanced).getByText('Parakeet')).toBeVisible()
+    expect(within(advanced).getByRole('button', { name: 'Use' })).toBeEnabled()
+    expect(within(advanced).queryByText('Whisper small')).not.toBeInTheDocument()
+  })
+
   it('shows repair and managed-only removal actions', async () => {
     const readiness = await getReadiness()
     seedPreviewReadiness({
@@ -677,6 +760,7 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByText('Installed components'))
     expect(await screen.findByRole('button', { name: 'Repair' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Remove ·/ })).toBeInTheDocument()
   })
@@ -686,6 +770,7 @@ describe('Echo desktop shell', () => {
     seedPreviewReadiness({
       ...readiness,
       managedSupported: false,
+      speechReady: false,
       unsupportedReason: 'Managed setup is available on Linux x86_64.',
       components: readiness.components.map((component) => ({
         ...component,
@@ -695,6 +780,7 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByText('Installed components'))
     expect(await screen.findByText('Managed setup is available on Linux x86_64.')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Set up recommended/ })).not.toBeInTheDocument()
   })
@@ -703,6 +789,7 @@ describe('Echo desktop shell', () => {
     const readiness = await getReadiness()
     seedPreviewReadiness({
       ...readiness,
+      speechReady: false,
       plans: readiness.plans.map((plan) =>
         plan.id === 'recommended'
           ? { ...plan, satisfied: false, diskReady: false, diskReason: 'Needs 900 bytes free; 400 bytes are available' }
@@ -735,7 +822,7 @@ describe('Echo desktop shell', () => {
     expect(screen.getByText('Recommended: Needs 900 bytes free; 400 bytes are available')).toBeInTheDocument()
     expect(screen.getByText('Parakeet: Needs 1200 bytes free; 400 bytes are available')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Set up recommended/ })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'Set up Parakeet' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Use Parakeet instead' })).toBeDisabled()
   })
 
   it('shows microphone then speech as guided Home steps', async () => {

@@ -1,0 +1,14 @@
+{
+  "date": "2026-08-24",
+  "browser": "T3 collaborative preview",
+  "viewportHeight": 600,
+  "widths": [760, 761, 800, 920, 959, 960, 961, 1024],
+  "documentOverflow": false,
+  "markedSurfaceOverflow": false,
+  "bluetoothSourceVisible": true,
+  "speechSummaryVisible": true,
+  "disclosuresInitiallyOpen": [false, false, false],
+  "recording": "/Users/vriesd/.t3/userdata/browser-artifacts/browser-recording-mt6cy2zg.mp4",
+  "finalRecording": "/Users/vriesd/.t3/userdata/browser-artifacts/browser-recording-mt6eeu0w.mp4",
+  "notes": "Browser geometry was measured from documentElement and every data-settings-surface node. The fixture proves projection and responsive layout, not the user's physical Bluetooth hardware."
+}

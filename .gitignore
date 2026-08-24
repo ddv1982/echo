@@ -1,6 +1,8 @@
 /target
 /frontend/dist
 /frontend/node_modules
+/frontend/playwright-report
+/frontend/test-results
 /src-tauri/gen
 **/*.rs.bk
 .idea
