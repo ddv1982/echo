@@ -21,12 +21,12 @@
 
 | Test ID | Result | Evidence |
 | --- | --- | --- |
-| P14-A1 | PASS | Frontend: 5 files / 94 tests; workspace: 160 Echo library tests plus full integration suites; clippy green; release build green. |
+| P14-A1 | PASS | Frontend: 5 files / 94 tests; workspace: 161 Echo library tests plus full integration suites; clippy green; release build green. |
 | P14-A2 | PASS | `verify-stt-benchmark`, corpus replay, acceleration self-tests, runtime archive install, and cache-cycle validation all exited 0. |
 | P14-B1 | PASS | [Managed CPU JSON](../../../.audit/whisper-phase6-current/managed-cpu.json): 307 ms, managed CPU, adjacent library identity. |
 | P14-B2 | PASS | [System Vulkan JSON](../../../.audit/whisper-phase6-current/system-vulkan.json): 1377 ms cold smoke on Intel Iris Xe, adjacent library identity. |
 | P14-C1 | PASS | CLI integration poisoned LD, Vulkan, Mesa, DRI, and CUDA selectors; all three integration tests passed. |
-| P14-D1 | BLOCKED | Committed cycle has one boot ID and reports `resetState: INCOMPLETE`. |
+| P14-D1 | BLOCKED | The committed pre-hardening cycle has one boot ID and is diagnostic only; two new cycles are required. |
 | P14-D2 | BLOCKED | The 57.777% Phase 5 result predates the current launch contract and cannot qualify this code state. |
 | P14-D3 | BLOCKED | The corpus lacks complete product-speech-class coverage. |
 | P14-E1 | PASS | Playwright ran light and dark Settings checks across widths 760, 761, 800, 920, 959, 960, 961, and 1024; both tests passed. |

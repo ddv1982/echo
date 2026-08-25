@@ -50,4 +50,4 @@ None. No P0 or P1 defect was observed.
 
 ## Process notes
 
-The independent evidence review directly caused two corrections: the Phase 5 pass was downgraded to historical research, and child environment scrubbing was broadened beyond a fixed short list. No production acceleration was enabled.
+The independent evidence review directly caused three corrections: the Phase 4/5 evidence was downgraded to historical research, qualification settings were routed through the actual product child launcher, and direct probe environment scrubbing was broadened beyond a fixed short list. No production acceleration was enabled.

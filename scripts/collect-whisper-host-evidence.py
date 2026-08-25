@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-"""Collect Linux host and Vulkan ICD evidence for a Whisper cache cycle."""
-
 from __future__ import annotations
 
 import argparse

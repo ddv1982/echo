@@ -79,6 +79,37 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def runtime_identity(
+    cli_value: object, label: str, identity_cache: dict[Path, str]
+) -> str:
+    cli = recorded_path(cli_value, label).resolve(strict=True)
+    cached = identity_cache.get(cli)
+    if cached is not None:
+        return cached
+    libraries: set[Path] = set()
+    for candidate in cli.parent.iterdir():
+        if ".so" not in candidate.name:
+            continue
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError:
+            continue
+        if resolved.is_file():
+            libraries.add(resolved)
+    digest = hashlib.sha256(b"echo-whisper-runtime-v1\0")
+    for path in [cli, *sorted(libraries)]:
+        name = path.name.encode()
+        digest.update(len(name).to_bytes(8, "little"))
+        digest.update(name)
+        digest.update(path.stat().st_size.to_bytes(8, "little"))
+        with path.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+    value = digest.hexdigest()
+    identity_cache[cli] = value
+    return value
+
+
 def is_sha256(value: object) -> bool:
     return isinstance(value, str) and bool(SHA256_PATTERN.fullmatch(value))
 
@@ -158,7 +189,9 @@ def safe_artifact_file(
     return resolved, contents
 
 
-def verify_identity(value: object, label: str) -> dict[str, object]:
+def verify_identity(
+    value: object, label: str, digest_cache: dict[Path, str] | None = None
+) -> dict[str, object]:
     identity = require_object(value, label)
     path = recorded_path(identity.get("path"), f"{label}.path")
     if not is_sha256(identity.get("sha256")):
@@ -166,7 +199,12 @@ def verify_identity(value: object, label: str) -> dict[str, object]:
     try:
         if not path.is_file():
             raise ValueError(f"{label}.path is not a file: {path}")
-        digest = sha256_file(path)
+        resolved = path.resolve(strict=True)
+        digest = digest_cache.get(resolved) if digest_cache is not None else None
+        if digest is None:
+            digest = sha256_file(resolved)
+            if digest_cache is not None:
+                digest_cache[resolved] = digest
     except OSError as error:
         raise ValueError(f"{label}.path cannot be read: {path}") from error
     if digest != identity["sha256"]:
@@ -412,6 +450,7 @@ def command_for_candidate(
     fixture_audio: object,
     binding: CorpusBinding,
     candidate: dict[str, object],
+    launch_override: dict[str, object],
     label: str,
 ) -> None:
     if not isinstance(command, list) or not all(
@@ -444,6 +483,24 @@ def command_for_candidate(
         expected.append("--whisper-no-fallback")
     if candidate["forceCpu"]:
         expected.append("--whisper-no-gpu")
+    if candidate["engine"] == "whisper":
+        driver = launch_override.get("vulkanDriverFiles")
+        if driver is not None:
+            driver = require_object(driver, "run-manifest launch Vulkan driver")
+            expected.extend(
+                [
+                    "--whisper-vulkan-driver-files",
+                    str(recorded_path(driver.get("path"), "launch Vulkan driver")),
+                ]
+            )
+        cache = launch_override.get("mesaShaderCacheDir")
+        if cache is not None:
+            expected.extend(
+                [
+                    "--whisper-mesa-shader-cache-dir",
+                    str(recorded_path(cache, "launch Mesa shader cache")),
+                ]
+            )
     actual = list(command[1:])
     actual[1] = portable_path(recorded_path(actual[1], f"{label} command audio"))
     if len(command) != len(expected) + 1 or actual != expected:
@@ -460,6 +517,7 @@ def identity_from_product(
     row_field: str,
     engine_field: str,
     label: str,
+    digest_cache: dict[Path, str],
 ) -> dict[str, object]:
     product_path = engine.get(engine_field)
     if not isinstance(product_path, str) or not product_path:
@@ -469,7 +527,7 @@ def identity_from_product(
         identity.get("path"), product_path, f"{label} {row_field}"
     ):
         raise ValueError(f"{label} {row_field} path does not match product JSON")
-    return verify_identity(identity, f"{label} row.{row_field}")
+    return verify_identity(identity, f"{label} row.{row_field}", digest_cache)
 
 
 def replay_artifact(
@@ -480,6 +538,9 @@ def replay_artifact(
     fixture: dict[str, object],
     candidate: dict[str, object],
     binary: object,
+    launch_override: dict[str, object],
+    digest_cache: dict[Path, str],
+    runtime_identity_cache: dict[Path, str],
 ) -> dict[str, object]:
     row_id = require_string(row.get("rowId"), "runs rowId")
     label = f"observation {row_id}"
@@ -506,7 +567,15 @@ def replay_artifact(
         for key, value in environment.items()
     ):
         raise ValueError(f"{label} environment must be a string object")
-    command_for_candidate(command, binary, fixture["audio"], binding, candidate, label)
+    command_for_candidate(
+        command,
+        binary,
+        fixture["audio"],
+        binding,
+        candidate,
+        launch_override,
+        label,
+    )
     result = require_object(result, f"{label} result")
     timing = require_object(timing, f"{label} timing")
     if result.get("schemaVersion") != 1 or timing.get("schemaVersion") != 1:
@@ -541,8 +610,12 @@ def replay_artifact(
         raise ValueError(f"{label} product model does not match its candidate")
     if engine.get("vad") is not None and not isinstance(engine["vad"], bool):
         raise ValueError(f"{label} product engine.vad must be a boolean or null")
-    runtime = identity_from_product(row, engine, "runtimeArtifact", "binary", label)
-    model = identity_from_product(row, engine, "modelArtifact", "modelPath", label)
+    runtime = identity_from_product(
+        row, engine, "runtimeArtifact", "binary", label, digest_cache
+    )
+    model = identity_from_product(
+        row, engine, "modelArtifact", "modelPath", label, digest_cache
+    )
     vad_artifact: dict[str, object] | None = None
     if "vadArtifact" in row:
         if not isinstance(engine.get("vadPath"), str) or not engine["vadPath"]:
@@ -550,11 +623,41 @@ def replay_artifact(
                 f"{label} records vadArtifact without product engine.vadPath"
             )
         vad_artifact = identity_from_product(
-            row, engine, "vadArtifact", "vadPath", label
+            row, engine, "vadArtifact", "vadPath", label, digest_cache
         )
     whisper = product.get("whisper")
     if whisper is not None and not isinstance(whisper, dict):
         raise ValueError(f"{label} product whisper must be an object or null")
+    if isinstance(whisper, dict) and candidate["engine"] == "whisper":
+        runtime_telemetry = require_object(
+            whisper.get("runtime"), f"{label} product whisper.runtime"
+        )
+        expected_runtime_identity = runtime_identity(
+            engine.get("binary"), f"{label} product runtime", runtime_identity_cache
+        )
+        if runtime_telemetry.get("identitySha256") != expected_runtime_identity:
+            raise ValueError(
+                f"{label} runtime identity does not match its CLI and adjacent libraries"
+            )
+        driver = launch_override.get("vulkanDriverFiles")
+        if driver is not None:
+            driver = require_object(driver, f"{label} launch Vulkan driver")
+            verify_identity(
+                driver, f"{label} launch Vulkan driver", digest_cache
+            )
+            if not same_recorded_path(
+                runtime_telemetry.get("vulkanDriverFiles"),
+                driver.get("path"),
+                f"{label} effective Vulkan driver",
+            ):
+                raise ValueError(f"{label} did not apply its Vulkan driver contract")
+        cache = launch_override.get("mesaShaderCacheDir")
+        if cache is not None and not same_recorded_path(
+            runtime_telemetry.get("mesaShaderCacheDir"),
+            cache,
+            f"{label} effective Mesa shader cache",
+        ):
+            raise ValueError(f"{label} did not apply its Mesa cache contract")
     reference_words = normalized_words(binding.reference)
     errors = edit_distance(reference_words, normalized_words(text))
     verified = {
@@ -603,6 +706,13 @@ def verify_bundle(
     echo = require_object(manifest.get("echo"), "run-manifest.echo")
     host = require_object(manifest.get("host"), "run-manifest.host")
     binary = require_object(manifest.get("binary"), "run-manifest.binary")
+    launch_override = manifest.get("launchOverride")
+    if launch_override is None:
+        launch_override = {
+            "vulkanDriverFiles": None,
+            "mesaShaderCacheDir": None,
+        }
+    launch_override = require_object(launch_override, "run-manifest.launchOverride")
     artifact_index = manifest.get("artifactIndex")
     if not isinstance(artifact_index, list):
         raise ValueError("run-manifest.artifactIndex must be an array")
@@ -611,6 +721,8 @@ def verify_bundle(
     warmup_ids: set[str] = set()
     warmup_coverage: dict[tuple[str, str], int] = defaultdict(int)
     artifact_paths: set[str] = set()
+    digest_cache: dict[Path, str] = {}
+    runtime_identity_cache: dict[Path, str] = {}
     for index, raw in enumerate(artifact_index):
         artifact = require_object(raw, f"artifactIndex[{index}]")
         if artifact.get("schemaVersion") != 1:
@@ -669,6 +781,35 @@ def verify_bundle(
             safe_artifact_file(
                 bundle_root, artifact[field], f"observation {row_id}.{field}"
             )
+    for row_id in sorted(warmup_ids):
+        artifact = artifacts[row_id]
+        warmup_row = {
+            "rowId": row_id,
+            "runtimeArtifact": require_object(
+                artifact.get("runtimeArtifact"),
+                f"observation {row_id}.runtimeArtifact",
+            ),
+            "modelArtifact": require_object(
+                artifact.get("modelArtifact"),
+                f"observation {row_id}.modelArtifact",
+            ),
+        }
+        if artifact.get("vadArtifact") is not None:
+            warmup_row["vadArtifact"] = require_object(
+                artifact["vadArtifact"], f"observation {row_id}.vadArtifact"
+            )
+        replay_artifact(
+            bundle_root,
+            artifact,
+            warmup_row,
+            bindings[str(artifact["utterance"])],
+            fixtures[str(artifact["utterance"])],
+            candidates[str(artifact["candidate"])],
+            binary["path"],
+            launch_override,
+            digest_cache,
+            runtime_identity_cache,
+        )
     try:
         raw_rows = [
             json.loads(line)
@@ -703,6 +844,11 @@ def verify_bundle(
             raise ValueError(
                 f"runs row {row_id} observationArtifact does not match artifactIndex"
             )
+        for identity_name in ("runtimeArtifact", "modelArtifact", "vadArtifact"):
+            if artifact.get(identity_name) != row.get(identity_name):
+                raise ValueError(
+                    f"runs row {row_id} {identity_name} does not match its observation artifact"
+                )
         candidate_label = require_string(
             row.get("candidate"), f"runs row {row_id}.candidate"
         )
@@ -733,13 +879,18 @@ def verify_bundle(
             fixtures[utterance],
             candidates[candidate_label],
             binary["path"],
+            launch_override,
+            digest_cache,
+            runtime_identity_cache,
         )
         verified.update(
             {
                 "echoVersion": echo.get("version"),
                 "echoCommit": echo.get("commit"),
                 "echoDirty": echo.get("dirty"),
-                "echoBinary": verify_identity(binary, "run-manifest.binary"),
+                "echoBinary": verify_identity(
+                    binary, "run-manifest.binary", digest_cache
+                ),
                 "host": host,
                 "seed": seed,
                 "cacheState": manifest.get("cacheState"),
@@ -798,6 +949,7 @@ def execution_identities(rows: list[dict[str, object]]) -> set[str]:
         vad_artifact = row.get("vadArtifact") or {}
         whisper = row.get("whisper") or {}
         tuning = whisper.get("tuning") or {}
+        launch = whisper.get("runtime") or {}
         identity = {
             "echoVersion": row.get("echoVersion"),
             "echoCommit": row.get("echoCommit"),
@@ -809,6 +961,10 @@ def execution_identities(rows: list[dict[str, object]]) -> set[str]:
             "engineModel": engine.get("model"),
             "engineVad": engine.get("vad"),
             "runtimeSha256": runtime.get("sha256"),
+            "runtimeIdentitySha256": launch.get("identitySha256"),
+            "libraryPath": launch.get("libraryPath"),
+            "vulkanDriverFiles": launch.get("vulkanDriverFiles"),
+            "mesaShaderCacheDir": launch.get("mesaShaderCacheDir"),
             "modelSha256": model.get("sha256"),
             "vadSha256": vad_artifact.get("sha256"),
             "tuning": tuning,
@@ -821,8 +977,10 @@ def execution_identity_complete(row: dict[str, object]) -> bool:
     echo_binary = row.get("echoBinary") or {}
     runtime = row.get("runtimeArtifact") or {}
     model = row.get("modelArtifact") or {}
+    vad_artifact = row.get("vadArtifact") or {}
     engine = row.get("engine") or {}
     whisper = row.get("whisper") or {}
+    launch = whisper.get("runtime") or {}
     strings = [
         row.get("echoVersion"),
         row.get("echoCommit"),
@@ -835,12 +993,28 @@ def execution_identity_complete(row: dict[str, object]) -> bool:
         isinstance(row.get("echoDirty"), bool)
         and all(isinstance(value, str) and value for value in strings)
         and isinstance(engine.get("vad"), (bool, type(None)))
+        and (
+            (engine.get("vadPath") is None and not vad_artifact)
+            or (
+                isinstance(engine.get("vadPath"), str)
+                and bool(engine["vadPath"])
+                and is_sha256(vad_artifact.get("sha256"))
+            )
+        )
         and isinstance(row.get("host"), dict)
         and bool(row["host"])
         and isinstance(row.get("seed"), int)
         and isinstance(row.get("warmups"), int)
         and isinstance(whisper.get("tuning"), dict)
         and bool(whisper["tuning"])
+        and isinstance(launch.get("identitySha256"), str)
+        and SHA256_PATTERN.fullmatch(launch["identitySha256"]) is not None
+        and isinstance(launch.get("libraryPath"), str)
+        and bool(launch["libraryPath"])
+        and isinstance(launch.get("vulkanDriverFiles"), str)
+        and bool(launch["vulkanDriverFiles"])
+        and isinstance(launch.get("mesaShaderCacheDir"), str)
+        and bool(launch["mesaShaderCacheDir"])
     )
 
 
@@ -1144,7 +1318,14 @@ def self_test() -> None:
                             "runtimeArtifact": {"sha256": "a" * 64},
                             "modelArtifact": {"sha256": "b" * 64},
                             "whisper": {
-                                "runtime": {"backend": backend, "device": device},
+                                "runtime": {
+                                    "backend": backend,
+                                    "device": device,
+                                    "identitySha256": "f" * 64,
+                                    "libraryPath": "/runtime",
+                                    "vulkanDriverFiles": "/driver.json",
+                                    "mesaShaderCacheDir": "/cache",
+                                },
                                 "tuning": {"threads": 4, "beamSize": 1},
                             },
                         }

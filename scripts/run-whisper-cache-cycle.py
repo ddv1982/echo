@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-"""Create auditable fresh and populated Mesa cache evidence for Whisper."""
-
 from __future__ import annotations
 
 import argparse
@@ -57,6 +55,34 @@ CHILD_ENVIRONMENT_RESET_NAMES = (
     "MESA_DISK_CACHE_SINGLE_FILE",
     "MESA_DISK_CACHE_COMBINE_RW_WITH_RO_FOZ",
     "MESA_DISK_CACHE_READ_ONLY_FOZ_DBS",
+)
+INFERENCE_ENVIRONMENT_PREFIXES = (
+    "LD_",
+    "VK_",
+    "MESA_",
+    "DRI_",
+    "LIBGL_",
+    "GALLIUM_",
+    "INTEL_",
+    "AMD_",
+    "RADV_",
+    "NVIDIA_",
+    "__GL",
+    "CUDA_",
+    "ROCR_",
+    "HIP_",
+    "HSA_",
+    "ONEAPI_",
+    "SYCL_",
+    "ZES_",
+    "ZE_",
+    "OPENCL_",
+    "OCL_",
+    "RUSTICL_",
+    "GGML_",
+    "OMP_",
+    "OPENBLAS_",
+    "LIBVA_",
 )
 
 
@@ -280,10 +306,15 @@ def write_snapshot(output_dir: Path, name: str, cache_root: Path) -> dict[str, o
 
 
 def child_environment(vk_driver_files: Path) -> dict[str, str]:
-    environment = os.environ.copy()
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.upper().startswith(INFERENCE_ENVIRONMENT_PREFIXES)
+    }
     for name in CHILD_ENVIRONMENT_RESET_NAMES:
         environment.pop(name, None)
-    environment["VK_DRIVER_FILES"] = str(vk_driver_files.resolve(strict=True))
+    if not vk_driver_files.resolve(strict=True).is_file():
+        raise ValueError("Vulkan driver manifest is not a file")
     return environment
 
 
@@ -327,6 +358,8 @@ def child_command(
         str(args.timeout),
         "--mesa-shader-cache-dir",
         str(cache_root),
+        "--vk-driver-files",
+        str(args.vk_driver_files),
         "--output-dir",
         str(output_dir),
     ]
@@ -918,6 +951,7 @@ def fake_scripts(root: Path) -> tuple[Path, Path]:
             parser = argparse.ArgumentParser()
             parser.add_argument('--output-dir', type=Path, required=True)
             parser.add_argument('--mesa-shader-cache-dir', type=Path, required=True)
+            parser.add_argument('--vk-driver-files', type=Path, required=True)
             parser.add_argument('--reuse-mesa-shader-cache', action='store_true')
             parser.add_argument('--binary'); parser.add_argument('--model'); parser.add_argument('--audio')
             parser.add_argument('--backend'); parser.add_argument('--language'); parser.add_argument('--prompt')
@@ -1014,22 +1048,34 @@ def self_test() -> None:
         collector, probe = fake_scripts(root)
         temporary_names = (
             *CHILD_ENVIRONMENT_RESET_NAMES,
+            "LD_LIBRARY_PATH",
+            "LD_PRELOAD",
+            "MESA_VK_DEVICE_SELECT",
+            "DRI_PRIME",
             "ECHO_FAKE_BOOT_ID",
             "ECHO_FAKE_BAD_GATE",
             "ECHO_FAKE_POPULATED_TEXT_MISMATCH",
         )
         previous_environment = {name: os.environ.get(name) for name in temporary_names}
         try:
-            for name in CHILD_ENVIRONMENT_RESET_NAMES:
+            for name in (
+                *CHILD_ENVIRONMENT_RESET_NAMES,
+                "LD_LIBRARY_PATH",
+                "LD_PRELOAD",
+                "MESA_VK_DEVICE_SELECT",
+                "DRI_PRIME",
+            ):
                 os.environ[name] = "poison"
             isolated = child_environment(root / "intel_icd.json")
-            assert isolated["VK_DRIVER_FILES"] == str(
-                (root / "intel_icd.json").resolve()
-            )
             assert all(
                 name not in isolated
-                for name in CHILD_ENVIRONMENT_RESET_NAMES
-                if name != "VK_DRIVER_FILES"
+                for name in (
+                    *CHILD_ENVIRONMENT_RESET_NAMES,
+                    "LD_LIBRARY_PATH",
+                    "LD_PRELOAD",
+                    "MESA_VK_DEVICE_SELECT",
+                    "DRI_PRIME",
+                )
             )
             os.environ["ECHO_FAKE_BOOT_ID"] = "boot-a"
             prior_root = root / "prior"

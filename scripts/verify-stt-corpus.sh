@@ -25,14 +25,30 @@ audio = bundle / "audio.bin"
 runtime = bundle / "runtime.bin"
 model = bundle / "model.bin"
 vad = bundle / "vad.bin"
+library = bundle / "libwhisper.so"
 audio.write_bytes(b"audio fixture")
 runtime.write_bytes(b"runtime receipt")
 model.write_bytes(b"model receipt")
 vad.write_bytes(b"vad receipt")
+library.write_bytes(b"library receipt")
 
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def launch_identity(path):
+    value = hashlib.sha256(b"echo-whisper-runtime-v1\0")
+    libraries = sorted(
+        {candidate.resolve() for candidate in path.parent.iterdir() if ".so" in candidate.name}
+    )
+    for candidate in [path, *libraries]:
+        name = candidate.name.encode()
+        value.update(len(name).to_bytes(8, "little"))
+        value.update(name)
+        value.update(candidate.stat().st_size.to_bytes(8, "little"))
+        value.update(candidate.read_bytes())
+    return value.hexdigest()
 
 
 def ref(relative, contents):
@@ -123,7 +139,14 @@ def observation(row_id, candidate, phase, backend):
             "vadPath": str(vad),
         },
         "whisper": {
-            "runtime": {"backend": backend, "device": "Test GPU" if backend == "vulkan" else None},
+            "runtime": {
+                "backend": backend,
+                "device": "Test GPU" if backend == "vulkan" else None,
+                "identitySha256": launch_identity(runtime),
+                "libraryPath": str(root),
+                "vulkanDriverFiles": str(root / "driver.json"),
+                "mesaShaderCacheDir": str(root / "cache"),
+            },
             "tuning": {"threads": 1, "beamSize": 1},
         },
     }
@@ -164,6 +187,9 @@ def observation(row_id, candidate, phase, backend):
             f"{prefix}/timing.json",
             b'{"schemaVersion":1,"startedAt":"start","finishedAt":"finish","wallMs":100,"returnCode":0}\n',
         ),
+        "runtimeArtifact": {"path": str(runtime), "sha256": digest(runtime)},
+        "modelArtifact": {"path": str(model), "sha256": digest(model)},
+        "vadArtifact": {"path": str(vad), "sha256": digest(vad)},
     }
     manifest["artifactIndex"].append(artifact)
     return {
@@ -289,6 +315,39 @@ def vad_digest_mismatch(target):
 
 
 tampered("vad-digest", vad_digest_mismatch)
+
+
+def warmup_runtime_digest_mismatch(target):
+    manifest_path = target / "run-manifest.json"
+    changed = json.loads(manifest_path.read_text())
+    warmup = next(item for item in changed["artifactIndex"] if item["rowId"] == "warmup-cpu")
+    warmup["runtimeArtifact"]["sha256"] = "0" * 64
+    manifest_path.write_text(json.dumps(changed), encoding="utf-8")
+
+
+tampered("warmup-runtime-digest", warmup_runtime_digest_mismatch)
+
+def composite_runtime_mismatch(target):
+    manifest_path = target / "run-manifest.json"
+    changed = json.loads(manifest_path.read_text())
+    row_id = "measurement-cpu"
+    stdout_path = target / f"artifacts/{row_id}/stdout.txt"
+    product = json.loads(stdout_path.read_text())
+    product["whisper"]["runtime"]["identitySha256"] = "0" * 64
+    stdout_path.write_text(json.dumps(product), encoding="utf-8")
+    result_path = target / f"artifacts/{row_id}/result.json"
+    result = json.loads(result_path.read_text())
+    result["productJson"] = product
+    result_path.write_text(json.dumps(result), encoding="utf-8")
+    artifact = next(item for item in changed["artifactIndex"] if item["rowId"] == row_id)
+    for name, path in (("stdout", stdout_path), ("result", result_path)):
+        artifact[name]["sha256"] = digest(path)
+        artifact[name]["bytes"] = path.stat().st_size
+    sync_row_artifact(target, changed, row_id)
+    manifest_path.write_text(json.dumps(changed), encoding="utf-8")
+
+
+tampered("composite-runtime-digest", composite_runtime_mismatch)
 
 
 def reference_mismatch(target):

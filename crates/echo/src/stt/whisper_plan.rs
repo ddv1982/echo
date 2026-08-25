@@ -37,14 +37,6 @@ pub struct WhisperRuntimeLaunch {
     pub identity_sha256: Option<String>,
 }
 
-impl WhisperRuntimeLaunch {
-    pub fn rebase_library_dir(&mut self, cli: &std::path::Path) {
-        if self.library_dir.is_some() {
-            self.library_dir = cli.parent().map(std::path::Path::to_path_buf);
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WhisperProtocol {
     OneShotCli,

@@ -65,7 +65,7 @@ ENVIRONMENT_PREFIXES = (
 
 
 class BenchmarkInterrupted(RuntimeError):
-    """Raised when a signal interrupts a benchmark attempt."""
+    pass
 
 
 def utc_now() -> str:
@@ -347,7 +347,13 @@ def load_manifest(path: Path, source: bytes | None = None) -> list[dict[str, obj
     return utterances
 
 
-def command_for(binary: Path, candidate: Candidate, utterance: dict[str, object]) -> list[str]:
+def command_for(
+    binary: Path,
+    candidate: Candidate,
+    utterance: dict[str, object],
+    vulkan_driver_files: Path | None = None,
+    mesa_shader_cache_dir: Path | None = None,
+) -> list[str]:
     requested_language = "auto" if candidate.engine == "parakeet" else str(utterance["language"])
     command = [
         str(binary),
@@ -373,6 +379,14 @@ def command_for(binary: Path, candidate: Candidate, utterance: dict[str, object]
         command.append("--whisper-no-fallback")
     if candidate.force_cpu:
         command.append("--whisper-no-gpu")
+    if candidate.engine == "whisper" and vulkan_driver_files is not None:
+        command.extend(
+            ["--whisper-vulkan-driver-files", str(vulkan_driver_files)]
+        )
+    if candidate.engine == "whisper" and mesa_shader_cache_dir is not None:
+        command.extend(
+            ["--whisper-mesa-shader-cache-dir", str(mesa_shader_cache_dir)]
+        )
     return command
 
 
@@ -428,9 +442,18 @@ def capture_observation(
     environment: dict[str, str],
     observation_id: str,
     phase: str,
+    vulkan_driver_files: Path | None,
+    mesa_shader_cache_dir: Path | None,
+    artifact_identities: dict[str, dict[str, object]],
 ) -> tuple[dict[str, object], float, dict[str, object]]:
     verify_utterance_unchanged(utterance)
-    command = command_for(binary, candidate, utterance)
+    command = command_for(
+        binary,
+        candidate,
+        utterance,
+        vulkan_driver_files,
+        mesa_shader_cache_dir,
+    )
     started_at = utc_now()
     completed: subprocess.CompletedProcess[str] | None = None
     invocation_error: OSError | None = None
@@ -504,6 +527,19 @@ def capture_observation(
         "utterance": utterance["id"],
         **artifacts,
     }
+    if isinstance(product, dict) and isinstance(product.get("engine"), dict):
+        engine = product["engine"]
+        assert isinstance(engine, dict)
+        for artifact_name, engine_name in (
+            ("runtimeArtifact", "binary"),
+            ("modelArtifact", "modelPath"),
+            ("vadArtifact", "vadPath"),
+        ):
+            identity = artifact_identity(
+                engine.get(engine_name), artifact_identities
+            )
+            if identity is not None:
+                artifact[artifact_name] = identity
     artifact_index = run_manifest["artifactIndex"]
     assert isinstance(artifact_index, list)
     artifact_index.append(artifact)
@@ -584,6 +620,21 @@ def run_benchmark(args: argparse.Namespace) -> None:
                 "warmups": args.warmups,
                 "cacheState": args.cache_state,
                 "resetCycle": args.reset_cycle,
+                "launchOverride": {
+                    "vulkanDriverFiles": (
+                        {
+                            "path": portable_path(args.whisper_vulkan_driver_files),
+                            "sha256": sha256(args.whisper_vulkan_driver_files),
+                        }
+                        if args.whisper_vulkan_driver_files is not None
+                        else None
+                    ),
+                    "mesaShaderCacheDir": (
+                        portable_path(args.whisper_mesa_shader_cache_dir)
+                        if args.whisper_mesa_shader_cache_dir is not None
+                        else None
+                    ),
+                },
                 "artifactIndex": [],
             }
             run_manifest_path = output_dir / "run-manifest.json"
@@ -650,11 +701,10 @@ def run_benchmark(args: argparse.Namespace) -> None:
                                 candidate_environment,
                                 f"warmup-{observation_count:06d}",
                                 "warmup",
+                                args.whisper_vulkan_driver_files,
+                                args.whisper_mesa_shader_cache_dir,
+                                artifact_identities,
                             )
-                            engine = payload.get("engine")
-                            if isinstance(engine, dict):
-                                artifact_identity(engine.get("binary"), artifact_identities)
-                                artifact_identity(engine.get("modelPath"), artifact_identities)
                 for repeat in range(args.repeats):
                     for utterance in utterances:
                         ordered = list(args.candidate)
@@ -672,6 +722,9 @@ def run_benchmark(args: argparse.Namespace) -> None:
                                 environments[candidate.label],
                                 row_id,
                                 "measurement",
+                                args.whisper_vulkan_driver_files,
+                                args.whisper_mesa_shader_cache_dir,
+                                artifact_identities,
                             )
                             reference_words = normalized_words(str(utterance["reference"]))
                             transcript = str(payload["text"])
@@ -902,6 +955,8 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--reset-cycle", default="unverified")
     value.add_argument("--driver-identity")
     value.add_argument("--icd-identity")
+    value.add_argument("--whisper-vulkan-driver-files", type=Path)
+    value.add_argument("--whisper-mesa-shader-cache-dir", type=Path)
     value.add_argument("--output-dir", required=True, type=Path)
     return value
 
@@ -916,6 +971,14 @@ def main() -> int:
         parser().error("--repeats must be at least 1")
     if args.warmups < 0:
         parser().error("--warmups cannot be negative")
+    if args.whisper_vulkan_driver_files is not None:
+        args.whisper_vulkan_driver_files = args.whisper_vulkan_driver_files.resolve()
+        if not args.whisper_vulkan_driver_files.is_file():
+            parser().error("--whisper-vulkan-driver-files must be a file")
+    if args.whisper_mesa_shader_cache_dir is not None:
+        args.whisper_mesa_shader_cache_dir = args.whisper_mesa_shader_cache_dir.resolve()
+        if not args.whisper_mesa_shader_cache_dir.is_dir():
+            parser().error("--whisper-mesa-shader-cache-dir must be a directory")
     try:
         run_benchmark(args)
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, json.JSONDecodeError) as error:

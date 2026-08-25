@@ -1,7 +1,9 @@
 # Manual test plan: Phase 14 Whisper acceleration
 
-**Audience:** QA, maintainers, release reviewers  
-**Last updated:** 2026-08-25  
+**Audience:** QA, maintainers, release reviewers
+
+**Last updated:** 2026-08-25
+
 **Maps to:** [Gate 14](QA_GATES.md#gate-14-quality-safe-whisper-acceleration)
 
 ## Setup
@@ -24,7 +26,7 @@ Use Linux with the managed Small model, the managed CPU runtime, and a locally b
 | P14-B1 | Managed CPU floor | Run `echo-desktop transcribe` with the managed Small model. | Source is `managed`, backend is `cpu`, adjacent library path and 64-hex identity are reported. | 14.3, 14.7 |
 | P14-B2 | Vulkan product smoke | Isolate the model cache, put the patched runtime first on `PATH`, unset parent loader/device selectors, and run the same CLI command. | Source is `system`, backend is `vulkan`, physical device, adjacent library path, and identity are reported. | 14.3 |
 | P14-C1 | Poisoned child environment | Set conflicting LD, Vulkan, Mesa device, DRI, and CUDA values in the CLI integration test. | The child sees only explicit launch values; inherited device selectors are absent. | 14.2 |
-| P14-D1 | Reset qualification | Validate two complete cache cycles from distinct boot IDs. | Two complete boot identities bind fresh and populated results. | 14.6 |
+| P14-D1 | Reset qualification | Collect and validate two new complete cache cycles from distinct boot IDs using the hardened probe. | Two complete boot identities bind fresh and populated results to the effective product launch contract. | 14.6 |
 | P14-D2 | Current full-corpus qualification | Run at least ten randomized CPU/GPU pairs for every fixture through the current Echo commit and launch contract. | All latency, p95, language quality, hallucination, receipt, cache, and exact-identity gates pass. | 14.4 |
 | P14-D3 | Product-speech coverage | Bind every required dictation class to licensed fixtures. | Coverage manifest is complete and replay-verifiable. | 14.5 |
 | P14-E1 | Settings regression | Run the Playwright responsive suite in light and dark mode at every supported width. | No horizontal overflow; core Settings controls remain visible. | 14.8 |

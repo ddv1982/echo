@@ -8,5 +8,6 @@ Observed results:
 
 - Managed CPU: 307 ms, managed source, adjacent library path, composite identity `dca15bd35fe0ebbe1995ba825ed99c9f626a4fe08b25ddd24954fb8be2d554b5`.
 - System Vulkan: 1377 ms, Intel Iris Xe, adjacent library path, composite identity `39b940671c4b8496747842c12f8f8e5699197f75705239da45710d5823cc6fc5`.
+- Explicit-contract Vulkan after multi-model review: 4076 ms cold, Intel Iris Xe, the same adjacent-library identity, explicit `/usr/share/vulkan/icd.d/intel_icd.json`, and a tool-owned Mesa cache path. The Echo parent was poisoned with conflicting LD, legacy Vulkan, Mesa device, DRI, and CUDA selectors; product telemetry reports only the explicit contract.
 
 This is runtime smoke evidence, not admission evidence. The fixture produced an empty transcript for both runs, and the full Phase 5 corpus was not rerun on this code state.

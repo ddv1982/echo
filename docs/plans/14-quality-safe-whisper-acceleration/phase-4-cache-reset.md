@@ -28,3 +28,5 @@ Runtime: collect a fresh and populated Mesa cache on this host. A current-boot r
 ## Stop gate
 
 Stop if Echo cannot isolate the backend cache root, prove that it began empty, or bind a reset claim to captured state.
+
+The first committed cycle predates the shared product launch override and retained a possible ambient loader boundary in its direct probe. It is historical diagnostic evidence only. Qualification must collect both required boot cycles again with the hardened probe and current product launcher.

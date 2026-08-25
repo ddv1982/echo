@@ -156,33 +156,35 @@ impl WhisperEngine {
         }
     }
 
-    fn runtime_identity(&self, binary: String, stderr: &str) -> WhisperRuntimeTelemetry {
+    fn runtime_identity(
+        &self,
+        binary: String,
+        stderr: &str,
+        launch: Option<&WhisperRuntimeLaunch>,
+    ) -> WhisperRuntimeTelemetry {
         let mut runtime = match &self.files {
-            WhisperFiles::Explicit(plan) => WhisperRuntimeTelemetry {
-                binary,
-                source: plan.runtime.source,
-                backend: plan.runtime.backend,
-                device: None,
-                library_path: plan
-                    .runtime
-                    .launch
-                    .library_dir
-                    .as_ref()
-                    .map(|path| path.to_string_lossy().into_owned()),
-                vulkan_driver_files: plan
-                    .runtime
-                    .launch
-                    .vulkan_driver_files
-                    .as_ref()
-                    .map(|path| path.to_string_lossy().into_owned()),
-                mesa_shader_cache_dir: plan
-                    .runtime
-                    .launch
-                    .mesa_shader_cache_dir
-                    .as_ref()
-                    .map(|path| path.to_string_lossy().into_owned()),
-                identity_sha256: plan.runtime.launch.identity_sha256.clone(),
-            },
+            WhisperFiles::Explicit(plan) => {
+                let launch = launch.expect("explicit Whisper plans have a launch contract");
+                WhisperRuntimeTelemetry {
+                    binary,
+                    source: plan.runtime.source,
+                    backend: plan.runtime.backend,
+                    device: None,
+                    library_path: launch
+                        .library_dir
+                        .as_ref()
+                        .map(|path| path.to_string_lossy().into_owned()),
+                    vulkan_driver_files: launch
+                        .vulkan_driver_files
+                        .as_ref()
+                        .map(|path| path.to_string_lossy().into_owned()),
+                    mesa_shader_cache_dir: launch
+                        .mesa_shader_cache_dir
+                        .as_ref()
+                        .map(|path| path.to_string_lossy().into_owned()),
+                    identity_sha256: launch.identity_sha256.clone(),
+                }
+            }
             WhisperFiles::Discover(_) => WhisperRuntimeTelemetry {
                 binary,
                 source: WhisperRuntimeSource::System,
@@ -218,6 +220,14 @@ impl WhisperEngine {
             WhisperFiles::Discover(_) => None,
         }
     }
+
+    fn effective_runtime_launch(&self, binary: &Path) -> Option<WhisperRuntimeLaunch> {
+        let configured = self.runtime_launch()?;
+        let mut effective = whisper_runtime_launch(binary);
+        effective.vulkan_driver_files = configured.vulkan_driver_files.clone();
+        effective.mesa_shader_cache_dir = configured.mesa_shader_cache_dir.clone();
+        Some(effective)
+    }
 }
 
 impl Engine for WhisperEngine {
@@ -240,6 +250,7 @@ impl Engine for WhisperEngine {
         let (model, multilingual) = self.selected_model().ok_or(EngineError::Missing)?;
         refuse_impossible_language(&model, multilingual, options.language)?;
         let bin = self.resolved_binary().ok_or(EngineError::Missing)?;
+        let launch = self.effective_runtime_launch(&bin);
         let started = Instant::now();
         let encode_started = Instant::now();
         let wav = TempWav::new(write_temp_wav(pcm).map_err(EngineError::Infer)?);
@@ -248,7 +259,7 @@ impl Engine for WhisperEngine {
         let tuning = self.tuning();
         let (first, mut first_telemetry) = run_attempt(
             &bin,
-            self.runtime_launch(),
+            launch.as_ref(),
             whisper_args_with_tuning(
                 &model,
                 wav.path(),
@@ -266,7 +277,7 @@ impl Engine for WhisperEngine {
             first_telemetry.retry_reason = Some(WhisperRetryReason::VadRejected);
             let (retry, retry_telemetry) = run_attempt(
                 &bin,
-                self.runtime_launch(),
+                launch.as_ref(),
                 whisper_args_with_tuning(
                     &model,
                     wav.path(),
@@ -308,6 +319,7 @@ impl Engine for WhisperEngine {
             detail: RunDetail {
                 binary: Some(binary.clone()),
                 model_path: Some(model.to_string_lossy().into_owned()),
+                vad_path: vad.as_ref().map(|path| path.to_string_lossy().into_owned()),
                 multilingual: Some(parsed.multilingual),
                 vad: Some(vad_active),
                 language: parsed.language.clone(),
@@ -317,7 +329,7 @@ impl Engine for WhisperEngine {
                     total_ms,
                     audio_encode_ms,
                     parse_ms,
-                    runtime: self.runtime_identity(binary, &stderr),
+                    runtime: self.runtime_identity(binary, &stderr, launch.as_ref()),
                     tuning: WhisperTuningTelemetry {
                         threads: tuning.threads.map(NonZeroUsize::get),
                         beam_size: tuning.beam_size,
@@ -417,8 +429,32 @@ fn command_for_runtime(binary: &Path, launch: Option<&WhisperRuntimeLaunch>) -> 
 fn is_inference_environment_selector(name: &std::ffi::OsStr) -> bool {
     let name = name.to_string_lossy().to_ascii_uppercase();
     [
-        "LD_", "VK_", "MESA_", "DRI_", "LIBGL_", "GALLIUM_", "INTEL_", "AMD_", "RADV_", "NVIDIA_",
-        "__GL", "CUDA_", "ROCR_", "HIP_", "ONEAPI_", "SYCL_", "ZES_", "ZE_", "OPENCL_", "OCL_",
+        "LD_",
+        "VK_",
+        "MESA_",
+        "DRI_",
+        "LIBGL_",
+        "GALLIUM_",
+        "INTEL_",
+        "AMD_",
+        "RADV_",
+        "NVIDIA_",
+        "__GL",
+        "CUDA_",
+        "ROCR_",
+        "HIP_",
+        "HSA_",
+        "ONEAPI_",
+        "SYCL_",
+        "ZES_",
+        "ZE_",
+        "OPENCL_",
+        "OCL_",
+        "RUSTICL_",
+        "GGML_",
+        "OMP_",
+        "OPENBLAS_",
+        "LIBVA_",
     ]
     .iter()
     .any(|prefix| name.starts_with(prefix))
@@ -712,6 +748,8 @@ mod tests {
             "RADV_PERFTEST",
             "__GLX_VENDOR_LIBRARY_NAME",
             "CUDA_VISIBLE_DEVICES",
+            "GGML_VK_VISIBLE_DEVICES",
+            "HSA_OVERRIDE_GFX_VERSION",
         ] {
             assert!(
                 is_inference_environment_selector(std::ffi::OsStr::new(name)),
@@ -723,6 +761,47 @@ mod tests {
                 name
             )));
         }
+    }
+
+    #[test]
+    fn effective_launch_rehashes_the_runtime_immediately_before_inference() {
+        let root = std::env::temp_dir().join(format!(
+            "echo-whisper-effective-launch-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let cli = root.join("whisper-cli");
+        let library = root.join("libwhisper.so");
+        fs::write(&cli, b"cli").unwrap();
+        fs::write(&library, b"library-v1").unwrap();
+        let mut candidate = WhisperRuntimeCandidate {
+            source: WhisperRuntimeSource::System,
+            backend: WhisperRuntimeBackend::Unknown,
+            cli: cli.clone(),
+            server: None,
+            launch: whisper_runtime_launch(&cli),
+        };
+        candidate.launch.vulkan_driver_files = Some(root.join("driver.json"));
+        candidate.launch.mesa_shader_cache_dir = Some(root.join("cache"));
+        let original_identity = candidate.launch.identity_sha256.clone();
+        let engine = WhisperEngine::with_plan(WhisperExecutionPlan::one_shot(
+            candidate,
+            WhisperModelAsset {
+                name: "small".to_string(),
+                path: root.join("model.bin"),
+                multilingual: true,
+            },
+            None,
+        ));
+        fs::write(&library, b"library-v2").unwrap();
+        let effective = engine.effective_runtime_launch(&cli).unwrap();
+        assert_ne!(effective.identity_sha256, original_identity);
+        assert_eq!(
+            effective.vulkan_driver_files,
+            Some(root.join("driver.json"))
+        );
+        assert_eq!(effective.mesa_shader_cache_dir, Some(root.join("cache")));
     }
 
     fn args_for_cache(dir: &Path) -> Vec<String> {

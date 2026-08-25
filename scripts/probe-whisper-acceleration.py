@@ -20,6 +20,7 @@ import time
 import tomllib
 from collections import defaultdict
 from pathlib import Path
+from unittest import mock
 
 
 TIMING_PATTERN = re.compile(
@@ -47,6 +48,34 @@ VULKAN_RECEIPT_KEYS = frozenset(
 UINT32_MAX = (1 << 32) - 1
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REPORT_FILES = ("warmups.jsonl", "runs.jsonl", "summary.json", "summary.md")
+INFERENCE_ENVIRONMENT_PREFIXES = (
+    "LD_",
+    "VK_",
+    "MESA_",
+    "DRI_",
+    "LIBGL_",
+    "GALLIUM_",
+    "INTEL_",
+    "AMD_",
+    "RADV_",
+    "NVIDIA_",
+    "__GL",
+    "CUDA_",
+    "ROCR_",
+    "HIP_",
+    "HSA_",
+    "ONEAPI_",
+    "SYCL_",
+    "ZES_",
+    "ZE_",
+    "OPENCL_",
+    "OCL_",
+    "RUSTICL_",
+    "GGML_",
+    "OMP_",
+    "OPENBLAS_",
+    "LIBVA_",
+)
 
 
 def portable_path(path: Path) -> str:
@@ -216,16 +245,22 @@ def vulkan_icds() -> list[dict[str, object]]:
 
 
 def runtime_environment(
-    binary: Path, mesa_shader_cache_dir: Path | None = None
+    binary: Path,
+    mesa_shader_cache_dir: Path | None = None,
+    vk_driver_files: Path | None = None,
 ) -> dict[str, str]:
-    environment = os.environ.copy()
-    existing = environment.get("LD_LIBRARY_PATH")
-    library_path = str(binary.parent.resolve())
-    environment["LD_LIBRARY_PATH"] = (
-        f"{library_path}{os.pathsep}{existing}" if existing else library_path
-    )
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.upper().startswith(INFERENCE_ENVIRONMENT_PREFIXES)
+    }
+    environment["LD_LIBRARY_PATH"] = str(binary.parent.resolve())
     if mesa_shader_cache_dir is not None:
-        environment["MESA_SHADER_CACHE_DIR"] = str(mesa_shader_cache_dir)
+        environment["MESA_SHADER_CACHE_DIR"] = str(
+            mesa_shader_cache_dir.resolve(strict=True)
+        )
+    if vk_driver_files is not None:
+        environment["VK_DRIVER_FILES"] = str(vk_driver_files.resolve(strict=True))
     return environment
 
 
@@ -245,13 +280,15 @@ def prepare_mesa_shader_cache(path: Path, reuse: bool) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-def runtime_version(binary: Path, timeout: int) -> str:
+def runtime_version(
+    binary: Path, timeout: int, vk_driver_files: Path | None = None
+) -> str:
     completed = subprocess.run(
         [str(binary), "--version"],
         capture_output=True,
         text=True,
         timeout=timeout,
-        env=runtime_environment(binary),
+        env=runtime_environment(binary, vk_driver_files=vk_driver_files),
     )
     if completed.returncode != 0:
         raise RuntimeError(
@@ -453,7 +490,9 @@ def invoke(
         capture_output=True,
         text=True,
         timeout=args.timeout,
-        env=runtime_environment(args.binary, args.mesa_shader_cache_dir),
+        env=runtime_environment(
+            args.binary, args.mesa_shader_cache_dir, args.vk_driver_files
+        ),
     )
     outer_ms = (time.perf_counter_ns() - started) / 1_000_000
     if completed.returncode != 0:
@@ -668,10 +707,17 @@ def run_probe(args: argparse.Namespace) -> int:
             "echo": repo_metadata(),
             "host": host_metadata(),
             "binary": artifact(args.binary),
-            "runtimeVersion": runtime_version(args.binary, args.timeout),
+            "runtimeVersion": runtime_version(
+                args.binary, args.timeout, args.vk_driver_files
+            ),
             "librarySearchPath": portable_path(args.binary.parent),
             "adjacentLibraries": adjacent_libraries(args.binary),
             "vulkanIcds": vulkan_icds(),
+            "selectedVulkanDriverFiles": (
+                artifact(args.vk_driver_files)
+                if args.vk_driver_files is not None
+                else None
+            ),
             "model": artifact(args.model),
             "vad": artifact(args.vad) if args.vad is not None else None,
             "backend": args.backend,
@@ -751,6 +797,29 @@ def run_probe(args: argparse.Namespace) -> int:
 
 
 def self_test() -> None:
+    with tempfile.TemporaryDirectory(prefix="echo-probe-environment-") as temporary:
+        root = Path(temporary)
+        binary = root / "whisper-cli"
+        cache = root / "cache"
+        driver = root / "driver.json"
+        binary.write_text("binary", encoding="utf-8")
+        cache.mkdir()
+        driver.write_text("{}", encoding="utf-8")
+        poison = {
+            "LD_LIBRARY_PATH": "/poison",
+            "LD_PRELOAD": "/poison.so",
+            "VK_ICD_FILENAMES": "/poison.json",
+            "MESA_VK_DEVICE_SELECT": "ffff:ffff!",
+            "DRI_PRIME": "1",
+            "CUDA_VISIBLE_DEVICES": "0",
+            "GGML_VK_VISIBLE_DEVICES": "0",
+        }
+        with mock.patch.dict(os.environ, poison):
+            environment = runtime_environment(binary, cache, driver)
+        assert environment["LD_LIBRARY_PATH"] == str(root)
+        assert environment["MESA_SHADER_CACHE_DIR"] == str(cache)
+        assert environment["VK_DRIVER_FILES"] == str(driver)
+        assert all(name not in environment for name in poison if name != "LD_LIBRARY_PATH")
     vulkan_log = """ggml_vulkan: 0 = Intel Iris Xe (Mesa) | fp16: 1
 whisper_backend_init_gpu: using Vulkan0 backend
 whisper_print_timings: total time = 42.50 ms
@@ -945,6 +1014,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--min-speedup-percent", type=float, default=20.0)
     result.add_argument("--min-speedup-ms", type=float, default=500.0)
     result.add_argument("--mesa-shader-cache-dir", type=Path)
+    result.add_argument("--vk-driver-files", type=Path)
     result.add_argument(
         "--reuse-mesa-shader-cache",
         action="store_true",
@@ -979,6 +1049,8 @@ def main() -> int:
         )
     if args.reuse_mesa_shader_cache and args.mesa_shader_cache_dir is None:
         raise ValueError("--reuse-mesa-shader-cache requires --mesa-shader-cache-dir")
+    if args.vk_driver_files is not None and not args.vk_driver_files.is_file():
+        raise ValueError("--vk-driver-files must name a file")
     return run_probe(args)
 
 

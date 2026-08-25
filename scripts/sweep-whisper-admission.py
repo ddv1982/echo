@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-"""Run fail-closed paired Whisper admission cells for two pinned revisions."""
-
 from __future__ import annotations
 
 import argparse
@@ -12,6 +10,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -21,7 +20,34 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SUPPORTED_REVISIONS = frozenset({"v1.9.2", "v1.9.3"})
 PRE_RELEASE_REVISIONS = frozenset({"v1.9.3"})
 RECEIPT_PREFIX = "echo_whisper_runtime_receipt: "
-ENVIRONMENT_RESET_PREFIXES = ("VK_", "MESA_", "LD_")
+ENVIRONMENT_RESET_PREFIXES = (
+    "LD_",
+    "VK_",
+    "MESA_",
+    "DRI_",
+    "LIBGL_",
+    "GALLIUM_",
+    "INTEL_",
+    "AMD_",
+    "RADV_",
+    "NVIDIA_",
+    "__GL",
+    "CUDA_",
+    "ROCR_",
+    "HIP_",
+    "HSA_",
+    "ONEAPI_",
+    "SYCL_",
+    "ZES_",
+    "ZE_",
+    "OPENCL_",
+    "OCL_",
+    "RUSTICL_",
+    "GGML_",
+    "OMP_",
+    "OPENBLAS_",
+    "LIBVA_",
+)
 RESEARCH_GATE_NAMES = (
     "completePairs",
     "pairIntegrity",
@@ -86,6 +112,29 @@ def sha256(path: Path) -> str:
     with path.open("rb") as source:
         for block in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(block)
+    return digest.hexdigest()
+
+
+def product_runtime_identity(cli: Path) -> str:
+    libraries: set[Path] = set()
+    for path in cli.parent.iterdir():
+        if ".so" not in path.name:
+            continue
+        try:
+            resolved = path.resolve(strict=True)
+        except OSError:
+            continue
+        if resolved.is_file():
+            libraries.add(resolved)
+    digest = hashlib.sha256(b"echo-whisper-runtime-v1\0")
+    for path in [cli, *sorted(libraries)]:
+        name = path.name.encode()
+        digest.update(len(name).to_bytes(8, "little"))
+        digest.update(name)
+        digest.update(path.stat().st_size.to_bytes(8, "little"))
+        with path.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
     return digest.hexdigest()
 
 
@@ -283,12 +332,11 @@ def child_environment(
         "HOME": str(home),
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
-        "LD_LIBRARY_PATH": str(runtime.root),
-        "MESA_SHADER_CACHE_DIR": str(cache_root),
         "PATH": str(runtime.root) + os.pathsep + os.environ.get("PATH", os.defpath),
         "TZ": "UTC",
-        "VK_DRIVER_FILES": str(vk_driver_files),
     }
+    cache_root.resolve(strict=True)
+    vk_driver_files.resolve(strict=True)
     return environment
 
 
@@ -349,6 +397,8 @@ def exact_runtime_gate(
     expected_runtime: Runtime,
     expected_model: Path,
     expected_environment: dict[str, str],
+    expected_driver: Path,
+    expected_cache: Path,
     cpu_label: str,
     accelerated_label: str,
     cell: Cell,
@@ -420,6 +470,22 @@ def exact_runtime_gate(
                 != expected_model.resolve()
             ):
                 return False, "child model path differs from selected model"
+            whisper = row.get("whisper")
+            telemetry = whisper.get("runtime") if isinstance(whisper, dict) else None
+            if not isinstance(telemetry, dict):
+                return False, "measurement has no effective Whisper launch telemetry"
+            if telemetry.get("identitySha256") != product_runtime_identity(
+                expected_runtime.cli
+            ):
+                return False, "effective child runtime identity differs from selected runtime"
+            launch_paths = {
+                "libraryPath": expected_runtime.root,
+                "vulkanDriverFiles": expected_driver,
+                "mesaShaderCacheDir": expected_cache,
+            }
+            for name, expected in launch_paths.items():
+                if recorded_path(telemetry.get(name), name).resolve() != expected.resolve():
+                    return False, f"effective child {name} differs from the launch contract"
             artifact = row.get("observationArtifact")
             if not isinstance(artifact, dict):
                 return False, "measurement row has no raw observation artifact"
@@ -429,22 +495,17 @@ def exact_runtime_gate(
             environment = read_json(environment_path, "observation environment")
             for name in (
                 "PATH",
-                "LD_LIBRARY_PATH",
                 "ECHO_MODEL_DIR",
-                "VK_DRIVER_FILES",
-                "MESA_SHADER_CACHE_DIR",
             ):
                 if environment.get(name) != expected_environment[name]:
-                    return False, f"child environment has a stale or ambient {name}"
+                    return False, f"benchmark parent environment has a stale or ambient {name}"
             if any(
                 name.startswith(ENVIRONMENT_RESET_PREFIXES)
-                and name
-                not in {"VK_DRIVER_FILES", "MESA_SHADER_CACHE_DIR", "LD_LIBRARY_PATH"}
                 for name in environment
             ):
                 return (
                     False,
-                    "child environment contains an inherited loader or cache variable",
+                    "benchmark parent contains an inherited loader or cache variable",
                 )
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
         return False, str(error)
@@ -647,6 +708,10 @@ def run_cell(
             sha256(args.vk_driver_files),
             "--output-dir",
             str(bundle_root),
+            "--whisper-vulkan-driver-files",
+            str(args.vk_driver_files),
+            "--whisper-mesa-shader-cache-dir",
+            str(cache.cache_root),
         ]
         run_command(benchmark_command, environment, cell_root, "benchmark")
         analyzer_root = cell_root / "analysis"
@@ -703,6 +768,8 @@ def run_cell(
             str(args.timeout),
             "--mesa-shader-cache-dir",
             str(cache.cache_root),
+            "--vk-driver-files",
+            str(args.vk_driver_files),
             "--reuse-mesa-shader-cache",
             "--output-dir",
             str(probe_root),
@@ -718,6 +785,8 @@ def run_cell(
             runtime,
             args.model_path,
             environment,
+            args.vk_driver_files,
+            cache.cache_root,
             cpu_label,
             accelerated_label,
             cell,
@@ -1084,21 +1153,117 @@ def self_test() -> None:
     assert (
         admission_decision("v1.9.2", baseline_research, changed_cache) == "INCOMPLETE"
     )
-    stale_environment = {
-        "PATH": "/old/runtime:/usr/bin",
-        "LD_LIBRARY_PATH": "/old/runtime",
-        "ECHO_MODEL_DIR": "/old/model",
-        "VK_DRIVER_FILES": "/old/icd",
-        "MESA_SHADER_CACHE_DIR": "/old/cache",
-    }
-    fresh_environment = {
-        "PATH": "/new/runtime:/usr/bin",
-        "LD_LIBRARY_PATH": "/new/runtime",
-        "ECHO_MODEL_DIR": "/new/model",
-        "VK_DRIVER_FILES": "/new/icd",
-        "MESA_SHADER_CACHE_DIR": "/new/cache",
-    }
-    assert stale_environment != fresh_environment
+    with tempfile.TemporaryDirectory(prefix="echo-sweep-exact-") as temporary:
+        root = Path(temporary)
+        runtime_root = root / "runtime"
+        runtime_root.mkdir()
+        cli = runtime_root / "whisper-cli"
+        cli.write_bytes(b"cli")
+        (runtime_root / "libwhisper.so").write_bytes(b"library")
+        model = root / "model.bin"
+        model.write_bytes(b"model")
+        driver = root / "driver.json"
+        driver.write_text("{}", encoding="utf-8")
+        cache = root / "cache"
+        cache.mkdir()
+        model_dir = root / "models"
+        model_dir.mkdir()
+        home = root / "home"
+        home.mkdir()
+        runtime = Runtime("runtime", "v1.9.2", runtime_root, cli, sha256(cli))
+        environment = child_environment(runtime, model_dir, cache, driver, home)
+        assert not any(
+            name.startswith(ENVIRONMENT_RESET_PREFIXES) for name in environment
+        )
+        bundle = root / "bundle"
+        artifact_dir = bundle / "artifacts"
+        artifact_dir.mkdir(parents=True)
+        environment_path = artifact_dir / "environment.json"
+        write_json(environment_path, environment)
+        environment_ref = {
+            "path": "artifacts/environment.json",
+            "sha256": sha256(environment_path),
+        }
+        write_json(
+            bundle / "status.json",
+            {"state": "complete", "runId": "self-test"},
+        )
+        write_json(
+            bundle / "run-manifest.json",
+            {
+                "runId": "self-test",
+                "candidates": [
+                    {
+                        "label": label,
+                        "threads": 4,
+                        "beamSize": cell.beam_size,
+                        "bestOf": cell.best_of,
+                        "noFallback": cell.no_fallback,
+                        "forceCpu": force_cpu,
+                    }
+                    for label, force_cpu in ((cpu, True), (gpu, False))
+                ],
+            },
+        )
+        rows = []
+        for label in (cpu, gpu):
+            rows.append(
+                {
+                    "candidate": label,
+                    "runtimeArtifact": {"path": str(cli), "sha256": sha256(cli)},
+                    "modelArtifact": {"path": str(model), "sha256": sha256(model)},
+                    "whisper": {
+                        "runtime": {
+                            "identitySha256": product_runtime_identity(cli),
+                            "libraryPath": str(runtime_root),
+                            "vulkanDriverFiles": str(driver),
+                            "mesaShaderCacheDir": str(cache),
+                        }
+                    },
+                    "observationArtifact": {"environment": environment_ref},
+                }
+            )
+        write_atomic(
+            bundle / "runs.jsonl",
+            "".join(json.dumps(row) + "\n" for row in rows),
+        )
+        exact, error = exact_runtime_gate(
+            bundle,
+            runtime,
+            model,
+            environment,
+            driver,
+            cache,
+            cpu,
+            gpu,
+            cell,
+            4,
+            1,
+            1,
+        )
+        assert exact, error
+        environment["LD_PRELOAD"] = "/poison.so"
+        write_json(environment_path, environment)
+        environment_ref["sha256"] = sha256(environment_path)
+        write_atomic(
+            bundle / "runs.jsonl",
+            "".join(json.dumps(row) + "\n" for row in rows),
+        )
+        exact, _ = exact_runtime_gate(
+            bundle,
+            runtime,
+            model,
+            environment,
+            driver,
+            cache,
+            cpu,
+            gpu,
+            cell,
+            4,
+            1,
+            1,
+        )
+        assert not exact
     assert admission_decision("v1.9.3", baseline_research, baseline_bindings) == "STOP"
     print("sweep-whisper-admission: self-test ok")
 

@@ -14,9 +14,18 @@ fn fake_whisper_proves_model_language_prompt_and_vad_retry_arguments() {
     let config_dir = root.join("config");
     let data_dir = root.join("data");
     let model_dir = root.join("models");
-    for dir in [&bin_dir, &config_dir, &data_dir, &model_dir] {
+    let shader_cache_dir = root.join("shader-cache");
+    for dir in [
+        &bin_dir,
+        &config_dir,
+        &data_dir,
+        &model_dir,
+        &shader_cache_dir,
+    ] {
         std::fs::create_dir_all(dir).unwrap();
     }
+    let driver_manifest = root.join("intel_icd.json");
+    std::fs::write(&driver_manifest, "{}").unwrap();
     std::fs::write(model_dir.join("ggml-small.bin"), []).unwrap();
     std::fs::write(model_dir.join("ggml-silero-v6.2.0.bin"), []).unwrap();
     std::fs::write(bin_dir.join("libwhisper-fake.so"), b"fake library").unwrap();
@@ -76,6 +85,10 @@ printf '%s\n' 'whisper_full: auto-detected language: de (p = 0.958162)' >&2
             "--whisper-best-of",
             "3",
             "--whisper-no-fallback",
+            "--whisper-vulkan-driver-files",
+            driver_manifest.to_str().unwrap(),
+            "--whisper-mesa-shader-cache-dir",
+            shader_cache_dir.to_str().unwrap(),
         ])
         .env("PATH", &bin_dir)
         .env("ECHO_ARGV_LOG", &log)
@@ -116,7 +129,10 @@ printf '%s\n' 'whisper_full: auto-detected language: de (p = 0.958162)' >&2
             run.contains(&format!("ENV_LD={}\n", bin_dir.display())),
             "run={run}"
         );
-        assert!(run.contains("ENV_VK=unset\n"), "run={run}");
+        assert!(
+            run.contains(&format!("ENV_VK={}\n", driver_manifest.display())),
+            "run={run}"
+        );
         assert!(run.contains("ENV_MESA_DEVICE=unset\n"), "run={run}");
         assert!(run.contains("ENV_DRI=unset\n"), "run={run}");
         assert!(run.contains("ENV_CUDA=unset\n"), "run={run}");
@@ -130,6 +146,13 @@ printf '%s\n' 'whisper_full: auto-detected language: de (p = 0.958162)' >&2
     assert_eq!(json["engine"]["id"], "whisper");
     assert_eq!(json["engine"]["model"], "small");
     assert_eq!(json["engine"]["vad"], false);
+    assert_eq!(
+        json["engine"]["vadPath"],
+        model_dir
+            .join("ggml-silero-v6.2.0.bin")
+            .display()
+            .to_string()
+    );
     assert_eq!(json["language"]["requested"], "de");
     assert_eq!(json["language"]["observed"], "de");
     assert_eq!(json["language"]["probability"], 0.958_162);
@@ -158,6 +181,14 @@ printf '%s\n' 'whisper_full: auto-detected language: de (p = 0.958162)' >&2
             .as_str()
             .map(str::len),
         Some(64)
+    );
+    assert_eq!(
+        json["whisper"]["runtime"]["vulkanDriverFiles"],
+        driver_manifest.display().to_string()
+    );
+    assert_eq!(
+        json["whisper"]["runtime"]["mesaShaderCacheDir"],
+        shader_cache_dir.display().to_string()
     );
     assert_eq!(json["whisper"]["tuning"]["threads"], 2);
     assert_eq!(json["whisper"]["tuning"]["beamSize"], 1);

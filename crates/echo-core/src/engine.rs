@@ -14,6 +14,8 @@ pub struct RunDetail {
     #[serde(default)]
     pub model_path: Option<String>,
     #[serde(default)]
+    pub vad_path: Option<String>,
+    #[serde(default)]
     pub multilingual: Option<bool>,
     #[serde(default)]
     pub vad: Option<bool>,

@@ -11,7 +11,7 @@
 | 14.3 | Current managed CPU and system Vulkan product paths execute on Linux | ☑ |
 | 14.4 | Current exact identity passes the full licensed corpus | ☐ `INCOMPLETE` |
 | 14.5 | Every required product-speech class is represented | ☐ `INCOMPLETE` |
-| 14.6 | Reset evidence spans two distinct boot IDs | ☐ `INCOMPLETE` |
+| 14.6 | Hardened reset evidence spans two distinct boot IDs | ☐ `INCOMPLETE` |
 | 14.7 | Production selection remains managed CPU while any gate is incomplete | ☑ |
 | 14.8 | Workspace, frontend, release, and responsive regressions are green | ☑ |
 
