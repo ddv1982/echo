@@ -7,6 +7,7 @@ mod whisper_admission;
 mod whisper_plan;
 mod whisper_probe;
 mod whisper_quarantine;
+mod whisper_recovery;
 
 pub use cache::{InstalledModel, ModelCache, ModelInventory, WhisperFamily};
 pub use fake::FakeEngine;
@@ -25,6 +26,7 @@ pub use whisper_plan::{
     WhisperRuntimeCandidate, WhisperRuntimeLaunch, WhisperTuning, WhisperTuningOverride,
 };
 pub use whisper_quarantine::QuarantineStore;
+pub use whisper_recovery::RecoveringWhisperEngine;
 
 use std::path::PathBuf;
 

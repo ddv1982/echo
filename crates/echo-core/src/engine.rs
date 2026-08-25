@@ -41,6 +41,31 @@ pub struct WhisperRunTelemetry {
     pub runtime: WhisperRuntimeTelemetry,
     pub tuning: WhisperTuningTelemetry,
     pub attempts: Vec<WhisperAttemptTelemetry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<WhisperRecoveryTelemetry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WhisperRecoveryTelemetry {
+    pub identity_key: String,
+    pub accelerated_attempted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<WhisperRecoveryReason>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WhisperRecoveryReason {
+    Quarantined,
+    QuarantineUnreadable,
+    RuntimeFailure,
+    Timeout,
+    MalformedOutput,
+    MissingReceipt,
+    ReceiptMismatch,
+    CpuFallback,
+    IdentityMismatch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

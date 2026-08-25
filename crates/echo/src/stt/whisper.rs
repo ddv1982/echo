@@ -354,6 +354,7 @@ impl Engine for WhisperEngine {
                         no_fallback: tuning.no_fallback,
                     },
                     attempts,
+                    recovery: None,
                 }),
             },
         })
