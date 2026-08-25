@@ -16,8 +16,8 @@ use super::whisper_admission::{
     AdmissionState,
 };
 use super::{
-    probe_vulkan_runtime_receipt, whisper_runtime_launch, WhisperExecutionPlan,
-    WhisperPlanDecision, WhisperRuntimeCandidate, WhisperTuning,
+    probe_vulkan_runtime_receipt, runtime_library_bindings, whisper_runtime_launch,
+    WhisperExecutionPlan, WhisperPlanDecision, WhisperRuntimeCandidate, WhisperTuning,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -101,6 +101,11 @@ pub(crate) fn select_qualified_package(
         .map(sha256_file)
         .transpose()?;
     let runtime_launch = whisper_runtime_launch(&runtime);
+    if runtime_library_bindings(&runtime).map_err(|error| error.to_string())?
+        != record.artifacts.runtime_library_bindings
+    {
+        return Err("Whisper runtime library alias bindings changed".to_string());
+    }
     let runtime_identity = runtime_launch
         .identity_sha256
         .clone()
@@ -633,6 +638,9 @@ mod tests {
         let icd_library = root.join("libvulkan_intel.so");
         executable(&runtime, b"vulkan runtime");
         executable(&probe, b"runtime probe");
+        fs::write(runtime_dir.join("libwhisper.so.1.9.2"), b"whisper").unwrap();
+        fs::write(runtime_dir.join("libwhisper.so.1"), b"whisper").unwrap();
+        fs::write(runtime_dir.join("libggml.so.0.18.1"), b"ggml").unwrap();
         executable(&cpu, b"cpu runtime");
         executable(&echo, b"echo binary");
         fs::write(&model, format!("small model {label}")).unwrap();
@@ -677,6 +685,7 @@ mod tests {
             expires_at: NOW + 60,
             artifacts: AdmissionArtifacts {
                 runtime_relative_path: "runtime/whisper-cli".to_string(),
+                runtime_library_bindings: runtime_library_bindings(&runtime).unwrap(),
                 probe_relative_path: "runtime/echo-whisper-runtime-probe".to_string(),
                 probe_sha256: sha256_file(&probe).unwrap(),
                 icd_manifest_path: icd_manifest.to_string_lossy().into_owned(),
@@ -765,6 +774,22 @@ mod tests {
         fs::write(&changed_runtime.runtime, b"changed runtime").unwrap();
         assert!(select_qualified_package(selection(
             &changed_runtime,
+            ObservedWhisperHost {
+                drm_vendor_id: 0x8086,
+                drm_device_id: 0x46a6,
+                drm_driver: "i915".to_string(),
+            },
+        ))
+        .is_err());
+
+        let changed_alias = fixture("alias-change");
+        fs::write(
+            changed_alias.package.join("runtime/libwhisper.so.1"),
+            b"ggml",
+        )
+        .unwrap();
+        assert!(select_qualified_package(selection(
+            &changed_alias,
             ObservedWhisperHost {
                 drm_vendor_id: 0x8086,
                 drm_device_id: 0x46a6,

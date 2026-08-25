@@ -103,6 +103,11 @@ def verify_extracted(
     if runtime_identity(runtime) != admission["identity"]["runtimeIdentitySha256"]:
         raise ValueError("packaged runtime identity changed")
     packaged_library_bindings = runtime_library_bindings(runtime)
+    if (
+        packaged_library_bindings
+        != admission["artifacts"]["runtimeLibraryBindings"]
+    ):
+        raise ValueError("packaged runtime library alias admission changed")
     if promotion_root is not None:
         source_runtime = (
             promotion_root

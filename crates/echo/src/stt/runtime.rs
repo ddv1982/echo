@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -32,6 +33,34 @@ pub(crate) fn whisper_runtime_launch(cli: &Path) -> WhisperRuntimeLaunch {
         identity_sha256,
         ..WhisperRuntimeLaunch::default()
     }
+}
+
+pub(crate) fn runtime_library_bindings(
+    cli: &Path,
+) -> std::io::Result<BTreeMap<String, String>> {
+    let Some(parent) = cli.parent() else {
+        return Ok(BTreeMap::new());
+    };
+    let mut bindings = BTreeMap::new();
+    for entry in std::fs::read_dir(parent)? {
+        let entry = entry?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if !name.contains(".so") {
+            continue;
+        }
+        let path = entry.path().canonicalize()?;
+        if !path.is_file() {
+            continue;
+        }
+        let mut digest = String::with_capacity(64);
+        for byte in file_sha256(&path)? {
+            write!(&mut digest, "{byte:02x}").expect("writing to a String cannot fail");
+        }
+        bindings.insert(name, digest);
+    }
+    Ok(bindings)
 }
 
 fn runtime_identity(cli: &Path, libraries: &BTreeSet<PathBuf>) -> std::io::Result<String> {
@@ -317,6 +346,28 @@ mod tests {
         std::fs::write(&cli, b"cli-v2").unwrap();
         let third = whisper_runtime_launch(&cli);
         assert_ne!(second.identity_sha256, third.identity_sha256);
+    }
+
+    #[test]
+    fn runtime_library_bindings_cover_each_loader_alias() {
+        let root = std::env::temp_dir().join(format!(
+            "echo-runtime-library-bindings-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let cli = root.join("whisper-cli");
+        std::fs::write(&cli, b"cli").unwrap();
+        std::fs::write(root.join("libwhisper.so.1.9.2"), b"whisper").unwrap();
+        std::fs::write(root.join("libwhisper.so.1"), b"whisper").unwrap();
+        std::fs::write(root.join("libggml.so.0.18.1"), b"ggml").unwrap();
+
+        let original_identity = whisper_runtime_launch(&cli).identity_sha256;
+        let original_bindings = runtime_library_bindings(&cli).unwrap();
+        std::fs::write(root.join("libwhisper.so.1"), b"ggml").unwrap();
+
+        assert_eq!(original_identity, whisper_runtime_launch(&cli).identity_sha256);
+        assert_ne!(original_bindings, runtime_library_bindings(&cli).unwrap());
     }
 
     fn install_sparse_managed_model(root: &Path, id: ComponentId) -> PathBuf {

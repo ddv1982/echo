@@ -14,6 +14,7 @@ from pathlib import Path
 
 from whisper_release_common import (
     runtime_identity,
+    runtime_library_bindings,
     sha256_file,
     tree_sha256,
     verify_contained_symlinks,
@@ -392,6 +393,9 @@ def promote(args: argparse.Namespace) -> None:
         "identity": identity,
         "artifacts": {
             "runtimeRelativePath": "runtime/whisper-cli",
+            "runtimeLibraryBindings": runtime_library_bindings(
+                package / "runtime/whisper-cli"
+            ),
             "probeRelativePath": "runtime/echo-whisper-runtime-probe",
             "probeSha256": sha256_file(runtime_probe),
             "icdManifestPath": str(icd_manifest),
