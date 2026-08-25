@@ -67,8 +67,8 @@ def runtime_libraries(cli: Path) -> list[Path]:
     return sorted(by_content.values())
 
 
-def runtime_library_names(cli: Path) -> list[str]:
-    names = []
+def runtime_library_bindings(cli: Path) -> dict[str, str]:
+    bindings = {}
     for candidate in cli.parent.iterdir():
         if ".so" not in candidate.name:
             continue
@@ -77,8 +77,8 @@ def runtime_library_names(cli: Path) -> list[str]:
         except OSError:
             continue
         if path.is_file():
-            names.append(candidate.name)
-    return sorted(names)
+            bindings[candidate.name] = sha256_file(path)
+    return dict(sorted(bindings.items()))
 
 
 def runtime_identity(cli: Path) -> str:
