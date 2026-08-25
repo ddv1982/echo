@@ -15,7 +15,10 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from whisper_release_common import runtime_identity as shared_runtime_identity
+from whisper_release_common import (
+    runtime_identity as shared_runtime_identity,
+    runtime_library_bindings,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -940,7 +943,11 @@ def run_cell(
                         "sha256": args.expected_echo_binary_sha256,
                     },
                 },
-                "runtime": {"path": str(runtime.cli), "sha256": runtime.sha256},
+                "runtime": {
+                    "path": str(runtime.cli),
+                    "sha256": runtime.sha256,
+                    "libraryBindings": runtime_library_bindings(runtime.cli),
+                },
                 "runtimeProbe": {
                     "path": str(args.runtime_probe),
                     "sha256": sha256(args.runtime_probe),
