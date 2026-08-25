@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- New recommended setup installs and pins Whisper Small, matching the model qualified for Vulkan acceleration. Existing explicit model and language choices remain unchanged, and automatic language detection stays on managed CPU until separately qualified.
+
 ## v0.12.2
 
 - Linux packages now ship qualified Whisper Vulkan acceleration only when the packaged admission exactly matches the executable, runtime, model, VAD, decoding policy, DRM device, ICD files, and seeded Mesa cache.

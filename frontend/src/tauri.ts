@@ -655,7 +655,7 @@ function defaultPreviewReadiness(): Readiness {
     managedSupported: true,
     unsupportedReason: null,
     totalMemoryBytes: 8 * 1024 * 1024 * 1024,
-    recommendedModel: 'whisper-large-v3-turbo-q5-0',
+    recommendedModel: 'whisper-small',
     components: sources.map(({ id, label, path, origin }) => ({
       id,
       label,
@@ -665,7 +665,7 @@ function defaultPreviewReadiness(): Readiness {
       activity: null,
     })),
     plans: [
-      { id: 'recommended', label: 'Recommended', components: ['whisper-runtime', 'whisper-large-v3-turbo-q5-0', 'silero-vad'], satisfied: false, downloadBytes: 574_041_195, requiredFreeBytes: 1_200_000_000, availableBytes: 10_000_000_000, diskReady: true, diskReason: null },
+      { id: 'recommended', label: 'Recommended', components: ['whisper-runtime', 'whisper-small', 'silero-vad'], satisfied: true, downloadBytes: 0, requiredFreeBytes: 0, availableBytes: 10_000_000_000, diskReady: true, diskReason: null },
       { id: 'parakeet', label: 'Parakeet', components: ['sherpa-runtime', 'parakeet-tdt-06b-v3-int8'], satisfied: false, downloadBytes: 848_526_547, requiredFreeBytes: 1_500_000_000, availableBytes: 10_000_000_000, diskReady: true, diskReason: null },
       { id: 'whisper-base', label: 'Whisper base', components: ['whisper-runtime', 'whisper-base-q5-1'], satisfied: false, downloadBytes: 141_000_000, requiredFreeBytes: 300_000_000, availableBytes: 10_000_000_000, diskReady: true, diskReason: null },
       { id: 'whisper-small', label: 'Whisper small', components: ['whisper-runtime', 'whisper-small', 'silero-vad'], satisfied: true, downloadBytes: 0, requiredFreeBytes: 0, availableBytes: 10_000_000_000, diskReady: true, diskReason: null },
