@@ -52,18 +52,19 @@ def extract_package(package: Path, bundle_type: str, destination: Path) -> None:
         return
     destination.mkdir(parents=True, exist_ok=True)
     if shutil.which("rpm2cpio") and shutil.which("cpio"):
-        archive = subprocess.run(
-            ["rpm2cpio", str(package)], check=True, capture_output=True
-        ).stdout
-        subprocess.run(
-            ["cpio", "-idmu", "--quiet"],
-            cwd=destination,
-            input=archive,
-            check=True,
+        converted = subprocess.run(
+            ["rpm2cpio", str(package)], check=False, capture_output=True
         )
-        return
+        if converted.returncode == 0:
+            subprocess.run(
+                ["cpio", "-idmu", "--quiet"],
+                cwd=destination,
+                input=converted.stdout,
+                check=True,
+            )
+            return
     if not shutil.which("7z"):
-        raise ValueError("RPM extraction requires rpm2cpio and cpio, or 7z")
+        raise ValueError("RPM extraction requires working rpm2cpio/cpio, or 7z")
     with tempfile.TemporaryDirectory(prefix="echo-rpm-") as temporary:
         stage = Path(temporary)
         subprocess.run(
@@ -352,6 +353,27 @@ def self_test() -> None:
             extract_package(rpm, "rpm", fallback)
             assert run.call_count == 2
             assert all(call.args[0][0] == "7z" for call in run.call_args_list)
+
+        nonzero = root / "nonzero"
+        nonzero.mkdir()
+
+        def run_after_nonzero(
+            command: list[str], **kwargs: object
+        ) -> subprocess.CompletedProcess:
+            if command[0] == "rpm2cpio":
+                return subprocess.CompletedProcess(command, 1, stdout=b"cpio")
+            return run_7z(command, **kwargs)
+
+        with (
+            patch.object(shutil, "which", return_value="/fake/tool"),
+            patch.object(subprocess, "run", side_effect=run_after_nonzero) as run,
+        ):
+            extract_package(rpm, "rpm", nonzero)
+            assert [call.args[0][0] for call in run.call_args_list] == [
+                "rpm2cpio",
+                "7z",
+                "7z",
+            ]
         inventory = root / "inventory"
         inventory.mkdir()
         (inventory / "qualified-release.json").write_bytes(b"manifest")
