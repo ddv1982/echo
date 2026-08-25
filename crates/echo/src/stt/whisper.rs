@@ -389,29 +389,18 @@ fn command_for_runtime(binary: &Path, launch: Option<&WhisperRuntimeLaunch>) -> 
         return command;
     };
     for name in [
-        "LD_AUDIT",
         "LD_LIBRARY_PATH",
         "LD_PRELOAD",
-        "MESA_DISK_CACHE_COMBINE_RW_WITH_RO_FOZ",
-        "MESA_DISK_CACHE_DATABASE",
-        "MESA_DISK_CACHE_READ_ONLY_FOZ_DBS",
-        "MESA_DISK_CACHE_SINGLE_FILE",
         "MESA_SHADER_CACHE_DIR",
-        "MESA_SHADER_CACHE_DISABLE",
-        "MESA_SHADER_CACHE_MAX_SIZE",
-        "VK_ADD_DRIVER_FILES",
-        "VK_ADD_IMPLICIT_LAYER_PATH",
-        "VK_ADD_LAYER_PATH",
         "VK_DRIVER_FILES",
         "VK_ICD_FILENAMES",
-        "VK_IMPLICIT_LAYER_PATH",
-        "VK_INSTANCE_LAYERS",
-        "VK_LAYER_PATH",
-        "VK_LOADER_DEBUG",
-        "VK_LOADER_DRIVERS_DISABLE",
-        "VK_LOADER_DRIVERS_SELECT",
     ] {
         command.env_remove(name);
+    }
+    for (name, _) in std::env::vars_os() {
+        if is_inference_environment_selector(&name) {
+            command.env_remove(name);
+        }
     }
     if let Some(path) = &launch.library_dir {
         command.env("LD_LIBRARY_PATH", path);
@@ -423,6 +412,16 @@ fn command_for_runtime(binary: &Path, launch: Option<&WhisperRuntimeLaunch>) -> 
         command.env("MESA_SHADER_CACHE_DIR", path);
     }
     command
+}
+
+fn is_inference_environment_selector(name: &std::ffi::OsStr) -> bool {
+    let name = name.to_string_lossy().to_ascii_uppercase();
+    [
+        "LD_", "VK_", "MESA_", "DRI_", "LIBGL_", "GALLIUM_", "INTEL_", "AMD_", "RADV_", "NVIDIA_",
+        "__GL", "CUDA_", "ROCR_", "HIP_", "ONEAPI_", "SYCL_", "ZES_", "ZE_", "OPENCL_", "OCL_",
+    ]
+    .iter()
+    .any(|prefix| name.starts_with(prefix))
 }
 
 fn should_retry_without_vad(stderr: &str) -> bool {
@@ -701,6 +700,29 @@ mod tests {
             .get_envs()
             .next()
             .is_none());
+    }
+
+    #[test]
+    fn launch_contract_recognizes_loader_and_device_selector_namespaces() {
+        for name in [
+            "LD_DEBUG",
+            "MESA_VK_DEVICE_SELECT",
+            "DRI_PRIME",
+            "VK_LOADER_LAYERS_ENABLE",
+            "RADV_PERFTEST",
+            "__GLX_VENDOR_LIBRARY_NAME",
+            "CUDA_VISIBLE_DEVICES",
+        ] {
+            assert!(
+                is_inference_environment_selector(std::ffi::OsStr::new(name)),
+                "{name}"
+            );
+        }
+        for name in ["ECHO_MODEL_DIR", "LANG", "PATH"] {
+            assert!(!is_inference_environment_selector(std::ffi::OsStr::new(
+                name
+            )));
+        }
     }
 
     fn args_for_cache(dir: &Path) -> Vec<String> {

@@ -33,6 +33,9 @@ fn fake_whisper_proves_model_language_prompt_and_vad_retry_arguments() {
   printf 'BEGIN\n'
   printf 'ENV_LD=%s\n' "${LD_LIBRARY_PATH-unset}"
   printf 'ENV_VK=%s\n' "${VK_DRIVER_FILES-unset}"
+  printf 'ENV_MESA_DEVICE=%s\n' "${MESA_VK_DEVICE_SELECT-unset}"
+  printf 'ENV_DRI=%s\n' "${DRI_PRIME-unset}"
+  printf 'ENV_CUDA=%s\n' "${CUDA_VISIBLE_DEVICES-unset}"
   for arg in "$@"; do printf '%s\n' "$arg"; done
   printf 'END\n'
 } >> "$ECHO_ARGV_LOG"
@@ -82,6 +85,9 @@ printf '%s\n' 'whisper_full: auto-detected language: de (p = 0.958162)' >&2
         .env("ECHO_MODEL_DIR", &model_dir)
         .env("LD_LIBRARY_PATH", "/poison")
         .env("VK_DRIVER_FILES", "/poison.json")
+        .env("MESA_VK_DEVICE_SELECT", "8086:9a49!")
+        .env("DRI_PRIME", "1")
+        .env("CUDA_VISIBLE_DEVICES", "0")
         .output()
         .unwrap();
     assert!(
@@ -111,6 +117,9 @@ printf '%s\n' 'whisper_full: auto-detected language: de (p = 0.958162)' >&2
             "run={run}"
         );
         assert!(run.contains("ENV_VK=unset\n"), "run={run}");
+        assert!(run.contains("ENV_MESA_DEVICE=unset\n"), "run={run}");
+        assert!(run.contains("ENV_DRI=unset\n"), "run={run}");
+        assert!(run.contains("ENV_CUDA=unset\n"), "run={run}");
         assert!(!run.contains("clawed code"), "run={run}");
     }
     assert!(runs[0].contains("--vad\n"));

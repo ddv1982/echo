@@ -38,6 +38,7 @@ Excluded:
 - Qualification must reproduce the production child environment. Ambient `LD_LIBRARY_PATH` and loader variables are not evidence.
 - An accelerated failure permits one same-model managed CPU retry. The existing VAD retry remains inside each logical attempt.
 - The current Iris Xe identity remains stopped until every gate passes.
+- Phase 5 measurements made before the shared launcher are historical research evidence only. A promotable identity must be measured again through the current launch contract and Echo commit.
 
 ## Alternatives
 
