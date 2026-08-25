@@ -1487,10 +1487,12 @@ def summarize(
         "gates": gates,
         "decision": "proceed" if all(gates.values()) else "stop",
         "claimBoundary": (
-            "This warmed, populated-cache clean-read slice cannot satisfy production coverage "
-            "for dictation, silence, nonspeech, noise, fast speech, quiet speech, technical "
-            "identifiers, and false starts. Fresh-cache, reset-repeat, explicit driver/ICD, "
-            "other-hardware, Turbo, memory, power, and failure-path evidence also remain pending."
+            "This corpus binds every required language and product-speech class. It qualifies "
+            "CPU/Vulkan parity only for the exact measured identity, not general model quality. "
+            "Cache, reset, driver, and production selection remain separate bound gates."
+            if coverage_complete
+            else "This corpus does not bind every required language and product-speech class. "
+            "Missing coverage cannot authorize production acceleration."
         ),
     }
 
