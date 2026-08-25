@@ -9,6 +9,7 @@ import json
 import math
 import re
 import statistics
+import subprocess
 import sys
 import unicodedata
 from collections import defaultdict
@@ -24,6 +25,10 @@ PRODUCT_CLASSES = {
     "false-starts",
     "silence",
     "nonspeech",
+}
+SUPPORTED_LICENSES = {
+    "CC-BY-4.0": "https://creativecommons.org/licenses/by/4.0/",
+    "CC0-1.0": "https://creativecommons.org/publicdomain/zero/1.0/",
 }
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -271,6 +276,84 @@ def corpus_bindings(
     return value, bindings
 
 
+def normalized_provenance(
+    item: dict[str, object], source: dict[str, object] | None
+) -> dict[str, object] | None:
+    provenance = item.get("provenance")
+    if isinstance(provenance, dict):
+        return provenance
+    if source is None or not all(
+        field in item for field in ("sourceUrl", "sha256", "bytes")
+    ):
+        return None
+    return {
+        "sourceUrl": item["sourceUrl"],
+        "sourceSha256": item["sha256"],
+        "sourceBytes": item["bytes"],
+        "repository": source.get("repository"),
+        "revision": source.get("revision"),
+        "attribution": source.get("attribution"),
+        "license": {
+            "id": source.get("license"),
+            "url": source.get("licenseUrl"),
+        },
+    }
+
+
+def normalized_derivation(item: dict[str, object]) -> dict[str, object] | None:
+    derivation = item.get("derivation")
+    if isinstance(derivation, dict):
+        return derivation
+    digest = item.get("sha256")
+    if is_sha256(digest):
+        return {
+            "kind": "verbatim-copy",
+            "sourceSha256": digest,
+            "outputSha256": digest,
+        }
+    return None
+
+
+def admission_metadata(value: dict[str, object]) -> dict[str, object] | None:
+    source = value.get("source")
+    source_object = source if isinstance(source, dict) else None
+    coverage = value.get("coverage")
+    utterances = value.get("utterances")
+    if not isinstance(utterances, list):
+        return None
+    fixtures: dict[str, object] = {}
+    consent = value.get("consent")
+    contributor = value.get("contributor")
+    present = (
+        source_object is not None
+        or isinstance(coverage, dict)
+        or isinstance(consent, dict)
+        or isinstance(contributor, dict)
+    )
+    for raw in utterances:
+        if not isinstance(raw, dict) or not isinstance(raw.get("id"), str):
+            continue
+        fixture = {
+            "class": raw.get("class"),
+            "provenance": normalized_provenance(raw, source_object),
+            "derivation": normalized_derivation(raw),
+            "naturalClassEvidence": raw.get("naturalClassEvidence"),
+            "synthetic": raw.get("synthetic"),
+            "capture": raw.get("capture"),
+        }
+        present = present or any(value is not None for value in fixture.values())
+        fixtures[str(raw["id"])] = fixture
+    if not present:
+        return None
+    return {
+        "source": source_object,
+        "coverage": coverage,
+        "consent": consent,
+        "contributor": contributor,
+        "fixtures": fixtures,
+    }
+
+
 def validate_status_and_manifest(bundle_root: Path) -> dict[str, object]:
     status = require_object(
         read_json(bundle_root / "status.json", "status.json"), "status.json"
@@ -323,10 +406,16 @@ def candidate_configs(manifest: dict[str, object]) -> dict[str, dict[str, object
     return candidates
 
 
-def snapshot_fixtures(source: bytes, label: str) -> dict[str, dict[str, object]]:
+def snapshot_document(source: bytes, label: str) -> dict[str, object]:
     value = require_object(json.loads(source), label)
     if value.get("schemaVersion") != 1:
         raise ValueError(f"{label} schemaVersion must be 1")
+    return value
+
+
+def snapshot_fixtures(
+    value: dict[str, object], label: str
+) -> dict[str, dict[str, object]]:
     utterances = value.get("utterances")
     if not isinstance(utterances, list) or not utterances:
         raise ValueError(f"{label} must contain utterances")
@@ -347,8 +436,11 @@ def snapshot_fixtures(source: bytes, label: str) -> dict[str, dict[str, object]]
 
 
 def validate_corpus_snapshot(
-    bundle_root: Path, manifest: dict[str, object], bindings: dict[str, CorpusBinding]
-) -> dict[str, dict[str, object]]:
+    bundle_root: Path,
+    manifest: dict[str, object],
+    external_corpus: dict[str, object],
+    bindings: dict[str, CorpusBinding],
+) -> tuple[dict[str, dict[str, object]], dict[str, object]]:
     corpus = require_object(manifest.get("corpus"), "run-manifest.corpus")
     _snapshot, snapshot_contents = safe_artifact_file(
         bundle_root,
@@ -356,7 +448,8 @@ def validate_corpus_snapshot(
         "run-manifest.corpus.snapshot",
         require_bytes=False,
     )
-    snapshot = snapshot_fixtures(snapshot_contents, "run bundle corpus snapshot")
+    snapshot_corpus = snapshot_document(snapshot_contents, "run bundle corpus snapshot")
+    snapshot = snapshot_fixtures(snapshot_corpus, "run bundle corpus snapshot")
     if set(snapshot) != set(bindings):
         raise ValueError(
             "run bundle corpus snapshot fixture IDs do not match --corpus-manifest"
@@ -370,13 +463,21 @@ def validate_corpus_snapshot(
             raise ValueError(
                 f"run bundle corpus snapshot fixture mismatch: {identifier}"
             )
+    if admission_metadata(external_corpus) != admission_metadata(snapshot_corpus):
+        raise ValueError(
+            "external corpus coverage, class, source, license, provenance, or "
+            "derivation metadata does not match the immutable bundle snapshot"
+        )
     source_path = recorded_path(
         corpus.get("sourcePath"), "run-manifest.corpus.sourcePath"
     )
     source_fixtures: dict[str, dict[str, object]] | None = None
     if source_path.is_file():
-        source_fixtures = snapshot_fixtures(
+        source_document = snapshot_document(
             source_path.read_bytes(), "run-manifest.corpus.sourcePath"
+        )
+        source_fixtures = snapshot_fixtures(
+            source_document, "run-manifest.corpus.sourcePath"
         )
         if set(source_fixtures) != set(snapshot):
             raise ValueError("run source fixture IDs do not match the bundled snapshot")
@@ -387,6 +488,10 @@ def validate_corpus_snapshot(
                 for field in ("language", "reference", "file")
             ):
                 raise ValueError(f"run source fixture mismatch: {identifier}")
+        if admission_metadata(source_document) != admission_metadata(snapshot_corpus):
+            raise ValueError(
+                "run source admission metadata differs from bundle snapshot"
+            )
     raw_fixtures = corpus.get("utterances")
     if not isinstance(raw_fixtures, list) or len(raw_fixtures) != len(bindings):
         raise ValueError("run-manifest corpus fixtures do not match --corpus-manifest")
@@ -436,12 +541,28 @@ def validate_corpus_snapshot(
                 raise ValueError(
                     f"run source fixture audio path mismatch: {identifier}"
                 )
+        for field in (
+            "class",
+            "provenance",
+            "derivation",
+            "naturalClassEvidence",
+            "synthetic",
+            "capture",
+            "bytes",
+            "sha256",
+        ):
+            if field in snapshot[identifier] and fixture.get(field) != snapshot[
+                identifier
+            ].get(field):
+                raise ValueError(
+                    f"run-manifest fixture {field} differs from bundle snapshot: {identifier}"
+                )
         fixtures[identifier] = fixture
     if set(fixtures) != set(bindings):
         raise ValueError(
             "run-manifest corpus fixture IDs do not match --corpus-manifest"
         )
-    return fixtures
+    return fixtures, snapshot_corpus
 
 
 def command_for_candidate(
@@ -642,9 +763,7 @@ def replay_artifact(
         driver = launch_override.get("vulkanDriverFiles")
         if driver is not None:
             driver = require_object(driver, f"{label} launch Vulkan driver")
-            verify_identity(
-                driver, f"{label} launch Vulkan driver", digest_cache
-            )
+            verify_identity(driver, f"{label} launch Vulkan driver", digest_cache)
             if not same_recorded_path(
                 runtime_telemetry.get("vulkanDriverFiles"),
                 driver.get("path"),
@@ -697,13 +816,30 @@ def verify_bundle(
         raise ValueError("--runs must name a runs.jsonl file in its Phase 1 bundle")
     bundle_root = runs_path.resolve().parent
     manifest = validate_status_and_manifest(bundle_root)
-    corpus, bindings = corpus_bindings(corpus_manifest.resolve())
-    fixtures = validate_corpus_snapshot(bundle_root, manifest, bindings)
+    external_corpus, bindings = corpus_bindings(corpus_manifest.resolve())
+    fixtures, bundled_corpus = validate_corpus_snapshot(
+        bundle_root, manifest, external_corpus, bindings
+    )
     candidates = candidate_configs(manifest)
     repeats = require_int(manifest.get("repeats"), "run-manifest.repeats", 1)
     warmups = require_int(manifest.get("warmups"), "run-manifest.warmups")
     seed = require_int(manifest.get("seed"), "run-manifest.seed")
     echo = require_object(manifest.get("echo"), "run-manifest.echo")
+    admission_identity = manifest.get("admissionIdentity")
+    if admission_identity is not None:
+        admission_identity = require_object(
+            admission_identity, "run-manifest.admissionIdentity"
+        )
+        if not re.fullmatch(
+            r"[0-9a-f]{40}",
+            require_string(
+                admission_identity.get("echoCommit"),
+                "run-manifest.admissionIdentity.echoCommit",
+            ),
+        ):
+            raise ValueError("admission Echo commit must be a full commit")
+        if not is_sha256(admission_identity.get("echoBinarySha256")):
+            raise ValueError("admission Echo binary digest must be a SHA-256")
     host = require_object(manifest.get("host"), "run-manifest.host")
     binary = require_object(manifest.get("binary"), "run-manifest.binary")
     launch_override = manifest.get("launchOverride")
@@ -891,6 +1027,7 @@ def verify_bundle(
                 "echoBinary": verify_identity(
                     binary, "run-manifest.binary", digest_cache
                 ),
+                "admissionIdentity": admission_identity,
                 "host": host,
                 "seed": seed,
                 "cacheState": manifest.get("cacheState"),
@@ -913,7 +1050,7 @@ def verify_bundle(
         raise ValueError(
             "measurement rows do not provide exact candidate/fixture/repeat coverage"
         )
-    return rows, corpus
+    return rows, bundled_corpus
 
 
 def percentile(values: list[float], fraction: float) -> float:
@@ -1018,6 +1155,47 @@ def execution_identity_complete(row: dict[str, object]) -> bool:
     )
 
 
+def current_echo_checkout() -> tuple[str | None, bool]:
+    try:
+        commit = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        dirty = bool(
+            subprocess.run(
+                ["git", "-C", str(REPO_ROOT), "status", "--porcelain"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+        )
+        return commit, dirty
+    except (OSError, subprocess.SubprocessError):
+        return None, True
+
+
+def admission_identity_matches(
+    rows: list[dict[str, object]], current_commit: str | None, current_dirty: bool
+) -> bool:
+    if current_dirty or current_commit is None:
+        return False
+    for row in rows:
+        admission = row.get("admissionIdentity")
+        binary = row.get("echoBinary")
+        if (
+            not isinstance(admission, dict)
+            or not isinstance(binary, dict)
+            or row.get("echoDirty") is not False
+            or row.get("echoCommit") != current_commit
+            or admission.get("echoCommit") != current_commit
+            or admission.get("echoBinarySha256") != binary.get("sha256")
+        ):
+            return False
+    return True
+
+
 def coverage_complete(corpus: dict[str, object]) -> bool:
     coverage = corpus.get("coverage")
     utterances = corpus.get("utterances")
@@ -1026,6 +1204,7 @@ def coverage_complete(corpus: dict[str, object]) -> bool:
     pending = coverage.get("pending")
     required_languages = coverage.get("requiredLanguages")
     required_classes = coverage.get("requiredClasses")
+    required_bindings = coverage.get("requiredBindings")
     if not isinstance(pending, list) or pending:
         return False
     if (
@@ -1037,16 +1216,94 @@ def coverage_complete(corpus: dict[str, object]) -> bool:
     if (
         not isinstance(required_classes, list)
         or not all(isinstance(value, str) and value for value in required_classes)
-        or not PRODUCT_CLASSES.issubset(required_classes)
+        or set(required_classes) != PRODUCT_CLASSES
+    ):
+        return False
+    if not isinstance(required_bindings, list) or not required_bindings:
+        return False
+    declared_bindings: dict[str, tuple[str, str]] = {}
+    for binding in required_bindings:
+        if not isinstance(binding, dict):
+            return False
+        identifier = binding.get("id")
+        language = binding.get("language")
+        fixture_class = binding.get("class")
+        if (
+            not isinstance(identifier, str)
+            or not identifier
+            or not isinstance(language, str)
+            or not isinstance(fixture_class, str)
+            or not fixture_class
+            or identifier in declared_bindings
+        ):
+            return False
+        declared_bindings[identifier] = (language, fixture_class)
+    if (
+        {language for language, _fixture_class in declared_bindings.values()}
+        != set(required_languages)
+        or {
+            fixture_class
+            for _language, fixture_class in declared_bindings.values()
+            if fixture_class in PRODUCT_CLASSES
+        }
+        != set(required_classes)
+        or any(
+            language not in required_languages
+            for language, _fixture_class in declared_bindings.values()
+        )
+    ):
+        return False
+    source = corpus.get("source")
+    if not isinstance(source, dict):
+        return False
+    license_id = source.get("license")
+    if (
+        not isinstance(license_id, str)
+        or SUPPORTED_LICENSES.get(license_id) != source.get("licenseUrl")
+        or not isinstance(source.get("attribution"), str)
+        or not source["attribution"]
     ):
         return False
     if len(utterances) < 20 or not all(isinstance(item, dict) for item in utterances):
         return False
-    present_languages = {item.get("language") for item in utterances}
-    present_classes = {item.get("class") for item in utterances}
-    return set(required_languages).issubset(present_languages) and set(
-        required_classes
-    ).issubset(present_classes)
+    observed_bindings: dict[str, tuple[object, object]] = {}
+    for item in utterances:
+        assert isinstance(item, dict)
+        identifier = item.get("id")
+        if not isinstance(identifier, str) or identifier in observed_bindings:
+            return False
+        fixture_class = item.get("class")
+        observed_bindings[identifier] = (item.get("language"), fixture_class)
+        if fixture_class in PRODUCT_CLASSES:
+            natural = item.get("naturalClassEvidence")
+            synthetic = item.get("synthetic")
+            if fixture_class in {"noise", "silence"}:
+                if (natural, synthetic) not in {(True, False), (False, True)}:
+                    return False
+            elif natural is not True or synthetic is not False:
+                return False
+        provenance = normalized_provenance(item, source)
+        derivation = normalized_derivation(item)
+        if not isinstance(provenance, dict) or not isinstance(derivation, dict):
+            return False
+        license_record = provenance.get("license")
+        if (
+            not isinstance(license_record, dict)
+            or SUPPORTED_LICENSES.get(str(license_record.get("id")))
+            != license_record.get("url")
+            or not is_sha256(provenance.get("sourceSha256"))
+            or not isinstance(provenance.get("sourceUrl"), str)
+            or not provenance["sourceUrl"]
+            or not isinstance(provenance.get("attribution"), str)
+            or not provenance["attribution"]
+            or not isinstance(derivation.get("kind"), str)
+            or not derivation["kind"]
+            or derivation.get("sourceSha256") != provenance.get("sourceSha256")
+            or not is_sha256(item.get("sha256"))
+            or derivation.get("outputSha256") != item.get("sha256")
+        ):
+            return False
+    return all(observed_bindings.get(identifier) == binding for identifier, binding in declared_bindings.items())
 
 
 def summarize(
@@ -1171,6 +1428,10 @@ def summarize(
         and cpu_identities == accelerated_identities
         and all(execution_identity_complete(row) for row in selected_rows)
     )
+    current_commit, current_dirty = current_echo_checkout()
+    identity_match = identity_match and admission_identity_matches(
+        selected_rows, current_commit, current_dirty
+    )
     hardware_device = (
         bool(devices)
         and all(
@@ -1280,6 +1541,89 @@ def render(summary: dict[str, object]) -> str:
 
 
 def self_test() -> None:
+    source = {
+        "license": "CC0-1.0",
+        "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+        "attribution": "Echo test contributor",
+    }
+    required_bindings = [
+        {
+            "id": f"fixture-{fixture_class}",
+            "language": "en",
+            "class": fixture_class,
+        }
+        for fixture_class in sorted(PRODUCT_CLASSES)
+    ]
+    admission_corpus = {
+        "source": source,
+        "coverage": {
+            "pending": [],
+            "requiredLanguages": ["en"],
+            "requiredClasses": sorted(PRODUCT_CLASSES),
+            "requiredBindings": required_bindings,
+        },
+        "utterances": [
+            {
+                "id": f"fixture-{fixture_class}",
+                "language": "en",
+                "class": fixture_class,
+                "sha256": (
+                    "b" * 64 if fixture_class in {"noise", "silence"} else "a" * 64
+                ),
+                "naturalClassEvidence": fixture_class not in {"noise", "silence"},
+                "synthetic": fixture_class in {"noise", "silence"},
+                "provenance": {
+                    "sourceUrl": "project://echo/self-test",
+                    "attribution": "Echo test contributor",
+                    "sourceSha256": "a" * 64,
+                    "license": {
+                        "id": "CC0-1.0",
+                        "url": "https://creativecommons.org/publicdomain/zero/1.0/",
+                    },
+                },
+                "derivation": {
+                    "kind": "verbatim-copy",
+                    "sourceSha256": "a" * 64,
+                    "outputSha256": (
+                        "b" * 64
+                        if fixture_class in {"noise", "silence"}
+                        else "a" * 64
+                    ),
+                },
+            }
+            for fixture_class in sorted(PRODUCT_CLASSES)
+        ]
+        + [
+            {
+                "id": f"clean-{index}",
+                "language": "en",
+                "class": "clean-read",
+                "sha256": "c" * 64,
+                "provenance": {
+                    "sourceUrl": "https://example.com/clean.wav",
+                    "attribution": "Clean fixture author",
+                    "sourceSha256": "c" * 64,
+                    "license": {
+                        "id": "CC0-1.0",
+                        "url": "https://creativecommons.org/publicdomain/zero/1.0/",
+                    },
+                },
+                "derivation": {
+                    "kind": "verbatim-copy",
+                    "sourceSha256": "c" * 64,
+                    "outputSha256": "c" * 64,
+                },
+            }
+            for index in range(12)
+        ],
+    }
+    assert coverage_complete(admission_corpus)
+    unsupported = json.loads(json.dumps(admission_corpus))
+    unsupported["source"]["license"] = "unknown"
+    assert not coverage_complete(unsupported)
+    missing_binding = json.loads(json.dumps(admission_corpus))
+    missing_binding["coverage"]["requiredBindings"].pop()
+    assert not coverage_complete(missing_binding)
     rows = []
     for reset_cycle in ("before-reset", "after-reset"):
         for cache_state in ("fresh", "populated"):

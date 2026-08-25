@@ -115,6 +115,46 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def validate_echo_boundary(
+    binary: Path,
+    expected_commit: str,
+    expected_binary_sha256: str,
+    *,
+    repo_root: Path = REPO_ROOT,
+    include_untracked: bool = True,
+) -> dict[str, str]:
+    if re.fullmatch(r"[0-9a-f]{40}", expected_commit) is None:
+        raise ValueError("expected Echo commit must be a full hexadecimal commit")
+    if SHA256_PATTERN.fullmatch(expected_binary_sha256) is None:
+        raise ValueError("expected Echo binary SHA-256 must be hexadecimal")
+    actual_commit = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    status_command = ["git", "-C", str(repo_root), "status", "--porcelain"]
+    if not include_untracked:
+        status_command.append("--untracked-files=no")
+    dirty = subprocess.run(
+        status_command,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if dirty:
+        raise ValueError("dirty Echo checkout cannot satisfy admission")
+    if actual_commit != expected_commit:
+        raise ValueError("current Echo commit does not match --expected-echo-commit")
+    actual_binary_sha256 = sha256(binary)
+    if actual_binary_sha256 != expected_binary_sha256:
+        raise ValueError("Echo binary does not match --expected-echo-binary-sha256")
+    return {
+        "echoCommit": actual_commit,
+        "echoBinarySha256": actual_binary_sha256,
+    }
+
+
 def product_runtime_identity(cli: Path) -> str:
     libraries: set[Path] = set()
     for path in cli.parent.iterdir():
@@ -477,15 +517,24 @@ def exact_runtime_gate(
             if telemetry.get("identitySha256") != product_runtime_identity(
                 expected_runtime.cli
             ):
-                return False, "effective child runtime identity differs from selected runtime"
+                return (
+                    False,
+                    "effective child runtime identity differs from selected runtime",
+                )
             launch_paths = {
                 "libraryPath": expected_runtime.root,
                 "vulkanDriverFiles": expected_driver,
                 "mesaShaderCacheDir": expected_cache,
             }
             for name, expected in launch_paths.items():
-                if recorded_path(telemetry.get(name), name).resolve() != expected.resolve():
-                    return False, f"effective child {name} differs from the launch contract"
+                if (
+                    recorded_path(telemetry.get(name), name).resolve()
+                    != expected.resolve()
+                ):
+                    return (
+                        False,
+                        f"effective child {name} differs from the launch contract",
+                    )
             artifact = row.get("observationArtifact")
             if not isinstance(artifact, dict):
                 return False, "measurement row has no raw observation artifact"
@@ -498,11 +547,11 @@ def exact_runtime_gate(
                 "ECHO_MODEL_DIR",
             ):
                 if environment.get(name) != expected_environment[name]:
-                    return False, f"benchmark parent environment has a stale or ambient {name}"
-            if any(
-                name.startswith(ENVIRONMENT_RESET_PREFIXES)
-                for name in environment
-            ):
+                    return (
+                        False,
+                        f"benchmark parent environment has a stale or ambient {name}",
+                    )
+            if any(name.startswith(ENVIRONMENT_RESET_PREFIXES) for name in environment):
                 return (
                     False,
                     "benchmark parent contains an inherited loader or cache variable",
@@ -710,6 +759,10 @@ def run_cell(
             sha256(args.vk_driver_files),
             "--output-dir",
             str(bundle_root),
+            "--expected-echo-commit",
+            args.expected_echo_commit,
+            "--expected-echo-binary-sha256",
+            args.expected_echo_binary_sha256,
             "--whisper-vulkan-driver-files",
             str(args.vk_driver_files),
             "--whisper-mesa-shader-cache-dir",
@@ -831,6 +884,13 @@ def run_cell(
                 "noFallback": cell.no_fallback,
             },
             "identity": {
+                "echo": {
+                    "commit": args.expected_echo_commit,
+                    "binary": {
+                        "path": str(args.echo_binary),
+                        "sha256": args.expected_echo_binary_sha256,
+                    },
+                },
                 "runtime": {"path": str(runtime.cli), "sha256": runtime.sha256},
                 "model": {
                     "path": str(args.model_path),
@@ -1050,6 +1110,11 @@ def run_sweep(args: argparse.Namespace) -> int:
     ):
         if not path.is_file():
             raise ValueError(f"{label} is missing: {path}")
+    validate_echo_boundary(
+        args.echo_binary,
+        args.expected_echo_commit,
+        args.expected_echo_binary_sha256,
+    )
     if args.threads < 1 or args.repeats < 1 or args.warmups < 0 or args.timeout < 1:
         raise ValueError(
             "threads, repeats, timeout must be positive; warmups must be non-negative"
@@ -1267,6 +1332,50 @@ def self_test() -> None:
         )
         assert not exact
     assert admission_decision("v1.9.3", baseline_research, baseline_bindings) == "STOP"
+    with tempfile.TemporaryDirectory(prefix="echo-sweep-boundary-") as temporary:
+        root = Path(temporary)
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        subprocess.run(
+            ["git", "-C", str(root), "config", "user.email", "test@example.com"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(root), "config", "user.name", "Echo Test"],
+            check=True,
+        )
+        binary = root / "echo"
+        binary.write_bytes(b"echo binary")
+        subprocess.run(["git", "-C", str(root), "add", "echo"], check=True)
+        subprocess.run(["git", "-C", str(root), "commit", "-qm", "fixture"], check=True)
+        commit = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        identity = validate_echo_boundary(
+            binary, commit, sha256(binary), repo_root=root
+        )
+        assert identity["echoCommit"] == commit
+        for wrong_commit, wrong_digest in (
+            ("0" * 40, sha256(binary)),
+            (commit, "0" * 64),
+        ):
+            try:
+                validate_echo_boundary(
+                    binary, wrong_commit, wrong_digest, repo_root=root
+                )
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("wrong Echo admission identity was accepted")
+        (root / "dirty.txt").write_text("dirty", encoding="utf-8")
+        try:
+            validate_echo_boundary(binary, commit, sha256(binary), repo_root=root)
+        except ValueError as error:
+            assert "dirty Echo checkout" in str(error)
+        else:
+            raise AssertionError("dirty Echo checkout was accepted")
     print("sweep-whisper-admission: self-test ok")
 
 
@@ -1274,6 +1383,8 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--self-test", action="store_true")
     result.add_argument("--echo-binary", type=Path)
+    result.add_argument("--expected-echo-commit")
+    result.add_argument("--expected-echo-binary-sha256")
     result.add_argument("--fixture-manifest", type=Path)
     result.add_argument("--coverage-manifest", type=Path)
     result.add_argument("--model-name")
@@ -1310,6 +1421,8 @@ def main() -> int:
         return 0
     required = (
         "echo_binary",
+        "expected_echo_commit",
+        "expected_echo_binary_sha256",
         "fixture_manifest",
         "coverage_manifest",
         "model_name",

@@ -41,16 +41,26 @@ def load_manifest(path: Path) -> dict[str, object]:
     if value.get("schemaVersion") != 1:
         raise ValueError("corpus manifest schemaVersion must be 1")
     source = value.get("source")
+    coverage = value.get("coverage")
     utterances = value.get("utterances")
-    if not isinstance(source, dict) or not isinstance(utterances, list) or not utterances:
-        raise ValueError("corpus manifest needs source and non-empty utterances")
+    if (
+        not isinstance(source, dict)
+        or not isinstance(coverage, dict)
+        or not isinstance(utterances, list)
+        or not utterances
+    ):
+        raise ValueError(
+            "corpus manifest needs source, coverage, and non-empty utterances"
+        )
     revision = source.get("revision")
     allowed_hosts = source.get("allowedHosts")
     redirect_host_suffixes = source.get("redirectAllowedHostSuffixes", [])
     if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision):
         raise ValueError("source revision must be a full hexadecimal commit")
-    if not isinstance(allowed_hosts, list) or not allowed_hosts or not all(
-        isinstance(host, str) and host for host in allowed_hosts
+    if (
+        not isinstance(allowed_hosts, list)
+        or not allowed_hosts
+        or not all(isinstance(host, str) and host for host in allowed_hosts)
     ):
         raise ValueError("source allowedHosts must be a non-empty string array")
     if not isinstance(redirect_host_suffixes, list) or not all(
@@ -66,7 +76,10 @@ def load_manifest(path: Path) -> dict[str, object]:
         "127.0.0.1",
         "localhost",
     }
-    if not (repository.scheme == "https" or repository_local_http) or not repository.hostname:
+    if (
+        not (repository.scheme == "https" or repository_local_http)
+        or not repository.hostname
+    ):
         raise ValueError("source repository must use HTTPS")
     repository_path = repository.path.rstrip("/")
     seen = set()
@@ -76,6 +89,7 @@ def load_manifest(path: Path) -> dict[str, object]:
             raise ValueError("each corpus utterance must be an object")
         identifier = item.get("id")
         language = item.get("language")
+        fixture_class = item.get("class")
         reference = item.get("reference")
         url = item.get("sourceUrl")
         digest = item.get("sha256")
@@ -84,8 +98,13 @@ def load_manifest(path: Path) -> dict[str, object]:
             raise ValueError(f"invalid utterance id: {identifier}")
         if identifier in seen:
             raise ValueError(f"duplicate utterance id: {identifier}")
-        if not all(isinstance(field, str) and field for field in [language, reference, url]):
-            raise ValueError(f"{identifier} needs language, reference, and sourceUrl")
+        if not all(
+            isinstance(field, str) and field
+            for field in [language, fixture_class, reference, url]
+        ):
+            raise ValueError(
+                f"{identifier} needs language, class, reference, and sourceUrl"
+            )
         parsed = urlparse(url)
         allowed_scheme = parsed.scheme == "https" or (
             parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost"}
@@ -95,7 +114,9 @@ def load_manifest(path: Path) -> dict[str, object]:
         if parsed.hostname not in allowed_hosts:
             raise ValueError(f"{identifier} source host is not allowed")
         expected_prefix = f"{repository_path}/resolve/{revision}/"
-        if parsed.hostname != repository.hostname or not parsed.path.startswith(expected_prefix):
+        if parsed.hostname != repository.hostname or not parsed.path.startswith(
+            expected_prefix
+        ):
             raise ValueError(
                 f"{identifier} sourceUrl must resolve the declared repository revision"
             )
@@ -112,7 +133,11 @@ def load_manifest(path: Path) -> dict[str, object]:
 
 def verify_wav(path: Path) -> None:
     with wave.open(str(path), "rb") as audio:
-        if (audio.getframerate(), audio.getnchannels(), audio.getsampwidth()) != (16000, 1, 2):
+        if (audio.getframerate(), audio.getnchannels(), audio.getsampwidth()) != (
+            16000,
+            1,
+            2,
+        ):
             raise ValueError(f"audio must be 16 kHz mono PCM16: {path}")
         if audio.getnframes() == 0:
             raise ValueError(f"audio has no frames: {path}")
@@ -142,12 +167,18 @@ def fetch_one(
     temporary_name = ""
     try:
         with tempfile.NamedTemporaryFile(
-            mode="wb", prefix=f".{identifier}.", suffix=".tmp", dir=output_dir, delete=False
+            mode="wb",
+            prefix=f".{identifier}.",
+            suffix=".tmp",
+            dir=output_dir,
+            delete=False,
         ) as temporary:
             temporary_name = temporary.name
             digest = hashlib.sha256()
             downloaded = 0
-            with urllib.request.urlopen(str(item["sourceUrl"]), timeout=120) as response:
+            with urllib.request.urlopen(
+                str(item["sourceUrl"]), timeout=120
+            ) as response:
                 final = urlparse(response.geturl())
                 local_http = final.scheme == "http" and final.hostname in {
                     "127.0.0.1",
@@ -156,8 +187,12 @@ def fetch_one(
                 if not (final.scheme == "https" or local_http) or not host_allowed(
                     final.hostname, allowed_hosts, redirect_host_suffixes
                 ):
-                    raise ValueError(f"{identifier} redirected to a disallowed source host")
-                while chunk := response.read(min(1024 * 1024, expected_size + 1 - downloaded)):
+                    raise ValueError(
+                        f"{identifier} redirected to a disallowed source host"
+                    )
+                while chunk := response.read(
+                    min(1024 * 1024, expected_size + 1 - downloaded)
+                ):
                     downloaded += len(chunk)
                     if downloaded > expected_size:
                         raise ValueError(f"{identifier} byte size mismatch")
@@ -198,10 +233,35 @@ def run_fetch(manifest_path: Path, output_dir: Path) -> None:
                     "id": item["id"],
                     "file": audio.name,
                     "language": item["language"],
+                    "class": item["class"],
                     "reference": item["reference"],
+                    "bytes": item["bytes"],
+                    "sha256": item["sha256"],
+                    "provenance": {
+                        "sourceUrl": item["sourceUrl"],
+                        "sourceSha256": item["sha256"],
+                        "sourceBytes": item["bytes"],
+                        "repository": source["repository"],
+                        "revision": source["revision"],
+                        "attribution": source["attribution"],
+                        "license": {
+                            "id": source["license"],
+                            "url": source["licenseUrl"],
+                        },
+                    },
+                    "derivation": {
+                        "kind": "verbatim-copy",
+                        "sourceSha256": item["sha256"],
+                        "outputSha256": item["sha256"],
+                    },
                 }
             )
-        benchmark = {"schemaVersion": 1, "utterances": fixtures}
+        benchmark = {
+            "schemaVersion": 1,
+            "source": source,
+            "coverage": manifest["coverage"],
+            "utterances": fixtures,
+        }
         write_atomic(
             output_dir / "fixtures.json",
             (json.dumps(benchmark, indent=2, ensure_ascii=False) + "\n").encode(),
@@ -284,10 +344,17 @@ def self_test() -> None:
                     "homepage": "https://example.com",
                     "repository": f"http://127.0.0.1:{server.server_port}/repo",
                 },
+                "coverage": {
+                    "included": ["test"],
+                    "requiredLanguages": ["en"],
+                    "requiredClasses": ["dictation"],
+                    "pending": ["dictation"],
+                },
                 "utterances": [
                     {
                         "id": "test_en",
                         "language": "en",
+                        "class": "dictation",
                         "reference": "test",
                         "sourceUrl": (
                             f"http://127.0.0.1:{server.server_port}/repo/resolve/"
@@ -319,11 +386,24 @@ def self_test() -> None:
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             output = root / "output"
             run_fetch(manifest_path, output)
-            assert json.loads((output / "status.json").read_text())["state"] == "complete"
-            assert json.loads((output / "fixtures.json").read_text())["utterances"][0]["id"] == "test_en"
+            assert (
+                json.loads((output / "status.json").read_text())["state"] == "complete"
+            )
+            fetched = json.loads((output / "fixtures.json").read_text())
+            fixture = fetched["utterances"][0]
+            assert fixture["id"] == "test_en" and fixture["class"] == "dictation"
+            assert fetched["coverage"] == manifest["coverage"]
+            assert fixture["provenance"]["license"]["id"] == "CC0"
+            assert (
+                fixture["derivation"]["outputSha256"]
+                == fixture["provenance"]["sourceSha256"]
+            )
             (output / "test_en.wav").write_bytes(b"corrupt")
             run_fetch(manifest_path, output)
-            assert sha256_bytes((output / "test_en.wav").read_bytes()) == manifest["utterances"][0]["sha256"]
+            assert (
+                sha256_bytes((output / "test_en.wav").read_bytes())
+                == manifest["utterances"][0]["sha256"]
+            )
             manifest["utterances"][0]["sha256"] = "0" * 64
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
             try:

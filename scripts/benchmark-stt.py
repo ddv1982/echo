@@ -88,7 +88,9 @@ def write_atomic(path: Path, value: bytes) -> None:
 def write_json_atomic(path: Path, value: object) -> None:
     write_atomic(
         path,
-        (json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8"),
+        (json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode(
+            "utf-8"
+        ),
     )
 
 
@@ -171,12 +173,57 @@ def verify_all_utterances_unchanged(utterances: list[dict[str, object]]) -> None
         verify_utterance_unchanged(utterance)
 
 
+def git_output(*arguments: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(REPO_ROOT), *arguments],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def validate_expected_echo_identity(
+    binary: Path,
+    expected_commit: str | None,
+    expected_binary_sha256: str | None,
+    *,
+    include_untracked: bool,
+) -> dict[str, str] | None:
+    if expected_commit is None and expected_binary_sha256 is None:
+        return None
+    if expected_commit is None or expected_binary_sha256 is None:
+        raise ValueError(
+            "expected Echo commit and binary SHA-256 must be supplied together"
+        )
+    if re.fullmatch(r"[0-9a-f]{40}", expected_commit) is None:
+        raise ValueError("expected Echo commit must be a full hexadecimal commit")
+    if re.fullmatch(r"[0-9a-f]{64}", expected_binary_sha256) is None:
+        raise ValueError("expected Echo binary SHA-256 must be hexadecimal")
+    actual_commit = git_output("rev-parse", "HEAD")
+    if actual_commit != expected_commit:
+        raise ValueError("current Echo commit does not match the expected commit")
+    status_arguments = ["status", "--porcelain"]
+    if not include_untracked:
+        status_arguments.append("--untracked-files=no")
+    if git_output(*status_arguments):
+        raise ValueError("dirty Echo checkout cannot produce admission evidence")
+    actual_binary_sha256 = sha256(binary)
+    if actual_binary_sha256 != expected_binary_sha256:
+        raise ValueError("Echo binary does not match the expected SHA-256")
+    return {
+        "echoCommit": actual_commit,
+        "echoBinarySha256": actual_binary_sha256,
+    }
+
+
 @contextlib.contextmanager
 def interruption_handler() -> object:
     def interrupt(signum: int, _frame: object) -> None:
         raise BenchmarkInterrupted(f"interrupted by {signal.Signals(signum).name}")
 
-    originals = {signum: signal.getsignal(signum) for signum in (signal.SIGINT, signal.SIGTERM)}
+    originals = {
+        signum: signal.getsignal(signum) for signum in (signal.SIGINT, signal.SIGTERM)
+    }
     try:
         for signum in originals:
             signal.signal(signum, interrupt)
@@ -266,11 +313,18 @@ def parse_candidate(raw: str) -> Candidate:
                 if key in {"no-fallback", "cpu-only"} and not value_separator:
                     values[key] = True
                     continue
-                if key not in {"threads", "beam", "best-of", "no-fallback"} or not value_separator:
-                    raise argparse.ArgumentTypeError(f"invalid Whisper candidate option: {entry}")
+                if (
+                    key not in {"threads", "beam", "best-of", "no-fallback"}
+                    or not value_separator
+                ):
+                    raise argparse.ArgumentTypeError(
+                        f"invalid Whisper candidate option: {entry}"
+                    )
                 if key == "no-fallback":
                     if value not in {"true", "false"}:
-                        raise argparse.ArgumentTypeError("no-fallback must be true or false")
+                        raise argparse.ArgumentTypeError(
+                            "no-fallback must be true or false"
+                        )
                     if value == "false":
                         raise argparse.ArgumentTypeError(
                             "omit no-fallback to keep the runtime fallback default"
@@ -280,7 +334,9 @@ def parse_candidate(raw: str) -> Candidate:
                 try:
                     parsed = int(value)
                 except ValueError as error:
-                    raise argparse.ArgumentTypeError(f"{key} must be an integer") from error
+                    raise argparse.ArgumentTypeError(
+                        f"{key} must be an integer"
+                    ) from error
                 if parsed < 1:
                     raise argparse.ArgumentTypeError(f"{key} must be at least 1")
                 values[key] = parsed
@@ -321,8 +377,13 @@ def load_manifest(path: Path, source: bytes | None = None) -> list[dict[str, obj
         relative_file = item.get("file")
         language = item.get("language")
         reference = item.get("reference")
-        if not all(isinstance(field, str) for field in [identifier, relative_file, language, reference]):
-            raise ValueError("utterance id, file, language, and reference must be strings")
+        if not all(
+            isinstance(field, str)
+            for field in [identifier, relative_file, language, reference]
+        ):
+            raise ValueError(
+                "utterance id, file, language, and reference must be strings"
+            )
         if identifier in seen:
             raise ValueError(f"duplicate utterance id: {identifier}")
         if language in CHARACTER_ERROR_LANGUAGES and reference.strip():
@@ -333,6 +394,20 @@ def load_manifest(path: Path, source: bytes | None = None) -> list[dict[str, obj
         audio = (path.parent / relative_file).resolve()
         if not audio.is_file():
             raise ValueError(f"audio fixture is missing: {audio}")
+        preserved = {
+            key: item[key]
+            for key in (
+                "class",
+                "provenance",
+                "derivation",
+                "naturalClassEvidence",
+                "synthetic",
+                "capture",
+                "bytes",
+                "sha256",
+            )
+            if key in item
+        }
         utterances.append(
             {
                 "id": identifier,
@@ -340,6 +415,7 @@ def load_manifest(path: Path, source: bytes | None = None) -> list[dict[str, obj
                 "language": language,
                 "reference": reference,
                 "audioSha256": sha256(audio),
+                **preserved,
             }
         )
     if not utterances:
@@ -354,7 +430,9 @@ def command_for(
     vulkan_driver_files: Path | None = None,
     mesa_shader_cache_dir: Path | None = None,
 ) -> list[str]:
-    requested_language = "auto" if candidate.engine == "parakeet" else str(utterance["language"])
+    requested_language = (
+        "auto" if candidate.engine == "parakeet" else str(utterance["language"])
+    )
     command = [
         str(binary),
         "transcribe",
@@ -380,13 +458,9 @@ def command_for(
     if candidate.force_cpu:
         command.append("--whisper-no-gpu")
     if candidate.engine == "whisper" and vulkan_driver_files is not None:
-        command.extend(
-            ["--whisper-vulkan-driver-files", str(vulkan_driver_files)]
-        )
+        command.extend(["--whisper-vulkan-driver-files", str(vulkan_driver_files)])
     if candidate.engine == "whisper" and mesa_shader_cache_dir is not None:
-        command.extend(
-            ["--whisper-mesa-shader-cache-dir", str(mesa_shader_cache_dir)]
-        )
+        command.extend(["--whisper-mesa-shader-cache-dir", str(mesa_shader_cache_dir)])
     return command
 
 
@@ -476,7 +550,10 @@ def capture_observation(
     stderr = completed.stderr if completed is not None else str(invocation_error or "")
     return_code = completed.returncode if completed is not None else None
     raw_files = {
-        "command": ("command.json", json.dumps(command, indent=2, ensure_ascii=False) + "\n"),
+        "command": (
+            "command.json",
+            json.dumps(command, indent=2, ensure_ascii=False) + "\n",
+        ),
         "environment": (
             "environment.json",
             json.dumps(environment, indent=2, sort_keys=True) + "\n",
@@ -491,7 +568,9 @@ def capture_observation(
                     "returnCode": return_code,
                     "productJson": product,
                     "parseError": parse_error,
-                    "invocationError": str(invocation_error) if invocation_error else None,
+                    "invocationError": str(invocation_error)
+                    if invocation_error
+                    else None,
                 },
                 indent=2,
                 sort_keys=True,
@@ -535,9 +614,7 @@ def capture_observation(
             ("modelArtifact", "modelPath"),
             ("vadArtifact", "vadPath"),
         ):
-            identity = artifact_identity(
-                engine.get(engine_name), artifact_identities
-            )
+            identity = artifact_identity(engine.get(engine_name), artifact_identities)
             if identity is not None:
                 artifact[artifact_name] = identity
     artifact_index = run_manifest["artifactIndex"]
@@ -573,6 +650,12 @@ def run_benchmark(args: argparse.Namespace) -> None:
             if not binary.is_file():
                 raise ValueError(f"Echo binary is missing: {binary}")
             corpus_path = args.manifest.resolve()
+            admission_identity = validate_expected_echo_identity(
+                binary,
+                args.expected_echo_commit,
+                args.expected_echo_binary_sha256,
+                include_untracked=False,
+            )
             corpus_source = corpus_path.read_bytes()
             manifest_digest = sha256_bytes(corpus_source)
             utterances = load_manifest(corpus_path, corpus_source)
@@ -587,6 +670,7 @@ def run_benchmark(args: argparse.Namespace) -> None:
                 "runId": run_id,
                 "startedAt": started_at,
                 "binary": binary_identity,
+                "admissionIdentity": admission_identity,
                 "corpus": {
                     "sourcePath": portable_path(corpus_path),
                     "snapshot": {
@@ -598,6 +682,20 @@ def run_benchmark(args: argparse.Namespace) -> None:
                             "id": utterance["id"],
                             "audio": portable_path(Path(utterance["audio"])),
                             "audioSha256": utterance["audioSha256"],
+                            **{
+                                key: utterance[key]
+                                for key in (
+                                    "class",
+                                    "provenance",
+                                    "derivation",
+                                    "naturalClassEvidence",
+                                    "synthetic",
+                                    "capture",
+                                    "bytes",
+                                    "sha256",
+                                )
+                                if key in utterance
+                            },
                         }
                         for utterance in utterances
                     ],
@@ -681,6 +779,13 @@ def run_benchmark(args: argparse.Namespace) -> None:
                 run_manifest["host"] = host
                 write_json_atomic(run_manifest_path, run_manifest)
                 verify_manifest_unchanged(corpus_path, manifest_digest)
+                if admission_identity is not None:
+                    validate_expected_echo_identity(
+                        binary,
+                        args.expected_echo_commit,
+                        args.expected_echo_binary_sha256,
+                        include_untracked=False,
+                    )
 
                 environments: dict[str, dict[str, str]] = {}
                 for candidate in args.candidate:
@@ -712,21 +817,25 @@ def run_benchmark(args: argparse.Namespace) -> None:
                         for order_index, candidate in enumerate(ordered):
                             observation_count += 1
                             row_id = f"observation-{observation_count:06d}"
-                            payload, outer_ms, observation_artifact = capture_observation(
-                                output_dir,
-                                run_manifest_path,
-                                run_manifest,
-                                binary,
-                                candidate,
-                                utterance,
-                                environments[candidate.label],
-                                row_id,
-                                "measurement",
-                                args.whisper_vulkan_driver_files,
-                                args.whisper_mesa_shader_cache_dir,
-                                artifact_identities,
+                            payload, outer_ms, observation_artifact = (
+                                capture_observation(
+                                    output_dir,
+                                    run_manifest_path,
+                                    run_manifest,
+                                    binary,
+                                    candidate,
+                                    utterance,
+                                    environments[candidate.label],
+                                    row_id,
+                                    "measurement",
+                                    args.whisper_vulkan_driver_files,
+                                    args.whisper_mesa_shader_cache_dir,
+                                    artifact_identities,
+                                )
                             )
-                            reference_words = normalized_words(str(utterance["reference"]))
+                            reference_words = normalized_words(
+                                str(utterance["reference"])
+                            )
                             transcript = str(payload["text"])
                             output_words = normalized_words(transcript)
                             errors = edit_distance(reference_words, output_words)
@@ -734,11 +843,15 @@ def run_benchmark(args: argparse.Namespace) -> None:
                             infer_ms = int(payload["inferMs"])
                             engine = payload.get("engine")
                             if not isinstance(engine, dict):
-                                raise ValueError("Echo JSON output has no engine object")
+                                raise ValueError(
+                                    "Echo JSON output has no engine object"
+                                )
                             portable_engine = dict(engine)
                             for key in ("binary", "modelPath"):
                                 if isinstance(portable_engine.get(key), str):
-                                    portable_engine[key] = portable_path(Path(portable_engine[key]))
+                                    portable_engine[key] = portable_path(
+                                        Path(portable_engine[key])
+                                    )
                             whisper = payload.get("whisper")
                             rows.append(
                                 {
@@ -765,7 +878,9 @@ def run_benchmark(args: argparse.Namespace) -> None:
                                     "raw": payload["raw"],
                                     "wordErrors": errors,
                                     "referenceWords": len(reference_words),
-                                    "wer": errors / len(reference_words) if reference_words else None,
+                                    "wer": errors / len(reference_words)
+                                    if reference_words
+                                    else None,
                                     "hallucinatedSilence": hallucinated_silence(
                                         reference_words, transcript
                                     ),
@@ -786,9 +901,19 @@ def run_benchmark(args: argparse.Namespace) -> None:
                             )
                 verify_manifest_unchanged(corpus_path, manifest_digest)
                 verify_all_utterances_unchanged(utterances)
+                if admission_identity is not None:
+                    validate_expected_echo_identity(
+                        binary,
+                        args.expected_echo_commit,
+                        args.expected_echo_binary_sha256,
+                        include_untracked=False,
+                    )
             write_text_atomic(
                 output_dir / "runs.jsonl",
-                "".join(json.dumps(row, sort_keys=True, ensure_ascii=False) + "\n" for row in rows),
+                "".join(
+                    json.dumps(row, sort_keys=True, ensure_ascii=False) + "\n"
+                    for row in rows
+                ),
             )
             write_text_atomic(output_dir / "summary.md", render_summary(rows))
     except BaseException as error:
@@ -821,7 +946,9 @@ def render_summary(rows: list[dict[str, object]]) -> str:
         "| --- | --- | ---: | ---: | ---: | ---: | ---: |",
     ]
     for (candidate, language), values in sorted(grouped.items()):
-        errors = sum(int(row["wordErrors"]) for row in values if int(row["referenceWords"]) > 0)
+        errors = sum(
+            int(row["wordErrors"]) for row in values if int(row["referenceWords"]) > 0
+        )
         words = sum(int(row["referenceWords"]) for row in values)
         rtf_values = [float(row["rtf"]) for row in values if row["rtf"] is not None]
         outer_values = [float(row["outerMs"]) for row in values]
@@ -837,7 +964,10 @@ def render_summary(rows: list[dict[str, object]]) -> str:
 
 
 def self_test() -> None:
-    assert portable_path(REPO_ROOT / "target" / "fixture.wav") == "$REPO/target/fixture.wav"
+    assert (
+        portable_path(REPO_ROOT / "target" / "fixture.wav")
+        == "$REPO/target/fixture.wav"
+    )
     portable = portable_whisper_telemetry(
         {
             "runtime": {
@@ -917,10 +1047,14 @@ def self_test() -> None:
         assert (output / artifact["path"]).read_bytes() == b"artifact"
 
         source_manifest = root / "fixtures.json"
-        source_manifest.write_text('{"schemaVersion":1,"utterances":[]}', encoding="utf-8")
+        source_manifest.write_text(
+            '{"schemaVersion":1,"utterances":[]}', encoding="utf-8"
+        )
         manifest_digest = sha256(source_manifest)
         verify_manifest_unchanged(source_manifest, manifest_digest)
-        source_manifest.write_text('{"schemaVersion":2,"utterances":[]}', encoding="utf-8")
+        source_manifest.write_text(
+            '{"schemaVersion":2,"utterances":[]}', encoding="utf-8"
+        )
         try:
             verify_manifest_unchanged(source_manifest, manifest_digest)
         except ValueError as error:
@@ -943,7 +1077,9 @@ def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description=__doc__)
     value.add_argument("--binary", required=True, type=Path)
     value.add_argument("--manifest", required=True, type=Path)
-    value.add_argument("--candidate", required=True, action="append", type=parse_candidate)
+    value.add_argument(
+        "--candidate", required=True, action="append", type=parse_candidate
+    )
     value.add_argument("--repeats", type=int, default=3)
     value.add_argument("--warmups", type=int, default=1)
     value.add_argument("--seed", type=int, default=20260824)
@@ -957,6 +1093,8 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--icd-identity")
     value.add_argument("--whisper-vulkan-driver-files", type=Path)
     value.add_argument("--whisper-mesa-shader-cache-dir", type=Path)
+    value.add_argument("--expected-echo-commit")
+    value.add_argument("--expected-echo-binary-sha256")
     value.add_argument("--output-dir", required=True, type=Path)
     return value
 
@@ -967,6 +1105,15 @@ def main() -> int:
         print("benchmark-stt: self-test ok")
         return 0
     args = parser().parse_args()
+    try:
+        validate_expected_echo_identity(
+            args.binary.resolve(),
+            args.expected_echo_commit,
+            args.expected_echo_binary_sha256,
+            include_untracked=True,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        parser().error(str(error))
     if args.repeats < 1:
         parser().error("--repeats must be at least 1")
     if args.warmups < 0:
@@ -976,12 +1123,20 @@ def main() -> int:
         if not args.whisper_vulkan_driver_files.is_file():
             parser().error("--whisper-vulkan-driver-files must be a file")
     if args.whisper_mesa_shader_cache_dir is not None:
-        args.whisper_mesa_shader_cache_dir = args.whisper_mesa_shader_cache_dir.resolve()
+        args.whisper_mesa_shader_cache_dir = (
+            args.whisper_mesa_shader_cache_dir.resolve()
+        )
         if not args.whisper_mesa_shader_cache_dir.is_dir():
             parser().error("--whisper-mesa-shader-cache-dir must be a directory")
     try:
         run_benchmark(args)
-    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, json.JSONDecodeError) as error:
+    except (
+        OSError,
+        ValueError,
+        RuntimeError,
+        subprocess.SubprocessError,
+        json.JSONDecodeError,
+    ) as error:
         print(f"benchmark-stt: {error}", file=sys.stderr)
         return 1
     print(f"benchmark-stt: wrote {args.output_dir / 'runs.jsonl'} and summary.md")
