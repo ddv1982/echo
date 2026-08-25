@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.12.3
 
 - New recommended setup installs and pins Whisper Small, matching the model qualified for Vulkan acceleration. Existing explicit model and language choices remain unchanged, and automatic language detection stays on managed CPU until separately qualified.
 
