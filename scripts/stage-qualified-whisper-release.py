@@ -231,6 +231,15 @@ def stage(args: argparse.Namespace) -> None:
     )
 
 
+def verify_asset_inventory(root: Path, expected_files: set[str]) -> None:
+    entries = list(root.iterdir())
+    if (
+        any(not path.is_file() or path.is_symlink() for path in entries)
+        or {path.name for path in entries} != expected_files
+    ):
+        raise ValueError("qualified release has an unexpected directory inventory")
+
+
 def verify_manifest(root: Path, expected_version: str, expected_commit: str) -> None:
     manifest = read_json(root / "qualified-release.json")
     if (
@@ -252,6 +261,11 @@ def verify_manifest(root: Path, expected_version: str, expected_commit: str) -> 
             or sha256_file(path) != value.get("sha256")
         ):
             raise ValueError(f"qualified {label} asset digest changed")
+    expected_files = {
+        "qualified-release.json",
+        *(str(value["file"]) for value in assets.values()),
+    }
+    verify_asset_inventory(root, expected_files)
     canonical = (root / assets["binary"]["file"]).read_bytes()
     for bundle_type in ("deb", "rpm"):
         package = root / assets[bundle_type]["file"]
@@ -338,6 +352,22 @@ def self_test() -> None:
             extract_package(rpm, "rpm", fallback)
             assert run.call_count == 2
             assert all(call.args[0][0] == "7z" for call in run.call_args_list)
+        inventory = root / "inventory"
+        inventory.mkdir()
+        (inventory / "qualified-release.json").write_bytes(b"manifest")
+        (inventory / "asset").write_bytes(b"asset")
+        expected_inventory = {
+            "qualified-release.json",
+            "asset",
+        }
+        verify_asset_inventory(inventory, expected_inventory)
+        (inventory / "unexpected.rpm").write_bytes(b"extra")
+        try:
+            verify_asset_inventory(inventory, expected_inventory)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("unexpected release asset passed inventory verification")
         package = root / "package"
         package.mkdir()
         outside = root / "outside"

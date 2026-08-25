@@ -247,30 +247,26 @@ jobs:
           if-no-files-found: error
 
   release-assets:
+    if: github.ref_type != 'tag'
     needs: linux-packages
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    permissions:
-      contents: write
     env:
       ARTIFACT_STEM: ${{ github.ref_type == 'tag' && format('echo-{0}-linux', github.ref_name) || format('echo-nightly-{0}-linux', github.sha) }}
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/download-artifact@v8
-        if: github.ref_type != 'tag'
         with:
           name: ${{ env.ARTIFACT_STEM }}
           path: release-assets/packages
 
       - uses: actions/download-artifact@v8
-        if: github.ref_type != 'tag'
         with:
           name: ${{ env.ARTIFACT_STEM }}-bin
           path: release-assets/bin
 
       - name: Validate staged release asset layout
-        if: github.ref_type != 'tag'
         run: |
           shopt -s nullglob
           deb_packages=(release-assets/packages/deb/*.deb)
@@ -285,8 +281,17 @@ jobs:
             exit 1
           fi
 
+  qualified-release-assets:
+    if: github.ref_type == 'tag'
+    needs: linux-packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
       - name: Download qualified tagged assets
-        if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -294,13 +299,11 @@ jobs:
           gh release download "qualification-${GITHUB_SHA}" --dir release-assets/qualified
 
       - name: Install qualified asset verification dependencies
-        if: github.ref_type == 'tag'
         run: |
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y cpio rpm
 
       - name: Verify qualified tagged assets
-        if: github.ref_type == 'tag'
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
@@ -311,7 +314,6 @@ jobs:
             --expected-commit "$GITHUB_SHA"
 
       - uses: actions/upload-artifact@v7
-        if: github.ref_type == 'tag'
         with:
           name: echo-${{ github.ref_name }}-qualified-release
           path: release-assets/qualified
@@ -319,7 +321,7 @@ jobs:
 
   github-release:
     if: github.ref_type == 'tag'
-    needs: release-assets
+    needs: qualified-release-assets
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
