@@ -14,10 +14,11 @@ use serde::Deserialize;
 
 use super::cache::{parse_whisper_filename, ModelCache};
 use super::whisper_probe::observe_runtime;
+use super::whisper_runtime_launch;
 use super::write_temp_wav;
 use super::{
     WhisperExecutionPlan, WhisperModelAsset, WhisperProtocol, WhisperRuntimeCandidate,
-    WhisperTuning,
+    WhisperRuntimeLaunch, WhisperTuning,
 };
 use crate::which::path_of;
 
@@ -28,7 +29,7 @@ pub struct WhisperEngine {
 
 enum WhisperFiles {
     Discover(ModelCache),
-    Explicit(WhisperExecutionPlan),
+    Explicit(Box<WhisperExecutionPlan>),
 }
 
 impl WhisperEngine {
@@ -44,7 +45,7 @@ impl WhisperEngine {
     pub fn with_plan(plan: WhisperExecutionPlan) -> Self {
         Self {
             model: plan.model.name.clone(),
-            files: WhisperFiles::Explicit(plan),
+            files: WhisperFiles::Explicit(Box::new(plan)),
         }
     }
 
@@ -57,12 +58,14 @@ impl WhisperEngine {
         multilingual: bool,
     ) -> Self {
         let model_name = model_name.into();
+        let launch = whisper_runtime_launch(&binary);
         Self::with_plan(WhisperExecutionPlan::one_shot(
             WhisperRuntimeCandidate {
                 source: WhisperRuntimeSource::Unknown,
                 backend: WhisperRuntimeBackend::Unknown,
                 cli: binary,
                 server: None,
+                launch,
             },
             WhisperModelAsset {
                 name: model_name,
@@ -160,12 +163,35 @@ impl WhisperEngine {
                 source: plan.runtime.source,
                 backend: plan.runtime.backend,
                 device: None,
+                library_path: plan
+                    .runtime
+                    .launch
+                    .library_dir
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().into_owned()),
+                vulkan_driver_files: plan
+                    .runtime
+                    .launch
+                    .vulkan_driver_files
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().into_owned()),
+                mesa_shader_cache_dir: plan
+                    .runtime
+                    .launch
+                    .mesa_shader_cache_dir
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().into_owned()),
+                identity_sha256: plan.runtime.launch.identity_sha256.clone(),
             },
             WhisperFiles::Discover(_) => WhisperRuntimeTelemetry {
                 binary,
                 source: WhisperRuntimeSource::System,
                 backend: WhisperRuntimeBackend::Unknown,
                 device: None,
+                library_path: None,
+                vulkan_driver_files: None,
+                mesa_shader_cache_dir: None,
+                identity_sha256: None,
             },
         };
         if let Some(observed) = observe_runtime(stderr) {
@@ -184,6 +210,13 @@ impl WhisperEngine {
 
     fn force_cpu(&self) -> bool {
         matches!(&self.files, WhisperFiles::Explicit(plan) if plan.force_cpu)
+    }
+
+    fn runtime_launch(&self) -> Option<&WhisperRuntimeLaunch> {
+        match &self.files {
+            WhisperFiles::Explicit(plan) => Some(&plan.runtime.launch),
+            WhisperFiles::Discover(_) => None,
+        }
     }
 }
 
@@ -215,6 +248,7 @@ impl Engine for WhisperEngine {
         let tuning = self.tuning();
         let (first, mut first_telemetry) = run_attempt(
             &bin,
+            self.runtime_launch(),
             whisper_args_with_tuning(
                 &model,
                 wav.path(),
@@ -232,6 +266,7 @@ impl Engine for WhisperEngine {
             first_telemetry.retry_reason = Some(WhisperRetryReason::VadRejected);
             let (retry, retry_telemetry) = run_attempt(
                 &bin,
+                self.runtime_launch(),
                 whisper_args_with_tuning(
                     &model,
                     wav.path(),
@@ -320,12 +355,14 @@ fn elapsed_ms(started: Instant) -> u64 {
 
 fn run_attempt(
     binary: &Path,
+    launch: Option<&WhisperRuntimeLaunch>,
     args: Vec<String>,
     vad: bool,
 ) -> Result<(Output, WhisperAttemptTelemetry), EngineError> {
     let wall_started = Instant::now();
     let spawn_started = Instant::now();
-    let child = Command::new(binary)
+    let mut command = command_for_runtime(binary, launch);
+    let child = command
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -344,6 +381,48 @@ fn run_attempt(
         retry_reason: None,
     };
     Ok((output, telemetry))
+}
+
+fn command_for_runtime(binary: &Path, launch: Option<&WhisperRuntimeLaunch>) -> Command {
+    let mut command = Command::new(binary);
+    let Some(launch) = launch else {
+        return command;
+    };
+    for name in [
+        "LD_AUDIT",
+        "LD_LIBRARY_PATH",
+        "LD_PRELOAD",
+        "MESA_DISK_CACHE_COMBINE_RW_WITH_RO_FOZ",
+        "MESA_DISK_CACHE_DATABASE",
+        "MESA_DISK_CACHE_READ_ONLY_FOZ_DBS",
+        "MESA_DISK_CACHE_SINGLE_FILE",
+        "MESA_SHADER_CACHE_DIR",
+        "MESA_SHADER_CACHE_DISABLE",
+        "MESA_SHADER_CACHE_MAX_SIZE",
+        "VK_ADD_DRIVER_FILES",
+        "VK_ADD_IMPLICIT_LAYER_PATH",
+        "VK_ADD_LAYER_PATH",
+        "VK_DRIVER_FILES",
+        "VK_ICD_FILENAMES",
+        "VK_IMPLICIT_LAYER_PATH",
+        "VK_INSTANCE_LAYERS",
+        "VK_LAYER_PATH",
+        "VK_LOADER_DEBUG",
+        "VK_LOADER_DRIVERS_DISABLE",
+        "VK_LOADER_DRIVERS_SELECT",
+    ] {
+        command.env_remove(name);
+    }
+    if let Some(path) = &launch.library_dir {
+        command.env("LD_LIBRARY_PATH", path);
+    }
+    if let Some(path) = &launch.vulkan_driver_files {
+        command.env("VK_DRIVER_FILES", path);
+    }
+    if let Some(path) = &launch.mesa_shader_cache_dir {
+        command.env("MESA_SHADER_CACHE_DIR", path);
+    }
+    command
 }
 
 fn should_retry_without_vad(stderr: &str) -> bool {
@@ -587,6 +666,41 @@ mod tests {
     #[test]
     fn blank_audio_raw_is_empty() {
         assert!(raw_text("[BLANK_AUDIO]").is_empty());
+    }
+
+    #[test]
+    fn explicit_launch_contract_replaces_loader_and_cache_state() {
+        let launch = WhisperRuntimeLaunch {
+            library_dir: Some(PathBuf::from("/runtime")),
+            vulkan_driver_files: Some(PathBuf::from("/driver.json")),
+            mesa_shader_cache_dir: Some(PathBuf::from("/shader-cache")),
+            identity_sha256: Some("a".repeat(64)),
+        };
+        let command = command_for_runtime(Path::new("whisper-cli"), Some(&launch));
+        let value = |name: &str| {
+            command
+                .get_envs()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| value)
+        };
+        assert_eq!(
+            value("LD_LIBRARY_PATH").flatten(),
+            Some(std::ffi::OsStr::new("/runtime"))
+        );
+        assert_eq!(
+            value("VK_DRIVER_FILES").flatten(),
+            Some(std::ffi::OsStr::new("/driver.json"))
+        );
+        assert_eq!(
+            value("MESA_SHADER_CACHE_DIR").flatten(),
+            Some(std::ffi::OsStr::new("/shader-cache"))
+        );
+        assert_eq!(value("LD_PRELOAD"), Some(None));
+        assert_eq!(value("VK_ICD_FILENAMES"), Some(None));
+        assert!(command_for_runtime(Path::new("whisper-cli"), None)
+            .get_envs()
+            .next()
+            .is_none());
     }
 
     fn args_for_cache(dir: &Path) -> Vec<String> {

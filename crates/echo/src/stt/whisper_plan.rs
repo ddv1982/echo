@@ -26,6 +26,23 @@ pub struct WhisperRuntimeCandidate {
     pub backend: WhisperRuntimeBackend,
     pub cli: PathBuf,
     pub server: Option<PathBuf>,
+    pub launch: WhisperRuntimeLaunch,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WhisperRuntimeLaunch {
+    pub library_dir: Option<PathBuf>,
+    pub vulkan_driver_files: Option<PathBuf>,
+    pub mesa_shader_cache_dir: Option<PathBuf>,
+    pub identity_sha256: Option<String>,
+}
+
+impl WhisperRuntimeLaunch {
+    pub fn rebase_library_dir(&mut self, cli: &std::path::Path) {
+        if self.library_dir.is_some() {
+            self.library_dir = cli.parent().map(std::path::Path::to_path_buf);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,6 +132,7 @@ mod tests {
             backend: WhisperRuntimeBackend::Cpu,
             cli: PathBuf::from(name),
             server: None,
+            launch: WhisperRuntimeLaunch::default(),
         }
     }
 

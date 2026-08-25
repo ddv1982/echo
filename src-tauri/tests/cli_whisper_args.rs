@@ -19,6 +19,7 @@ fn fake_whisper_proves_model_language_prompt_and_vad_retry_arguments() {
     }
     std::fs::write(model_dir.join("ggml-small.bin"), []).unwrap();
     std::fs::write(model_dir.join("ggml-silero-v6.2.0.bin"), []).unwrap();
+    std::fs::write(bin_dir.join("libwhisper-fake.so"), b"fake library").unwrap();
     std::fs::write(
         data_dir.join("dictionary.json"),
         r#"{"entries":[{"spoken":"clawed code","written":"Claude Code","created_at":1}]}"#,
@@ -30,6 +31,8 @@ fn fake_whisper_proves_model_language_prompt_and_vad_retry_arguments() {
         r#"#!/bin/sh
 {
   printf 'BEGIN\n'
+  printf 'ENV_LD=%s\n' "${LD_LIBRARY_PATH-unset}"
+  printf 'ENV_VK=%s\n' "${VK_DRIVER_FILES-unset}"
   for arg in "$@"; do printf '%s\n' "$arg"; done
   printf 'END\n'
 } >> "$ECHO_ARGV_LOG"
@@ -77,6 +80,8 @@ printf '%s\n' 'whisper_full: auto-detected language: de (p = 0.958162)' >&2
         .env("ECHO_CONFIG_DIR", &config_dir)
         .env("ECHO_DATA_DIR", &data_dir)
         .env("ECHO_MODEL_DIR", &model_dir)
+        .env("LD_LIBRARY_PATH", "/poison")
+        .env("VK_DRIVER_FILES", "/poison.json")
         .output()
         .unwrap();
     assert!(
@@ -101,6 +106,11 @@ printf '%s\n' 'whisper_full: auto-detected language: de (p = 0.958162)' >&2
         assert!(run.contains("-bo\n3\n"), "run={run}");
         assert!(run.contains("-nf\n"), "run={run}");
         assert!(run.contains("--prompt\nClaude Code\n"), "run={run}");
+        assert!(
+            run.contains(&format!("ENV_LD={}\n", bin_dir.display())),
+            "run={run}"
+        );
+        assert!(run.contains("ENV_VK=unset\n"), "run={run}");
         assert!(!run.contains("clawed code"), "run={run}");
     }
     assert!(runs[0].contains("--vad\n"));
@@ -129,6 +139,16 @@ printf '%s\n' 'whisper_full: auto-detected language: de (p = 0.958162)' >&2
     assert_eq!(
         json["whisper"]["runtime"]["device"],
         "Test Vulkan GPU (driver)"
+    );
+    assert_eq!(
+        json["whisper"]["runtime"]["libraryPath"],
+        bin_dir.display().to_string()
+    );
+    assert_eq!(
+        json["whisper"]["runtime"]["identitySha256"]
+            .as_str()
+            .map(str::len),
+        Some(64)
     );
     assert_eq!(json["whisper"]["tuning"]["threads"], 2);
     assert_eq!(json["whisper"]["tuning"]["beamSize"], 1);

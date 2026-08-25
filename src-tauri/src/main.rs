@@ -3332,6 +3332,10 @@ mod settings_tests {
                     source: WhisperRuntimeSource::System,
                     backend: WhisperRuntimeBackend::Cpu,
                     device: Some("Test CPU".to_string()),
+                    library_path: None,
+                    vulkan_driver_files: None,
+                    mesa_shader_cache_dir: None,
+                    identity_sha256: None,
                 },
                 tuning: WhisperTuningTelemetry {
                     threads: Some(4),

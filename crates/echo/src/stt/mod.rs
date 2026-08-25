@@ -10,10 +10,11 @@ pub use cache::{InstalledModel, ModelCache, ModelInventory, WhisperFamily};
 pub use fake::FakeEngine;
 pub use parakeet::ParakeetEngine;
 pub use runtime::SpeechRuntimeInventory;
+pub(crate) use runtime::whisper_runtime_launch;
 pub use whisper::WhisperEngine;
 pub use whisper_plan::{
     preferred_runtime, WhisperExecutionPlan, WhisperModelAsset, WhisperProtocol,
-    WhisperRuntimeCandidate, WhisperTuning, WhisperTuningOverride,
+    WhisperRuntimeCandidate, WhisperRuntimeLaunch, WhisperTuning, WhisperTuningOverride,
 };
 
 use std::path::PathBuf;

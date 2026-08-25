@@ -519,6 +519,9 @@ pub fn prepare_with_config(
             let mut paths = locked.paths.into_iter();
             let mut locked_runtime = runtime_candidate;
             locked_runtime.cli = paths.next().expect("selected runtime has a CLI");
+            locked_runtime
+                .launch
+                .rebase_library_dir(&locked_runtime.cli);
             locked_runtime.server = locked_runtime
                 .server
                 .as_ref()

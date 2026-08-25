@@ -204,8 +204,14 @@ def portable_whisper_telemetry(value: object) -> dict[str, object] | None:
     runtime = telemetry.get("runtime")
     if isinstance(runtime, dict):
         portable_runtime = dict(runtime)
-        if isinstance(portable_runtime.get("binary"), str):
-            portable_runtime["binary"] = portable_path(Path(portable_runtime["binary"]))
+        for key in (
+            "binary",
+            "libraryPath",
+            "vulkanDriverFiles",
+            "mesaShaderCacheDir",
+        ):
+            if isinstance(portable_runtime.get(key), str):
+                portable_runtime[key] = portable_path(Path(portable_runtime[key]))
         telemetry["runtime"] = portable_runtime
     return telemetry
 
@@ -780,9 +786,19 @@ def render_summary(rows: list[dict[str, object]]) -> str:
 def self_test() -> None:
     assert portable_path(REPO_ROOT / "target" / "fixture.wav") == "$REPO/target/fixture.wav"
     portable = portable_whisper_telemetry(
-        {"runtime": {"binary": str(REPO_ROOT / "target" / "whisper-cli")}}
+        {
+            "runtime": {
+                "binary": str(REPO_ROOT / "target" / "whisper-cli"),
+                "libraryPath": str(REPO_ROOT / "target" / "runtime"),
+            }
+        }
     )
-    assert portable == {"runtime": {"binary": "$REPO/target/whisper-cli"}}
+    assert portable == {
+        "runtime": {
+            "binary": "$REPO/target/whisper-cli",
+            "libraryPath": "$REPO/target/runtime",
+        }
+    }
     assert normalized_words(" Héllo, WORLD! ") == ["héllo", "world"]
     assert normalized_words("ＡＢＣ 123") == ["abc", "123"]
     assert edit_distance(["one", "two"], ["one", "too"]) == 1
