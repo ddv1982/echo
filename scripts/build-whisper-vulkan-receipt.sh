@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build the one pinned, receipt-capable Vulkan candidate used by qualification.
-# This never selects a production runtime.
+# Build a pinned, receipt-capable Vulkan candidate used by qualification.
+# This never selects a production runtime. v1.9.3 is investigative only.
 
-readonly expected_commit="306c88f4d1286aec1bf96e544632897886af5501"
-readonly expected_tag="v1.9.2"
 readonly script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly repo_root="$(cd -- "${script_dir}/.." && pwd)"
-readonly receipt_patch="${repo_root}/patches/whisper.cpp/v1.9.2-runtime-receipt.patch"
+readonly receipt_patch="${repo_root}/patches/whisper.cpp/runtime-receipt.patch"
 readonly required_libraries=(libwhisper libggml libggml-base libggml-cpu libggml-vulkan)
 
 die() {
@@ -21,20 +19,41 @@ usage() {
 Usage:
   scripts/build-whisper-vulkan-receipt.sh SOURCE_DIR OUTPUT_DIR
   scripts/build-whisper-vulkan-receipt.sh --check-source SOURCE_DIR
+  scripts/build-whisper-vulkan-receipt.sh --revision v1.9.3 SOURCE_DIR OUTPUT_DIR
+  scripts/build-whisper-vulkan-receipt.sh --revision v1.9.3 --check-source SOURCE_DIR
 
 SOURCE_DIR must be a clean checkout at whisper.cpp v1.9.2 commit
-306c88f4d1286aec1bf96e544632897886af5501. OUTPUT_DIR must not exist.
+306c88f4d1286aec1bf96e544632897886af5501 by default, or the explicitly
+requested supported revision. OUTPUT_DIR must not exist. The shared
+runtime-receipt.patch applies unchanged to v1.9.2 and v1.9.3.
 The resulting directory places whisper-cli and every built shared library beside
 one another; invoke it with that directory first in LD_LIBRARY_PATH.
 EOF
 }
+
+revision="v1.9.2"
+if [[ "${1:-}" == "--revision" ]]; then
+    [[ $# -ge 3 ]] || { usage >&2; exit 2; }
+    revision="$2"
+    shift 2
+fi
+
+case "${revision}" in
+    v1.9.2)
+        expected_commit="306c88f4d1286aec1bf96e544632897886af5501"
+        ;;
+    v1.9.3)
+        expected_commit="371b5a7561823ab2bb32142d2751e35e7534727b"
+        ;;
+    *) die "unsupported revision: ${revision} (supported: v1.9.2, v1.9.3)" ;;
+esac
 
 check_source() {
     local source_dir="$1"
     [[ -d "${source_dir}/.git" || -f "${source_dir}/.git" ]] || die "source is not a Git worktree: ${source_dir}"
     [[ -f "${source_dir}/CMakeLists.txt" ]] || die "source does not look like whisper.cpp: ${source_dir}"
     [[ "$(git -C "${source_dir}" rev-parse HEAD)" == "${expected_commit}" ]] || die "source HEAD is not ${expected_commit}"
-    [[ "$(git -C "${source_dir}" rev-parse "${expected_tag}^{commit}")" == "${expected_commit}" ]] || die "${expected_tag} does not resolve to ${expected_commit}"
+    [[ "$(git -C "${source_dir}" rev-parse "${revision}^{commit}")" == "${expected_commit}" ]] || die "${revision} does not resolve to ${expected_commit}"
     [[ -z "$(git -C "${source_dir}" status --porcelain)" ]] || die "source worktree is not clean"
     git -C "${source_dir}" apply --check "${receipt_patch}" || die "receipt patch does not apply to source"
 }
@@ -84,7 +103,7 @@ check_staged_runtime() {
 if [[ "${1:-}" == "--check-source" ]]; then
     [[ $# -eq 2 ]] || { usage >&2; exit 2; }
     check_source "$2"
-    printf 'build-whisper-vulkan-receipt: source and patch verified\n'
+    printf 'build-whisper-vulkan-receipt: %s source and patch verified\n' "${revision}"
     exit 0
 fi
 
@@ -126,4 +145,4 @@ check_staged_runtime "${stage_dir}"
 mv -- "${stage_dir}" "${output_dir}"
 trap - EXIT
 cleanup
-printf 'build-whisper-vulkan-receipt: built %s from %s\n' "${output_dir}" "${expected_commit}"
+printf 'build-whisper-vulkan-receipt: built %s from %s (%s)\n' "${output_dir}" "${expected_commit}" "${revision}"
