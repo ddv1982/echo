@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.12.1
+
+- Linux packages now ship qualified Whisper Vulkan acceleration only when the packaged admission exactly matches the executable, runtime, model, VAD, decoding policy, DRM device, ICD files, and seeded Mesa cache.
+- Automatic language detection, non-empty recognition hints, missing or changed identities, and quarantined accelerators stay on managed CPU. A qualified GPU failure performs one same-model CPU retry.
+- Debian and RPM releases carry independently measured executables, root-owned acceleration resources, and package-specific admissions. Release verification re-extracts each package before publication.
+- The tagged release job can read its private commit-specific qualification draft, while publication permission remains isolated to release jobs.
+
 ## v0.12.0
 
 - Linux packages can now ship a qualified Whisper Vulkan accelerator as a root-owned `whisper-acceleration` resource instead of relying on an ambient system runtime.
