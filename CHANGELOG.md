@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- New recommended setup installs and pins Whisper Small so supported Intel Vulkan systems use the qualified accelerator by default. Existing explicit model choices remain unchanged.
+- New recommended setup installs and pins Whisper Small, matching the model qualified for Vulkan acceleration. Existing explicit model and language choices remain unchanged, and automatic language detection stays on managed CPU until separately qualified.
 
 ## v0.12.2
 
