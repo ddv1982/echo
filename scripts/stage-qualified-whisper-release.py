@@ -46,12 +46,18 @@ def preserve_old_bundle(label: str) -> None:
         bundle.rename(backup)
 
 
-def extract_package(package: Path, bundle_type: str, destination: Path) -> None:
+def extract_package(
+    package: Path,
+    bundle_type: str,
+    destination: Path,
+    *,
+    force_7z: bool = False,
+) -> None:
     if bundle_type == "deb":
         subprocess.run(["dpkg-deb", "-x", str(package), str(destination)], check=True)
         return
     destination.mkdir(parents=True, exist_ok=True)
-    if shutil.which("rpm2cpio") and shutil.which("cpio"):
+    if not force_7z and shutil.which("rpm2cpio") and shutil.which("cpio"):
         converted = subprocess.run(
             ["rpm2cpio", str(package)], check=False, capture_output=True
         )
@@ -80,6 +86,14 @@ def extract_package(package: Path, bundle_type: str, destination: Path) -> None:
             check=True,
             capture_output=True,
         )
+
+
+def verify_rpm_extraction(package: Path) -> None:
+    with tempfile.TemporaryDirectory(prefix="echo-rpm-smoke-") as temporary:
+        destination = Path(temporary) / "payload"
+        extract_package(package.resolve(), "rpm", destination, force_7z=True)
+        if not (destination / "usr/bin/echo-desktop").is_file():
+            raise ValueError("RPM fallback extraction has no Echo executable")
 
 
 def verify_extracted(
@@ -374,6 +388,8 @@ def self_test() -> None:
                 "7z",
                 "7z",
             ]
+            assert run.call_args_list[0].kwargs["check"] is False
+            assert run.call_args_list[0].kwargs["capture_output"] is True
         inventory = root / "inventory"
         inventory.mkdir()
         (inventory / "qualified-release.json").write_bytes(b"manifest")
@@ -425,6 +441,7 @@ def main() -> int:
     )
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--verify", type=Path)
+    parser.add_argument("--verify-rpm-extraction", type=Path)
     parser.add_argument("--expected-version")
     parser.add_argument("--expected-commit")
     parser.add_argument("--canonical-binary", type=Path)
@@ -437,6 +454,8 @@ def main() -> int:
     try:
         if args.self_test:
             self_test()
+        elif args.verify_rpm_extraction is not None:
+            verify_rpm_extraction(args.verify_rpm_extraction)
         elif args.verify is not None:
             if args.expected_version is None or args.expected_commit is None:
                 parser.error(

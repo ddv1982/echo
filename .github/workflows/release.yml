@@ -281,6 +281,18 @@ jobs:
             exit 1
           fi
 
+      - name: Install RPM fallback smoke dependency
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y p7zip-full
+
+      - name: Smoke-test RPM fallback extraction
+        run: |
+          shopt -s nullglob
+          rpm_packages=(release-assets/packages/rpm/*.rpm)
+          python3 scripts/stage-qualified-whisper-release.py \
+            --verify-rpm-extraction "${rpm_packages[0]}"
+
   qualified-release-assets:
     if: github.ref_type == 'tag'
     needs: linux-packages
