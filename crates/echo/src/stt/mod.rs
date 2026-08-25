@@ -19,7 +19,7 @@ pub use whisper_admission::{
     QuarantineRecord, MAX_ADMISSION_LIFETIME_SECS, MAX_QUARANTINE_LIFETIME_SECS,
 };
 pub use whisper_plan::{
-    preferred_runtime, WhisperExecutionPlan, WhisperModelAsset, WhisperProtocol,
+    preferred_runtime, WhisperExecutionPlan, WhisperModelAsset, WhisperPlanDecision, WhisperProtocol,
     WhisperRuntimeCandidate, WhisperRuntimeLaunch, WhisperTuning, WhisperTuningOverride,
 };
 
