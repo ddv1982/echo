@@ -15,6 +15,7 @@ from whisper_release_common import (
     BUNDLE_TOKENS,
     bundle_variant,
     runtime_identity,
+    runtime_library_names,
     sha256_bytes,
     sha256_file,
     tree_sha256,
@@ -84,7 +85,7 @@ def verify_extracted(
     extracted: Path,
     expected_binary: bytes,
     promotion_root: Path | None,
-) -> dict[str, str]:
+) -> dict[str, object]:
     binary = extracted / "usr/bin/echo-desktop"
     resource = extracted / "usr/lib/io.github.ddv1982.echo/whisper-acceleration"
     if binary.read_bytes() != expected_binary:
@@ -101,6 +102,15 @@ def verify_extracted(
     runtime = resource / admission["artifacts"]["runtimeRelativePath"]
     if runtime_identity(runtime) != admission["identity"]["runtimeIdentitySha256"]:
         raise ValueError("packaged runtime identity changed")
+    packaged_library_names = runtime_library_names(runtime)
+    if promotion_root is not None:
+        source_runtime = (
+            promotion_root
+            / "whisper-acceleration"
+            / admission["artifacts"]["runtimeRelativePath"]
+        )
+        if packaged_library_names != runtime_library_names(source_runtime):
+            raise ValueError("packaged runtime library aliases changed")
     probe = resource / admission["artifacts"]["probeRelativePath"]
     if sha256_file(probe) != admission["artifacts"]["probeSha256"]:
         raise ValueError("packaged runtime probe identity changed")
@@ -112,6 +122,7 @@ def verify_extracted(
         "binarySha256": sha256_file(binary),
         "admissionSha256": sha256_file(packaged_admission),
         "runtimeIdentitySha256": admission["identity"]["runtimeIdentitySha256"],
+        "runtimeLibraryNames": packaged_library_names,
         "cacheSeedSha256": admission["artifacts"]["cacheSeedSha256"],
         "admissionIdentityKey": admission["identityKey"],
     }
@@ -270,6 +281,7 @@ def verify_manifest(root: Path, expected_version: str, expected_commit: str) -> 
             "binarySha256",
             "admissionSha256",
             "runtimeIdentitySha256",
+            "runtimeLibraryNames",
             "cacheSeedSha256",
             "admissionIdentityKey",
         ):
@@ -306,6 +318,18 @@ def self_test() -> None:
         (runtime / "libwhisper.so").write_bytes(b"library")
         (runtime / "libwhisper.so.1").write_bytes(b"library")
         assert runtime_identity(cli) == original
+        assert runtime_library_names(cli) == [
+            "libwhisper.so",
+            "libwhisper.so.1",
+            "libwhisper.so.1.9.2",
+        ]
+        (runtime / "libwhisper.so.1").unlink()
+        assert runtime_identity(cli) == original
+        assert runtime_library_names(cli) != [
+            "libwhisper.so",
+            "libwhisper.so.1",
+            "libwhisper.so.1.9.2",
+        ]
     print("stage-qualified-whisper-release: self-test passed")
 
 

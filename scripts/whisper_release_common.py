@@ -67,6 +67,20 @@ def runtime_libraries(cli: Path) -> list[Path]:
     return sorted(by_content.values())
 
 
+def runtime_library_names(cli: Path) -> list[str]:
+    names = []
+    for candidate in cli.parent.iterdir():
+        if ".so" not in candidate.name:
+            continue
+        try:
+            path = candidate.resolve(strict=True)
+        except OSError:
+            continue
+        if path.is_file():
+            names.append(candidate.name)
+    return sorted(names)
+
+
 def runtime_identity(cli: Path) -> str:
     digest = hashlib.sha256(b"echo-whisper-runtime-v1\0")
     for path in [cli.resolve(), *runtime_libraries(cli)]:
