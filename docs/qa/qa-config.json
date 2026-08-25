@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "discoveredAt": "2026-08-25T04:50:08Z",
+  "confirmedBy": "autonomous-pass-no-bugs-filed",
+  "issueTracker": {
+    "type": "none",
+    "syncOnFile": false,
+    "pull": {
+      "onBRBStart": false,
+      "onReTest": false,
+      "window": "since-last-sync",
+      "createLocalForUntracked": "ask"
+    }
+  },
+  "triage": {
+    "runHeuristicsOnBRBStart": true,
+    "runHeuristicsOnFile": false,
+    "enabledHeuristics": ["same-test-id", "same-console-error", "regression-marker"]
+  },
+  "report": {
+    "outputDir": "docs/qa/report",
+    "title": "Echo Whisper Acceleration QA"
+  },
+  "platforms": {
+    "desktop": {
+      "enabled": true,
+      "kind": "tauri",
+      "primary": "linux"
+    },
+    "web": {
+      "enabled": true,
+      "purpose": "Linux fallback for the Tauri web layer",
+      "deviceModes": {
+        "minimum": "760x600",
+        "default": "920x680",
+        "wide": "1024x600"
+      },
+      "primary": "default",
+      "primarySource": "tauri.conf.json"
+    },
+    "ios": { "enabled": false }
+  }
+}
