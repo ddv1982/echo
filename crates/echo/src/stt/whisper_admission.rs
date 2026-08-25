@@ -1,3 +1,5 @@
+use std::path::{Component, Path};
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -48,10 +50,20 @@ pub struct AdmissionIdentity {
     pub language_policy: String,
     pub prompt_policy: String,
     pub device: AdmissionDeviceIdentity,
-    pub driver_sha256: String,
+    pub drm_driver: String,
     pub icd_manifest_sha256: String,
     pub icd_library_sha256: String,
     pub launch_contract_schema: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AdmissionArtifacts {
+    pub runtime_relative_path: String,
+    pub icd_manifest_path: String,
+    pub icd_library_path: String,
+    pub cache_seed_relative_path: String,
+    pub cache_seed_sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -133,6 +145,7 @@ pub enum AdmissionVerdict {
 pub struct AdmissionRecord {
     pub schema_version: u32,
     pub identity: AdmissionIdentity,
+    pub artifacts: AdmissionArtifacts,
     pub identity_key: AdmissionIdentityKey,
     pub evidence_sha256: String,
     pub gates: AdmissionGates,
@@ -212,12 +225,30 @@ fn admission_applies(record: &AdmissionRecord, identity: &AdmissionIdentity, now
         && record.identity == *identity
         && record.identity_key == AdmissionIdentityKey::for_identity(identity)
         && is_sha256(&record.evidence_sha256)
+        && artifacts_are_valid(&record.artifacts)
         && interval_is_current(
             record.accepted_at,
             record.expires_at,
             now,
             MAX_ADMISSION_LIFETIME_SECS,
         )
+}
+
+fn artifacts_are_valid(artifacts: &AdmissionArtifacts) -> bool {
+    safe_relative(&artifacts.runtime_relative_path)
+        && safe_relative(&artifacts.cache_seed_relative_path)
+        && Path::new(&artifacts.icd_manifest_path).is_absolute()
+        && Path::new(&artifacts.icd_library_path).is_absolute()
+        && is_sha256(&artifacts.cache_seed_sha256)
+}
+
+fn safe_relative(value: &str) -> bool {
+    let path = Path::new(value);
+    !value.is_empty()
+        && !path.is_absolute()
+        && path
+            .components()
+            .all(|part| matches!(part, Component::Normal(_)))
 }
 
 fn quarantine_applies(record: &QuarantineRecord, identity: &AdmissionIdentity, now: u64) -> bool {
@@ -245,7 +276,6 @@ fn identity_is_valid(identity: &AdmissionIdentity) -> bool {
         identity.echo_binary_sha256.as_str(),
         identity.runtime_identity_sha256.as_str(),
         identity.model_sha256.as_str(),
-        identity.driver_sha256.as_str(),
         identity.icd_manifest_sha256.as_str(),
         identity.icd_library_sha256.as_str(),
     ]
@@ -262,6 +292,7 @@ fn identity_is_valid(identity: &AdmissionIdentity) -> bool {
         && identity.device.backend == "vulkan"
         && identity.device.vendor_id > 0
         && identity.device.device_id > 0
+        && !identity.drm_driver.is_empty()
         && [
             identity.device.device_uuid.as_str(),
             identity.device.driver_uuid.as_str(),
@@ -317,7 +348,7 @@ mod tests {
                 driver_uuid: "2".repeat(32),
                 pipeline_cache_uuid: "3".repeat(32),
             },
-            driver_sha256: "f".repeat(64),
+            drm_driver: "i915".to_string(),
             icd_manifest_sha256: "1".repeat(64),
             icd_library_sha256: "2".repeat(64),
             launch_contract_schema: 1,
@@ -351,6 +382,13 @@ mod tests {
         AdmissionRecord {
             schema_version: 1,
             identity: identity.clone(),
+            artifacts: AdmissionArtifacts {
+                runtime_relative_path: "runtime/whisper-cli".to_string(),
+                icd_manifest_path: "/usr/share/vulkan/icd.d/intel_icd.json".to_string(),
+                icd_library_path: "/usr/lib/x86_64-linux-gnu/libvulkan_intel.so".to_string(),
+                cache_seed_relative_path: "cache-seed".to_string(),
+                cache_seed_sha256: "f".repeat(64),
+            },
             identity_key: AdmissionIdentityKey::for_identity(identity),
             evidence_sha256: "a".repeat(64),
             gates: passed_gates(),

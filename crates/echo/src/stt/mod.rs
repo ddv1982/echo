@@ -3,6 +3,7 @@ mod fake;
 mod parakeet;
 mod runtime;
 mod whisper;
+mod whisper_acceleration;
 mod whisper_admission;
 mod whisper_plan;
 mod whisper_probe;
@@ -15,10 +16,11 @@ pub use parakeet::ParakeetEngine;
 pub(crate) use runtime::whisper_runtime_launch;
 pub use runtime::SpeechRuntimeInventory;
 pub use whisper::WhisperEngine;
+pub(crate) use whisper_acceleration::production_whisper_decision;
 pub use whisper_admission::{
-    admission_state_from_bytes, AdmissionDeviceIdentity, AdmissionGates, AdmissionIdentity,
-    AdmissionIdentityKey, AdmissionRecord, AdmissionState, AdmissionTuning, AdmissionVerdict,
-    QuarantineReason, QuarantineRecord, MAX_ADMISSION_LIFETIME_SECS,
+    admission_state_from_bytes, AdmissionArtifacts, AdmissionDeviceIdentity, AdmissionGates,
+    AdmissionIdentity, AdmissionIdentityKey, AdmissionRecord, AdmissionState, AdmissionTuning,
+    AdmissionVerdict, QuarantineReason, QuarantineRecord, MAX_ADMISSION_LIFETIME_SECS,
     MAX_QUARANTINE_LIFETIME_SECS,
 };
 pub use whisper_plan::{
