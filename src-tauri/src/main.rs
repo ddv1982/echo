@@ -3336,6 +3336,7 @@ mod settings_tests {
                     vulkan_driver_files: None,
                     mesa_shader_cache_dir: None,
                     identity_sha256: None,
+                    vulkan_receipt: None,
                 },
                 tuning: WhisperTuningTelemetry {
                     threads: Some(4),
@@ -3361,6 +3362,7 @@ mod settings_tests {
                         retry_reason: None,
                     },
                 ],
+                recovery: None,
             }),
             ..RunDetail::default()
         };
