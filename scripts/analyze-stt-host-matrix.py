@@ -16,6 +16,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from whisper_release_common import runtime_identity as shared_runtime_identity
+
 PRODUCT_CLASSES = {
     "dictation",
     "technical-identifiers",
@@ -91,26 +93,7 @@ def runtime_identity(
     cached = identity_cache.get(cli)
     if cached is not None:
         return cached
-    libraries: set[Path] = set()
-    for candidate in cli.parent.iterdir():
-        if ".so" not in candidate.name:
-            continue
-        try:
-            resolved = candidate.resolve(strict=True)
-        except OSError:
-            continue
-        if resolved.is_file():
-            libraries.add(resolved)
-    digest = hashlib.sha256(b"echo-whisper-runtime-v1\0")
-    for path in [cli, *sorted(libraries)]:
-        name = path.name.encode()
-        digest.update(len(name).to_bytes(8, "little"))
-        digest.update(name)
-        digest.update(path.stat().st_size.to_bytes(8, "little"))
-        with path.open("rb") as source:
-            for chunk in iter(lambda: source.read(1024 * 1024), b""):
-                digest.update(chunk)
-    value = digest.hexdigest()
+    value = shared_runtime_identity(cli)
     identity_cache[cli] = value
     return value
 
@@ -1303,7 +1286,10 @@ def coverage_complete(corpus: dict[str, object]) -> bool:
             or derivation.get("outputSha256") != item.get("sha256")
         ):
             return False
-    return all(observed_bindings.get(identifier) == binding for identifier, binding in declared_bindings.items())
+    return all(
+        observed_bindings.get(identifier) == binding
+        for identifier, binding in declared_bindings.items()
+    )
 
 
 def summarize(
@@ -1587,9 +1573,7 @@ def self_test() -> None:
                     "kind": "verbatim-copy",
                     "sourceSha256": "a" * 64,
                     "outputSha256": (
-                        "b" * 64
-                        if fixture_class in {"noise", "silence"}
-                        else "a" * 64
+                        "b" * 64 if fixture_class in {"noise", "silence"} else "a" * 64
                     ),
                 },
             }

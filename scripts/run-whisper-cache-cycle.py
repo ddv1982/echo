@@ -15,6 +15,8 @@ import textwrap
 import uuid
 from pathlib import Path, PurePosixPath
 
+from whisper_release_common import runtime_libraries
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REPORT_NAMES = ("status.json", "summary.json", "runs.jsonl")
@@ -609,20 +611,10 @@ def identity_artifact(value: object, label: str) -> dict[str, object]:
 
 
 def runtime_identity(binary: Path) -> dict[str, object]:
-    libraries: set[Path] = set()
-    for candidate in binary.parent.iterdir():
-        if ".so" not in candidate.name:
-            continue
-        try:
-            resolved = candidate.resolve(strict=True)
-        except OSError:
-            continue
-        if resolved.is_file():
-            libraries.add(resolved)
     digest = hashlib.sha256(b"echo-whisper-runtime-v1\0")
     artifacts = []
     binary_artifact: dict[str, object] | None = None
-    for path in [binary, *sorted(libraries)]:
+    for path in [binary, *runtime_libraries(binary)]:
         name = path.name.encode()
         digest.update(len(name).to_bytes(8, "little"))
         digest.update(name)

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::{Component, Path};
 
 use serde::{Deserialize, Serialize};
@@ -60,6 +61,7 @@ pub struct AdmissionIdentity {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AdmissionArtifacts {
     pub runtime_relative_path: String,
+    pub runtime_library_bindings: BTreeMap<String, String>,
     pub probe_relative_path: String,
     pub probe_sha256: String,
     pub icd_manifest_path: String,
@@ -238,12 +240,21 @@ fn admission_applies(record: &AdmissionRecord, identity: &AdmissionIdentity, now
 
 fn artifacts_are_valid(artifacts: &AdmissionArtifacts) -> bool {
     safe_relative(&artifacts.runtime_relative_path)
+        && !artifacts.runtime_library_bindings.is_empty()
+        && artifacts
+            .runtime_library_bindings
+            .iter()
+            .all(|(name, digest)| safe_library_name(name) && is_sha256(digest))
         && safe_relative(&artifacts.probe_relative_path)
         && is_sha256(&artifacts.probe_sha256)
         && safe_relative(&artifacts.cache_seed_relative_path)
         && Path::new(&artifacts.icd_manifest_path).is_absolute()
         && Path::new(&artifacts.icd_library_path).is_absolute()
         && is_sha256(&artifacts.cache_seed_sha256)
+}
+
+fn safe_library_name(value: &str) -> bool {
+    value.contains(".so") && Path::new(value).components().count() == 1 && safe_relative(value)
 }
 
 fn safe_relative(value: &str) -> bool {
@@ -388,6 +399,10 @@ mod tests {
             identity: identity.clone(),
             artifacts: AdmissionArtifacts {
                 runtime_relative_path: "runtime/whisper-cli".to_string(),
+                runtime_library_bindings: BTreeMap::from([(
+                    "libwhisper.so.1".to_string(),
+                    "2".repeat(64),
+                )]),
                 probe_relative_path: "runtime/echo-whisper-runtime-probe".to_string(),
                 probe_sha256: "3".repeat(64),
                 icd_manifest_path: "/usr/share/vulkan/icd.d/intel_icd.json".to_string(),

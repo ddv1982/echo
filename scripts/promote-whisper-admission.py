@@ -14,6 +14,7 @@ from pathlib import Path
 
 from whisper_release_common import (
     runtime_identity,
+    runtime_library_bindings,
     sha256_file,
     tree_sha256,
     verify_contained_symlinks,
@@ -60,6 +61,13 @@ def read_json(path: Path, label: str) -> dict[str, object]:
     if not isinstance(value, dict):
         raise ValueError(f"{label} must be an object")
     return value
+
+
+def verify_runtime_alias_bindings(recorded: object, runtime_cli: Path) -> None:
+    if not isinstance(recorded, dict) or recorded != runtime_library_bindings(
+        runtime_cli
+    ):
+        raise ValueError("runtime library aliases changed after qualification")
 
 
 def canonical(value: object) -> bytes:
@@ -300,6 +308,8 @@ def promote(args: argparse.Namespace) -> None:
     verify_sweep_vad(cell, vad)
     cycle_identity = cycle["identity"]["value"]
     runtime_sha = runtime_identity(runtime_cli)
+    qualified_runtime_bindings = identity_block["runtime"].get("libraryBindings")
+    verify_runtime_alias_bindings(qualified_runtime_bindings, runtime_cli)
     for actual, expected, label in (
         (runtime_sha, cycle_identity["runtime"]["identitySha256"], "runtime"),
         (sha256_file(model), cycle_identity["model"]["sha256"], "model"),
@@ -346,6 +356,9 @@ def promote(args: argparse.Namespace) -> None:
     package = output / "whisper-acceleration"
     package.mkdir(parents=True)
     shutil.copytree(runtime_dir, package / "runtime", symlinks=True)
+    verify_runtime_alias_bindings(
+        qualified_runtime_bindings, package / "runtime/whisper-cli"
+    )
     shutil.copy2(runtime_probe, package / "runtime/echo-whisper-runtime-probe")
     cache_source = cycle_path / "mesa-cache"
     shutil.copytree(cache_source, package / "cache-seed")
@@ -392,6 +405,9 @@ def promote(args: argparse.Namespace) -> None:
         "identity": identity,
         "artifacts": {
             "runtimeRelativePath": "runtime/whisper-cli",
+            "runtimeLibraryBindings": runtime_library_bindings(
+                package / "runtime/whisper-cli"
+            ),
             "probeRelativePath": "runtime/echo-whisper-runtime-probe",
             "probeSha256": sha256_file(runtime_probe),
             "icdManifestPath": str(icd_manifest),
@@ -439,6 +455,23 @@ def self_test() -> None:
         assert first == tree_sha256(root)
         (root / "one").write_bytes(b"changed")
         assert first != tree_sha256(root)
+        runtime = root / "runtime"
+        runtime.mkdir()
+        cli = runtime / "whisper-cli"
+        cli.write_bytes(b"cli")
+        (runtime / "libwhisper.so.1.9.2").write_bytes(b"whisper")
+        alias = runtime / "libwhisper.so.1"
+        alias.write_bytes(b"whisper")
+        (runtime / "libggml.so.0.18.1").write_bytes(b"ggml")
+        bindings = runtime_library_bindings(cli)
+        verify_runtime_alias_bindings(bindings, cli)
+        alias.write_bytes(b"ggml")
+        try:
+            verify_runtime_alias_bindings(bindings, cli)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("changed runtime alias passed qualification binding")
     sample = {
         "schemaVersion": 1,
         "echoCommit": "4" * 40,

@@ -46,14 +46,44 @@ def tree_sha256(root: Path) -> str:
     return digest.hexdigest()
 
 
+def runtime_libraries(cli: Path) -> list[Path]:
+    by_content: dict[tuple[int, str], Path] = {}
+    for candidate in cli.parent.iterdir():
+        if ".so" not in candidate.name:
+            continue
+        try:
+            path = candidate.resolve(strict=True)
+        except OSError:
+            continue
+        if not path.is_file():
+            continue
+        key = (path.stat().st_size, sha256_file(path))
+        selected = by_content.get(key)
+        if selected is None or (len(path.name), path.name) > (
+            len(selected.name),
+            selected.name,
+        ):
+            by_content[key] = path
+    return sorted(by_content.values())
+
+
+def runtime_library_bindings(cli: Path) -> dict[str, str]:
+    bindings = {}
+    for candidate in cli.parent.iterdir():
+        if ".so" not in candidate.name:
+            continue
+        try:
+            path = candidate.resolve(strict=True)
+        except OSError:
+            continue
+        if path.is_file():
+            bindings[candidate.name] = sha256_file(path)
+    return dict(sorted(bindings.items()))
+
+
 def runtime_identity(cli: Path) -> str:
-    libraries = {
-        path.resolve()
-        for path in cli.parent.iterdir()
-        if ".so" in path.name and path.resolve().is_file()
-    }
     digest = hashlib.sha256(b"echo-whisper-runtime-v1\0")
-    for path in [cli.resolve(), *sorted(libraries)]:
+    for path in [cli.resolve(), *runtime_libraries(cli)]:
         name = path.name.encode()
         digest.update(len(name).to_bytes(8, "little"))
         digest.update(name)

@@ -13,7 +13,7 @@ mod whisper_recovery;
 pub use cache::{InstalledModel, ModelCache, ModelInventory, WhisperFamily};
 pub use fake::FakeEngine;
 pub use parakeet::ParakeetEngine;
-pub(crate) use runtime::whisper_runtime_launch;
+pub(crate) use runtime::{runtime_library_bindings, whisper_runtime_launch};
 pub use runtime::SpeechRuntimeInventory;
 pub use whisper::WhisperEngine;
 pub(crate) use whisper::probe_vulkan_runtime_receipt;

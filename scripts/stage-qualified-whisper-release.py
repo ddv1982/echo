@@ -15,6 +15,7 @@ from whisper_release_common import (
     BUNDLE_TOKENS,
     bundle_variant,
     runtime_identity,
+    runtime_library_bindings,
     sha256_bytes,
     sha256_file,
     tree_sha256,
@@ -84,7 +85,7 @@ def verify_extracted(
     extracted: Path,
     expected_binary: bytes,
     promotion_root: Path | None,
-) -> dict[str, str]:
+) -> dict[str, object]:
     binary = extracted / "usr/bin/echo-desktop"
     resource = extracted / "usr/lib/io.github.ddv1982.echo/whisper-acceleration"
     if binary.read_bytes() != expected_binary:
@@ -101,6 +102,20 @@ def verify_extracted(
     runtime = resource / admission["artifacts"]["runtimeRelativePath"]
     if runtime_identity(runtime) != admission["identity"]["runtimeIdentitySha256"]:
         raise ValueError("packaged runtime identity changed")
+    packaged_library_bindings = runtime_library_bindings(runtime)
+    if (
+        packaged_library_bindings
+        != admission["artifacts"]["runtimeLibraryBindings"]
+    ):
+        raise ValueError("packaged runtime library alias admission changed")
+    if promotion_root is not None:
+        source_runtime = (
+            promotion_root
+            / "whisper-acceleration"
+            / admission["artifacts"]["runtimeRelativePath"]
+        )
+        if packaged_library_bindings != runtime_library_bindings(source_runtime):
+            raise ValueError("packaged runtime library alias bindings changed")
     probe = resource / admission["artifacts"]["probeRelativePath"]
     if sha256_file(probe) != admission["artifacts"]["probeSha256"]:
         raise ValueError("packaged runtime probe identity changed")
@@ -112,6 +127,7 @@ def verify_extracted(
         "binarySha256": sha256_file(binary),
         "admissionSha256": sha256_file(packaged_admission),
         "runtimeIdentitySha256": admission["identity"]["runtimeIdentitySha256"],
+        "runtimeLibraryBindings": packaged_library_bindings,
         "cacheSeedSha256": admission["artifacts"]["cacheSeedSha256"],
         "admissionIdentityKey": admission["identityKey"],
     }
@@ -270,6 +286,7 @@ def verify_manifest(root: Path, expected_version: str, expected_commit: str) -> 
             "binarySha256",
             "admissionSha256",
             "runtimeIdentitySha256",
+            "runtimeLibraryBindings",
             "cacheSeedSha256",
             "admissionIdentityKey",
         ):
@@ -296,6 +313,21 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("escaping package symlink was accepted")
+        runtime = root / "runtime"
+        runtime.mkdir()
+        cli = runtime / "whisper-cli"
+        versioned = runtime / "libwhisper.so.1.9.2"
+        ggml = runtime / "libggml.so.0.18.1"
+        cli.write_bytes(b"cli")
+        versioned.write_bytes(b"library")
+        ggml.write_bytes(b"other library")
+        (runtime / "libwhisper.so").write_bytes(b"library")
+        (runtime / "libwhisper.so.1").write_bytes(b"library")
+        original = runtime_identity(cli)
+        original_bindings = runtime_library_bindings(cli)
+        (runtime / "libwhisper.so.1").write_bytes(b"other library")
+        assert runtime_identity(cli) == original
+        assert runtime_library_bindings(cli) != original_bindings
     print("stage-qualified-whisper-release: self-test passed")
 
 

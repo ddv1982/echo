@@ -15,6 +15,11 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from whisper_release_common import (
+    runtime_identity as shared_runtime_identity,
+    runtime_library_bindings,
+)
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SUPPORTED_REVISIONS = frozenset({"v1.9.2", "v1.9.3"})
@@ -156,26 +161,14 @@ def validate_echo_boundary(
 
 
 def product_runtime_identity(cli: Path) -> str:
-    libraries: set[Path] = set()
-    for path in cli.parent.iterdir():
-        if ".so" not in path.name:
-            continue
-        try:
-            resolved = path.resolve(strict=True)
-        except OSError:
-            continue
-        if resolved.is_file():
-            libraries.add(resolved)
-    digest = hashlib.sha256(b"echo-whisper-runtime-v1\0")
-    for path in [cli, *sorted(libraries)]:
-        name = path.name.encode()
-        digest.update(len(name).to_bytes(8, "little"))
-        digest.update(name)
-        digest.update(path.stat().st_size.to_bytes(8, "little"))
-        with path.open("rb") as source:
-            for chunk in iter(lambda: source.read(1024 * 1024), b""):
-                digest.update(chunk)
-    return digest.hexdigest()
+    return shared_runtime_identity(cli)
+
+
+def verify_runtime_alias_bindings(
+    expected: dict[str, str], runtime_cli: Path, stage: str
+) -> None:
+    if not expected or runtime_library_bindings(runtime_cli) != expected:
+        raise ValueError(f"runtime library aliases changed during {stage}")
 
 
 def canonical_json(value: object) -> str:
@@ -771,6 +764,10 @@ def run_cell(
         },
     )
     try:
+        qualified_runtime_bindings = runtime_library_bindings(runtime.cli)
+        verify_runtime_alias_bindings(
+            qualified_runtime_bindings, runtime.cli, "cell setup"
+        )
         model_dir = create_model_dir(cell_root, args.model_path, args.vad_path)
         home = cell_root / "home"
         home.mkdir()
@@ -789,6 +786,9 @@ def run_cell(
             args.vk_driver_files,
             environment,
             cell_root,
+        )
+        verify_runtime_alias_bindings(
+            qualified_runtime_bindings, runtime.cli, "runtime preflight"
         )
         if preflight_receipt != expected_receipt:
             raise ValueError(
@@ -834,6 +834,9 @@ def run_cell(
             str(cache.cache_root),
         ]
         run_command(benchmark_command, environment, cell_root, "benchmark")
+        verify_runtime_alias_bindings(
+            qualified_runtime_bindings, runtime.cli, "paired benchmark"
+        )
         analyzer_root = cell_root / "analysis"
         analyzer_command = [
             sys.executable,
@@ -897,6 +900,9 @@ def run_cell(
         if cell.no_fallback:
             probe_command.append("--no-fallback")
         run_command(probe_command, environment, cell_root, "receipt-probe")
+        verify_runtime_alias_bindings(
+            qualified_runtime_bindings, runtime.cli, "receipt probe"
+        )
         receipt_ok, receipt_error, receipt = probe_receipt_consistency(
             probe_root, expected_receipt
         )
@@ -957,7 +963,11 @@ def run_cell(
                         "sha256": args.expected_echo_binary_sha256,
                     },
                 },
-                "runtime": {"path": str(runtime.cli), "sha256": runtime.sha256},
+                "runtime": {
+                    "path": str(runtime.cli),
+                    "sha256": runtime.sha256,
+                    "libraryBindings": qualified_runtime_bindings,
+                },
                 "runtimeProbe": {
                     "path": str(args.runtime_probe),
                     "sha256": sha256(args.runtime_probe),
@@ -1302,7 +1312,18 @@ def self_test() -> None:
         runtime_root.mkdir()
         cli = runtime_root / "whisper-cli"
         cli.write_bytes(b"cli")
-        (runtime_root / "libwhisper.so").write_bytes(b"library")
+        library = runtime_root / "libwhisper.so"
+        library.write_bytes(b"library")
+        qualified_bindings = runtime_library_bindings(cli)
+        verify_runtime_alias_bindings(qualified_bindings, cli, "self-test")
+        library.write_bytes(b"changed")
+        try:
+            verify_runtime_alias_bindings(qualified_bindings, cli, "self-test")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("runtime alias mutation escaped the sweep bracket")
+        library.write_bytes(b"library")
         model = root / "model.bin"
         model.write_bytes(b"model")
         vad = root / "ggml-silero-v6.2.0.bin"
