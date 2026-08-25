@@ -308,9 +308,8 @@ def promote(args: argparse.Namespace) -> None:
     verify_sweep_vad(cell, vad)
     cycle_identity = cycle["identity"]["value"]
     runtime_sha = runtime_identity(runtime_cli)
-    verify_runtime_alias_bindings(
-        identity_block["runtime"].get("libraryBindings"), runtime_cli
-    )
+    qualified_runtime_bindings = identity_block["runtime"].get("libraryBindings")
+    verify_runtime_alias_bindings(qualified_runtime_bindings, runtime_cli)
     for actual, expected, label in (
         (runtime_sha, cycle_identity["runtime"]["identitySha256"], "runtime"),
         (sha256_file(model), cycle_identity["model"]["sha256"], "model"),
@@ -357,6 +356,9 @@ def promote(args: argparse.Namespace) -> None:
     package = output / "whisper-acceleration"
     package.mkdir(parents=True)
     shutil.copytree(runtime_dir, package / "runtime", symlinks=True)
+    verify_runtime_alias_bindings(
+        qualified_runtime_bindings, package / "runtime/whisper-cli"
+    )
     shutil.copy2(runtime_probe, package / "runtime/echo-whisper-runtime-probe")
     cache_source = cycle_path / "mesa-cache"
     shutil.copytree(cache_source, package / "cache-seed")
