@@ -1,8 +1,10 @@
 use std::fs;
 use std::num::NonZeroUsize;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::time::Instant;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use echo_core::{
     strip_nonspeech, DecodeOptions, Engine, EngineError, EngineId, Language, LanguageChoice,
@@ -219,6 +221,13 @@ impl WhisperEngine {
         matches!(&self.files, WhisperFiles::Explicit(plan) if plan.force_cpu)
     }
 
+    fn timeout(&self) -> Duration {
+        match &self.files {
+            WhisperFiles::Explicit(plan) => plan.timeout,
+            WhisperFiles::Discover(_) => Duration::from_secs(15 * 60),
+        }
+    }
+
     fn runtime_launch(&self) -> Option<&WhisperRuntimeLaunch> {
         match &self.files {
             WhisperFiles::Explicit(plan) => Some(&plan.runtime.launch),
@@ -262,6 +271,7 @@ impl Engine for WhisperEngine {
         let audio_encode_ms = elapsed_ms(encode_started);
         let vad = self.vad_model();
         let tuning = self.tuning();
+        let timeout = self.timeout();
         let (first, mut first_telemetry) = run_attempt(
             &bin,
             launch.as_ref(),
@@ -274,6 +284,7 @@ impl Engine for WhisperEngine {
                 self.force_cpu(),
             ),
             vad.is_some(),
+            timeout,
         )?;
         let retry_without_vad = !first.status.success()
             && vad.is_some()
@@ -292,6 +303,7 @@ impl Engine for WhisperEngine {
                     self.force_cpu(),
                 ),
                 false,
+                timeout,
             )?;
             (
                 retry,
@@ -375,10 +387,12 @@ fn run_attempt(
     launch: Option<&WhisperRuntimeLaunch>,
     args: Vec<String>,
     vad: bool,
+    timeout: Duration,
 ) -> Result<(Output, WhisperAttemptTelemetry), EngineError> {
     let wall_started = Instant::now();
     let spawn_started = Instant::now();
     let mut command = command_for_runtime(binary, launch);
+    command.process_group(0);
     let child = command
         .args(args)
         .stdout(Stdio::piped())
@@ -386,9 +400,33 @@ fn run_attempt(
         .spawn()
         .map_err(|error| EngineError::Infer(error.to_string()))?;
     let process_start_ms = elapsed_ms(spawn_started);
-    let output = child
-        .wait_with_output()
-        .map_err(|error| EngineError::Infer(error.to_string()))?;
+    let pid = rustix::process::Pid::from_raw(i32::try_from(child.id()).map_err(|_| {
+        EngineError::Infer("Whisper child process ID is out of range".to_string())
+    })?)
+    .ok_or_else(|| EngineError::Infer("Whisper child process ID is zero".to_string()))?;
+    let (sender, receiver) = mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let _ = sender.send(child.wait_with_output());
+    });
+    let output = match receiver.recv_timeout(timeout) {
+        Ok(output) => output.map_err(|error| EngineError::Infer(error.to_string()))?,
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            let group_kill = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+            if group_kill.is_err() {
+                let _ = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
+            }
+            let _ = receiver.recv_timeout(Duration::from_secs(5));
+            return Err(EngineError::Infer(format!(
+                "Whisper runtime timed out after {} ms",
+                timeout.as_millis()
+            )));
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            return Err(EngineError::Infer(
+                "Whisper runtime wait thread stopped unexpectedly".to_string(),
+            ));
+        }
+    };
     let telemetry = WhisperAttemptTelemetry {
         vad,
         process_start_ms,
@@ -1136,5 +1174,21 @@ mod tests {
         assert!(!should_retry_without_vad(
             "decoder crashed after loading ggml-silero-v6.2.0.bin"
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_timeout_kills_and_reaps_a_hung_process() {
+        let started = Instant::now();
+        let error = run_attempt(
+            Path::new("/bin/sh"),
+            None,
+            vec!["-c".to_string(), "sleep 5".to_string()],
+            false,
+            std::time::Duration::from_millis(30),
+        )
+        .unwrap_err();
+        assert!(error.as_str().contains("timed out"), "{error}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
     }
 }

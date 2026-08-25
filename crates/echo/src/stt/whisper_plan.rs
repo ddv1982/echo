@@ -1,5 +1,6 @@
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use echo_core::{WhisperRuntimeBackend, WhisperRuntimeSource};
 
@@ -11,6 +12,7 @@ pub struct WhisperExecutionPlan {
     pub tuning: WhisperTuning,
     pub protocol: WhisperProtocol,
     pub force_cpu: bool,
+    pub timeout: Duration,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,6 +99,7 @@ impl WhisperExecutionPlan {
             tuning: WhisperTuning::runtime_defaults(),
             protocol: WhisperProtocol::OneShotCli,
             force_cpu: false,
+            timeout: Duration::from_secs(15 * 60),
         }
     }
 }
