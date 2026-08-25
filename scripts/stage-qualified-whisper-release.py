@@ -315,6 +315,29 @@ def self_test() -> None:
             run.return_value = subprocess.CompletedProcess([], 0, stdout=b"")
             extract_package(rpm, "rpm", existing)
             assert run.call_count == 2
+            assert run.call_args_list[0].args[0][0] == "rpm2cpio"
+            assert run.call_args_list[1].args[0][0] == "cpio"
+
+        fallback = root / "fallback"
+        fallback.mkdir()
+
+        def run_7z(command: list[str], **_: object) -> subprocess.CompletedProcess:
+            output = next(value for value in command if value.startswith("-o"))[2:]
+            if command[-1] == str(rpm):
+                (Path(output) / "payload.cpio").write_bytes(b"cpio")
+            return subprocess.CompletedProcess(command, 0, stdout=b"")
+
+        with (
+            patch.object(
+                shutil,
+                "which",
+                side_effect=lambda command: "/fake/7z" if command == "7z" else None,
+            ),
+            patch.object(subprocess, "run", side_effect=run_7z) as run,
+        ):
+            extract_package(rpm, "rpm", fallback)
+            assert run.call_count == 2
+            assert all(call.args[0][0] == "7z" for call in run.call_args_list)
         package = root / "package"
         package.mkdir()
         outside = root / "outside"
