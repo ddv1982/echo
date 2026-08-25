@@ -37,7 +37,7 @@ pub(crate) fn whisper_runtime_launch(cli: &Path) -> WhisperRuntimeLaunch {
 fn runtime_identity(cli: &Path, libraries: &BTreeSet<PathBuf>) -> std::io::Result<String> {
     let mut hasher = Sha256::new();
     hasher.update(b"echo-whisper-runtime-v1\0");
-    for path in std::iter::once(cli.to_path_buf()).chain(libraries.iter().cloned()) {
+    for path in std::iter::once(cli.to_path_buf()).chain(unique_libraries(libraries)?) {
         let name = path
             .file_name()
             .and_then(|name| name.to_str())
@@ -56,6 +56,43 @@ fn runtime_identity(cli: &Path, libraries: &BTreeSet<PathBuf>) -> std::io::Resul
         }
     }
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn unique_libraries(libraries: &BTreeSet<PathBuf>) -> std::io::Result<Vec<PathBuf>> {
+    let mut by_content = BTreeMap::<(u64, [u8; 32]), PathBuf>::new();
+    for path in libraries {
+        let size = path.metadata()?.len();
+        let digest = file_sha256(path)?;
+        by_content
+            .entry((size, digest))
+            .and_modify(|selected| {
+                let rank = |value: &Path| {
+                    let name = value.file_name().unwrap_or_default().to_string_lossy();
+                    (name.len(), name.into_owned())
+                };
+                if rank(path) > rank(selected) {
+                    *selected = path.clone();
+                }
+            })
+            .or_insert_with(|| path.clone());
+    }
+    let mut selected = by_content.into_values().collect::<Vec<_>>();
+    selected.sort();
+    Ok(selected)
+}
+
+fn file_sha256(path: &Path) -> std::io::Result<[u8; 32]> {
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher.finalize().into())
 }
 
 pub struct ManagedSelection {
@@ -271,6 +308,9 @@ mod tests {
         let first = whisper_runtime_launch(&cli);
         assert_eq!(first.library_dir.as_deref(), Some(root.as_path()));
         assert_eq!(first.identity_sha256.as_deref().map(str::len), Some(64));
+        std::fs::write(root.join("libwhisper.so"), b"library-v1").unwrap();
+        std::fs::write(root.join("libwhisper.so.0"), b"library-v1").unwrap();
+        assert_eq!(first.identity_sha256, whisper_runtime_launch(&cli).identity_sha256);
         std::fs::write(&library, b"library-v2").unwrap();
         let second = whisper_runtime_launch(&cli);
         assert_ne!(first.identity_sha256, second.identity_sha256);

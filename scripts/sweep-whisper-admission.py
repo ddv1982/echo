@@ -15,6 +15,8 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from whisper_release_common import runtime_identity as shared_runtime_identity
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SUPPORTED_REVISIONS = frozenset({"v1.9.2", "v1.9.3"})
@@ -156,26 +158,7 @@ def validate_echo_boundary(
 
 
 def product_runtime_identity(cli: Path) -> str:
-    libraries: set[Path] = set()
-    for path in cli.parent.iterdir():
-        if ".so" not in path.name:
-            continue
-        try:
-            resolved = path.resolve(strict=True)
-        except OSError:
-            continue
-        if resolved.is_file():
-            libraries.add(resolved)
-    digest = hashlib.sha256(b"echo-whisper-runtime-v1\0")
-    for path in [cli, *sorted(libraries)]:
-        name = path.name.encode()
-        digest.update(len(name).to_bytes(8, "little"))
-        digest.update(name)
-        digest.update(path.stat().st_size.to_bytes(8, "little"))
-        with path.open("rb") as source:
-            for chunk in iter(lambda: source.read(1024 * 1024), b""):
-                digest.update(chunk)
-    return digest.hexdigest()
+    return shared_runtime_identity(cli)
 
 
 def canonical_json(value: object) -> str:

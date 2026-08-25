@@ -296,6 +296,16 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("escaping package symlink was accepted")
+        runtime = root / "runtime"
+        runtime.mkdir()
+        cli = runtime / "whisper-cli"
+        versioned = runtime / "libwhisper.so.1.9.2"
+        cli.write_bytes(b"cli")
+        versioned.write_bytes(b"library")
+        original = runtime_identity(cli)
+        (runtime / "libwhisper.so").write_bytes(b"library")
+        (runtime / "libwhisper.so.1").write_bytes(b"library")
+        assert runtime_identity(cli) == original
     print("stage-qualified-whisper-release: self-test passed")
 
 

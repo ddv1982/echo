@@ -18,6 +18,9 @@ import sys
 
 repo = pathlib.Path(sys.argv[1])
 root = pathlib.Path(sys.argv[2])
+sys.path.insert(0, str(repo / "scripts"))
+from whisper_release_common import runtime_identity as launch_identity
+
 analyzer = repo / "scripts" / "analyze-stt-host-matrix.py"
 bundle = root / "bundle"
 bundle.mkdir()
@@ -35,20 +38,6 @@ library.write_bytes(b"library receipt")
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def launch_identity(path):
-    value = hashlib.sha256(b"echo-whisper-runtime-v1\0")
-    libraries = sorted(
-        {candidate.resolve() for candidate in path.parent.iterdir() if ".so" in candidate.name}
-    )
-    for candidate in [path, *libraries]:
-        name = candidate.name.encode()
-        value.update(len(name).to_bytes(8, "little"))
-        value.update(name)
-        value.update(candidate.stat().st_size.to_bytes(8, "little"))
-        value.update(candidate.read_bytes())
-    return value.hexdigest()
 
 
 def ref(relative, contents):
