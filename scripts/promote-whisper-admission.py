@@ -307,9 +307,11 @@ def promote(args: argparse.Namespace) -> None:
     ):
         if actual != expected:
             raise ValueError(f"{label} changed after qualification")
-    if identity_block["runtime"]["sha256"] != sha256_file(
-        runtime_cli
-    ) or identity_block["model"]["sha256"] != sha256_file(model):
+    if (
+        identity_block["runtime"]["sha256"] != sha256_file(runtime_cli)
+        or identity_block["runtimeProbe"]["sha256"] != sha256_file(runtime_probe)
+        or identity_block["model"]["sha256"] != sha256_file(model)
+    ):
         raise ValueError("sweep artifacts differ from promotion inputs")
     if receipt != cycle["probes"]["populated"]["receipt"]:
         raise ValueError("sweep and cache-cycle receipts differ")

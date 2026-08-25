@@ -406,6 +406,39 @@ def run_command(
     return completed
 
 
+def runtime_preflight_receipt(
+    probe: Path,
+    runtime: Runtime,
+    cache: Path,
+    driver: Path,
+    environment: dict[str, str],
+    cell_root: Path,
+) -> dict[str, object]:
+    probe_environment = environment.copy()
+    probe_environment.update(
+        {
+            "LD_LIBRARY_PATH": str(runtime.root),
+            "MESA_SHADER_CACHE_DIR": str(cache),
+            "VK_DRIVER_FILES": str(driver),
+        }
+    )
+    write_json(cell_root / "runtime-preflight.environment.json", probe_environment)
+    completed = run_command(
+        [str(probe)], probe_environment, cell_root, "runtime-preflight"
+    )
+    lines = [
+        line.removeprefix(RECEIPT_PREFIX)
+        for line in completed.stderr.splitlines()
+        if line.startswith(RECEIPT_PREFIX)
+    ]
+    if len(lines) != 1:
+        raise ValueError("runtime preflight did not emit exactly one receipt")
+    receipt = json.loads(lines[0])
+    if not isinstance(receipt, dict):
+        raise ValueError("runtime preflight receipt must be an object")
+    return receipt
+
+
 def read_fixture_audio(manifest_path: Path) -> Path:
     manifest = read_json(manifest_path, "fixture manifest")
     utterances = manifest.get("utterances")
@@ -749,6 +782,18 @@ def run_cell(
         cache_ok, driver_ok, reset_ok, cache_error, expected_receipt = cache_binding(
             runtime, cache, args.model_path, args.vad_path, args.vk_driver_files
         )
+        preflight_receipt = runtime_preflight_receipt(
+            args.runtime_probe,
+            runtime,
+            cache.cache_root,
+            args.vk_driver_files,
+            environment,
+            cell_root,
+        )
+        if preflight_receipt != expected_receipt:
+            raise ValueError(
+                "runtime preflight receipt differs from cache-cycle evidence"
+            )
         before = cache_snapshot(cache.cache_root)
         write_json(cell_root / "cache-before.json", before)
         bundle_root = cell_root / "bundle"
@@ -913,6 +958,10 @@ def run_cell(
                     },
                 },
                 "runtime": {"path": str(runtime.cli), "sha256": runtime.sha256},
+                "runtimeProbe": {
+                    "path": str(args.runtime_probe),
+                    "sha256": sha256(args.runtime_probe),
+                },
                 "model": {
                     "path": str(args.model_path),
                     "sha256": sha256(args.model_path),
@@ -935,6 +984,7 @@ def run_cell(
                 "bundle": str(bundle_root),
                 "analysis": str(analyzer_root),
                 "receiptProbe": str(probe_root),
+                "runtimePreflight": str(cell_root / "runtime-preflight.stderr.txt"),
                 "cacheBefore": str(cell_root / "cache-before.json"),
                 "cacheAfter": str(cell_root / "cache-after.json"),
                 "cacheCycle": str(cache.cycle_root),
@@ -1122,12 +1172,16 @@ def prepare_output(output: Path) -> None:
 
 
 def run_sweep(args: argparse.Namespace) -> int:
+    args.model_path = args.model_path.resolve()
+    args.vad_path = args.vad_path.resolve()
+    args.runtime_probe = args.runtime_probe.resolve()
     for label, path in (
         ("Echo binary", args.echo_binary),
         ("fixture manifest", args.fixture_manifest),
         ("coverage manifest", args.coverage_manifest),
         ("model", args.model_path),
         ("VAD", args.vad_path),
+        ("runtime probe", args.runtime_probe),
         ("VK_DRIVER_FILES", args.vk_driver_files),
     ):
         if not path.is_file():
@@ -1418,6 +1472,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--model-name")
     result.add_argument("--model-path", type=Path)
     result.add_argument("--vad-path", type=Path)
+    result.add_argument("--runtime-probe", type=Path)
     result.add_argument("--vk-driver-files", type=Path)
     result.add_argument(
         "--receipt-runtime", action="append", default=[], metavar="REVISION=DIR"
@@ -1457,6 +1512,7 @@ def main() -> int:
         "model_name",
         "model_path",
         "vad_path",
+        "runtime_probe",
         "vk_driver_files",
         "output",
     )

@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -7,7 +7,9 @@ use echo_core::{
     WhisperRecoveryReason, WhisperRecoveryTelemetry, WhisperRuntimeBackend,
 };
 
-use super::whisper_admission::{AdmissionIdentityKey, QuarantineReason};
+use super::whisper_admission::{
+    AdmissionIdentityKey, QuarantineReason, MAX_QUARANTINE_LIFETIME_SECS,
+};
 use super::whisper_plan::{QualifiedWhisperPlan, WhisperPlanDecision};
 use super::{QuarantineStore, WhisperEngine};
 
@@ -15,10 +17,10 @@ pub struct RecoveringWhisperEngine {
     decision: WhisperPlanDecision,
     quarantine: QuarantineStore,
     now: fn() -> u64,
-    process_quarantine: Arc<Mutex<BTreeSet<String>>>,
+    process_quarantine: Arc<Mutex<BTreeMap<String, u64>>>,
 }
 
-static PROCESS_QUARANTINE: OnceLock<Arc<Mutex<BTreeSet<String>>>> = OnceLock::new();
+static PROCESS_QUARANTINE: OnceLock<Arc<Mutex<BTreeMap<String, u64>>>> = OnceLock::new();
 
 impl RecoveringWhisperEngine {
     #[must_use]
@@ -28,7 +30,7 @@ impl RecoveringWhisperEngine {
             quarantine,
             now: system_now,
             process_quarantine: Arc::clone(
-                PROCESS_QUARANTINE.get_or_init(|| Arc::new(Mutex::new(BTreeSet::new()))),
+                PROCESS_QUARANTINE.get_or_init(|| Arc::new(Mutex::new(BTreeMap::new()))),
             ),
         }
     }
@@ -44,7 +46,7 @@ impl RecoveringWhisperEngine {
             decision,
             quarantine,
             now,
-            process_quarantine: Arc::new(Mutex::new(BTreeSet::new())),
+            process_quarantine: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -99,7 +101,7 @@ impl RecoveringWhisperEngine {
                 WhisperRecoveryReason::PolicyMismatch,
             );
         }
-        match self.process_quarantined(&plan.identity_key) {
+        match self.process_quarantined(&plan.identity_key, now) {
             Ok(true) => {
                 return self.run_fallback(
                     plan,
@@ -154,7 +156,10 @@ impl RecoveringWhisperEngine {
             Err(error) => classify_error(&error),
         };
         if let Ok(mut keys) = self.process_quarantine.lock() {
-            keys.insert(plan.identity_key.as_str().to_string());
+            keys.insert(
+                plan.identity_key.as_str().to_string(),
+                now.saturating_add(MAX_QUARANTINE_LIFETIME_SECS),
+            );
         }
         let _ = self.quarantine.record_failure(
             &plan.identity_key,
@@ -164,10 +169,13 @@ impl RecoveringWhisperEngine {
         self.run_fallback(plan, pcm, options, true, failure)
     }
 
-    fn process_quarantined(&self, key: &AdmissionIdentityKey) -> Result<bool, ()> {
+    fn process_quarantined(&self, key: &AdmissionIdentityKey, now: u64) -> Result<bool, ()> {
         self.process_quarantine
             .lock()
-            .map(|keys| keys.contains(key.as_str()))
+            .map(|mut keys| {
+                keys.retain(|_, expires_at| *expires_at > now);
+                keys.contains_key(key.as_str())
+            })
             .map_err(|_| ())
     }
 
@@ -573,6 +581,12 @@ mod tests {
                     recovery.fallback_reason,
                     Some(WhisperRecoveryReason::Quarantined)
                 );
+                assert!(!engine
+                    .process_quarantined(
+                        &identity_key,
+                        NOW + MAX_QUARANTINE_LIFETIME_SECS,
+                    )
+                    .unwrap());
             }
         }
     }
