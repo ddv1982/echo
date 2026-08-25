@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "name": "Echo product-speech qualification corpus",
+    "homepage": "https://github.com/ddv1982/echo",
+    "repository": "https://github.com/ddv1982/echo",
+    "revision": "recipe-v1",
+    "license": "CC-BY-4.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+    "attribution": "Includes Google FLEURS, the AMI Meeting Corpus, CC0 Wikimedia Commons recordings, and consented Echo contributor recordings. See each fixture provenance record."
+  },
+  "requiredLanguages": ["en", "nl", "de", "fr", "es"],
+  "requiredClasses": [
+    "dictation",
+    "technical-identifiers",
+    "fast-speech",
+    "quiet-speech",
+    "noise",
+    "false-starts",
+    "silence",
+    "nonspeech"
+  ],
+  "captures": [
+    {
+      "id": "product-dictation-en",
+      "language": "en",
+      "class": "dictation",
+      "reference": "Please schedule the design review for Tuesday afternoon and send the notes to the product team."
+    },
+    {
+      "id": "product-technical-en",
+      "language": "en",
+      "class": "technical-identifiers",
+      "reference": "Deploy API version two point four to node alpha seven, then open slash var slash lib slash echo slash config dot JSON."
+    },
+    {
+      "id": "product-fast-en",
+      "language": "en",
+      "class": "fast-speech",
+      "reference": "Before lunch, summarize the customer feedback, update the roadmap, assign the follow-up actions, and notify everyone in the release channel."
+    },
+    {
+      "id": "product-quiet-en",
+      "language": "en",
+      "class": "quiet-speech",
+      "reference": "This is a quiet dictation recorded close to the microphone while the room remains naturally silent."
+    }
+  ],
+  "externals": {
+    "ami": {
+      "id": "product-false-starts-en",
+      "url": "https://huggingface.co/datasets/podscripter-project/test-fixtures/resolve/53ae490ce0c2244c9882f591fc6e2edaf2b846b1/en/ami_en2001b_1993_2020.wav",
+      "bytes": 827278,
+      "sha256": "ed3119d1f1e44b77903f1d1ccff7973dc8183171643a59b98dcb03be66058ca3",
+      "license": "CC-BY-4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+      "attribution": "J. Carletta et al., The AMI Meeting Corpus: A pre-announcement, MLMI 2005.",
+      "modifications": "EN2001b Mix-Headset seconds 1993.87 through 2019.72, re-encoded as 16 kHz mono PCM16 by podscripter-project/test-fixtures.",
+      "reference": "Um and what well, what score would a word get that just occurs once in all the corpus for example? Probably one point zero is very high information value. Even though there are all the other same topics where it doesn't occur? Yeah, 'cause this would Yeah, in in a sense I mean this is a bit like the what like document frequency over total frequency."
+    },
+    "cough": {
+      "id": "product-nonspeech-cough-en",
+      "url": "https://upload.wikimedia.org/wikipedia/commons/b/be/Woman_coughing_three_times.wav",
+      "bytes": 284632,
+      "sha256": "8e10238f86d6e7495165f5a60f02a816eed98bf083fec8e18271578839e842ae",
+      "revision": "2023-07-09T03:47:24Z",
+      "license": "CC0-1.0",
+      "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "attribution": "Ashe Kirk, Cough (2), via Wikimedia Commons and Freesound."
+    },
+    "keyboard": {
+      "url": "https://upload.wikimedia.org/wikipedia/commons/1/16/IBM_M2_sound.ogg",
+      "bytes": 63414,
+      "sha256": "e620684e9b03b62319fb48da6149392cfd4042615e17a891554f8a9f6ac8515e",
+      "revision": "2014-05-17T10:40:09Z",
+      "license": "CC0-1.0",
+      "licenseUrl": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "attribution": "Anonimski, IBM Model M2 keyboard sound, via Wikimedia Commons."
+    }
+  },
+  "derivations": {
+    "noiseSnrDb": 10,
+    "silenceDurationMs": 3000,
+    "sampleRateHz": 16000,
+    "channels": 1,
+    "bitsPerSample": 16
+  }
+}

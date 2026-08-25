@@ -28,6 +28,39 @@ to become a release requirement.
 
 ## Publish
 
+### Stage a qualified Whisper acceleration release
+
+Use this path when the release contains an admitted Whisper accelerator. Do not let the tag workflow rebuild the qualified executable.
+
+1. Build `target/release/echo-desktop` from clean `origin/main`. Set `ECHO_BUILD_COMMIT` to the full main commit.
+2. Run `patch-tauri-bundle-type.py` to create the Debian and RPM ELF variants.
+3. Run the full Whisper qualification against each variant.
+4. Run `promote-whisper-admission.py` for each passing sweep.
+5. Run `stage-qualified-whisper-release.py` to bundle and verify the exact variants.
+6. Create a draft GitHub Release named `qualification-$commit`. Upload every staged file to that draft.
+
+The staging command has this shape:
+
+```sh
+python3 scripts/stage-qualified-whisper-release.py \
+  --canonical-binary target/release/echo-desktop \
+  --deb-promotion target/whisper-release/deb-promotion \
+  --rpm-promotion target/whisper-release/rpm-promotion \
+  --output target/whisper-release/assets \
+  --version X.Y.Z \
+  --commit "$commit"
+
+gh release create "qualification-$commit" \
+  --draft \
+  --target "$commit" \
+  --title "Qualified release candidate $commit" \
+  target/whisper-release/assets/*
+```
+
+The tag workflow downloads that draft. It extracts both packages and checks the executable, admission, runtime, and cache identities before it publishes the final release.
+
+### Push the application tag
+
 Create an annotated tag on the tested `origin/main` commit and push only the
 tag. Do not create a GitHub Release or upload assets by hand.
 
@@ -48,7 +81,7 @@ GitHub Release only after all required artifacts are available.
 ## Verify
 
 Confirm that the workflow is green and the Release has all three required
-assets:
+assets plus `qualified-release.json` for an acceleration release:
 
 ```sh
 gh run list --workflow release.yml --limit 5

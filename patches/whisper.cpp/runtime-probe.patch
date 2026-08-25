@@ -1,0 +1,51 @@
+diff --git a/examples/CMakeLists.txt b/examples/CMakeLists.txt
+--- a/examples/CMakeLists.txt
++++ b/examples/CMakeLists.txt
+@@ -67,6 +67,7 @@ elseif(CMAKE_JS_VERSION)
+     add_subdirectory(addon.node)
+ else()
+     add_subdirectory(cli)
++    add_subdirectory(echo-runtime-probe)
+     add_subdirectory(bench)
+     add_subdirectory(server)
+     add_subdirectory(quantize)
+diff --git a/examples/echo-runtime-probe/CMakeLists.txt b/examples/echo-runtime-probe/CMakeLists.txt
+new file mode 100644
+--- /dev/null
++++ b/examples/echo-runtime-probe/CMakeLists.txt
+@@ -0,0 +1,8 @@
++set(TARGET echo-whisper-runtime-probe)
++add_executable(${TARGET} runtime-probe.cpp)
++
++include(DefaultTargetOptions)
++
++target_link_libraries(${TARGET} PRIVATE whisper)
++
++install(TARGETS ${TARGET} RUNTIME)
+diff --git a/examples/echo-runtime-probe/runtime-probe.cpp b/examples/echo-runtime-probe/runtime-probe.cpp
+new file mode 100644
+--- /dev/null
++++ b/examples/echo-runtime-probe/runtime-probe.cpp
+@@ -0,0 +1,22 @@
++#include "ggml-backend.h"
++
++#include <cstdio>
++
++int main() {
++    ggml_backend_load_all();
++    ggml_backend_dev_t device = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
++    if (device == nullptr) {
++        device = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_IGPU);
++    }
++    if (device == nullptr) {
++        std::fprintf(stderr, "echo-whisper-runtime-probe: no GPU device\n");
++        return 2;
++    }
++    ggml_backend_t backend = ggml_backend_dev_init(device, nullptr);
++    if (backend == nullptr) {
++        std::fprintf(stderr, "echo-whisper-runtime-probe: backend initialization failed\n");
++        return 3;
++    }
++    ggml_backend_free(backend);
++    return 0;
++}

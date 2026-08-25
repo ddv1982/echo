@@ -60,8 +60,17 @@ def ref(relative, contents):
 
 coverage = {
     "schemaVersion": 1,
+    "source": {
+        "name": "Replay fixture",
+        "homepage": "https://example.com/corpus",
+        "repository": "https://example.com/repository",
+        "revision": "b" * 40,
+        "license": "CC-BY-4.0",
+        "licenseUrl": "https://creativecommons.org/licenses/by/4.0/",
+        "attribution": "Replay fixture authors",
+    },
     "coverage": {
-        "pending": [],
+        "pending": ["missing product classes"],
         "requiredLanguages": ["en"],
         "requiredClasses": [
             "dictation", "technical-identifiers", "fast-speech", "quiet-speech",
@@ -74,6 +83,8 @@ coverage = {
             "language": "en",
             "class": "clean-read",
             "reference": "hello world",
+            "sourceUrl": "https://example.com/repository/audio.bin",
+            "bytes": audio.stat().st_size,
             "sha256": digest(audio),
         }
     ],
@@ -82,8 +93,29 @@ coverage_path = root / "coverage-manifest.json"
 coverage_path.write_text(json.dumps(coverage, indent=2) + "\n", encoding="utf-8")
 snapshot = {
     "schemaVersion": 1,
+    "source": coverage["source"],
+    "coverage": coverage["coverage"],
     "utterances": [
-        {"id": "fixture", "file": "audio.bin", "language": "en", "reference": "hello world"}
+        {
+            "id": "fixture", "file": "audio.bin", "language": "en",
+            "class": "clean-read", "reference": "hello world",
+            "provenance": {
+                "sourceUrl": "https://example.com/repository/audio.bin",
+                "sourceSha256": digest(audio),
+                "sourceBytes": audio.stat().st_size,
+                "repository": coverage["source"]["repository"],
+                "revision": coverage["source"]["revision"],
+                "attribution": coverage["source"]["attribution"],
+                "license": {
+                    "id": coverage["source"]["license"],
+                    "url": coverage["source"]["licenseUrl"],
+                },
+            },
+            "derivation": {
+                "kind": "verbatim-copy", "sourceSha256": digest(audio),
+                "outputSha256": digest(audio),
+            },
+        }
     ],
 }
 corpus_path = bundle / "corpus-manifest.json"
@@ -97,7 +129,12 @@ manifest = {
     "corpus": {
         "sourcePath": str(corpus_path),
         "snapshot": {"path": "corpus-manifest.json", "sha256": digest(corpus_path)},
-        "utterances": [{"id": "fixture", "audio": str(audio), "audioSha256": digest(audio)}],
+        "utterances": [{
+            "id": "fixture", "audio": str(audio), "audioSha256": digest(audio),
+            "class": snapshot["utterances"][0]["class"],
+            "provenance": snapshot["utterances"][0]["provenance"],
+            "derivation": snapshot["utterances"][0]["derivation"],
+        }],
     },
     "candidates": [
         {
@@ -241,11 +278,11 @@ rows = [
 )
 
 
-def run(target):
+def run(target, corpus=coverage_path):
     return subprocess.run(
         [
             sys.executable, str(analyzer), "--runs", str(target / "runs.jsonl"),
-            "--corpus-manifest", str(coverage_path),
+            "--corpus-manifest", str(corpus),
             "--cpu-candidate", "cpu", "--accelerated-candidate", "gpu", "--output-dir", str(target / "decision"),
         ],
         check=False,
@@ -261,6 +298,7 @@ decision = json.loads((bundle / "decision" / "decision.json").read_text())
 assert decision["languages"]["en"]["cpuWer"] == 0
 assert decision["languages"]["en"]["acceleratedWer"] == 0
 assert not decision["gates"]["coverageComplete"]
+assert not decision["gates"]["identityMatch"]
 assert not decision["gates"]["driverIcdIdentity"]
 assert not decision["gates"]["freshAndPopulatedCacheEvidence"]
 assert not decision["gates"]["resetEvidence"]
@@ -285,6 +323,15 @@ def tampered(name, mutate):
     shutil.copytree(bundle, target, ignore=shutil.ignore_patterns("decision"))
     mutate(target)
     rejected = run(target)
+    assert rejected.returncode == 1, (name, rejected.stdout, rejected.stderr)
+
+
+def tampered_external(name, mutate):
+    changed_path = root / f"{name}.json"
+    changed = json.loads(coverage_path.read_text())
+    mutate(changed)
+    changed_path.write_text(json.dumps(changed), encoding="utf-8")
+    rejected = run(bundle, changed_path)
     assert rejected.returncode == 1, (name, rejected.stdout, rejected.stderr)
 
 
@@ -363,6 +410,41 @@ def reference_mismatch(target):
 
 
 tampered("reference-mismatch", reference_mismatch)
+
+
+tampered_external(
+    "external-class-tamper",
+    lambda changed: changed["utterances"][0].__setitem__("class", "dictation"),
+)
+tampered_external(
+    "external-coverage-tamper",
+    lambda changed: changed["coverage"].__setitem__("pending", []),
+)
+tampered_external(
+    "external-license-tamper",
+    lambda changed: changed["source"].__setitem__("license", "CC0-1.0"),
+)
+tampered_external(
+    "external-source-tamper",
+    lambda changed: changed["source"].__setitem__(
+        "repository", "https://example.com/other"
+    ),
+)
+
+
+def bundled_class_mismatch(target):
+    snapshot_path = target / "corpus-manifest.json"
+    changed = json.loads(snapshot_path.read_text())
+    changed["utterances"][0]["class"] = "dictation"
+    snapshot_path.write_text(json.dumps(changed), encoding="utf-8")
+    manifest_path = target / "run-manifest.json"
+    run_manifest = json.loads(manifest_path.read_text())
+    run_manifest["corpus"]["snapshot"]["sha256"] = digest(snapshot_path)
+    run_manifest["corpus"]["utterances"][0]["class"] = "dictation"
+    manifest_path.write_text(json.dumps(run_manifest), encoding="utf-8")
+
+
+tampered("bundled-class-mismatch", bundled_class_mismatch)
 
 
 def audio_mismatch(target):

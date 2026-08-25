@@ -7,6 +7,7 @@ set -euo pipefail
 readonly script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly repo_root="$(cd -- "${script_dir}/.." && pwd)"
 readonly receipt_patch="${repo_root}/patches/whisper.cpp/runtime-receipt.patch"
+readonly probe_patch="${repo_root}/patches/whisper.cpp/runtime-probe.patch"
 readonly required_libraries=(libwhisper libggml libggml-base libggml-cpu libggml-vulkan)
 
 die() {
@@ -56,6 +57,7 @@ check_source() {
     [[ "$(git -C "${source_dir}" rev-parse "${revision}^{commit}")" == "${expected_commit}" ]] || die "${revision} does not resolve to ${expected_commit}"
     [[ -z "$(git -C "${source_dir}" status --porcelain)" ]] || die "source worktree is not clean"
     git -C "${source_dir}" apply --check "${receipt_patch}" || die "receipt patch does not apply to source"
+    git -C "${source_dir}" apply --check "${probe_patch}" || die "runtime probe patch does not apply to source"
 }
 
 check_staged_runtime() {
@@ -70,6 +72,7 @@ check_staged_runtime() {
     command -v readelf >/dev/null || die "readelf is required to verify runtime paths"
     stage_real="$(readlink -f -- "${stage_dir}")"
     [[ -x "${stage_dir}/whisper-cli" ]] || die "whisper-cli was not produced"
+    [[ -x "${stage_dir}/echo-whisper-runtime-probe" ]] || die "echo-whisper-runtime-probe was not produced"
     for library in "${required_libraries[@]}"; do
         find "${stage_dir}" -maxdepth 1 -type f -name "${library}.so*" -print -quit | grep -q . || die "${library} was not produced beside whisper-cli"
     done
@@ -77,7 +80,11 @@ check_staged_runtime() {
         if readelf -d "${artifact}" | grep -Eq '\((RPATH|RUNPATH)\)'; then
             die "staged runtime has an RPATH or RUNPATH: ${artifact}"
         fi
-    done < <(find "${stage_dir}" -maxdepth 1 -type f \( -name 'whisper-cli' -o -name '*.so*' \) -print0)
+    done < <(find "${stage_dir}" -maxdepth 1 -type f \( -name 'whisper-cli' -o -name 'echo-whisper-runtime-probe' -o -name '*.so*' \) -print0)
+
+    if LD_LIBRARY_PATH="${stage_dir}" ldd "${stage_dir}/echo-whisper-runtime-probe" | grep -q 'not found'; then
+        die "echo-whisper-runtime-probe has unresolved shared-library dependencies"
+    fi
 
     ldd_output="$(LD_LIBRARY_PATH="${stage_dir}" ldd "${stage_dir}/whisper-cli")" || die "could not inspect whisper-cli dependencies"
     if grep -q 'not found' <<<"${ldd_output}"; then
@@ -99,6 +106,7 @@ check_staged_runtime() {
 }
 
 [[ -f "${receipt_patch}" ]] || die "receipt patch is missing: ${receipt_patch}"
+[[ -f "${probe_patch}" ]] || die "runtime probe patch is missing: ${probe_patch}"
 
 if [[ "${1:-}" == "--check-source" ]]; then
     [[ $# -eq 2 ]] || { usage >&2; exit 2; }
@@ -128,6 +136,8 @@ trap cleanup EXIT
 git -C "${source_dir}" worktree add --detach "${worktree_dir}" "${expected_commit}" >/dev/null
 git -C "${worktree_dir}" apply --check "${receipt_patch}"
 git -C "${worktree_dir}" apply "${receipt_patch}"
+git -C "${worktree_dir}" apply --check "${probe_patch}"
+git -C "${worktree_dir}" apply "${probe_patch}"
 
 cmake -S "${worktree_dir}" -B "${build_dir}" \
     -DCMAKE_BUILD_TYPE=Release \
@@ -137,7 +147,7 @@ cmake -S "${worktree_dir}" -B "${build_dir}" \
     -DWHISPER_BUILD_TESTS=OFF \
     -DWHISPER_BUILD_EXAMPLES=ON \
     -DWHISPER_BUILD_SERVER=OFF
-cmake --build "${build_dir}" --config Release --target whisper-cli --parallel
+cmake --build "${build_dir}" --config Release --target whisper-cli echo-whisper-runtime-probe --parallel
 
 mv -- "${build_dir}/bin" "${stage_dir}"
 check_staged_runtime "${stage_dir}"

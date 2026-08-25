@@ -1,6 +1,77 @@
 use std::collections::BTreeSet;
 
-use echo_core::WhisperRuntimeBackend;
+use echo_core::{WhisperRuntimeBackend, WhisperVulkanReceipt};
+
+const VULKAN_RECEIPT_PREFIX: &str = "echo_whisper_runtime_receipt: ";
+
+pub(crate) fn parse_vulkan_runtime_receipt(
+    stderr: &str,
+) -> Result<WhisperVulkanReceipt, String> {
+    let receipt = parse_vulkan_runtime_receipt_line(stderr)?;
+    let selected = stderr
+        .lines()
+        .filter_map(|line| {
+            line.trim()
+                .strip_prefix("whisper_backend_init_gpu: using Vulkan")?
+                .strip_suffix(" backend")?
+                .parse::<u32>()
+                .ok()
+        })
+        .collect::<Vec<_>>();
+    if selected.len() != 1 {
+        return Err(format!(
+            "expected exactly one selected Vulkan backend, found {}",
+            selected.len()
+        ));
+    }
+    if receipt.selected_index != selected[0] {
+        return Err(format!(
+            "Vulkan runtime receipt selectedIndex does not match the selected backend ({} != {})",
+            receipt.selected_index, selected[0]
+        ));
+    }
+    Ok(receipt)
+}
+
+pub(crate) fn parse_vulkan_runtime_receipt_line(
+    stderr: &str,
+) -> Result<WhisperVulkanReceipt, String> {
+    let lines = stderr
+        .lines()
+        .filter_map(|line| line.strip_prefix(VULKAN_RECEIPT_PREFIX))
+        .collect::<Vec<_>>();
+    if lines.len() != 1 {
+        return Err(format!(
+            "expected exactly one Vulkan runtime receipt, found {}",
+            lines.len()
+        ));
+    }
+    let receipt: WhisperVulkanReceipt = serde_json::from_str(lines[0])
+        .map_err(|error| format!("invalid Vulkan runtime receipt: {error}"))?;
+    if receipt.schema_version != 1 {
+        return Err("Vulkan runtime receipt has an unsupported schemaVersion".to_string());
+    }
+    if receipt.backend != "vulkan" {
+        return Err("Vulkan runtime receipt backend is not vulkan".to_string());
+    }
+    for (name, value) in [
+        ("deviceUUID", receipt.device_uuid.as_str()),
+        ("driverUUID", receipt.driver_uuid.as_str()),
+        ("pipelineCacheUUID", receipt.pipeline_cache_uuid.as_str()),
+    ] {
+        if value.len() != 32
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            || value.bytes().all(|byte| byte == b'0')
+        {
+            return Err(format!(
+                "Vulkan runtime receipt {name} must be nonzero lowercase 32-hex"
+            ));
+        }
+    }
+    Ok(receipt)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WhisperRuntimeObservation {
@@ -132,6 +203,65 @@ fn cpu_observation(stderr: &str) -> Option<WhisperRuntimeObservation> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const RECEIPT: &str = "echo_whisper_runtime_receipt: {\"schemaVersion\":1,\"backend\":\"vulkan\",\"selectedIndex\":0,\"vendorId\":32902,\"deviceId\":18086,\"apiVersion\":4211006,\"driverVersion\":104865800,\"deviceUUID\":\"8680a6460c0000000002000000000000\",\"driverUUID\":\"ee99561e45e1e718c6121d36d8345582\",\"pipelineCacheUUID\":\"35e9eb9761bf7afc9291ffc449ddf849\"}";
+
+    #[test]
+    fn strict_vulkan_receipt_binds_the_selected_backend_index() {
+        let stderr = format!(
+            "ggml_vulkan: 0 = Intel(R) Graphics | uma: 1\n\
+             whisper_backend_init_gpu: using Vulkan0 backend\n{RECEIPT}\n"
+        );
+        let receipt = parse_vulkan_runtime_receipt(&stderr).unwrap();
+        assert_eq!(receipt.selected_index, 0);
+        assert_eq!(receipt.vendor_id, 0x8086);
+        assert_eq!(receipt.device_id, 0x46a6);
+        assert_eq!(receipt.device_uuid, "8680a6460c0000000002000000000000");
+        assert_eq!(parse_vulkan_runtime_receipt_line(RECEIPT).unwrap(), receipt);
+    }
+
+    #[test]
+    fn strict_vulkan_receipt_rejects_missing_duplicate_and_changed_evidence() {
+        let duplicate = format!(
+            "whisper_backend_init_gpu: using Vulkan0 backend\n{RECEIPT}\n{RECEIPT}\n"
+        );
+        assert!(parse_vulkan_runtime_receipt(&duplicate)
+            .unwrap_err()
+            .contains("exactly one"));
+        assert!(parse_vulkan_runtime_receipt(RECEIPT)
+            .unwrap_err()
+            .contains("selected Vulkan backend"));
+        let wrong_index = format!(
+            "whisper_backend_init_gpu: using Vulkan1 backend\n{RECEIPT}\n"
+        );
+        assert!(parse_vulkan_runtime_receipt(&wrong_index)
+            .unwrap_err()
+            .contains("selectedIndex"));
+        let duplicate_key = format!(
+            "whisper_backend_init_gpu: using Vulkan0 backend\n{}\n",
+            RECEIPT.replace("{\"schemaVersion\":1", "{\"schemaVersion\":1,\"schemaVersion\":1")
+        );
+        assert!(parse_vulkan_runtime_receipt(&duplicate_key)
+            .unwrap_err()
+            .contains("duplicate"));
+        let unknown = format!(
+            "whisper_backend_init_gpu: using Vulkan0 backend\n{}\n",
+            RECEIPT.replace("}", ",\"extra\":true}")
+        );
+        assert!(parse_vulkan_runtime_receipt(&unknown)
+            .unwrap_err()
+            .contains("unknown"));
+        let zero_uuid = format!(
+            "whisper_backend_init_gpu: using Vulkan0 backend\n{}\n",
+            RECEIPT.replace(
+                "8680a6460c0000000002000000000000",
+                "00000000000000000000000000000000"
+            )
+        );
+        assert!(parse_vulkan_runtime_receipt(&zero_uuid)
+            .unwrap_err()
+            .contains("deviceUUID"));
+    }
 
     #[test]
     fn selected_vulkan_index_binds_its_physical_device() {

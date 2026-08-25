@@ -249,21 +249,26 @@ jobs:
   release-assets:
     needs: linux-packages
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
       ARTIFACT_STEM: ${{ github.ref_type == 'tag' && format('echo-{0}-linux', github.ref_name) || format('echo-nightly-{0}-linux', github.sha) }}
     steps:
+      - uses: actions/checkout@v7
+
       - uses: actions/download-artifact@v8
+        if: github.ref_type != 'tag'
         with:
           name: ${{ env.ARTIFACT_STEM }}
           path: release-assets/packages
 
       - uses: actions/download-artifact@v8
+        if: github.ref_type != 'tag'
         with:
           name: ${{ env.ARTIFACT_STEM }}-bin
           path: release-assets/bin
 
       - name: Validate staged release asset layout
+        if: github.ref_type != 'tag'
         run: |
           shopt -s nullglob
           deb_packages=(release-assets/packages/deb/*.deb)
@@ -278,6 +283,38 @@ jobs:
             exit 1
           fi
 
+      - name: Download qualified tagged assets
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p release-assets/qualified
+          gh release download "qualification-${GITHUB_SHA}" --dir release-assets/qualified
+
+      - name: Install qualified asset verification dependencies
+        if: github.ref_type == 'tag'
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y cpio rpm
+
+      - name: Verify qualified tagged assets
+        if: github.ref_type == 'tag'
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          package_version=${RELEASE_TAG#v}
+          python3 scripts/stage-qualified-whisper-release.py \
+            --verify release-assets/qualified \
+            --expected-version "$package_version" \
+            --expected-commit "$GITHUB_SHA"
+
+      - uses: actions/upload-artifact@v7
+        if: github.ref_type == 'tag'
+        with:
+          name: echo-${{ github.ref_name }}-qualified-release
+          path: release-assets/qualified
+          if-no-files-found: error
+
   github-release:
     if: github.ref_type == 'tag'
     needs: release-assets
@@ -285,20 +322,13 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
-    env:
-      ARTIFACT_STEM: echo-${{ github.ref_name }}-linux
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/download-artifact@v8
         with:
-          name: ${{ env.ARTIFACT_STEM }}
-          path: release-assets/packages
-
-      - uses: actions/download-artifact@v8
-        with:
-          name: ${{ env.ARTIFACT_STEM }}-bin
-          path: release-assets/bin
+          name: echo-${{ github.ref_name }}-qualified-release
+          path: release-assets/qualified
 
       - name: Extract release notes
         run: python3 scripts/changelog-notes.py "${{ github.ref_name }}" > release-notes.md
@@ -308,8 +338,9 @@ jobs:
         with:
           body_path: release-notes.md
           files: |
-            release-assets/packages/deb/*.deb
-            release-assets/packages/rpm/*.rpm
-            release-assets/bin/echo-desktop
+            release-assets/qualified/*.deb
+            release-assets/qualified/*.rpm
+            release-assets/qualified/echo-desktop
+            release-assets/qualified/qualified-release.json
           prerelease: ${{ contains(github.ref_name, '-') }}
           fail_on_unmatched_files: true

@@ -1,8 +1,10 @@
 use std::fs;
 use std::num::NonZeroUsize;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::time::Instant;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use echo_core::{
     strip_nonspeech, DecodeOptions, Engine, EngineError, EngineId, Language, LanguageChoice,
@@ -13,7 +15,9 @@ use echo_core::{
 use serde::Deserialize;
 
 use super::cache::{parse_whisper_filename, ModelCache};
-use super::whisper_probe::observe_runtime;
+use super::whisper_probe::{
+    observe_runtime, parse_vulkan_runtime_receipt, parse_vulkan_runtime_receipt_line,
+};
 use super::whisper_runtime_launch;
 use super::write_temp_wav;
 use super::{
@@ -183,6 +187,7 @@ impl WhisperEngine {
                         .as_ref()
                         .map(|path| path.to_string_lossy().into_owned()),
                     identity_sha256: launch.identity_sha256.clone(),
+                    vulkan_receipt: None,
                 }
             }
             WhisperFiles::Discover(_) => WhisperRuntimeTelemetry {
@@ -194,11 +199,15 @@ impl WhisperEngine {
                 vulkan_driver_files: None,
                 mesa_shader_cache_dir: None,
                 identity_sha256: None,
+                vulkan_receipt: None,
             },
         };
         if let Some(observed) = observe_runtime(stderr) {
             runtime.backend = observed.backend;
             runtime.device = observed.device;
+        }
+        if runtime.backend == WhisperRuntimeBackend::Vulkan {
+            runtime.vulkan_receipt = parse_vulkan_runtime_receipt(stderr).ok();
         }
         runtime
     }
@@ -212,6 +221,20 @@ impl WhisperEngine {
 
     fn force_cpu(&self) -> bool {
         matches!(&self.files, WhisperFiles::Explicit(plan) if plan.force_cpu)
+    }
+
+    fn timeout(&self) -> Duration {
+        match &self.files {
+            WhisperFiles::Explicit(plan) => plan.timeout,
+            WhisperFiles::Discover(_) => Duration::from_secs(15 * 60),
+        }
+    }
+
+    fn allow_vad_retry(&self) -> bool {
+        match &self.files {
+            WhisperFiles::Explicit(plan) => plan.allow_vad_retry,
+            WhisperFiles::Discover(_) => true,
+        }
     }
 
     fn runtime_launch(&self) -> Option<&WhisperRuntimeLaunch> {
@@ -257,6 +280,7 @@ impl Engine for WhisperEngine {
         let audio_encode_ms = elapsed_ms(encode_started);
         let vad = self.vad_model();
         let tuning = self.tuning();
+        let timeout = self.timeout();
         let (first, mut first_telemetry) = run_attempt(
             &bin,
             launch.as_ref(),
@@ -269,8 +293,10 @@ impl Engine for WhisperEngine {
                 self.force_cpu(),
             ),
             vad.is_some(),
+            timeout,
         )?;
-        let retry_without_vad = !first.status.success()
+        let retry_without_vad = self.allow_vad_retry()
+            && !first.status.success()
             && vad.is_some()
             && should_retry_without_vad(&String::from_utf8_lossy(&first.stderr));
         let (status, vad_active, mode, attempts) = if retry_without_vad {
@@ -287,6 +313,7 @@ impl Engine for WhisperEngine {
                     self.force_cpu(),
                 ),
                 false,
+                timeout,
             )?;
             (
                 retry,
@@ -337,6 +364,7 @@ impl Engine for WhisperEngine {
                         no_fallback: tuning.no_fallback,
                     },
                     attempts,
+                    recovery: None,
                 }),
             },
         })
@@ -370,10 +398,12 @@ fn run_attempt(
     launch: Option<&WhisperRuntimeLaunch>,
     args: Vec<String>,
     vad: bool,
+    timeout: Duration,
 ) -> Result<(Output, WhisperAttemptTelemetry), EngineError> {
     let wall_started = Instant::now();
     let spawn_started = Instant::now();
     let mut command = command_for_runtime(binary, launch);
+    command.process_group(0);
     let child = command
         .args(args)
         .stdout(Stdio::piped())
@@ -381,9 +411,33 @@ fn run_attempt(
         .spawn()
         .map_err(|error| EngineError::Infer(error.to_string()))?;
     let process_start_ms = elapsed_ms(spawn_started);
-    let output = child
-        .wait_with_output()
-        .map_err(|error| EngineError::Infer(error.to_string()))?;
+    let pid = rustix::process::Pid::from_raw(i32::try_from(child.id()).map_err(|_| {
+        EngineError::Infer("Whisper child process ID is out of range".to_string())
+    })?)
+    .ok_or_else(|| EngineError::Infer("Whisper child process ID is zero".to_string()))?;
+    let (sender, receiver) = mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let _ = sender.send(child.wait_with_output());
+    });
+    let output = match receiver.recv_timeout(timeout) {
+        Ok(output) => output.map_err(|error| EngineError::Infer(error.to_string()))?,
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            let group_kill = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+            if group_kill.is_err() {
+                let _ = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
+            }
+            let _ = receiver.recv_timeout(Duration::from_secs(5));
+            return Err(EngineError::Infer(format!(
+                "Whisper runtime timed out after {} ms",
+                timeout.as_millis()
+            )));
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            return Err(EngineError::Infer(
+                "Whisper runtime wait thread stopped unexpectedly".to_string(),
+            ));
+        }
+    };
     let telemetry = WhisperAttemptTelemetry {
         vad,
         process_start_ms,
@@ -393,6 +447,20 @@ fn run_attempt(
         retry_reason: None,
     };
     Ok((output, telemetry))
+}
+
+pub(crate) fn probe_vulkan_runtime_receipt(
+    binary: &Path,
+    launch: &WhisperRuntimeLaunch,
+    timeout: Duration,
+) -> Result<echo_core::WhisperVulkanReceipt, String> {
+    let (output, _) = run_attempt(binary, Some(launch), Vec::new(), false, timeout)
+        .map_err(|error| error.to_string())?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() {
+        return Err(stderr.into_owned());
+    }
+    parse_vulkan_runtime_receipt_line(&stderr)
 }
 
 fn command_for_runtime(binary: &Path, launch: Option<&WhisperRuntimeLaunch>) -> Command {
@@ -1131,5 +1199,21 @@ mod tests {
         assert!(!should_retry_without_vad(
             "decoder crashed after loading ggml-silero-v6.2.0.bin"
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_timeout_kills_and_reaps_a_hung_process() {
+        let started = Instant::now();
+        let error = run_attempt(
+            Path::new("/bin/sh"),
+            None,
+            vec!["-c".to_string(), "sleep 5".to_string()],
+            false,
+            std::time::Duration::from_millis(30),
+        )
+        .unwrap_err();
+        assert!(error.as_str().contains("timed out"), "{error}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
     }
 }

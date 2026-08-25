@@ -99,3 +99,4 @@ Apply Foundational Thinking by landing evidence formats before policy. Apply Bui
 
 The architecture and arena decision are in [architecture.md](architecture.md) and [arena.md](arena.md). Research and current evidence are in [grounding.md](grounding.md).
 The independent review, multi-model interrogation, fixes, and final verification are in [review.md](review.md).
+The continuation that clears admission, selection, packaging, and release gates is in [admission-run.md](admission-run.md).
