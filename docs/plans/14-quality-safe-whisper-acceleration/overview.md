@@ -98,3 +98,4 @@ Every measured phase also runs the optimized `echo-desktop transcribe` path on L
 Apply Foundational Thinking by landing evidence formats before policy. Apply Build the Lever by keeping the runner, verifier, and sweep scripts reusable. Apply Sequence Work into Verifiable Units by stopping after each phase until its checks pass. Apply Prove It Works by checking raw artifacts and the real product path. Apply Boundary Discipline by parsing external process and host data once, then passing typed state inward. Apply the Laziness Protocol by preserving the current caller seam and managed CPU path.
 
 The architecture and arena decision are in [architecture.md](architecture.md) and [arena.md](arena.md). Research and current evidence are in [grounding.md](grounding.md).
+The independent review, multi-model interrogation, fixes, and final verification are in [review.md](review.md).
