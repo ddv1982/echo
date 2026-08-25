@@ -50,7 +50,7 @@ def extract_package(package: Path, bundle_type: str, destination: Path) -> None:
     if bundle_type == "deb":
         subprocess.run(["dpkg-deb", "-x", str(package), str(destination)], check=True)
         return
-    destination.mkdir(parents=True)
+    destination.mkdir(parents=True, exist_ok=True)
     if shutil.which("rpm2cpio") and shutil.which("cpio"):
         archive = subprocess.run(
             ["rpm2cpio", str(package)], check=True, capture_output=True
@@ -297,11 +297,24 @@ def verify_manifest(root: Path, expected_version: str, expected_commit: str) -> 
 
 
 def self_test() -> None:
+    from unittest.mock import patch
+
     canonical = b"before" + BUNDLE_MARKER + b"after"
     for bundle_type, token in BUNDLE_TOKENS.items():
         assert variant_bytes(canonical, bundle_type) == b"before" + token + b"after"
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
+        rpm = root / "fixture.rpm"
+        rpm.write_bytes(b"rpm")
+        existing = root / "existing"
+        existing.mkdir()
+        with (
+            patch.object(shutil, "which", return_value="/fake/tool"),
+            patch.object(subprocess, "run") as run,
+        ):
+            run.return_value = subprocess.CompletedProcess([], 0, stdout=b"")
+            extract_package(rpm, "rpm", existing)
+            assert run.call_count == 2
         package = root / "package"
         package.mkdir()
         outside = root / "outside"
