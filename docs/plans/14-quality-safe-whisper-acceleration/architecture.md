@@ -65,9 +65,15 @@ Discovery never implies eligibility. Selection follows this order:
 
 If an admitted accelerator fails, reports the wrong identity, returns malformed output, or violates the launch contract, Echo quarantines that exact identity. Echo then runs one same-model managed CPU logical retry. It does not retry another GPU or switch models.
 
+The admission record stays outside the Echo executable. Linux packages own the record and the accelerator payload. Echo rejects records or payload files that are not owned by root or that a non-root user can write. This boundary avoids a self-referential build where adding the record changes the executable hash that the record admits.
+
+The current qualification used pinned languages and an empty prompt. Automatic language detection and recognition hints stay on managed CPU until paired tests admit those policies.
+
 ## Packaging boundary
 
 Managed CPU and each accelerator are separate components. An accelerator component contains the whisper runtime and adjacent non-driver libraries. The host owns GPU drivers and ICDs.
+
+Release packaging uses the executable that passed qualification. `cargo tauri bundle` creates packages around that existing executable and does not compile a replacement. The release gate extracts each package and compares its executable hash with the admission record before publication.
 
 Vulkan, CUDA, ROCm, and OpenVINO remain separate variants. OpenVINO also binds encoder IR and compiled-cache evidence. A pass never crosses variants.
 

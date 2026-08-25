@@ -284,8 +284,8 @@ fn identity_is_valid(identity: &AdmissionIdentity) -> bool {
         && identity.vad_sha256.as_deref().is_none_or(is_sha256)
         && is_lower_hex(&identity.echo_commit, 40)
         && identity.protocol == "oneShotCli"
-        && identity.language_policy == "autoOrPinned"
-        && identity.prompt_policy == "recognitionHints"
+        && identity.language_policy == "pinned"
+        && identity.prompt_policy == "empty"
         && identity.tuning.threads > 0
         && identity.tuning.beam_size > 0
         && identity.tuning.best_of > 0
@@ -335,8 +335,8 @@ mod tests {
                 best_of: 5,
                 no_fallback: false,
             },
-            language_policy: "autoOrPinned".to_string(),
-            prompt_policy: "recognitionHints".to_string(),
+            language_policy: "pinned".to_string(),
+            prompt_policy: "empty".to_string(),
             device: AdmissionDeviceIdentity {
                 backend: "vulkan".to_string(),
                 selected_index: 0,
@@ -581,6 +581,20 @@ mod tests {
         assert_eq!(
             AdmissionIdentityKey::for_identity(&first).as_str().len(),
             64
+        );
+    }
+
+    #[test]
+    fn promotion_identity_key_matches_the_cross_language_contract() {
+        let mut value = identity('a');
+        value.device.device_uuid = "8680a6460c0000000002000000000000".to_string();
+        value.device.driver_uuid = "ee99561e45e1e718c6121d36d8345582".to_string();
+        value.device.pipeline_cache_uuid = "35e9eb9761bf7afc9291ffc449ddf849".to_string();
+        value.icd_manifest_sha256 = "e".repeat(64);
+        value.icd_library_sha256 = "f".repeat(64);
+        assert_eq!(
+            AdmissionIdentityKey::for_identity(&value).as_str(),
+            "1aafa0c27dc5c344c14f2c43685ed182b4650469ffed13d6bbfbc7663fffd360"
         );
     }
 }

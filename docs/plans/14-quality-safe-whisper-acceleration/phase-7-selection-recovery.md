@@ -12,6 +12,7 @@ Enable exact passed identities and preserve availability through one managed CPU
 - Preserve the existing `prepare_with_config` caller and build both the selected accelerator and managed CPU fallback plan.
 - Add exact, bounded quarantine records written atomically after accelerated failures.
 - Add one same-model managed CPU logical retry and backward-compatible attempt telemetry.
+- Keep automatic language detection and non-empty recognition hints on managed CPU until those policies pass paired qualification.
 
 ## Data structures
 
@@ -25,6 +26,8 @@ Enable exact passed identities and preserve availability through one managed CPU
 Static: table tests cover missing, stopped, expired, changed, software, and quarantined identities. Integration tests inject missing libraries, crashes, timeouts, malformed JSON, silent CPU fallback, and wrong-device receipts.
 
 Runtime: an exact passed test identity can select acceleration. Every injected failure quarantines only that identity and performs one CPU retry with the same model, language, prompt, VAD, tuning, and cleanup policy.
+
+Package: a missing, user-writable, expired, changed, or unqualified admission record selects managed CPU without a GPU probe.
 
 ## Stop gate
 

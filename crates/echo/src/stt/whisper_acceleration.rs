@@ -100,8 +100,8 @@ pub(crate) fn select_qualified_package(
         vad_sha256,
         protocol: "oneShotCli".to_string(),
         tuning: record.identity.tuning.clone(),
-        language_policy: "autoOrPinned".to_string(),
-        prompt_policy: "recognitionHints".to_string(),
+        language_policy: "pinned".to_string(),
+        prompt_policy: "empty".to_string(),
         device: record.identity.device.clone(),
         drm_driver: selection.host.drm_driver,
         icd_manifest_sha256: sha256_file(&icd_manifest)?,
@@ -196,6 +196,7 @@ fn package_root(echo_binary: &Path) -> Option<PathBuf> {
     [
         parent.join("whisper-acceleration"),
         prefix.join("lib/echo/whisper-acceleration"),
+        prefix.join("lib/io.github.ddv1982.echo/whisper-acceleration"),
     ]
     .into_iter()
     .find(|candidate| candidate.join("admission.json").is_file())
@@ -581,8 +582,8 @@ mod tests {
             vad_sha256: Some(sha256_file(&vad).unwrap()),
             protocol: "oneShotCli".to_string(),
             tuning,
-            language_policy: "autoOrPinned".to_string(),
-            prompt_policy: "recognitionHints".to_string(),
+            language_policy: "pinned".to_string(),
+            prompt_policy: "empty".to_string(),
             device: device(),
             drm_driver: "i915".to_string(),
             icd_manifest_sha256: sha256_file(&icd_manifest).unwrap(),

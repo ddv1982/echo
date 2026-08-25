@@ -66,6 +66,7 @@ pub enum WhisperRecoveryReason {
     ReceiptMismatch,
     CpuFallback,
     IdentityMismatch,
+    PolicyMismatch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
