@@ -6,6 +6,7 @@ mod whisper;
 mod whisper_admission;
 mod whisper_plan;
 mod whisper_probe;
+mod whisper_quarantine;
 
 pub use cache::{InstalledModel, ModelCache, ModelInventory, WhisperFamily};
 pub use fake::FakeEngine;
@@ -16,12 +17,14 @@ pub use whisper::WhisperEngine;
 pub use whisper_admission::{
     admission_state_from_bytes, AdmissionDeviceIdentity, AdmissionGates, AdmissionIdentity,
     AdmissionIdentityKey, AdmissionRecord, AdmissionState, AdmissionTuning, AdmissionVerdict,
-    QuarantineRecord, MAX_ADMISSION_LIFETIME_SECS, MAX_QUARANTINE_LIFETIME_SECS,
+    QuarantineReason, QuarantineRecord, MAX_ADMISSION_LIFETIME_SECS,
+    MAX_QUARANTINE_LIFETIME_SECS,
 };
 pub use whisper_plan::{
     preferred_runtime, WhisperExecutionPlan, WhisperModelAsset, WhisperPlanDecision, WhisperProtocol,
     WhisperRuntimeCandidate, WhisperRuntimeLaunch, WhisperTuning, WhisperTuningOverride,
 };
+pub use whisper_quarantine::QuarantineStore;
 
 use std::path::PathBuf;
 

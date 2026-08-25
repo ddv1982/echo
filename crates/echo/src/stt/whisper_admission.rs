@@ -145,12 +145,23 @@ pub struct AdmissionRecord {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct QuarantineRecord {
     pub schema_version: u32,
-    pub identity: AdmissionIdentity,
     pub identity_key: AdmissionIdentityKey,
-    pub reason: String,
+    pub reason: QuarantineReason,
     pub failure_count: u32,
     pub created_at: u64,
     pub expires_at: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum QuarantineReason {
+    RuntimeFailure,
+    Timeout,
+    MalformedOutput,
+    MissingReceipt,
+    ReceiptMismatch,
+    CpuFallback,
+    IdentityMismatch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,10 +222,8 @@ fn admission_applies(record: &AdmissionRecord, identity: &AdmissionIdentity, now
 
 fn quarantine_applies(record: &QuarantineRecord, identity: &AdmissionIdentity, now: u64) -> bool {
     record.schema_version == QUARANTINE_SCHEMA_VERSION
-        && record.identity == *identity
         && record.identity_key == AdmissionIdentityKey::for_identity(identity)
         && record.failure_count > 0
-        && !record.reason.trim().is_empty()
         && interval_is_current(
             record.created_at,
             record.expires_at,
@@ -354,9 +363,8 @@ mod tests {
     fn quarantine(identity: &AdmissionIdentity) -> QuarantineRecord {
         QuarantineRecord {
             schema_version: 1,
-            identity: identity.clone(),
             identity_key: AdmissionIdentityKey::for_identity(identity),
-            reason: "runtime receipt mismatch".to_string(),
+            reason: QuarantineReason::ReceiptMismatch,
             failure_count: 1,
             created_at: NOW - 60,
             expires_at: NOW + 60,
