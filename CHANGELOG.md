@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.12.0
+
+- Linux packages can now ship a qualified Whisper Vulkan accelerator as a root-owned `whisper-acceleration` resource instead of relying on an ambient system runtime.
+- Echo selects GPU transcription only when the packaged admission record exactly matches the current executable, Whisper runtime, model, VAD, decoding policy, DRM device, ICD manifest and library, and seeded Mesa cache. Any missing, changed, expired, stopped, or quarantined identity stays on managed CPU.
+- A qualified accelerated failure now quarantines only that exact identity and performs one same-model managed CPU logical retry. Automatic language detection and non-empty recognition hints stay on managed CPU until they pass paired qualification.
+- Release tooling now stages Debian and RPM specific qualified executables, admissions, runtimes, and cache seeds, then verifies the extracted package identities again before a tagged release can publish them.
+
 ## v0.11.0
 
 - Whisper runs now report separate WAV encoding, child-process, parsing, runtime, backend, decoding, and attempt detail while keeping the existing `inferMs` boundary compatible with old history and CLI consumers.
