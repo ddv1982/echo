@@ -60,6 +60,8 @@ pub struct AdmissionIdentity {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AdmissionArtifacts {
     pub runtime_relative_path: String,
+    pub probe_relative_path: String,
+    pub probe_sha256: String,
     pub icd_manifest_path: String,
     pub icd_library_path: String,
     pub cache_seed_relative_path: String,
@@ -236,6 +238,8 @@ fn admission_applies(record: &AdmissionRecord, identity: &AdmissionIdentity, now
 
 fn artifacts_are_valid(artifacts: &AdmissionArtifacts) -> bool {
     safe_relative(&artifacts.runtime_relative_path)
+        && safe_relative(&artifacts.probe_relative_path)
+        && is_sha256(&artifacts.probe_sha256)
         && safe_relative(&artifacts.cache_seed_relative_path)
         && Path::new(&artifacts.icd_manifest_path).is_absolute()
         && Path::new(&artifacts.icd_library_path).is_absolute()
@@ -384,6 +388,8 @@ mod tests {
             identity: identity.clone(),
             artifacts: AdmissionArtifacts {
                 runtime_relative_path: "runtime/whisper-cli".to_string(),
+                probe_relative_path: "runtime/echo-whisper-runtime-probe".to_string(),
+                probe_sha256: "3".repeat(64),
                 icd_manifest_path: "/usr/share/vulkan/icd.d/intel_icd.json".to_string(),
                 icd_library_path: "/usr/lib/x86_64-linux-gnu/libvulkan_intel.so".to_string(),
                 cache_seed_relative_path: "cache-seed".to_string(),

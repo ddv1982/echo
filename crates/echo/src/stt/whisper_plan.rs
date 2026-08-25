@@ -15,6 +15,7 @@ pub struct WhisperExecutionPlan {
     pub protocol: WhisperProtocol,
     pub force_cpu: bool,
     pub timeout: Duration,
+    pub allow_vad_retry: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +57,7 @@ impl WhisperPlanDecision {
             || primary.protocol != WhisperProtocol::OneShotCli
             || primary.force_cpu
             || primary.runtime.launch.identity_sha256.is_none()
+            || primary.allow_vad_retry
         {
             return Err("qualified primary must be an identified one-shot Vulkan runtime".to_string());
         }
@@ -64,6 +66,7 @@ impl WhisperPlanDecision {
             || fallback.protocol != WhisperProtocol::OneShotCli
             || !fallback.force_cpu
             || fallback.runtime.launch.identity_sha256.is_none()
+            || fallback.allow_vad_retry
         {
             return Err("qualified fallback must be the identified managed CPU runtime".to_string());
         }
@@ -184,6 +187,7 @@ impl WhisperExecutionPlan {
             protocol: WhisperProtocol::OneShotCli,
             force_cpu: false,
             timeout: Duration::from_secs(15 * 60),
+            allow_vad_retry: true,
         }
     }
 }
@@ -245,6 +249,7 @@ mod tests {
             None,
         );
         assert!(!plan.force_cpu);
+        assert!(plan.allow_vad_retry);
     }
 
     #[test]
@@ -291,6 +296,7 @@ mod tests {
             no_fallback: Some(false),
         };
         plan.force_cpu = source == WhisperRuntimeSource::Managed;
+        plan.allow_vad_retry = false;
         plan
     }
 

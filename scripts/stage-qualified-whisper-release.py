@@ -18,6 +18,7 @@ from whisper_release_common import (
     sha256_bytes,
     sha256_file,
     tree_sha256,
+    verify_contained_symlinks,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -94,11 +95,15 @@ def verify_extracted(
         if packaged_admission.read_bytes() != source_admission.read_bytes():
             raise ValueError("packaged admission record changed")
     admission = read_json(packaged_admission)
+    verify_contained_symlinks(resource)
     if admission["identity"]["echoBinarySha256"] != sha256_file(binary):
         raise ValueError("admission record does not bind the packaged executable")
     runtime = resource / admission["artifacts"]["runtimeRelativePath"]
     if runtime_identity(runtime) != admission["identity"]["runtimeIdentitySha256"]:
         raise ValueError("packaged runtime identity changed")
+    probe = resource / admission["artifacts"]["probeRelativePath"]
+    if sha256_file(probe) != admission["artifacts"]["probeSha256"]:
+        raise ValueError("packaged runtime probe identity changed")
     cache_seed = resource / admission["artifacts"]["cacheSeedRelativePath"]
     if tree_sha256(cache_seed) != admission["artifacts"]["cacheSeedSha256"]:
         raise ValueError("packaged cache seed identity changed")
@@ -234,6 +239,22 @@ def verify_manifest(root: Path, expected_version: str, expected_commit: str) -> 
     canonical = (root / assets["binary"]["file"]).read_bytes()
     for bundle_type in ("deb", "rpm"):
         package = root / assets[bundle_type]["file"]
+        if bundle_type == "deb":
+            packaged_version = subprocess.run(
+                ["dpkg-deb", "-f", str(package), "Version"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+        else:
+            packaged_version = subprocess.run(
+                ["rpm", "-qp", "--queryformat", "%{VERSION}", str(package)],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+        if packaged_version != expected_version:
+            raise ValueError(f"qualified {bundle_type} package version changed")
         with tempfile.TemporaryDirectory(
             prefix=f"echo-verify-{bundle_type}-"
         ) as temporary:
@@ -262,6 +283,19 @@ def self_test() -> None:
     canonical = b"before" + BUNDLE_MARKER + b"after"
     for bundle_type, token in BUNDLE_TOKENS.items():
         assert variant_bytes(canonical, bundle_type) == b"before" + token + b"after"
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        package = root / "package"
+        package.mkdir()
+        outside = root / "outside"
+        outside.write_bytes(b"outside")
+        (package / "escape").symlink_to(outside)
+        try:
+            verify_contained_symlinks(package)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("escaping package symlink was accepted")
     print("stage-qualified-whisper-release: self-test passed")
 
 

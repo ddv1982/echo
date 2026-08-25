@@ -15,7 +15,9 @@ use echo_core::{
 use serde::Deserialize;
 
 use super::cache::{parse_whisper_filename, ModelCache};
-use super::whisper_probe::{observe_runtime, parse_vulkan_runtime_receipt};
+use super::whisper_probe::{
+    observe_runtime, parse_vulkan_runtime_receipt, parse_vulkan_runtime_receipt_line,
+};
 use super::whisper_runtime_launch;
 use super::write_temp_wav;
 use super::{
@@ -228,6 +230,13 @@ impl WhisperEngine {
         }
     }
 
+    fn allow_vad_retry(&self) -> bool {
+        match &self.files {
+            WhisperFiles::Explicit(plan) => plan.allow_vad_retry,
+            WhisperFiles::Discover(_) => true,
+        }
+    }
+
     fn runtime_launch(&self) -> Option<&WhisperRuntimeLaunch> {
         match &self.files {
             WhisperFiles::Explicit(plan) => Some(&plan.runtime.launch),
@@ -286,7 +295,8 @@ impl Engine for WhisperEngine {
             vad.is_some(),
             timeout,
         )?;
-        let retry_without_vad = !first.status.success()
+        let retry_without_vad = self.allow_vad_retry()
+            && !first.status.success()
             && vad.is_some()
             && should_retry_without_vad(&String::from_utf8_lossy(&first.stderr));
         let (status, vad_active, mode, attempts) = if retry_without_vad {
@@ -437,6 +447,20 @@ fn run_attempt(
         retry_reason: None,
     };
     Ok((output, telemetry))
+}
+
+pub(crate) fn probe_vulkan_runtime_receipt(
+    binary: &Path,
+    launch: &WhisperRuntimeLaunch,
+    timeout: Duration,
+) -> Result<echo_core::WhisperVulkanReceipt, String> {
+    let (output, _) = run_attempt(binary, Some(launch), Vec::new(), false, timeout)
+        .map_err(|error| error.to_string())?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() {
+        return Err(stderr.into_owned());
+    }
+    parse_vulkan_runtime_receipt_line(&stderr)
 }
 
 fn command_for_runtime(binary: &Path, launch: Option<&WhisperRuntimeLaunch>) -> Command {

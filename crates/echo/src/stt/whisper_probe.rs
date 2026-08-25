@@ -7,6 +7,35 @@ const VULKAN_RECEIPT_PREFIX: &str = "echo_whisper_runtime_receipt: ";
 pub(crate) fn parse_vulkan_runtime_receipt(
     stderr: &str,
 ) -> Result<WhisperVulkanReceipt, String> {
+    let receipt = parse_vulkan_runtime_receipt_line(stderr)?;
+    let selected = stderr
+        .lines()
+        .filter_map(|line| {
+            line.trim()
+                .strip_prefix("whisper_backend_init_gpu: using Vulkan")?
+                .strip_suffix(" backend")?
+                .parse::<u32>()
+                .ok()
+        })
+        .collect::<Vec<_>>();
+    if selected.len() != 1 {
+        return Err(format!(
+            "expected exactly one selected Vulkan backend, found {}",
+            selected.len()
+        ));
+    }
+    if receipt.selected_index != selected[0] {
+        return Err(format!(
+            "Vulkan runtime receipt selectedIndex does not match the selected backend ({} != {})",
+            receipt.selected_index, selected[0]
+        ));
+    }
+    Ok(receipt)
+}
+
+pub(crate) fn parse_vulkan_runtime_receipt_line(
+    stderr: &str,
+) -> Result<WhisperVulkanReceipt, String> {
     let lines = stderr
         .lines()
         .filter_map(|line| line.strip_prefix(VULKAN_RECEIPT_PREFIX))
@@ -40,28 +69,6 @@ pub(crate) fn parse_vulkan_runtime_receipt(
                 "Vulkan runtime receipt {name} must be nonzero lowercase 32-hex"
             ));
         }
-    }
-    let selected = stderr
-        .lines()
-        .filter_map(|line| {
-            line.trim()
-                .strip_prefix("whisper_backend_init_gpu: using Vulkan")?
-                .strip_suffix(" backend")?
-                .parse::<u32>()
-                .ok()
-        })
-        .collect::<Vec<_>>();
-    if selected.len() != 1 {
-        return Err(format!(
-            "expected exactly one selected Vulkan backend, found {}",
-            selected.len()
-        ));
-    }
-    if receipt.selected_index != selected[0] {
-        return Err(format!(
-            "Vulkan runtime receipt selectedIndex does not match the selected backend ({} != {})",
-            receipt.selected_index, selected[0]
-        ));
     }
     Ok(receipt)
 }
@@ -210,6 +217,7 @@ mod tests {
         assert_eq!(receipt.vendor_id, 0x8086);
         assert_eq!(receipt.device_id, 0x46a6);
         assert_eq!(receipt.device_uuid, "8680a6460c0000000002000000000000");
+        assert_eq!(parse_vulkan_runtime_receipt_line(RECEIPT).unwrap(), receipt);
     }
 
     #[test]

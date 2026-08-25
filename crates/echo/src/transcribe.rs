@@ -554,7 +554,9 @@ pub fn prepare_with_config(
             if let Some(overrides) = overrides.whisper_tuning {
                 plan.tuning = overrides.apply(plan.tuning);
             }
-            plan.force_cpu = overrides.whisper_force_cpu;
+            plan.force_cpu = overrides.whisper_force_cpu
+                || (plan.runtime.source == echo_core::WhisperRuntimeSource::Managed
+                    && plan.runtime.backend == echo_core::WhisperRuntimeBackend::Cpu);
             let can_accelerate = plan.runtime.source == echo_core::WhisperRuntimeSource::Managed
                 && plan.runtime.backend == echo_core::WhisperRuntimeBackend::Cpu
                 && overrides.whisper_tuning.is_none()

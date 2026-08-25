@@ -895,6 +895,9 @@ def run_benchmark(args: argparse.Namespace) -> None:
                                     "modelArtifact": artifact_identity(
                                         engine.get("modelPath"), artifact_identities
                                     ),
+                                    "vadArtifact": artifact_identity(
+                                        engine.get("vadPath"), artifact_identities
+                                    ),
                                     "whisper": portable_whisper_telemetry(whisper),
                                     "warmups": args.warmups,
                                 }

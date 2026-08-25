@@ -13,6 +13,8 @@ Enable exact passed identities and preserve availability through one managed CPU
 - Add exact, bounded quarantine records written atomically after accelerated failures.
 - Add one same-model managed CPU logical retry and backward-compatible attempt telemetry.
 - Keep automatic language detection and non-empty recognition hints on managed CPU until those policies pass paired qualification.
+- Verify the live Vulkan receipt with a package-owned, model-free probe before user audio can reach the accelerator.
+- Disable the legacy no-VAD retry in both halves of a qualified plan.
 
 ## Data structures
 

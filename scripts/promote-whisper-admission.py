@@ -5,13 +5,19 @@ import argparse
 import datetime
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-from whisper_release_common import runtime_identity, sha256_file, tree_sha256
+from whisper_release_common import (
+    runtime_identity,
+    sha256_file,
+    tree_sha256,
+    verify_contained_symlinks,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RESEARCH_GATES = (
@@ -36,6 +42,7 @@ BINDING_GATES = (
     "cleanChildEnvironment",
     "exactRuntime",
 )
+RECEIPT_PREFIX = "echo_whisper_runtime_receipt: "
 
 
 def read_json(path: Path, label: str) -> dict[str, object]:
@@ -130,6 +137,11 @@ def replay_analysis(cell: dict[str, object], corpus: Path, scratch: Path) -> Non
     if not isinstance(phase2, dict):
         raise ValueError("cell phase2 analysis is missing")
     for field in (
+        "decision",
+        "gates",
+        "expectedBackend",
+        "cpuCandidate",
+        "acceleratedCandidate",
         "runsPerCandidate",
         "cpuMedianOuterMs",
         "acceleratedMedianOuterMs",
@@ -144,10 +156,67 @@ def replay_analysis(cell: dict[str, object], corpus: Path, scratch: Path) -> Non
             raise ValueError(f"replayed analysis changed {field}")
 
 
+def verify_sweep_vad(cell: dict[str, object], expected_vad: Path) -> None:
+    evidence = cell.get("evidence")
+    if not isinstance(evidence, dict):
+        raise ValueError("cell evidence is required")
+    bundle = require_path(evidence.get("bundle"), "cell bundle")
+    expected_digest = sha256_file(expected_vad)
+    rows = [
+        json.loads(line)
+        for line in (bundle / "runs.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    if not rows:
+        raise ValueError("sweep has no measurement rows")
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("vadArtifact"), dict):
+            raise ValueError("sweep measurement has no VAD identity")
+        vad = row["vadArtifact"]
+        if (
+            vad.get("sha256") != expected_digest
+            or require_path(vad.get("path"), "measurement VAD").resolve()
+            != expected_vad.resolve()
+            or row.get("engine", {}).get("vad") is not True
+        ):
+            raise ValueError("sweep measurement used a different or inactive VAD")
+
+
 def parse_timestamp(value: object) -> int:
     if not isinstance(value, str):
         raise ValueError("sweep completedAt is missing")
     return int(datetime.datetime.fromisoformat(value).timestamp())
+
+
+def verify_runtime_probe(
+    probe: Path,
+    runtime_dir: Path,
+    icd_manifest: Path,
+    cache: Path,
+    expected_receipt: dict[str, object],
+) -> None:
+    completed = subprocess.run(
+        [str(probe)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        env={
+            "HOME": str(Path.home()),
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+            "LD_LIBRARY_PATH": str(runtime_dir),
+            "MESA_SHADER_CACHE_DIR": str(cache),
+            "PATH": os.defpath,
+            "VK_DRIVER_FILES": str(icd_manifest),
+        },
+    )
+    lines = [
+        line.removeprefix(RECEIPT_PREFIX)
+        for line in completed.stderr.splitlines()
+        if line.startswith(RECEIPT_PREFIX)
+    ]
+    if completed.returncode != 0 or len(lines) != 1 or json.loads(lines[0]) != expected_receipt:
+        raise ValueError("runtime probe did not reproduce the admitted receipt")
 
 
 def promote(args: argparse.Namespace) -> None:
@@ -212,8 +281,12 @@ def promote(args: argparse.Namespace) -> None:
 
     runtime_dir = args.runtime_dir.resolve()
     runtime_cli = runtime_dir / "whisper-cli"
+    runtime_probe = args.runtime_probe.resolve()
+    if not runtime_probe.is_file():
+        raise ValueError("receipt runtime has no echo-whisper-runtime-probe")
     model = args.model.resolve()
     vad = args.vad.resolve()
+    verify_sweep_vad(cell, vad)
     cycle_identity = cycle["identity"]["value"]
     runtime_sha = runtime_identity(runtime_cli)
     for actual, expected, label in (
@@ -223,6 +296,10 @@ def promote(args: argparse.Namespace) -> None:
     ):
         if actual != expected:
             raise ValueError(f"{label} changed after qualification")
+    if identity_block["runtime"]["sha256"] != sha256_file(
+        runtime_cli
+    ) or identity_block["model"]["sha256"] != sha256_file(model):
+        raise ValueError("sweep artifacts differ from promotion inputs")
     if receipt != cycle["probes"]["populated"]["receipt"]:
         raise ValueError("sweep and cache-cycle receipts differ")
 
@@ -233,8 +310,17 @@ def promote(args: argparse.Namespace) -> None:
     icd_library = require_path(selected_icd["library"]["path"], "ICD library").resolve()
     if sha256_file(icd_manifest) != selected_icd["manifest"]["sha256"]:
         raise ValueError("ICD manifest changed after qualification")
+    if identity_block["vkDriverFiles"]["sha256"] != sha256_file(icd_manifest):
+        raise ValueError("sweep and cache-cycle ICD manifests differ")
     if sha256_file(icd_library) != selected_icd["library"]["sha256"]:
         raise ValueError("ICD library changed after qualification")
+    verify_runtime_probe(
+        runtime_probe,
+        runtime_dir,
+        icd_manifest,
+        cycle_path / "mesa-cache",
+        receipt,
+    )
     drm = [
         device
         for device in host["drmDevices"]
@@ -247,8 +333,10 @@ def promote(args: argparse.Namespace) -> None:
     package = output / "whisper-acceleration"
     package.mkdir(parents=True)
     shutil.copytree(runtime_dir, package / "runtime", symlinks=True)
+    shutil.copy2(runtime_probe, package / "runtime/echo-whisper-runtime-probe")
     cache_source = cycle_path / "mesa-cache"
     shutil.copytree(cache_source, package / "cache-seed")
+    verify_contained_symlinks(package)
     cache_sha = tree_sha256(package / "cache-seed")
     tuning = {
         "threads": int(cell_config["threads"]),
@@ -291,6 +379,8 @@ def promote(args: argparse.Namespace) -> None:
         "identity": identity,
         "artifacts": {
             "runtimeRelativePath": "runtime/whisper-cli",
+            "probeRelativePath": "runtime/echo-whisper-runtime-probe",
+            "probeSha256": sha256_file(runtime_probe),
             "icdManifestPath": str(icd_manifest),
             "icdLibraryPath": str(icd_library),
             "cacheSeedRelativePath": "cache-seed",
@@ -380,6 +470,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cache-cycle", type=Path)
     parser.add_argument("--corpus", type=Path)
     parser.add_argument("--runtime-dir", type=Path)
+    parser.add_argument("--runtime-probe", type=Path)
     parser.add_argument("--echo-binary", type=Path)
     parser.add_argument("--model", type=Path)
     parser.add_argument("--vad", type=Path)
@@ -394,6 +485,7 @@ def parse_args() -> argparse.Namespace:
             "cache_cycle",
             "corpus",
             "runtime_dir",
+            "runtime_probe",
             "echo_binary",
             "model",
             "vad",

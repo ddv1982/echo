@@ -70,3 +70,12 @@ def bundle_variant(canonical: bytes, bundle_type: str) -> bytes:
             "canonical binary must contain one unknown Tauri bundle marker"
         )
     return canonical.replace(BUNDLE_MARKER, BUNDLE_TOKENS[bundle_type], 1)
+
+
+def verify_contained_symlinks(root: Path) -> None:
+    resolved_root = root.resolve()
+    for path in root.rglob("*"):
+        if path.is_symlink() and not path.resolve(strict=True).is_relative_to(
+            resolved_root
+        ):
+            raise ValueError(f"symlink escapes package root: {path}")

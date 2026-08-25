@@ -16,6 +16,7 @@ pub use parakeet::ParakeetEngine;
 pub(crate) use runtime::whisper_runtime_launch;
 pub use runtime::SpeechRuntimeInventory;
 pub use whisper::WhisperEngine;
+pub(crate) use whisper::probe_vulkan_runtime_receipt;
 pub(crate) use whisper_acceleration::production_whisper_decision;
 pub use whisper_admission::{
     admission_state_from_bytes, AdmissionArtifacts, AdmissionDeviceIdentity, AdmissionGates,

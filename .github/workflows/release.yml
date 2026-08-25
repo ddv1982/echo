@@ -249,7 +249,7 @@ jobs:
   release-assets:
     needs: linux-packages
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
       ARTIFACT_STEM: ${{ github.ref_type == 'tag' && format('echo-{0}-linux', github.ref_name) || format('echo-nightly-{0}-linux', github.sha) }}
     steps:
@@ -290,6 +290,12 @@ jobs:
         run: |
           mkdir -p release-assets/qualified
           gh release download "qualification-${GITHUB_SHA}" --dir release-assets/qualified
+
+      - name: Install qualified asset verification dependencies
+        if: github.ref_type == 'tag'
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y cpio rpm
 
       - name: Verify qualified tagged assets
         if: github.ref_type == 'tag'

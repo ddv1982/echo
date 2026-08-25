@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use echo_core::{
@@ -13,15 +15,26 @@ pub struct RecoveringWhisperEngine {
     decision: WhisperPlanDecision,
     quarantine: QuarantineStore,
     now: fn() -> u64,
+    process_quarantine: Arc<Mutex<BTreeSet<String>>>,
 }
+
+static PROCESS_QUARANTINE: OnceLock<Arc<Mutex<BTreeSet<String>>>> = OnceLock::new();
 
 impl RecoveringWhisperEngine {
     #[must_use]
     pub fn new(decision: WhisperPlanDecision, quarantine: QuarantineStore) -> Self {
-        Self::with_clock(decision, quarantine, system_now)
+        Self {
+            decision,
+            quarantine,
+            now: system_now,
+            process_quarantine: Arc::clone(
+                PROCESS_QUARANTINE.get_or_init(|| Arc::new(Mutex::new(BTreeSet::new()))),
+            ),
+        }
     }
 
     #[must_use]
+    #[cfg(test)]
     pub(crate) fn with_clock(
         decision: WhisperPlanDecision,
         quarantine: QuarantineStore,
@@ -31,6 +44,7 @@ impl RecoveringWhisperEngine {
             decision,
             quarantine,
             now,
+            process_quarantine: Arc::new(Mutex::new(BTreeSet::new())),
         }
     }
 
@@ -85,6 +99,27 @@ impl RecoveringWhisperEngine {
                 WhisperRecoveryReason::PolicyMismatch,
             );
         }
+        match self.process_quarantined(&plan.identity_key) {
+            Ok(true) => {
+                return self.run_fallback(
+                    plan,
+                    pcm,
+                    options,
+                    false,
+                    WhisperRecoveryReason::Quarantined,
+                );
+            }
+            Err(()) => {
+                return self.run_fallback(
+                    plan,
+                    pcm,
+                    options,
+                    false,
+                    WhisperRecoveryReason::QuarantineUnreadable,
+                );
+            }
+            Ok(false) => {}
+        }
         match self.quarantine.is_active(&plan.identity_key, now) {
             Ok(true) => {
                 return self.run_fallback(
@@ -118,12 +153,22 @@ impl RecoveringWhisperEngine {
             },
             Err(error) => classify_error(&error),
         };
+        if let Ok(mut keys) = self.process_quarantine.lock() {
+            keys.insert(plan.identity_key.as_str().to_string());
+        }
         let _ = self.quarantine.record_failure(
             &plan.identity_key,
             quarantine_reason(failure),
             now,
         );
         self.run_fallback(plan, pcm, options, true, failure)
+    }
+
+    fn process_quarantined(&self, key: &AdmissionIdentityKey) -> Result<bool, ()> {
+        self.process_quarantine
+            .lock()
+            .map(|keys| keys.contains(key.as_str()))
+            .map_err(|_| ())
     }
 
     fn run_fallback(
@@ -311,6 +356,22 @@ mod tests {
         path
     }
 
+    fn vad_rejecting_script(
+        root: &Path,
+        marker: &Path,
+        stdout: &str,
+        success_stderr: &str,
+    ) -> PathBuf {
+        let path = root.join("gpu-vad-reject");
+        let body = format!(
+            "#!/bin/sh\nprintf '%s\\n' run >> '{}'\nfor arg in \"$@\"; do\n  if [ \"$arg\" = \"--vad\" ]; then\n    printf '%s\\n' 'failed to load VAD model' >&2\n    exit 1\n  fi\ndone\nprintf '%s' '{}'\nprintf '%s\\n' '{}' >&2\n",
+            marker.display(), stdout, success_stderr
+        );
+        fs::write(&path, body).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
     fn plan(
         binary: PathBuf,
         source: WhisperRuntimeSource,
@@ -341,6 +402,7 @@ mod tests {
         };
         plan.force_cpu = force_cpu;
         plan.timeout = Duration::from_millis(200);
+        plan.allow_vad_retry = false;
         plan
     }
 
@@ -491,7 +553,82 @@ mod tests {
             assert!(recovery.accelerated_attempted, "{label}");
             assert_eq!(recovery.fallback_reason, Some(reason), "{label}");
             assert!(engine.quarantine_is_active(NOW).unwrap(), "{label}");
+            if label == "crash" {
+                fs::remove_file(root.join("quarantine.json")).unwrap();
+                let transcript = engine
+                    .transcribe(&Pcm16kMono::from_samples(vec![0; 160]), &options())
+                    .unwrap();
+                assert_eq!(transcript.raw, "CPU");
+                assert_eq!(
+                    fs::read_to_string(&gpu_marker).unwrap().lines().count(),
+                    1
+                );
+                assert_eq!(
+                    fs::read_to_string(&cpu_marker).unwrap().lines().count(),
+                    2
+                );
+                let recovery = transcript.detail.whisper.unwrap().recovery.unwrap();
+                assert!(!recovery.accelerated_attempted);
+                assert_eq!(
+                    recovery.fallback_reason,
+                    Some(WhisperRecoveryReason::Quarantined)
+                );
+            }
         }
+    }
+
+    #[test]
+    fn qualified_vad_failure_does_not_retry_acceleration_without_vad() {
+        let root = scratch("vad-contract");
+        let model = root.join("ggml-base.bin");
+        let vad = root.join("ggml-silero.bin");
+        fs::write(&model, []).unwrap();
+        fs::write(&vad, []).unwrap();
+        let gpu_marker = root.join("gpu.marker");
+        let cpu_marker = root.join("cpu.marker");
+        let expected = receipt(0x46a6);
+        let gpu_log = format!(
+            "ggml_vulkan: 0 = Intel Graphics | uma: 1\nwhisper_backend_init_gpu: using Vulkan0 backend\n{}",
+            receipt_line(&expected)
+        );
+        let gpu = vad_rejecting_script(&root, &gpu_marker, &json("GPU"), &gpu_log);
+        let cpu = script(
+            &root,
+            "cpu",
+            &cpu_marker,
+            &json("CPU"),
+            "whisper_model_load: CPU total size = 1 MB",
+            false,
+            true,
+        );
+        let mut primary = plan(
+            gpu,
+            WhisperRuntimeSource::System,
+            WhisperRuntimeBackend::Vulkan,
+            &model,
+            false,
+        );
+        primary.vad = Some(vad.clone());
+        let mut fallback = plan(
+            cpu,
+            WhisperRuntimeSource::Managed,
+            WhisperRuntimeBackend::Cpu,
+            &model,
+            true,
+        );
+        fallback.vad = Some(vad);
+        let decision = WhisperPlanDecision::qualified(key(), primary, fallback, expected).unwrap();
+        let engine = RecoveringWhisperEngine::with_clock(
+            decision,
+            QuarantineStore::at(root.join("quarantine.json")),
+            now,
+        );
+        let transcript = engine
+            .transcribe(&Pcm16kMono::from_samples(vec![0; 160]), &options())
+            .unwrap();
+        assert_eq!(transcript.raw, "CPU");
+        assert_eq!(fs::read_to_string(gpu_marker).unwrap().lines().count(), 1);
+        assert_eq!(fs::read_to_string(cpu_marker).unwrap().lines().count(), 1);
     }
 
     #[test]

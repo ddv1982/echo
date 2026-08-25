@@ -16,8 +16,8 @@ use super::whisper_admission::{
     AdmissionState,
 };
 use super::{
-    whisper_runtime_launch, WhisperExecutionPlan, WhisperPlanDecision, WhisperRuntimeCandidate,
-    WhisperTuning,
+    probe_vulkan_runtime_receipt, whisper_runtime_launch, WhisperExecutionPlan,
+    WhisperPlanDecision, WhisperRuntimeCandidate, WhisperTuning,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -33,6 +33,7 @@ struct FileStamp {
 }
 
 static FILE_DIGESTS: OnceLock<Mutex<HashMap<FileStamp, String>>> = OnceLock::new();
+static PREFLIGHT_RECEIPTS: OnceLock<Mutex<HashMap<String, WhisperVulkanReceipt>>> = OnceLock::new();
 
 pub(crate) struct ObservedWhisperHost {
     pub drm_vendor_id: u32,
@@ -49,6 +50,11 @@ pub(crate) struct PackageSelection<'a> {
     pub host: ObservedWhisperHost,
     pub now: u64,
     pub require_package_ownership: bool,
+    pub receipt_probe: fn(
+        &Path,
+        &super::WhisperRuntimeLaunch,
+        std::time::Duration,
+    ) -> Result<WhisperVulkanReceipt, String>,
 }
 
 pub(crate) fn select_qualified_package(
@@ -69,6 +75,14 @@ pub(crate) fn select_qualified_package(
         &record.artifacts.runtime_relative_path,
         true,
     )?;
+    let probe = package_path(
+        selection.package_root,
+        &record.artifacts.probe_relative_path,
+        true,
+    )?;
+    if sha256_file(&probe)? != record.artifacts.probe_sha256 {
+        return Err("Whisper runtime probe identity changed".to_string());
+    }
     let cache_seed = package_path(
         selection.package_root,
         &record.artifacts.cache_seed_relative_path,
@@ -150,16 +164,58 @@ pub(crate) fn select_qualified_package(
     primary.runtime.launch.mesa_shader_cache_dir = Some(cache);
     primary.tuning = tuning;
     primary.timeout = selection.managed_cpu.timeout;
+    primary.allow_vad_retry = false;
+
+    let expected_receipt = receipt(&record.identity.device);
+    verify_live_receipt(
+        record.identity_key.as_str(),
+        &expected_receipt,
+        &probe,
+        &primary.runtime.launch,
+        selection.receipt_probe,
+    )?;
 
     let mut fallback = selection.managed_cpu;
     fallback.tuning = tuning;
     fallback.force_cpu = true;
+    fallback.allow_vad_retry = false;
     WhisperPlanDecision::qualified(
         record.identity_key,
         primary,
         fallback,
-        receipt(&record.identity.device),
+        expected_receipt,
     )
+}
+
+fn verify_live_receipt(
+    identity_key: &str,
+    expected: &WhisperVulkanReceipt,
+    probe: &Path,
+    launch: &super::WhisperRuntimeLaunch,
+    run_probe: fn(
+        &Path,
+        &super::WhisperRuntimeLaunch,
+        std::time::Duration,
+    ) -> Result<WhisperVulkanReceipt, String>,
+) -> Result<(), String> {
+    let receipts = PREFLIGHT_RECEIPTS.get_or_init(|| Mutex::new(HashMap::new()));
+    if receipts
+        .lock()
+        .map_err(|_| "Whisper preflight receipt cache is unavailable".to_string())?
+        .get(identity_key)
+        == Some(expected)
+    {
+        return Ok(());
+    }
+    let observed = run_probe(probe, launch, std::time::Duration::from_secs(15))?;
+    if &observed != expected {
+        return Err("live Vulkan receipt differs from admission".to_string());
+    }
+    receipts
+        .lock()
+        .map_err(|_| "Whisper preflight receipt cache is unavailable".to_string())?
+        .insert(identity_key.to_string(), observed);
+    Ok(())
 }
 
 pub(crate) fn production_whisper_decision(
@@ -186,6 +242,7 @@ pub(crate) fn production_whisper_decision(
         host,
         now,
         require_package_ownership: false,
+        receipt_probe: probe_vulkan_runtime_receipt,
     })
     .ok()
 }
@@ -392,8 +449,13 @@ fn populate_cache_seed(
     lock.lock_exclusive().map_err(|error| error.to_string())?;
     let destination = cache_root.join(identity_key);
     let result = (|| {
-        if destination.is_dir() && tree_sha256(&destination)? == expected_sha256 {
-            return Ok(destination.clone());
+        let marker = destination.join(".echo-seed-sha256");
+        if destination.is_dir()
+            && fs::read_to_string(&marker)
+                .ok()
+                .is_some_and(|value| value.trim() == expected_sha256)
+        {
+            return Ok(destination);
         }
         if destination.exists() {
             fs::remove_dir_all(&destination).map_err(|error| error.to_string())?;
@@ -407,6 +469,8 @@ fn populate_cache_seed(
             let _ = fs::remove_dir_all(&stage);
             return Err("copied Whisper cache seed changed identity".to_string());
         }
+        fs::write(stage.join(".echo-seed-sha256"), expected_sha256)
+            .map_err(|error| error.to_string())?;
         fs::rename(&stage, &destination).map_err(|error| error.to_string())?;
         Ok(destination)
     })();
@@ -481,7 +545,7 @@ mod tests {
     use super::*;
     use crate::stt::{
         AdmissionArtifacts, AdmissionGates, AdmissionIdentityKey, AdmissionTuning,
-        AdmissionVerdict, WhisperModelAsset, WhisperProtocol,
+        AdmissionVerdict, WhisperModelAsset, WhisperProtocol, WhisperRuntimeLaunch,
     };
 
     const NOW: u64 = 2_000_000_000;
@@ -538,6 +602,12 @@ mod tests {
         }
     }
 
+    fn live_receipt(device_id: u32) -> WhisperVulkanReceipt {
+        let mut value = device();
+        value.device_id = device_id;
+        receipt(&value)
+    }
+
     struct Fixture {
         package: PathBuf,
         cache: PathBuf,
@@ -554,6 +624,7 @@ mod tests {
         fs::create_dir_all(&runtime_dir).unwrap();
         fs::create_dir_all(&seed).unwrap();
         let runtime = runtime_dir.join("whisper-cli");
+        let probe = runtime_dir.join("echo-whisper-runtime-probe");
         let cpu = root.join("whisper-cpu");
         let echo = root.join("echo-desktop");
         let model = root.join("ggml-small.bin");
@@ -561,9 +632,10 @@ mod tests {
         let icd_manifest = root.join("intel_icd.json");
         let icd_library = root.join("libvulkan_intel.so");
         executable(&runtime, b"vulkan runtime");
+        executable(&probe, b"runtime probe");
         executable(&cpu, b"cpu runtime");
         executable(&echo, b"echo binary");
-        fs::write(&model, b"small model").unwrap();
+        fs::write(&model, format!("small model {label}")).unwrap();
         fs::write(&vad, b"vad model").unwrap();
         fs::write(&icd_manifest, b"icd manifest").unwrap();
         fs::write(&icd_library, b"icd library").unwrap();
@@ -605,6 +677,8 @@ mod tests {
             expires_at: NOW + 60,
             artifacts: AdmissionArtifacts {
                 runtime_relative_path: "runtime/whisper-cli".to_string(),
+                probe_relative_path: "runtime/echo-whisper-runtime-probe".to_string(),
+                probe_sha256: sha256_file(&probe).unwrap(),
                 icd_manifest_path: icd_manifest.to_string_lossy().into_owned(),
                 icd_library_path: icd_library.to_string_lossy().into_owned(),
                 cache_seed_relative_path: "cache-seed".to_string(),
@@ -634,6 +708,7 @@ mod tests {
             protocol: WhisperProtocol::OneShotCli,
             force_cpu: false,
             timeout: std::time::Duration::from_secs(60),
+            allow_vad_retry: true,
         };
         Fixture {
             package,
@@ -645,6 +720,13 @@ mod tests {
     }
 
     fn selection<'a>(fixture: &'a Fixture, host: ObservedWhisperHost) -> PackageSelection<'a> {
+        fn test_probe(
+            _: &Path,
+            _: &WhisperRuntimeLaunch,
+            _: std::time::Duration,
+        ) -> Result<WhisperVulkanReceipt, String> {
+            Ok(live_receipt(0x46a6))
+        }
         PackageSelection {
             package_root: &fixture.package,
             cache_root: &fixture.cache,
@@ -654,6 +736,7 @@ mod tests {
             host,
             now: NOW,
             require_package_ownership: false,
+            receipt_probe: test_probe,
         }
     }
 
@@ -712,6 +795,25 @@ mod tests {
         );
         untrusted_selection.require_package_ownership = true;
         assert!(select_qualified_package(untrusted_selection).is_err());
+
+        fn wrong_receipt(
+            _: &Path,
+            _: &WhisperRuntimeLaunch,
+            _: std::time::Duration,
+        ) -> Result<WhisperVulkanReceipt, String> {
+            Ok(live_receipt(0x9999))
+        }
+        let changed_receipt = fixture("receipt-change");
+        let mut changed_receipt_selection = selection(
+            &changed_receipt,
+            ObservedWhisperHost {
+                drm_vendor_id: 0x8086,
+                drm_device_id: 0x46a6,
+                drm_driver: "i915".to_string(),
+            },
+        );
+        changed_receipt_selection.receipt_probe = wrong_receipt;
+        assert!(select_qualified_package(changed_receipt_selection).is_err());
     }
 
     #[test]

@@ -60,8 +60,9 @@ Discovery never implies eligibility. Selection follows this order:
 
 1. Prepare and lease the managed CPU floor.
 2. Build the exact accelerated identity under the production launch contract.
-3. Reject unknown, incomplete, stopped, expired, changed, software-rendered, or quarantined identities.
-4. Select an accelerator only for an exact passed identity.
+3. Run the package-owned receipt probe without a model or user audio. Require the exact admitted UUIDs, versions, and selected index.
+4. Reject unknown, incomplete, stopped, expired, changed, software-rendered, or quarantined identities.
+5. Select an accelerator only for an exact passed identity.
 
 If an admitted accelerator fails, reports the wrong identity, returns malformed output, or violates the launch contract, Echo quarantines that exact identity. Echo then runs one same-model managed CPU logical retry. It does not retry another GPU or switch models.
 

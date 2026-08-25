@@ -424,11 +424,11 @@ def read_fixture_audio(manifest_path: Path) -> Path:
     return path
 
 
-def create_model_dir(cell_root: Path, model_path: Path) -> Path:
+def create_model_dir(cell_root: Path, model_path: Path, vad_path: Path) -> Path:
     model_dir = cell_root / "model-cache"
     model_dir.mkdir()
-    target = model_dir / model_path.name
-    target.symlink_to(model_path)
+    (model_dir / model_path.name).symlink_to(model_path)
+    (model_dir / vad_path.name).symlink_to(vad_path)
     return model_dir
 
 
@@ -436,6 +436,7 @@ def exact_runtime_gate(
     bundle_root: Path,
     expected_runtime: Runtime,
     expected_model: Path,
+    expected_vad: Path,
     expected_environment: dict[str, str],
     expected_driver: Path,
     expected_cache: Path,
@@ -448,6 +449,7 @@ def exact_runtime_gate(
 ) -> tuple[bool, str | None]:
     try:
         expected_model_sha256 = sha256(expected_model)
+        expected_vad_sha256 = sha256(expected_vad)
         status = read_json(bundle_root / "status.json", "benchmark status")
         manifest = read_json(bundle_root / "run-manifest.json", "benchmark manifest")
         if status.get("state") != "complete" or status.get("runId") != manifest.get(
@@ -490,6 +492,7 @@ def exact_runtime_gate(
                 return False, "benchmark contains an unexpected candidate"
             runtime = row.get("runtimeArtifact")
             model = row.get("modelArtifact")
+            vad = row.get("vadArtifact")
             if (
                 not isinstance(runtime, dict)
                 or runtime.get("sha256") != expected_runtime.sha256
@@ -510,6 +513,16 @@ def exact_runtime_gate(
                 != expected_model.resolve()
             ):
                 return False, "child model path differs from selected model"
+            if not isinstance(vad, dict) or vad.get("sha256") != expected_vad_sha256:
+                return False, "child VAD hash differs from selected VAD"
+            if (
+                recorded_path(vad.get("path"), "child VAD path").resolve()
+                != expected_vad.resolve()
+            ):
+                return False, "child VAD path differs from selected VAD"
+            engine = row.get("engine")
+            if not isinstance(engine, dict) or engine.get("vad") is not True:
+                return False, "measurement did not keep VAD active"
             whisper = row.get("whisper")
             telemetry = whisper.get("runtime") if isinstance(whisper, dict) else None
             if not isinstance(telemetry, dict):
@@ -604,7 +617,11 @@ def probe_receipt_consistency(
 
 
 def cache_binding(
-    runtime: Runtime, cache: Cache, model_path: Path, vk_driver_files: Path
+    runtime: Runtime,
+    cache: Cache,
+    model_path: Path,
+    vad_path: Path,
+    vk_driver_files: Path,
 ) -> tuple[bool, bool, bool, str | None, object]:
     try:
         identity = cache.cycle.get("identity")
@@ -613,10 +630,12 @@ def cache_binding(
             return False, False, False, "cache cycle has no identity", None
         cycle_runtime = identity_value.get("runtime")
         cycle_model = identity_value.get("model")
+        cycle_vad = identity_value.get("vad")
         host = identity_value.get("host")
         if (
             not isinstance(cycle_runtime, dict)
             or not isinstance(cycle_model, dict)
+            or not isinstance(cycle_vad, dict)
             or not isinstance(host, dict)
         ):
             return False, False, False, "cache cycle identity is incomplete", None
@@ -628,6 +647,7 @@ def cache_binding(
             and cycle_runtime.get("identitySha256")
             == product_runtime_identity(runtime.cli)
             and cycle_model.get("sha256") == sha256(model_path)
+            and cycle_vad.get("sha256") == sha256(vad_path)
             and selected_manifest.get("sha256") == sha256(vk_driver_files)
         )
         snapshots = cache.cycle.get("cacheSnapshots")
@@ -718,7 +738,7 @@ def run_cell(
         },
     )
     try:
-        model_dir = create_model_dir(cell_root, args.model_path)
+        model_dir = create_model_dir(cell_root, args.model_path, args.vad_path)
         home = cell_root / "home"
         home.mkdir()
         environment = child_environment(
@@ -727,7 +747,7 @@ def run_cell(
         accelerated_label = candidate_label(args.model_name, args.threads, cell, False)
         cpu_label = candidate_label(args.model_name, args.threads, cell, True)
         cache_ok, driver_ok, reset_ok, cache_error, expected_receipt = cache_binding(
-            runtime, cache, args.model_path, args.vk_driver_files
+            runtime, cache, args.model_path, args.vad_path, args.vk_driver_files
         )
         before = cache_snapshot(cache.cache_root)
         write_json(cell_root / "cache-before.json", before)
@@ -839,6 +859,7 @@ def run_cell(
             bundle_root,
             runtime,
             args.model_path,
+            args.vad_path,
             environment,
             args.vk_driver_files,
             cache.cache_root,
@@ -1106,6 +1127,7 @@ def run_sweep(args: argparse.Namespace) -> int:
         ("fixture manifest", args.fixture_manifest),
         ("coverage manifest", args.coverage_manifest),
         ("model", args.model_path),
+        ("VAD", args.vad_path),
         ("VK_DRIVER_FILES", args.vk_driver_files),
     ):
         if not path.is_file():
@@ -1229,6 +1251,8 @@ def self_test() -> None:
         (runtime_root / "libwhisper.so").write_bytes(b"library")
         model = root / "model.bin"
         model.write_bytes(b"model")
+        vad = root / "ggml-silero-v6.2.0.bin"
+        vad.write_bytes(b"vad")
         driver = root / "driver.json"
         driver.write_text("{}", encoding="utf-8")
         cache = root / "cache"
@@ -1279,6 +1303,8 @@ def self_test() -> None:
                     "candidate": label,
                     "runtimeArtifact": {"path": str(cli), "sha256": sha256(cli)},
                     "modelArtifact": {"path": str(model), "sha256": sha256(model)},
+                    "vadArtifact": {"path": str(vad), "sha256": sha256(vad)},
+                    "engine": {"vad": True},
                     "whisper": {
                         "runtime": {
                             "identitySha256": product_runtime_identity(cli),
@@ -1298,6 +1324,7 @@ def self_test() -> None:
             bundle,
             runtime,
             model,
+            vad,
             environment,
             driver,
             cache,
@@ -1320,6 +1347,7 @@ def self_test() -> None:
             bundle,
             runtime,
             model,
+            vad,
             environment,
             driver,
             cache,
@@ -1389,6 +1417,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--coverage-manifest", type=Path)
     result.add_argument("--model-name")
     result.add_argument("--model-path", type=Path)
+    result.add_argument("--vad-path", type=Path)
     result.add_argument("--vk-driver-files", type=Path)
     result.add_argument(
         "--receipt-runtime", action="append", default=[], metavar="REVISION=DIR"
@@ -1427,6 +1456,7 @@ def main() -> int:
         "coverage_manifest",
         "model_name",
         "model_path",
+        "vad_path",
         "vk_driver_files",
         "output",
     )

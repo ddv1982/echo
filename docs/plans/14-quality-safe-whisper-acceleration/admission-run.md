@@ -18,7 +18,7 @@ The reset gate requires two hardened cycles from distinct Linux boot IDs. The fi
 
 `CorpusFixture` is the unit of quality evidence. It binds one audio digest to one reference, language, product class, source license, and derivation record. Derived stress audio may cover acoustic conditions such as speed, level, and noise only when the source and transform are pinned. It cannot be relabelled as spontaneous dictation, technical identifiers, or false starts unless the spoken content actually has that property.
 
-`AdmissionIdentity` binds the Echo binary, runtime CLI and adjacent libraries, model, VAD, protocol, decoding, device receipt, ICD manifest and library, Mesa cache class, and evidence digests. Boot ID separates reset strata but is not a production wildcard.
+`AdmissionIdentity` binds the Echo binary, runtime CLI and adjacent libraries, model, VAD, pinned-language and empty-prompt policy, decoding, device receipt, ICD manifest and library, Mesa cache class, and evidence digests. Boot ID separates reset strata but is not a production wildcard.
 
 ## Workflow
 
