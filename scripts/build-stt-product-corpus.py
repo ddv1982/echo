@@ -179,7 +179,11 @@ def obtain_external(name: str, item: dict[str, object], cache: Path) -> Path:
     cache.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
     try:
-        with urllib.request.urlopen(url, timeout=120) as response:
+        request = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Echo-STT-Corpus/1.0 (+https://github.com/ddv1982/echo)"},
+        )
+        with urllib.request.urlopen(request, timeout=120) as response:
             final = urlparse(response.geturl())
             if final.scheme != "https" or not (
                 final.hostname in ALLOWED_HOSTS
