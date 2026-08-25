@@ -1,4 +1,4 @@
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 
 use fs2::FileExt;
@@ -31,7 +31,7 @@ impl QuarantineStore {
     }
 
     pub fn is_active(&self, key: &AdmissionIdentityKey, now: u64) -> Result<bool, String> {
-        self.with_lock(|_| {
+        self.with_lock(|| {
             let document = self.read_document()?;
             Ok(document.records.iter().any(|record| {
                 record.identity_key == *key
@@ -47,7 +47,7 @@ impl QuarantineStore {
         reason: QuarantineReason,
         now: u64,
     ) -> Result<(), String> {
-        self.with_lock(|_| {
+        self.with_lock(|| {
             let mut document = self.read_document()?;
             document
                 .records
@@ -76,7 +76,7 @@ impl QuarantineStore {
         })
     }
 
-    fn with_lock<T>(&self, operation: impl FnOnce(&File) -> Result<T, String>) -> Result<T, String> {
+    fn with_lock<T>(&self, operation: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
         let parent = self.path.parent().unwrap_or_else(|| Path::new("."));
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         let lock = OpenOptions::new()
@@ -87,7 +87,7 @@ impl QuarantineStore {
             .open(&self.lock_path)
             .map_err(|error| error.to_string())?;
         lock.lock_exclusive().map_err(|error| error.to_string())?;
-        let result = operation(&lock);
+        let result = operation();
         let unlock = FileExt::unlock(&lock).map_err(|error| error.to_string());
         match (result, unlock) {
             (Ok(value), Ok(())) => Ok(value),

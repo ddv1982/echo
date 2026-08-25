@@ -11,6 +11,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from whisper_release_common import runtime_identity, sha256_file, tree_sha256
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RESEARCH_GATES = (
     "completePairs",
@@ -51,55 +53,6 @@ def read_json(path: Path, label: str) -> dict[str, object]:
     if not isinstance(value, dict):
         raise ValueError(f"{label} must be an object")
     return value
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def tree_sha256(root: Path) -> str:
-    files = []
-    for path in root.rglob("*"):
-        if path.is_symlink():
-            raise ValueError("cache seed must not contain symlinks")
-        if path.is_file():
-            files.append((path.relative_to(root).as_posix(), path))
-        elif not path.is_dir():
-            raise ValueError(f"unsupported cache seed entry: {path}")
-    if not files:
-        raise ValueError("cache seed must contain files")
-    digest = hashlib.sha256(b"echo-whisper-tree-v1\0")
-    for relative, path in sorted(files):
-        name = relative.encode()
-        digest.update(len(name).to_bytes(8, "little"))
-        digest.update(name)
-        digest.update(path.stat().st_size.to_bytes(8, "little"))
-        with path.open("rb") as source:
-            for chunk in iter(lambda: source.read(1024 * 1024), b""):
-                digest.update(chunk)
-    return digest.hexdigest()
-
-
-def runtime_identity(cli: Path) -> str:
-    libraries = {
-        path.resolve()
-        for path in cli.parent.iterdir()
-        if ".so" in path.name and path.resolve().is_file()
-    }
-    digest = hashlib.sha256(b"echo-whisper-runtime-v1\0")
-    for path in [cli.resolve(), *sorted(libraries)]:
-        name = path.name.encode()
-        digest.update(len(name).to_bytes(8, "little"))
-        digest.update(name)
-        digest.update(path.stat().st_size.to_bytes(8, "little"))
-        with path.open("rb") as source:
-            for chunk in iter(lambda: source.read(1024 * 1024), b""):
-                digest.update(chunk)
-    return digest.hexdigest()
 
 
 def canonical(value: object) -> bytes:
@@ -169,10 +122,10 @@ def replay_analysis(cell: dict[str, object], corpus: Path, scratch: Path) -> Non
         "--expected-backend",
         "vulkan",
         "--output-dir",
-        str(scratch),
+        str(scratch / "analysis"),
     ]
     subprocess.run(command, cwd=REPO_ROOT, check=True, capture_output=True, text=True)
-    replay = read_json(scratch / "decision.json", "replayed analysis")
+    replay = read_json(scratch / "analysis/decision.json", "replayed analysis")
     phase2 = cell.get("phase2")
     if not isinstance(phase2, dict):
         raise ValueError("cell phase2 analysis is missing")

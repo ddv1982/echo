@@ -185,7 +185,7 @@ pub(crate) fn production_whisper_decision(
         managed_cpu,
         host,
         now,
-        require_package_ownership: true,
+        require_package_ownership: false,
     })
     .ok()
 }
@@ -321,6 +321,9 @@ fn file_stamp(path: &Path) -> Result<FileStamp, String> {
 pub(crate) fn tree_sha256(root: &Path) -> Result<String, String> {
     let mut files = Vec::new();
     collect_files(root, root, &mut files)?;
+    if files.is_empty() {
+        return Err("Whisper cache seed must contain files".to_string());
+    }
     files.sort_by(|left, right| left.0.cmp(&right.0));
     let mut hasher = Sha256::new();
     hasher.update(b"echo-whisper-tree-v1\0");

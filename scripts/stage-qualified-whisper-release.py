@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import shutil
@@ -11,13 +10,18 @@ import sys
 import tempfile
 from pathlib import Path
 
+from whisper_release_common import (
+    BUNDLE_MARKER,
+    BUNDLE_TOKENS,
+    bundle_variant,
+    runtime_identity,
+    sha256_bytes,
+    sha256_file,
+    tree_sha256,
+)
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CANONICAL_BINARY = REPO_ROOT / "target/release/echo-desktop"
-BUNDLE_MARKER = b"__TAURI_BUNDLE_TYPE_VAR_UNK"
-BUNDLE_TOKENS = {
-    "deb": b"__TAURI_BUNDLE_TYPE_VAR_DEB",
-    "rpm": b"__TAURI_BUNDLE_TYPE_VAR_RPM",
-}
 
 
 def read_json(path: Path) -> dict[str, object]:
@@ -27,63 +31,8 @@ def read_json(path: Path) -> dict[str, object]:
     return value
 
 
-def sha256_bytes(value: bytes) -> str:
-    return hashlib.sha256(value).hexdigest()
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def tree_sha256(root: Path) -> str:
-    files = []
-    for path in root.rglob("*"):
-        if path.is_symlink():
-            raise ValueError("cache seed must not contain symlinks")
-        if path.is_file():
-            files.append((path.relative_to(root).as_posix(), path))
-        elif not path.is_dir():
-            raise ValueError(f"unsupported cache entry: {path}")
-    digest = hashlib.sha256(b"echo-whisper-tree-v1\0")
-    for relative, path in sorted(files):
-        name = relative.encode()
-        digest.update(len(name).to_bytes(8, "little"))
-        digest.update(name)
-        digest.update(path.stat().st_size.to_bytes(8, "little"))
-        with path.open("rb") as source:
-            for chunk in iter(lambda: source.read(1024 * 1024), b""):
-                digest.update(chunk)
-    return digest.hexdigest()
-
-
-def runtime_identity(cli: Path) -> str:
-    libraries = {
-        path.resolve()
-        for path in cli.parent.iterdir()
-        if ".so" in path.name and path.resolve().is_file()
-    }
-    digest = hashlib.sha256(b"echo-whisper-runtime-v1\0")
-    for path in [cli.resolve(), *sorted(libraries)]:
-        name = path.name.encode()
-        digest.update(len(name).to_bytes(8, "little"))
-        digest.update(name)
-        digest.update(path.stat().st_size.to_bytes(8, "little"))
-        with path.open("rb") as source:
-            for chunk in iter(lambda: source.read(1024 * 1024), b""):
-                digest.update(chunk)
-    return digest.hexdigest()
-
-
 def variant_bytes(canonical: bytes, bundle_type: str) -> bytes:
-    if canonical.count(BUNDLE_MARKER) != 1:
-        raise ValueError(
-            "canonical binary must contain one unknown Tauri bundle marker"
-        )
-    return canonical.replace(BUNDLE_MARKER, BUNDLE_TOKENS[bundle_type], 1)
+    return bundle_variant(canonical, bundle_type)
 
 
 def preserve_old_bundle(label: str) -> None:
