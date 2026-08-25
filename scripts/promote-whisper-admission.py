@@ -215,7 +215,11 @@ def verify_runtime_probe(
         for line in completed.stderr.splitlines()
         if line.startswith(RECEIPT_PREFIX)
     ]
-    if completed.returncode != 0 or len(lines) != 1 or json.loads(lines[0]) != expected_receipt:
+    if (
+        completed.returncode != 0
+        or len(lines) != 1
+        or json.loads(lines[0]) != expected_receipt
+    ):
         raise ValueError("runtime probe did not reproduce the admitted receipt")
 
 
@@ -233,6 +237,13 @@ def promote(args: argparse.Namespace) -> None:
         replay_analysis(cell, args.corpus.resolve(), Path(temporary))
 
     cycle_path = args.cache_cycle.resolve()
+    cell_evidence = cell.get("evidence")
+    if (
+        not isinstance(cell_evidence, dict)
+        or require_path(cell_evidence.get("cacheCycle"), "cell cache cycle").resolve()
+        != cycle_path
+    ):
+        raise ValueError("promotion cache cycle differs from the selected sweep cell")
     subprocess.run(
         [
             sys.executable,
