@@ -39,6 +39,8 @@ All four reviewers reported no findings on the corrected diff.
 - Real managed CPU, system Vulkan, and explicit-contract Vulkan product smokes.
 - Optimized release build and icon drift check.
 
+The PR review then found one additional valid gap: cache-cycle identity covered the CLI but not adjacent runtime libraries. The cycle now stores the composite runtime identity plus each adjacent library artifact, and the sweep requires that composite identity before accepting cache evidence.
+
 Repository-wide `cargo fmt --all -- --check` remains outside CI and reports pre-existing drift in unchanged files. Changed Rust files pass the pinned Rust 1.88 formatter.
 
 ## Verdict

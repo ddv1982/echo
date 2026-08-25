@@ -608,6 +608,49 @@ def identity_artifact(value: object, label: str) -> dict[str, object]:
     return {"bytes": size, "sha256": digest}
 
 
+def runtime_identity(binary: Path) -> dict[str, object]:
+    libraries: set[Path] = set()
+    for candidate in binary.parent.iterdir():
+        if ".so" not in candidate.name:
+            continue
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError:
+            continue
+        if resolved.is_file():
+            libraries.add(resolved)
+    digest = hashlib.sha256(b"echo-whisper-runtime-v1\0")
+    artifacts = []
+    binary_artifact: dict[str, object] | None = None
+    for path in [binary, *sorted(libraries)]:
+        name = path.name.encode()
+        digest.update(len(name).to_bytes(8, "little"))
+        digest.update(name)
+        size = path.stat().st_size
+        digest.update(size.to_bytes(8, "little"))
+        file_digest = hashlib.sha256()
+        with path.open("rb") as source:
+            for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(chunk)
+                file_digest.update(chunk)
+        identity = {"bytes": size, "sha256": file_digest.hexdigest()}
+        if path == binary:
+            binary_artifact = identity
+        else:
+            artifacts.append(
+                {
+                    "name": path.name,
+                    **identity,
+                }
+            )
+    assert binary_artifact is not None
+    return {
+        **binary_artifact,
+        "identitySha256": digest.hexdigest(),
+        "adjacentLibraries": artifacts,
+    }
+
+
 def canonical_json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
@@ -619,7 +662,7 @@ def cycle_identity(
     assert isinstance(selected, dict)
     value = {
         "schemaVersion": 1,
-        "runtime": identity_artifact(artifact(args.binary), "binary"),
+        "runtime": runtime_identity(args.binary),
         "model": identity_artifact(artifact(args.model), "model"),
         "audio": identity_artifact(artifact(args.audio), "audio"),
         "vad": identity_artifact(artifact(args.vad), "VAD")
@@ -1039,6 +1082,15 @@ def self_test() -> None:
             )
         for name in ("whisper-cli", "model.bin", "fixture.wav", "intel_icd.json"):
             (root / name).write_text(name, encoding="utf-8")
+        library = root / "libwhisper.so"
+        library.write_text("library-v1", encoding="utf-8")
+        first_runtime_identity = runtime_identity(root / "whisper-cli")
+        library.write_text("library-v2", encoding="utf-8")
+        second_runtime_identity = runtime_identity(root / "whisper-cli")
+        assert (
+            first_runtime_identity["identitySha256"]
+            != second_runtime_identity["identitySha256"]
+        )
         cache_tree = root / "deterministic-cache"
         (cache_tree / "0a").mkdir(parents=True)
         (cache_tree / "index").write_text("index", encoding="utf-8")

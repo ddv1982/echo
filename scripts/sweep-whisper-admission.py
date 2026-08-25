@@ -576,6 +576,8 @@ def cache_binding(
             return False, False, False, "cache cycle has no selected ICD identity", None
         matches = (
             cycle_runtime.get("sha256") == runtime.sha256
+            and cycle_runtime.get("identitySha256")
+            == product_runtime_identity(runtime.cli)
             and cycle_model.get("sha256") == sha256(model_path)
             and selected_manifest.get("sha256") == sha256(vk_driver_files)
         )
