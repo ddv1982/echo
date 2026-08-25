@@ -6,6 +6,413 @@ python3 scripts/fetch-stt-corpus.py \
   --check-manifest \
   --manifest benchmarks/stt/corpus-fleurs.json
 python3 scripts/analyze-stt-host-matrix.py --self-test
+verify_root="$(mktemp -d -t echo-stt-replay-XXXXXX)"
+trap 'rm -rf "$verify_root"' EXIT
+python3 - "$PWD" "$verify_root" <<'PY'
+import hashlib
+import json
+import pathlib
+import shutil
+import subprocess
+import sys
+
+repo = pathlib.Path(sys.argv[1])
+root = pathlib.Path(sys.argv[2])
+analyzer = repo / "scripts" / "analyze-stt-host-matrix.py"
+bundle = root / "bundle"
+bundle.mkdir()
+audio = bundle / "audio.bin"
+runtime = bundle / "runtime.bin"
+model = bundle / "model.bin"
+vad = bundle / "vad.bin"
+library = bundle / "libwhisper.so"
+audio.write_bytes(b"audio fixture")
+runtime.write_bytes(b"runtime receipt")
+model.write_bytes(b"model receipt")
+vad.write_bytes(b"vad receipt")
+library.write_bytes(b"library receipt")
+
+
+def digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def launch_identity(path):
+    value = hashlib.sha256(b"echo-whisper-runtime-v1\0")
+    libraries = sorted(
+        {candidate.resolve() for candidate in path.parent.iterdir() if ".so" in candidate.name}
+    )
+    for candidate in [path, *libraries]:
+        name = candidate.name.encode()
+        value.update(len(name).to_bytes(8, "little"))
+        value.update(name)
+        value.update(candidate.stat().st_size.to_bytes(8, "little"))
+        value.update(candidate.read_bytes())
+    return value.hexdigest()
+
+
+def ref(relative, contents):
+    path = bundle / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(contents)
+    return {"path": relative, "sha256": digest(path), "bytes": len(contents)}
+
+
+coverage = {
+    "schemaVersion": 1,
+    "coverage": {
+        "pending": [],
+        "requiredLanguages": ["en"],
+        "requiredClasses": [
+            "dictation", "technical-identifiers", "fast-speech", "quiet-speech",
+            "noise", "false-starts", "silence", "nonspeech",
+        ],
+    },
+    "utterances": [
+        {
+            "id": "fixture",
+            "language": "en",
+            "class": "clean-read",
+            "reference": "hello world",
+            "sha256": digest(audio),
+        }
+    ],
+}
+coverage_path = root / "coverage-manifest.json"
+coverage_path.write_text(json.dumps(coverage, indent=2) + "\n", encoding="utf-8")
+snapshot = {
+    "schemaVersion": 1,
+    "utterances": [
+        {"id": "fixture", "file": "audio.bin", "language": "en", "reference": "hello world"}
+    ],
+}
+corpus_path = bundle / "corpus-manifest.json"
+corpus_path.write_text(json.dumps(snapshot, indent=2) + "\n", encoding="utf-8")
+
+manifest = {
+    "schemaVersion": 1,
+    "runId": "replay-fixture",
+    "startedAt": "2026-08-25T00:00:00+00:00",
+    "binary": {"path": sys.executable, "sha256": digest(pathlib.Path(sys.executable))},
+    "corpus": {
+        "sourcePath": str(corpus_path),
+        "snapshot": {"path": "corpus-manifest.json", "sha256": digest(corpus_path)},
+        "utterances": [{"id": "fixture", "audio": str(audio), "audioSha256": digest(audio)}],
+    },
+    "candidates": [
+        {
+            "label": label,
+            "engine": "whisper",
+            "model": "base",
+            "threads": None,
+            "beamSize": None,
+            "bestOf": None,
+            "noFallback": False,
+            "forceCpu": False,
+        }
+        for label in ("cpu", "gpu")
+    ],
+    "seed": 7,
+    "repeats": 1,
+    "warmups": 1,
+    "cacheState": "fresh",
+    "resetCycle": "forged-reset",
+    "echo": {"version": "echo 1", "commit": "a" * 40, "dirty": False},
+    "host": {"system": "Linux", "driverIdentity": "forged", "icdIdentity": "forged"},
+    "artifactIndex": [],
+}
+
+
+def observation(row_id, candidate, phase, backend):
+    product = {
+        "schemaVersion": 1,
+        "text": "hello world",
+        "raw": "HELLO WORLD",
+        "audioMs": 1000,
+        "inferMs": 50,
+        "engine": {
+            "id": "whisper",
+            "model": "base",
+            "binary": str(runtime),
+            "modelPath": str(model),
+            "vad": False,
+            "vadPath": str(vad),
+        },
+        "whisper": {
+            "runtime": {
+                "backend": backend,
+                "device": "Test GPU" if backend == "vulkan" else None,
+                "identitySha256": launch_identity(runtime),
+                "libraryPath": str(root),
+                "vulkanDriverFiles": str(root / "driver.json"),
+                "mesaShaderCacheDir": str(root / "cache"),
+            },
+            "tuning": {"threads": 1, "beamSize": 1},
+        },
+    }
+    prefix = f"artifacts/{row_id}"
+    stdout = json.dumps(product, sort_keys=True).encode() + b"\n"
+    artifact = {
+        "schemaVersion": 1,
+        "rowId": row_id,
+        "phase": phase,
+        "candidate": candidate,
+        "utterance": "fixture",
+        "command": ref(
+            f"{prefix}/command.json",
+            json.dumps(
+                [
+                    sys.executable, "transcribe", str(audio), "--language", "en", "--format", "json",
+                    "--engine", "whisper", "--model", "base",
+                ]
+            ).encode() + b"\n",
+        ),
+        "environment": ref(f"{prefix}/environment.json", b"{}\n"),
+        "stdout": ref(f"{prefix}/stdout.txt", stdout),
+        "stderr": ref(f"{prefix}/stderr.txt", b""),
+        "result": ref(
+            f"{prefix}/result.json",
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "returnCode": 0,
+                    "productJson": product,
+                    "parseError": None,
+                    "invocationError": None,
+                },
+                sort_keys=True,
+            ).encode() + b"\n",
+        ),
+        "timing": ref(
+            f"{prefix}/timing.json",
+            b'{"schemaVersion":1,"startedAt":"start","finishedAt":"finish","wallMs":100,"returnCode":0}\n',
+        ),
+        "runtimeArtifact": {"path": str(runtime), "sha256": digest(runtime)},
+        "modelArtifact": {"path": str(model), "sha256": digest(model)},
+        "vadArtifact": {"path": str(vad), "sha256": digest(vad)},
+    }
+    manifest["artifactIndex"].append(artifact)
+    return {
+        "schemaVersion": 2,
+        "rowId": row_id,
+        "observationArtifact": artifact,
+        "candidate": candidate,
+        "utterance": "fixture",
+        "repeat": 1,
+        "text": "forged transcript",
+        "raw": "forged raw",
+        "reference": "forged reference",
+        "referenceWords": 999,
+        "wordErrors": 999,
+        "wer": 999,
+        "hallucinatedSilence": True,
+        "outerMs": 1,
+        "audioMs": 1,
+        "inferMs": 1,
+        "engine": {"id": "forged"},
+        "whisper": {"runtime": {"backend": "forged"}},
+        "runtimeArtifact": {"path": str(runtime), "sha256": digest(runtime)},
+        "modelArtifact": {"path": str(model), "sha256": digest(model)},
+        "vadArtifact": {"path": str(vad), "sha256": digest(vad)},
+    }
+
+
+observation("warmup-cpu", "cpu", "warmup", "cpu")
+observation("warmup-gpu", "gpu", "warmup", "vulkan")
+rows = [
+    observation("measurement-cpu", "cpu", "measurement", "cpu"),
+    observation("measurement-gpu", "gpu", "measurement", "vulkan"),
+]
+(bundle / "runs.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+(bundle / "run-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+(bundle / "status.json").write_text(
+    json.dumps(
+        {
+            "schemaVersion": 1,
+            "runId": "replay-fixture",
+            "state": "complete",
+            "startedAt": "2026-08-25T00:00:00+00:00",
+            "completedAt": "2026-08-25T00:01:00+00:00",
+            "updatedAt": "2026-08-25T00:01:00+00:00",
+        }
+    )
+    + "\n",
+    encoding="utf-8",
+)
+
+
+def run(target):
+    return subprocess.run(
+        [
+            sys.executable, str(analyzer), "--runs", str(target / "runs.jsonl"),
+            "--corpus-manifest", str(coverage_path),
+            "--cpu-candidate", "cpu", "--accelerated-candidate", "gpu", "--output-dir", str(target / "decision"),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+completed = run(bundle)
+assert completed.returncode == 0, completed.stderr
+assert coverage_path.read_bytes() != corpus_path.read_bytes()
+decision = json.loads((bundle / "decision" / "decision.json").read_text())
+assert decision["languages"]["en"]["cpuWer"] == 0
+assert decision["languages"]["en"]["acceleratedWer"] == 0
+assert not decision["gates"]["coverageComplete"]
+assert not decision["gates"]["driverIcdIdentity"]
+assert not decision["gates"]["freshAndPopulatedCacheEvidence"]
+assert not decision["gates"]["resetEvidence"]
+
+zero_warmups = root / "zero-warmups"
+shutil.copytree(bundle, zero_warmups, ignore=shutil.ignore_patterns("decision"))
+zero_manifest_path = zero_warmups / "run-manifest.json"
+zero_manifest = json.loads(zero_manifest_path.read_text())
+zero_manifest["warmups"] = 0
+zero_manifest["artifactIndex"] = [
+    artifact
+    for artifact in zero_manifest["artifactIndex"]
+    if artifact["phase"] == "measurement"
+]
+zero_manifest_path.write_text(json.dumps(zero_manifest), encoding="utf-8")
+zero_completed = run(zero_warmups)
+assert zero_completed.returncode == 0, zero_completed.stderr
+
+
+def tampered(name, mutate):
+    target = root / name
+    shutil.copytree(bundle, target, ignore=shutil.ignore_patterns("decision"))
+    mutate(target)
+    rejected = run(target)
+    assert rejected.returncode == 1, (name, rejected.stdout, rejected.stderr)
+
+
+def sync_row_artifact(target, changed, row_id):
+    artifact = next(item for item in changed["artifactIndex"] if item["rowId"] == row_id)
+    rows = [json.loads(line) for line in (target / "runs.jsonl").read_text().splitlines()]
+    next(row for row in rows if row["rowId"] == row_id)["observationArtifact"] = artifact
+    (target / "runs.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+
+tampered("running", lambda target: (target / "status.json").write_text((target / "status.json").read_text().replace('"complete"', '"running"')))
+tampered("failed", lambda target: (target / "status.json").write_text((target / "status.json").read_text().replace('"complete"', '"failed"')))
+tampered("stale", lambda target: (target / "status.json").write_text((target / "status.json").read_text().replace("replay-fixture", "old-run")))
+tampered("duplicate", lambda target: (target / "runs.jsonl").write_text((target / "runs.jsonl").read_text() * 2))
+tampered("missing", lambda target: (target / "runs.jsonl").write_text((target / "runs.jsonl").read_text().splitlines()[0] + "\n"))
+tampered(
+    "mutation",
+    lambda target: (target / "artifacts/measurement-cpu/stdout.txt").write_bytes(
+        (target / "artifacts/measurement-cpu/stdout.txt").read_bytes() + b"!"
+    ),
+)
+
+
+def vad_digest_mismatch(target):
+    rows = [json.loads(line) for line in (target / "runs.jsonl").read_text().splitlines()]
+    rows[0]["vadArtifact"]["sha256"] = "0" * 64
+    (target / "runs.jsonl").write_text("".join(json.dumps(row) + "\n" for row in rows))
+
+
+tampered("vad-digest", vad_digest_mismatch)
+
+
+def warmup_runtime_digest_mismatch(target):
+    manifest_path = target / "run-manifest.json"
+    changed = json.loads(manifest_path.read_text())
+    warmup = next(item for item in changed["artifactIndex"] if item["rowId"] == "warmup-cpu")
+    warmup["runtimeArtifact"]["sha256"] = "0" * 64
+    manifest_path.write_text(json.dumps(changed), encoding="utf-8")
+
+
+tampered("warmup-runtime-digest", warmup_runtime_digest_mismatch)
+
+def composite_runtime_mismatch(target):
+    manifest_path = target / "run-manifest.json"
+    changed = json.loads(manifest_path.read_text())
+    row_id = "measurement-cpu"
+    stdout_path = target / f"artifacts/{row_id}/stdout.txt"
+    product = json.loads(stdout_path.read_text())
+    product["whisper"]["runtime"]["identitySha256"] = "0" * 64
+    stdout_path.write_text(json.dumps(product), encoding="utf-8")
+    result_path = target / f"artifacts/{row_id}/result.json"
+    result = json.loads(result_path.read_text())
+    result["productJson"] = product
+    result_path.write_text(json.dumps(result), encoding="utf-8")
+    artifact = next(item for item in changed["artifactIndex"] if item["rowId"] == row_id)
+    for name, path in (("stdout", stdout_path), ("result", result_path)):
+        artifact[name]["sha256"] = digest(path)
+        artifact[name]["bytes"] = path.stat().st_size
+    sync_row_artifact(target, changed, row_id)
+    manifest_path.write_text(json.dumps(changed), encoding="utf-8")
+
+
+tampered("composite-runtime-digest", composite_runtime_mismatch)
+
+
+def reference_mismatch(target):
+    snapshot_path = target / "corpus-manifest.json"
+    changed = json.loads(snapshot_path.read_text())
+    changed["utterances"][0]["reference"] = "wrong reference"
+    snapshot_path.write_text(json.dumps(changed), encoding="utf-8")
+    manifest_path = target / "run-manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    snapshot = manifest["corpus"]["snapshot"]
+    snapshot["sha256"] = digest(snapshot_path)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+
+tampered("reference-mismatch", reference_mismatch)
+
+
+def audio_mismatch(target):
+    manifest_path = target / "run-manifest.json"
+    changed = json.loads(manifest_path.read_text())
+    changed["corpus"]["utterances"][0]["audioSha256"] = "0" * 64
+    manifest_path.write_text(json.dumps(changed), encoding="utf-8")
+
+
+tampered("audio-mismatch", audio_mismatch)
+
+
+def mismatch(target):
+    manifest_path = target / "run-manifest.json"
+    changed = json.loads(manifest_path.read_text())
+    result = target / "artifacts/measurement-cpu/result.json"
+    payload = json.loads(result.read_text())
+    payload["productJson"]["text"] = "mismatch"
+    result.write_text(json.dumps(payload), encoding="utf-8")
+    reference = next(item for item in changed["artifactIndex"] if item["rowId"] == "measurement-cpu")["result"]
+    reference["sha256"] = digest(result)
+    reference["bytes"] = result.stat().st_size
+    sync_row_artifact(target, changed, "measurement-cpu")
+    manifest_path.write_text(json.dumps(changed), encoding="utf-8")
+
+
+tampered("result-mismatch", mismatch)
+
+
+def candidate_mismatch(target):
+    manifest_path = target / "run-manifest.json"
+    changed = json.loads(manifest_path.read_text())
+    next(item for item in changed["artifactIndex"] if item["rowId"] == "measurement-gpu")["candidate"] = "cpu"
+    sync_row_artifact(target, changed, "measurement-gpu")
+    manifest_path.write_text(json.dumps(changed), encoding="utf-8")
+
+
+tampered("candidate-mismatch", candidate_mismatch)
+
+
+def path_escape(target):
+    manifest_path = target / "run-manifest.json"
+    changed = json.loads(manifest_path.read_text())
+    next(item for item in changed["artifactIndex"] if item["rowId"] == "measurement-cpu")["command"]["path"] = "../escape"
+    manifest_path.write_text(json.dumps(changed), encoding="utf-8")
+
+
+tampered("path-escape", path_escape)
+print("verify-stt-corpus replay: ok")
+PY
 python3 - <<'PY'
 import json
 from pathlib import Path

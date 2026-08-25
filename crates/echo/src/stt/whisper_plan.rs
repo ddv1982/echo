@@ -26,6 +26,15 @@ pub struct WhisperRuntimeCandidate {
     pub backend: WhisperRuntimeBackend,
     pub cli: PathBuf,
     pub server: Option<PathBuf>,
+    pub launch: WhisperRuntimeLaunch,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WhisperRuntimeLaunch {
+    pub library_dir: Option<PathBuf>,
+    pub vulkan_driver_files: Option<PathBuf>,
+    pub mesa_shader_cache_dir: Option<PathBuf>,
+    pub identity_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,6 +124,7 @@ mod tests {
             backend: WhisperRuntimeBackend::Cpu,
             cli: PathBuf::from(name),
             server: None,
+            launch: WhisperRuntimeLaunch::default(),
         }
     }
 

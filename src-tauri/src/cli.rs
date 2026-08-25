@@ -61,6 +61,10 @@ struct TranscribeArgs {
     whisper_no_fallback: bool,
     #[arg(long, hide = true)]
     whisper_no_gpu: bool,
+    #[arg(long, hide = true)]
+    whisper_vulkan_driver_files: Option<PathBuf>,
+    #[arg(long, hide = true)]
+    whisper_mesa_shader_cache_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -223,7 +227,9 @@ fn run_transcribe(args: TranscribeArgs) -> Result<(), CliFailure> {
         || args.whisper_beam_size.is_some()
         || args.whisper_best_of.is_some()
         || args.whisper_no_fallback
-        || args.whisper_no_gpu;
+        || args.whisper_no_gpu
+        || args.whisper_vulkan_driver_files.is_some()
+        || args.whisper_mesa_shader_cache_dir.is_some();
     if args.engine == Some(CliEngine::Parakeet) && has_whisper_performance_options {
         return Err(CliFailure::argument(
             "Whisper performance options require the Whisper engine",
@@ -253,6 +259,8 @@ fn run_transcribe(args: TranscribeArgs) -> Result<(), CliFailure> {
         language: args.language,
         whisper_tuning,
         whisper_force_cpu: args.whisper_no_gpu,
+        whisper_vulkan_driver_files: args.whisper_vulkan_driver_files,
+        whisper_mesa_shader_cache_dir: args.whisper_mesa_shader_cache_dir,
     };
     let prepared =
         echo::transcribe::prepare_with_config(overrides, &config).map_err(|error| match error {
@@ -383,6 +391,7 @@ impl<'a> TranscriptionJsonV1<'a> {
                 model,
                 binary: result.detail.binary.as_deref(),
                 model_path: result.detail.model_path.as_deref(),
+                vad_path: result.detail.vad_path.as_deref(),
                 multilingual: result.detail.multilingual,
                 vad: result.detail.vad,
             },
@@ -404,6 +413,7 @@ struct EngineJsonV1<'a> {
     model: Option<&'a str>,
     binary: Option<&'a str>,
     model_path: Option<&'a str>,
+    vad_path: Option<&'a str>,
     multilingual: Option<bool>,
     vad: Option<bool>,
 }

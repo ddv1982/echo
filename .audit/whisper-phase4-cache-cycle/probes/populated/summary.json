@@ -1,0 +1,47 @@
+{
+  "candidates": {
+    "accelerated": {
+      "devices": [
+        "Intel(R) Iris(R) Xe Graphics (ADL GT2) (Intel open-source Mesa driver)"
+      ],
+      "medianOuterMs": 421.821,
+      "p95OuterMs": 421.821,
+      "resolvedBackends": [
+        "vulkan"
+      ],
+      "runs": 1,
+      "runtimeReceiptErrors": []
+    },
+    "cpu": {
+      "devices": [],
+      "medianOuterMs": 1014.901,
+      "p95OuterMs": 1014.901,
+      "resolvedBackends": [
+        "cpu"
+      ],
+      "runs": 1,
+      "runtimeReceiptErrors": []
+    }
+  },
+  "claimBoundary": "This probe proves backend creation, its selected physical-device receipt, paired latency, and exact transcript parity only. The receipt does not prove an ICD manifest or loaded-library digests; launch evidence owns those. It does not replace the multilingual WER/CER and silence corpus gate.",
+  "decision": "stop",
+  "gates": {
+    "backendTruth": true,
+    "hardwareDevice": true,
+    "medianReduction": true,
+    "medianSpeedup": true,
+    "p95Improved": true,
+    "pairedCompleteness": true,
+    "runtimeReceipt": true,
+    "sampleSize": false,
+    "transcriptParity": true
+  },
+  "medianReductionMs": 593.08,
+  "minimumReductionMs": 500.0,
+  "minimumSpeedupPercent": 20.0,
+  "speedupPercent": 58.437,
+  "warmups": {
+    "accelerated": [],
+    "cpu": []
+  }
+}

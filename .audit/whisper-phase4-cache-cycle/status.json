@@ -1,0 +1,13 @@
+{
+  "completedAt": "2026-08-25T00:04:10.679805+00:00",
+  "cycle": {
+    "bytes": 5305,
+    "path": "cache-cycle.json",
+    "sha256": "817358dc6cd55d6ecbfb715b1821a0dd02aee4739a0580d45cd1d583b168f587"
+  },
+  "runId": "d5177d7c-9bac-42c2-853e-e016b84540a1",
+  "schemaVersion": 1,
+  "startedAt": "2026-08-25T00:03:59.844764+00:00",
+  "state": "complete",
+  "updatedAt": "2026-08-25T00:04:10.679889+00:00"
+}

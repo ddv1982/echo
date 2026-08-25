@@ -7,8 +7,9 @@ use echo_core::{
 
 use crate::install::ManagedPath;
 use crate::stt::{
-    preferred_runtime, FakeEngine, ModelCache, ParakeetEngine, SpeechRuntimeInventory,
-    WhisperEngine, WhisperExecutionPlan, WhisperModelAsset, WhisperTuningOverride,
+    preferred_runtime, whisper_runtime_launch, FakeEngine, ModelCache, ParakeetEngine,
+    SpeechRuntimeInventory, WhisperEngine, WhisperExecutionPlan, WhisperModelAsset,
+    WhisperTuningOverride,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -18,6 +19,8 @@ pub struct RunOverrides {
     pub language: Option<LanguageChoice>,
     pub whisper_tuning: Option<WhisperTuningOverride>,
     pub whisper_force_cpu: bool,
+    pub whisper_vulkan_driver_files: Option<PathBuf>,
+    pub whisper_mesa_shader_cache_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -483,7 +486,10 @@ pub fn prepare_with_config(
     .collect::<Vec<_>>();
     let available = EngineAvailabilitySnapshot::from_process(&cache, &runtime, &model_candidates);
     let resolved = resolve_run(&overrides, &env, file, &available)?;
-    if (overrides.whisper_tuning.is_some() || overrides.whisper_force_cpu)
+    if (overrides.whisper_tuning.is_some()
+        || overrides.whisper_force_cpu
+        || overrides.whisper_vulkan_driver_files.is_some()
+        || overrides.whisper_mesa_shader_cache_dir.is_some())
         && !matches!(resolved.engine, ResolvedEngine::Whisper { .. })
     {
         return Err(PrepareError::InvalidRequest(
@@ -519,6 +525,17 @@ pub fn prepare_with_config(
             let mut paths = locked.paths.into_iter();
             let mut locked_runtime = runtime_candidate;
             locked_runtime.cli = paths.next().expect("selected runtime has a CLI");
+            locked_runtime.launch = whisper_runtime_launch(&locked_runtime.cli);
+            locked_runtime.launch.vulkan_driver_files = canonical_launch_path(
+                overrides.whisper_vulkan_driver_files.as_deref(),
+                "Whisper Vulkan driver manifest",
+                false,
+            )?;
+            locked_runtime.launch.mesa_shader_cache_dir = canonical_launch_path(
+                overrides.whisper_mesa_shader_cache_dir.as_deref(),
+                "Whisper Mesa shader cache",
+                true,
+            )?;
             locked_runtime.server = locked_runtime
                 .server
                 .as_ref()
@@ -565,6 +582,26 @@ pub fn prepare_with_config(
         engine,
         _managed_paths: managed_paths,
     })
+}
+
+fn canonical_launch_path(
+    path: Option<&Path>,
+    label: &str,
+    directory: bool,
+) -> Result<Option<PathBuf>, PrepareError> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let resolved = path.canonicalize().map_err(|error| {
+        PrepareError::InvalidRequest(format!("{label} is unavailable: {error}"))
+    })?;
+    if directory != resolved.is_dir() {
+        return Err(PrepareError::InvalidRequest(format!(
+            "{label} must be a {}",
+            if directory { "directory" } else { "file" }
+        )));
+    }
+    Ok(Some(resolved))
 }
 
 pub fn transcribe_file(

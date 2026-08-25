@@ -1,12 +1,62 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use echo_core::{WhisperRuntimeBackend, WhisperRuntimeSource};
+use sha2::{Digest, Sha256};
 
 use crate::install::{ComponentId, ManagedPath, ManagedStore};
 use crate::which::path_of;
 
-use super::{InstalledModel, ModelCache, ModelInventory, WhisperFamily, WhisperRuntimeCandidate};
+use super::{
+    InstalledModel, ModelCache, ModelInventory, WhisperFamily, WhisperRuntimeCandidate,
+    WhisperRuntimeLaunch,
+};
+
+pub(crate) fn whisper_runtime_launch(cli: &Path) -> WhisperRuntimeLaunch {
+    let Some(parent) = cli.parent() else {
+        return WhisperRuntimeLaunch::default();
+    };
+    let libraries = std::fs::read_dir(parent)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().contains(".so"))
+        .filter_map(|entry| entry.path().canonicalize().ok())
+        .filter(|path| path.is_file())
+        .collect::<BTreeSet<_>>();
+    let identity_sha256 = runtime_identity(cli, &libraries).ok();
+    WhisperRuntimeLaunch {
+        library_dir: (!libraries.is_empty()).then(|| parent.to_path_buf()),
+        identity_sha256,
+        ..WhisperRuntimeLaunch::default()
+    }
+}
+
+fn runtime_identity(cli: &Path, libraries: &BTreeSet<PathBuf>) -> std::io::Result<String> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"echo-whisper-runtime-v1\0");
+    for path in std::iter::once(cli.to_path_buf()).chain(libraries.iter().cloned()) {
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        hasher.update(u64::try_from(name.len()).unwrap_or(u64::MAX).to_le_bytes());
+        hasher.update(name.as_bytes());
+        let mut file = std::fs::File::open(&path)?;
+        hasher.update(file.metadata()?.len().to_le_bytes());
+        let mut buffer = [0_u8; 1024 * 1024];
+        loop {
+            let read = file.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+        }
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
 
 pub struct ManagedSelection {
     pub paths: Vec<PathBuf>,
@@ -46,6 +96,7 @@ impl SpeechRuntimeInventory {
                 whisper_runtimes.push(WhisperRuntimeCandidate {
                     source: WhisperRuntimeSource::Managed,
                     backend: WhisperRuntimeBackend::Cpu,
+                    launch: whisper_runtime_launch(&cli),
                     cli,
                     server,
                 });
@@ -66,6 +117,7 @@ impl SpeechRuntimeInventory {
                 whisper_runtimes.push(WhisperRuntimeCandidate {
                     source: WhisperRuntimeSource::System,
                     backend: WhisperRuntimeBackend::Unknown,
+                    launch: whisper_runtime_launch(&cli),
                     cli,
                     server,
                 });
@@ -205,6 +257,27 @@ mod tests {
     use super::*;
     use crate::install::catalog::{component, PayloadKind};
     use crate::install::{ActivationRecord, InstalledFile};
+
+    #[test]
+    fn runtime_identity_covers_cli_and_adjacent_libraries() {
+        let root =
+            std::env::temp_dir().join(format!("echo-runtime-identity-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let cli = root.join("whisper-cli");
+        let library = root.join("libwhisper.so.1");
+        std::fs::write(&cli, b"cli").unwrap();
+        std::fs::write(&library, b"library-v1").unwrap();
+        let first = whisper_runtime_launch(&cli);
+        assert_eq!(first.library_dir.as_deref(), Some(root.as_path()));
+        assert_eq!(first.identity_sha256.as_deref().map(str::len), Some(64));
+        std::fs::write(&library, b"library-v2").unwrap();
+        let second = whisper_runtime_launch(&cli);
+        assert_ne!(first.identity_sha256, second.identity_sha256);
+        std::fs::write(&cli, b"cli-v2").unwrap();
+        let third = whisper_runtime_launch(&cli);
+        assert_ne!(second.identity_sha256, third.identity_sha256);
+    }
 
     fn install_sparse_managed_model(root: &Path, id: ComponentId) -> PathBuf {
         let spec = component(id);

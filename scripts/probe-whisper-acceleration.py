@@ -20,6 +20,7 @@ import time
 import tomllib
 from collections import defaultdict
 from pathlib import Path
+from unittest import mock
 
 
 TIMING_PATTERN = re.compile(
@@ -28,8 +29,53 @@ TIMING_PATTERN = re.compile(
 )
 VULKAN_DEVICE_PATTERN = re.compile(r"ggml_vulkan:\s*(\d+)\s*=\s*(.+?)(?:\s*\||$)")
 VULKAN_BACKEND_PATTERN = re.compile(r"using Vulkan(\d+) backend")
+RUNTIME_RECEIPT_PREFIX = "echo_whisper_runtime_receipt: "
+UUID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+VULKAN_RECEIPT_KEYS = frozenset(
+    {
+        "schemaVersion",
+        "backend",
+        "selectedIndex",
+        "vendorId",
+        "deviceId",
+        "apiVersion",
+        "driverVersion",
+        "deviceUUID",
+        "driverUUID",
+        "pipelineCacheUUID",
+    }
+)
+UINT32_MAX = (1 << 32) - 1
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REPORT_FILES = ("warmups.jsonl", "runs.jsonl", "summary.json", "summary.md")
+INFERENCE_ENVIRONMENT_PREFIXES = (
+    "LD_",
+    "VK_",
+    "MESA_",
+    "DRI_",
+    "LIBGL_",
+    "GALLIUM_",
+    "INTEL_",
+    "AMD_",
+    "RADV_",
+    "NVIDIA_",
+    "__GL",
+    "CUDA_",
+    "ROCR_",
+    "HIP_",
+    "HSA_",
+    "ONEAPI_",
+    "SYCL_",
+    "ZES_",
+    "ZE_",
+    "OPENCL_",
+    "OCL_",
+    "RUSTICL_",
+    "GGML_",
+    "OMP_",
+    "OPENBLAS_",
+    "LIBVA_",
+)
 
 
 def portable_path(path: Path) -> str:
@@ -52,7 +98,11 @@ def sha256(path: Path) -> str:
 
 
 def artifact(path: Path) -> dict[str, object]:
-    return {"path": portable_path(path), "bytes": path.stat().st_size, "sha256": sha256(path)}
+    return {
+        "path": portable_path(path),
+        "bytes": path.stat().st_size,
+        "sha256": sha256(path),
+    }
 
 
 def repo_metadata() -> dict[str, object]:
@@ -147,7 +197,9 @@ def host_metadata() -> dict[str, object]:
     governors = sorted(
         {
             value
-            for path in Path("/sys/devices/system/cpu").glob("cpu*/cpufreq/scaling_governor")
+            for path in Path("/sys/devices/system/cpu").glob(
+                "cpu*/cpufreq/scaling_governor"
+            )
             if (value := read_optional(path)) is not None
         }
     )
@@ -193,29 +245,55 @@ def vulkan_icds() -> list[dict[str, object]]:
 
 
 def runtime_environment(
-    binary: Path, mesa_shader_cache_dir: Path | None = None
+    binary: Path,
+    mesa_shader_cache_dir: Path | None = None,
+    vk_driver_files: Path | None = None,
 ) -> dict[str, str]:
-    environment = os.environ.copy()
-    existing = environment.get("LD_LIBRARY_PATH")
-    library_path = str(binary.parent.resolve())
-    environment["LD_LIBRARY_PATH"] = (
-        f"{library_path}{os.pathsep}{existing}" if existing else library_path
-    )
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.upper().startswith(INFERENCE_ENVIRONMENT_PREFIXES)
+    }
+    environment["LD_LIBRARY_PATH"] = str(binary.parent.resolve())
     if mesa_shader_cache_dir is not None:
-        environment["MESA_SHADER_CACHE_DIR"] = str(mesa_shader_cache_dir)
+        environment["MESA_SHADER_CACHE_DIR"] = str(
+            mesa_shader_cache_dir.resolve(strict=True)
+        )
+    if vk_driver_files is not None:
+        environment["VK_DRIVER_FILES"] = str(vk_driver_files.resolve(strict=True))
     return environment
 
 
-def runtime_version(binary: Path, timeout: int) -> str:
+def prepare_mesa_shader_cache(path: Path, reuse: bool) -> None:
+    if reuse:
+        if not path.is_dir():
+            raise ValueError(
+                f"populated Mesa shader cache directory must already exist: {path}"
+            )
+        if not any(candidate.is_file() for candidate in path.rglob("*")):
+            raise ValueError(
+                f"populated Mesa shader cache directory must contain files: {path}"
+            )
+        return
+    if path.exists() and (not path.is_dir() or any(path.iterdir())):
+        raise ValueError(f"Mesa shader cache directory must be empty: {path}")
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def runtime_version(
+    binary: Path, timeout: int, vk_driver_files: Path | None = None
+) -> str:
     completed = subprocess.run(
         [str(binary), "--version"],
         capture_output=True,
         text=True,
         timeout=timeout,
-        env=runtime_environment(binary),
+        env=runtime_environment(binary, vk_driver_files=vk_driver_files),
     )
     if completed.returncode != 0:
-        raise RuntimeError(f"could not read runtime version: {completed.stderr.strip()}")
+        raise RuntimeError(
+            f"could not read runtime version: {completed.stderr.strip()}"
+        )
     lines = [
         line.strip()
         for line in (completed.stdout + "\n" + completed.stderr).splitlines()
@@ -242,24 +320,127 @@ def parse_transcript(raw: str) -> tuple[str, str | None]:
 
 
 def parse_timings(stderr: str) -> dict[str, float]:
-    return {
-        f"{name}Ms": float(value)
-        for name, value in TIMING_PATTERN.findall(stderr)
-    }
+    return {f"{name}Ms": float(value) for name, value in TIMING_PATTERN.findall(stderr)}
+
+
+def strict_json_object(value: str) -> dict[str, object]:
+    def reject_constant(constant: str) -> object:
+        raise ValueError(f"non-finite JSON value: {constant}")
+
+    def reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, item in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON key: {key}")
+            result[key] = item
+        return result
+
+    parsed = json.loads(
+        value,
+        object_pairs_hook=reject_duplicate_keys,
+        parse_constant=reject_constant,
+    )
+    if not isinstance(parsed, dict):
+        raise ValueError("receipt must be a JSON object")
+    return parsed
+
+
+def receipt_lines(stderr: str) -> list[str]:
+    return [
+        line.removeprefix(RUNTIME_RECEIPT_PREFIX)
+        for line in stderr.splitlines()
+        if line.startswith(RUNTIME_RECEIPT_PREFIX)
+    ]
+
+
+def parse_vulkan_runtime_receipt(stderr: str) -> dict[str, object]:
+    lines = receipt_lines(stderr)
+    if len(lines) != 1:
+        raise ValueError(
+            f"expected exactly one Vulkan runtime receipt, found {len(lines)}"
+        )
+    try:
+        receipt = strict_json_object(lines[0])
+    except (TypeError, ValueError, json.JSONDecodeError) as error:
+        raise ValueError(f"invalid Vulkan runtime receipt: {error}") from error
+    if frozenset(receipt) != VULKAN_RECEIPT_KEYS:
+        raise ValueError("Vulkan runtime receipt has an unexpected schema")
+    if receipt["schemaVersion"] != 1 or isinstance(receipt["schemaVersion"], bool):
+        raise ValueError("Vulkan runtime receipt has an unsupported schemaVersion")
+    if receipt["backend"] != "vulkan":
+        raise ValueError("Vulkan runtime receipt backend is not vulkan")
+    for field in (
+        "selectedIndex",
+        "vendorId",
+        "deviceId",
+        "apiVersion",
+        "driverVersion",
+    ):
+        value = receipt[field]
+        if (
+            not isinstance(value, int)
+            or isinstance(value, bool)
+            or not 0 <= value <= UINT32_MAX
+        ):
+            raise ValueError(
+                f"Vulkan runtime receipt {field} is not an unsigned 32-bit integer"
+            )
+    for field in ("deviceUUID", "driverUUID", "pipelineCacheUUID"):
+        value = receipt[field]
+        if not isinstance(value, str) or UUID_PATTERN.fullmatch(value) is None:
+            raise ValueError(f"Vulkan runtime receipt {field} is not lowercase 32-hex")
+        if value == "0" * 32:
+            raise ValueError(f"Vulkan runtime receipt {field} must not be all zero")
+    return receipt
+
+
+def canonical_runtime_receipt(receipt: dict[str, object]) -> str:
+    return json.dumps(receipt, sort_keys=True, separators=(",", ":"))
+
+
+def observed_vulkan_index(stderr: str) -> int | None:
+    selected = [int(value) for value in VULKAN_BACKEND_PATTERN.findall(stderr)]
+    return selected[0] if len(selected) == 1 else None
+
+
+def runtime_receipt_observation(
+    stderr: str, control: bool
+) -> tuple[dict[str, object] | None, str | None]:
+    lines = receipt_lines(stderr)
+    if control:
+        if lines:
+            return None, "CPU control emitted a Vulkan runtime receipt"
+        return None, None
+    try:
+        receipt = parse_vulkan_runtime_receipt(stderr)
+    except ValueError as error:
+        return None, str(error)
+    selected_index = observed_vulkan_index(stderr)
+    if selected_index is None:
+        return None, "loader logs did not report exactly one selected Vulkan backend"
+    if receipt["selectedIndex"] != selected_index:
+        return None, (
+            "Vulkan runtime receipt selectedIndex does not match the selected backend "
+            f"({receipt['selectedIndex']} != {selected_index})"
+        )
+    return receipt, None
 
 
 def detect_backend(stderr: str, control: bool) -> tuple[str, str | None]:
     if control:
-        if "whisper_backend_init_gpu: no GPU found" in stderr and " total size =" in stderr:
+        if (
+            "whisper_backend_init_gpu: no GPU found" in stderr
+            and " total size =" in stderr
+        ):
             return "cpu", None
         return "unknown", None
-    selected = VULKAN_BACKEND_PATTERN.search(stderr)
-    if selected:
+    selected_index = observed_vulkan_index(stderr)
+    if selected_index is not None:
         devices = {
             index: device.strip()
             for index, device in VULKAN_DEVICE_PATTERN.findall(stderr)
         }
-        return "vulkan", devices.get(selected.group(1))
+        return "vulkan", devices.get(str(selected_index))
     return "unknown", None
 
 
@@ -309,7 +490,9 @@ def invoke(
         capture_output=True,
         text=True,
         timeout=args.timeout,
-        env=runtime_environment(args.binary, args.mesa_shader_cache_dir),
+        env=runtime_environment(
+            args.binary, args.mesa_shader_cache_dir, args.vk_driver_files
+        ),
     )
     outer_ms = (time.perf_counter_ns() - started) / 1_000_000
     if completed.returncode != 0:
@@ -318,12 +501,15 @@ def invoke(
         )
     text, language = parse_transcript(completed.stdout)
     backend, device = detect_backend(completed.stderr, control)
+    receipt, receipt_error = runtime_receipt_observation(completed.stderr, control)
     return {
         "schemaVersion": 1,
         "candidate": candidate,
         "expectedBackend": "cpu" if control else args.backend,
         "resolvedBackend": backend,
         "device": device,
+        "runtimeReceipt": receipt,
+        "runtimeReceiptError": receipt_error,
         "audio": portable_path(audio),
         "audioSha256": sha256(audio),
         "repeat": repeat,
@@ -332,6 +518,8 @@ def invoke(
         "text": text,
         "language": language,
         "timings": parse_timings(completed.stderr),
+        "rawStdout": completed.stdout,
+        "rawStderr": completed.stderr,
         "evidence": [
             line.strip()
             for line in completed.stderr.splitlines()
@@ -366,18 +554,30 @@ def summarize(
             "p95OuterMs": round(percentile(outer, 0.95), 3),
             "resolvedBackends": sorted({str(row["resolvedBackend"]) for row in values}),
             "devices": sorted({str(row["device"]) for row in values if row["device"]}),
+            "runtimeReceiptErrors": sorted(
+                {
+                    str(row["runtimeReceiptError"])
+                    for row in values
+                    if row.get("runtimeReceiptError") is not None
+                }
+            ),
         }
+
     def row_key(row: dict[str, object]) -> tuple[str, str, int]:
         return str(row["audio"]), str(row["audioSha256"]), int(row["repeat"])
 
     cpu_rows = {row_key(row): row for row in by_candidate["cpu"]}
     accelerated_rows = {row_key(row): row for row in by_candidate["accelerated"]}
-    unique_pairs = len(cpu_rows) == len(by_candidate["cpu"]) and len(accelerated_rows) == len(
-        by_candidate["accelerated"]
-    )
+    unique_pairs = len(cpu_rows) == len(by_candidate["cpu"]) and len(
+        accelerated_rows
+    ) == len(by_candidate["accelerated"])
     complete_pairs = unique_pairs and cpu_rows.keys() == accelerated_rows.keys()
-    paired_rows = [(cpu_rows[key], accelerated_rows[key]) for key in sorted(cpu_rows.keys())]
-    reductions = [float(cpu["outerMs"]) - float(gpu["outerMs"]) for cpu, gpu in paired_rows]
+    paired_rows = [
+        (cpu_rows[key], accelerated_rows[key]) for key in sorted(cpu_rows.keys())
+    ]
+    reductions = [
+        float(cpu["outerMs"]) - float(gpu["outerMs"]) for cpu, gpu in paired_rows
+    ]
     speedups = [
         100 * (float(cpu["outerMs"]) - float(gpu["outerMs"])) / float(cpu["outerMs"])
         for cpu, gpu in paired_rows
@@ -387,26 +587,53 @@ def summarize(
     transcript_parity = complete_pairs and all(
         str(cpu["text"]) == str(gpu["text"]) for cpu, gpu in paired_rows
     )
-    backend_truth = candidate_summary["accelerated"]["resolvedBackends"] == [expected_backend]
+    backend_truth = candidate_summary["accelerated"]["resolvedBackends"] == [
+        expected_backend
+    ]
     cpu_truth = candidate_summary["cpu"]["resolvedBackends"] == ["cpu"]
     hardware_device = bool(by_candidate["accelerated"]) and all(
         row["device"]
-        and not re.search(r"lavapipe|llvmpipe|swiftshader", str(row["device"]), re.IGNORECASE)
+        and not re.search(
+            r"lavapipe|llvmpipe|swiftshader", str(row["device"]), re.IGNORECASE
+        )
         for row in by_candidate["accelerated"]
+    )
+    accelerated_receipt_rows = by_candidate["accelerated"]
+    accepted_accelerated_receipts = bool(accelerated_receipt_rows) and all(
+        isinstance(row.get("runtimeReceipt"), dict)
+        and row.get("runtimeReceiptError") is None
+        for row in accelerated_receipt_rows
+    )
+    accelerated_receipts = (
+        accepted_accelerated_receipts
+        and len(
+            {
+                canonical_runtime_receipt(row["runtimeReceipt"])
+                for row in accelerated_receipt_rows
+                if isinstance(row.get("runtimeReceipt"), dict)
+            }
+        )
+        == 1
+    )
+    cpu_without_receipts = bool(by_candidate["cpu"]) and all(
+        row.get("runtimeReceipt") is None and row.get("runtimeReceiptError") is None
+        for row in by_candidate["cpu"]
     )
     pairs_per_audio: dict[tuple[str, str], int] = defaultdict(int)
     for audio, audio_sha256, _repeat in cpu_rows:
         pairs_per_audio[(audio, audio_sha256)] += 1
-    sample_size = complete_pairs and bool(pairs_per_audio) and all(
-        count >= 10 for count in pairs_per_audio.values()
+    sample_size = (
+        complete_pairs
+        and bool(pairs_per_audio)
+        and all(count >= 10 for count in pairs_per_audio.values())
     )
-    p95_improved = (
-        float(candidate_summary["accelerated"]["p95OuterMs"])
-        < float(candidate_summary["cpu"]["p95OuterMs"])
+    p95_improved = float(candidate_summary["accelerated"]["p95OuterMs"]) < float(
+        candidate_summary["cpu"]["p95OuterMs"]
     )
     gates = {
         "backendTruth": backend_truth and cpu_truth,
         "hardwareDevice": hardware_device,
+        "runtimeReceipt": accelerated_receipts and cpu_without_receipts,
         "pairedCompleteness": complete_pairs,
         "sampleSize": sample_size,
         "transcriptParity": transcript_parity,
@@ -423,8 +650,10 @@ def summarize(
         "gates": gates,
         "decision": "proceed" if all(gates.values()) else "stop",
         "claimBoundary": (
-            "This probe proves backend use, paired latency, and exact transcript parity only. "
-            "It does not replace the multilingual WER/CER and silence corpus gate."
+            "This probe proves backend creation, its selected physical-device receipt, paired "
+            "latency, and exact transcript parity only. The receipt does not prove an ICD "
+            "manifest or loaded-library digests; launch evidence owns those. It does not replace "
+            "the multilingual WER/CER and silence corpus gate."
         ),
     }
 
@@ -478,10 +707,17 @@ def run_probe(args: argparse.Namespace) -> int:
             "echo": repo_metadata(),
             "host": host_metadata(),
             "binary": artifact(args.binary),
-            "runtimeVersion": runtime_version(args.binary, args.timeout),
+            "runtimeVersion": runtime_version(
+                args.binary, args.timeout, args.vk_driver_files
+            ),
             "librarySearchPath": portable_path(args.binary.parent),
             "adjacentLibraries": adjacent_libraries(args.binary),
             "vulkanIcds": vulkan_icds(),
+            "selectedVulkanDriverFiles": (
+                artifact(args.vk_driver_files)
+                if args.vk_driver_files is not None
+                else None
+            ),
             "model": artifact(args.model),
             "vad": artifact(args.vad) if args.vad is not None else None,
             "backend": args.backend,
@@ -493,6 +729,7 @@ def run_probe(args: argparse.Namespace) -> int:
                 if args.mesa_shader_cache_dir is not None
                 else None
             ),
+            "mesaShaderCacheReuse": args.reuse_mesa_shader_cache,
             "tuning": {
                 "threads": args.threads,
                 "beamSize": args.beam_size,
@@ -503,13 +740,9 @@ def run_probe(args: argparse.Namespace) -> int:
             },
         }
         if args.mesa_shader_cache_dir is not None:
-            if args.mesa_shader_cache_dir.exists() and any(
-                args.mesa_shader_cache_dir.iterdir()
-            ):
-                raise ValueError(
-                    f"Mesa shader cache directory must be empty: {args.mesa_shader_cache_dir}"
-                )
-            args.mesa_shader_cache_dir.mkdir(parents=True, exist_ok=True)
+            prepare_mesa_shader_cache(
+                args.mesa_shader_cache_dir, args.reuse_mesa_shader_cache
+            )
         warmup_rows = []
         for audio in args.audio:
             for candidate in ("cpu", "accelerated"):
@@ -564,6 +797,29 @@ def run_probe(args: argparse.Namespace) -> int:
 
 
 def self_test() -> None:
+    with tempfile.TemporaryDirectory(prefix="echo-probe-environment-") as temporary:
+        root = Path(temporary)
+        binary = root / "whisper-cli"
+        cache = root / "cache"
+        driver = root / "driver.json"
+        binary.write_text("binary", encoding="utf-8")
+        cache.mkdir()
+        driver.write_text("{}", encoding="utf-8")
+        poison = {
+            "LD_LIBRARY_PATH": "/poison",
+            "LD_PRELOAD": "/poison.so",
+            "VK_ICD_FILENAMES": "/poison.json",
+            "MESA_VK_DEVICE_SELECT": "ffff:ffff!",
+            "DRI_PRIME": "1",
+            "CUDA_VISIBLE_DEVICES": "0",
+            "GGML_VK_VISIBLE_DEVICES": "0",
+        }
+        with mock.patch.dict(os.environ, poison):
+            environment = runtime_environment(binary, cache, driver)
+        assert environment["LD_LIBRARY_PATH"] == str(root)
+        assert environment["MESA_SHADER_CACHE_DIR"] == str(cache)
+        assert environment["VK_DRIVER_FILES"] == str(driver)
+        assert all(name not in environment for name in poison if name != "LD_LIBRARY_PATH")
     vulkan_log = """ggml_vulkan: 0 = Intel Iris Xe (Mesa) | fp16: 1
 whisper_backend_init_gpu: using Vulkan0 backend
 whisper_print_timings: total time = 42.50 ms
@@ -582,6 +838,70 @@ whisper_backend_init_gpu: using Vulkan0 backend
     assert parse_timings(vulkan_log) == {"totalMs": 42.5}
     cpu_log = "whisper_model_load: CPU total size = 1 MB\nwhisper_backend_init_gpu: no GPU found\n"
     assert detect_backend(cpu_log, True) == ("cpu", None)
+    receipt = {
+        "schemaVersion": 1,
+        "backend": "vulkan",
+        "selectedIndex": 0,
+        "vendorId": 32902,
+        "deviceId": 39497,
+        "apiVersion": 4206831,
+        "driverVersion": 123,
+        "deviceUUID": "0123456789abcdef0123456789abcdef",
+        "driverUUID": "fedcba9876543210fedcba9876543210",
+        "pipelineCacheUUID": "00112233445566778899aabbccddeeff",
+    }
+    receipt_line = RUNTIME_RECEIPT_PREFIX + json.dumps(receipt, separators=(",", ":"))
+    assert parse_vulkan_runtime_receipt(vulkan_log + receipt_line + "\n") == receipt
+    assert receipt_lines('{"schemaVersion":1,"backend":"unrelated"}\n') == []
+    assert runtime_receipt_observation(vulkan_log + receipt_line + "\n", False) == (
+        receipt,
+        None,
+    )
+    assert runtime_receipt_observation(cpu_log, True) == (None, None)
+    assert "CPU control emitted" in str(
+        runtime_receipt_observation(cpu_log + receipt_line + "\n", True)[1]
+    )
+    bad_uuid = dict(receipt)
+    bad_uuid["deviceUUID"] = str(bad_uuid["deviceUUID"]).upper()
+    try:
+        parse_vulkan_runtime_receipt(
+            RUNTIME_RECEIPT_PREFIX + json.dumps(bad_uuid) + "\n"
+        )
+    except ValueError as error:
+        assert "lowercase 32-hex" in str(error)
+    else:
+        raise AssertionError("uppercase UUID receipt should be rejected")
+    for uuid_field in ("deviceUUID", "driverUUID", "pipelineCacheUUID"):
+        zero_uuid = dict(receipt)
+        zero_uuid[uuid_field] = "0" * 32
+        try:
+            parse_vulkan_runtime_receipt(
+                RUNTIME_RECEIPT_PREFIX + json.dumps(zero_uuid) + "\n"
+            )
+        except ValueError as error:
+            assert f"{uuid_field} must not be all zero" in str(error)
+        else:
+            raise AssertionError("all-zero UUID receipt should be rejected")
+    try:
+        parse_vulkan_runtime_receipt(
+            RUNTIME_RECEIPT_PREFIX
+            + '{"schemaVersion":1,"schemaVersion":1,"backend":"vulkan"}\n'
+        )
+    except ValueError as error:
+        assert "duplicate JSON key" in str(error)
+    else:
+        raise AssertionError("duplicate receipt fields should be rejected")
+    assert "exactly one" in str(runtime_receipt_observation(vulkan_log, False)[1])
+    wrong_index = dict(receipt)
+    wrong_index["selectedIndex"] = 1
+    assert "does not match" in str(
+        runtime_receipt_observation(
+            vulkan_log + RUNTIME_RECEIPT_PREFIX + json.dumps(wrong_index) + "\n", False
+        )[1]
+    )
+    assert detect_backend(
+        vulkan_log + "whisper_backend_init_gpu: using Vulkan1 backend\n", False
+    ) == ("unknown", None)
     raw = '{"result":{"language":"en"},"transcription":[{"text":" hello"},{"text":" world"}]}'
     assert parse_transcript(raw) == ("hello world", "en")
     rows = []
@@ -598,6 +918,8 @@ whisper_backend_init_gpu: using Vulkan0 backend
                     "outerMs": elapsed,
                     "resolvedBackend": backend,
                     "device": "GPU" if backend == "vulkan" else None,
+                    "runtimeReceipt": receipt if backend == "vulkan" else None,
+                    "runtimeReceiptError": None,
                     "audio": "audio.wav",
                     "audioSha256": "audio",
                     "repeat": repeat,
@@ -611,6 +933,18 @@ whisper_backend_init_gpu: using Vulkan0 backend
     assert not rejected["gates"]["hardwareDevice"]
     assert rejected["decision"] == "stop"
     rows[-1]["device"] = "GPU"
+    rows[-1]["runtimeReceipt"] = None
+    rows[-1]["runtimeReceiptError"] = "missing Vulkan runtime receipt"
+    receipt_rejected = summarize(rows, "vulkan", 20.0, 20.0)
+    assert not receipt_rejected["gates"]["runtimeReceipt"]
+    rows[-1]["runtimeReceipt"] = receipt
+    rows[-1]["runtimeReceiptError"] = None
+    different_receipt = dict(receipt)
+    different_receipt["driverVersion"] = 124
+    rows[-1]["runtimeReceipt"] = different_receipt
+    different_receipt_rejected = summarize(rows, "vulkan", 20.0, 20.0)
+    assert not different_receipt_rejected["gates"]["runtimeReceipt"]
+    rows[-1]["runtimeReceipt"] = receipt
     too_small = summarize(rows[:2], "vulkan", 20.0, 20.0)
     assert not too_small["gates"]["sampleSize"]
     duplicate = summarize(rows + [dict(rows[0])], "vulkan", 20.0, 20.0)
@@ -644,6 +978,18 @@ whisper_backend_init_gpu: using Vulkan0 backend
         status = json.loads((output / "status.json").read_text(encoding="utf-8"))
         assert status["state"] == "failed" and status["errorType"] == "ValueError"
         assert all(not (output / name).exists() for name in REPORT_FILES)
+    with tempfile.TemporaryDirectory(prefix="echo-acceleration-cache-") as temporary:
+        cache = Path(temporary) / "mesa"
+        prepare_mesa_shader_cache(cache, False)
+        assert cache.is_dir()
+        (cache / "entry").write_text("cache", encoding="utf-8")
+        prepare_mesa_shader_cache(cache, True)
+        try:
+            prepare_mesa_shader_cache(cache, False)
+        except ValueError as error:
+            assert "must be empty" in str(error)
+        else:
+            raise AssertionError("fresh cache mode should reject populated cache")
     print("whisper acceleration probe self-test passed")
 
 
@@ -668,6 +1014,12 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--min-speedup-percent", type=float, default=20.0)
     result.add_argument("--min-speedup-ms", type=float, default=500.0)
     result.add_argument("--mesa-shader-cache-dir", type=Path)
+    result.add_argument("--vk-driver-files", type=Path)
+    result.add_argument(
+        "--reuse-mesa-shader-cache",
+        action="store_true",
+        help="reuse an existing non-empty Mesa cache without deleting or modifying it first",
+    )
     result.add_argument("--require-gate", action="store_true")
     result.add_argument("--output-dir", type=Path)
     return result
@@ -678,7 +1030,11 @@ def main() -> int:
     if args.self_test:
         self_test()
         return 0
-    missing = [name for name in ("binary", "model", "output_dir") if getattr(args, name) is None]
+    missing = [
+        name
+        for name in ("binary", "model", "output_dir")
+        if getattr(args, name) is None
+    ]
     if not args.audio:
         missing.append("audio")
     if missing:
@@ -688,7 +1044,13 @@ def main() -> int:
     if args.warmups < 0 or args.repeats < 1:
         raise ValueError("warmups must be non-negative and repeats must be positive")
     if args.timeout < 1 or args.min_speedup_percent < 0 or args.min_speedup_ms < 0:
-        raise ValueError("timeout must be positive and speedup gates must be non-negative")
+        raise ValueError(
+            "timeout must be positive and speedup gates must be non-negative"
+        )
+    if args.reuse_mesa_shader_cache and args.mesa_shader_cache_dir is None:
+        raise ValueError("--reuse-mesa-shader-cache requires --mesa-shader-cache-dir")
+    if args.vk_driver_files is not None and not args.vk_driver_files.is_file():
+        raise ValueError("--vk-driver-files must name a file")
     return run_probe(args)
 
 

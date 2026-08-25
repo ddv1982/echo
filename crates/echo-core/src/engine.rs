@@ -14,6 +14,8 @@ pub struct RunDetail {
     #[serde(default)]
     pub model_path: Option<String>,
     #[serde(default)]
+    pub vad_path: Option<String>,
+    #[serde(default)]
     pub multilingual: Option<bool>,
     #[serde(default)]
     pub vad: Option<bool>,
@@ -65,6 +67,14 @@ pub struct WhisperRuntimeTelemetry {
     pub backend: WhisperRuntimeBackend,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub library_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vulkan_driver_files: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mesa_shader_cache_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -167,11 +177,12 @@ mod tests {
 
     #[test]
     fn old_runtime_telemetry_without_device_remains_compatible() {
-        let runtime: WhisperRuntimeTelemetry = serde_json::from_str(
-            r#"{"binary":"whisper-cli","source":"system","backend":"cpu"}"#,
-        )
-        .unwrap();
+        let runtime: WhisperRuntimeTelemetry =
+            serde_json::from_str(r#"{"binary":"whisper-cli","source":"system","backend":"cpu"}"#)
+                .unwrap();
         assert_eq!(runtime.backend, WhisperRuntimeBackend::Cpu);
         assert!(runtime.device.is_none());
+        assert!(runtime.library_path.is_none());
+        assert!(runtime.identity_sha256.is_none());
     }
 }
