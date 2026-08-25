@@ -75,6 +75,26 @@ pub struct WhisperRuntimeTelemetry {
     pub mesa_shader_cache_dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vulkan_receipt: Option<WhisperVulkanReceipt>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WhisperVulkanReceipt {
+    pub schema_version: u32,
+    pub backend: String,
+    pub selected_index: u32,
+    pub vendor_id: u32,
+    pub device_id: u32,
+    pub api_version: u32,
+    pub driver_version: u32,
+    #[serde(rename = "deviceUUID")]
+    pub device_uuid: String,
+    #[serde(rename = "driverUUID")]
+    pub driver_uuid: String,
+    #[serde(rename = "pipelineCacheUUID")]
+    pub pipeline_cache_uuid: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

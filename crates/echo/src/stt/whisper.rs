@@ -13,7 +13,7 @@ use echo_core::{
 use serde::Deserialize;
 
 use super::cache::{parse_whisper_filename, ModelCache};
-use super::whisper_probe::observe_runtime;
+use super::whisper_probe::{observe_runtime, parse_vulkan_runtime_receipt};
 use super::whisper_runtime_launch;
 use super::write_temp_wav;
 use super::{
@@ -183,6 +183,7 @@ impl WhisperEngine {
                         .as_ref()
                         .map(|path| path.to_string_lossy().into_owned()),
                     identity_sha256: launch.identity_sha256.clone(),
+                    vulkan_receipt: None,
                 }
             }
             WhisperFiles::Discover(_) => WhisperRuntimeTelemetry {
@@ -194,11 +195,15 @@ impl WhisperEngine {
                 vulkan_driver_files: None,
                 mesa_shader_cache_dir: None,
                 identity_sha256: None,
+                vulkan_receipt: None,
             },
         };
         if let Some(observed) = observe_runtime(stderr) {
             runtime.backend = observed.backend;
             runtime.device = observed.device;
+        }
+        if runtime.backend == WhisperRuntimeBackend::Vulkan {
+            runtime.vulkan_receipt = parse_vulkan_runtime_receipt(stderr).ok();
         }
         runtime
     }

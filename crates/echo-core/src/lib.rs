@@ -19,6 +19,7 @@ pub use engine::{
     DecodeOptions, Engine, EngineError, RunDetail, Transcript, WhisperAttemptTelemetry,
     WhisperRetryReason, WhisperRunMode, WhisperRunTelemetry, WhisperRuntimeBackend,
     WhisperRuntimeSource, WhisperRuntimeTelemetry, WhisperTuningTelemetry,
+    WhisperVulkanReceipt,
 };
 pub use history::{History, HistoryRow};
 pub use inject::{FocusTarget, InjectBackend, InjectReport, Injector};
