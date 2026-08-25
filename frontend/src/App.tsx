@@ -1548,11 +1548,11 @@ function modelQualitySummary(model: WhisperModelInfo) {
     case 'large-v3':
       return 'Highest accuracy'
     case 'large-v3-turbo':
-      return 'Recommended balance'
+      return 'Higher accuracy'
     case 'medium':
       return 'High accuracy'
     case 'small':
-      return 'Lower memory, lower accuracy'
+      return 'Recommended for fast dictation'
     case 'tiny':
     case 'base':
       return 'Low memory'

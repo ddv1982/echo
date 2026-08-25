@@ -406,10 +406,10 @@ describe('Echo desktop shell', () => {
     const picker = await screen.findByLabelText('Speech model')
     expect(screen.getByRole('option', { name: 'Auto · best installed' })).toBeInTheDocument()
     expect(
-      screen.getByRole('option', { name: 'Lower memory, lower accuracy · small · multilingual · full precision · 466 MiB' }),
+      screen.getByRole('option', { name: 'Recommended for fast dictation · small · multilingual · full precision · 466 MiB' }),
     ).toBeInTheDocument()
     expect(
-      screen.getByRole('option', { name: 'Recommended balance · large-v3-turbo-q8_0 · multilingual · q8_0 · 834 MiB' }),
+      screen.getByRole('option', { name: 'Higher accuracy · large-v3-turbo-q8_0 · multilingual · q8_0 · 834 MiB' }),
     ).toBeInTheDocument()
 
     fireEvent.change(picker, { target: { value: 'small' } })
@@ -750,7 +750,7 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    fireEvent.click(await screen.findByRole('button', { name: /Set up Large v3 Turbo Q5_0/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /Set up Small multilingual/ }))
     await waitFor(async () => {
       expect((await getReadiness()).plans.find((plan) => plan.id === 'recommended')?.satisfied).toBe(true)
     })
@@ -769,7 +769,7 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Use Large v3 Turbo Q5_0' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Use Small multilingual' }))
     await waitFor(async () => expect((await getReadiness()).speechReady).toBe(true))
   })
 
@@ -803,7 +803,7 @@ describe('Echo desktop shell', () => {
     const advanced = screen.getByText('Advanced speech options').closest('details')!
     const parakeetRow = within(advanced).getByText('Parakeet').closest<HTMLElement>('.setting-row')!
     expect(within(parakeetRow).getByRole('button', { name: 'Use' })).toBeEnabled()
-    expect(within(advanced).queryByText('Whisper Large v3 Turbo Q5_0')).not.toBeInTheDocument()
+    expect(within(advanced).queryByText('Whisper small')).not.toBeInTheDocument()
   })
 
   it('shows repair and managed-only removal actions', async () => {
@@ -843,7 +843,7 @@ describe('Echo desktop shell', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     fireEvent.click(await screen.findByText('Installed components'))
     expect(await screen.findByText('Managed setup is available on Linux x86_64.')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /Set up Large v3 Turbo Q5_0/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Set up Small multilingual/ })).not.toBeInTheDocument()
   })
 
   it('renders component progress, resume, and low-space admission truthfully', async () => {
@@ -859,7 +859,7 @@ describe('Echo desktop shell', () => {
             : plan,
       ),
       components: readiness.components.map((component) =>
-        component.id === 'whisper-large-v3-turbo-q5-0'
+        component.id === 'whisper-small'
           ? {
               ...component,
               managed: { kind: 'absent', resumableBytes: 42 },
@@ -878,11 +878,11 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    expect(await screen.findByRole('progressbar', { name: 'Large v3 Turbo Q5_0 downloading' })).toHaveAttribute('aria-valuenow', '50')
+    expect(await screen.findByRole('progressbar', { name: 'Small multilingual downloading' })).toHaveAttribute('aria-valuenow', '50')
     expect(screen.getByRole('button', { name: /Resume/ })).toBeInTheDocument()
     expect(screen.getByText('Recommended: Needs 900 bytes free; 400 bytes are available')).toBeInTheDocument()
     expect(screen.getByText('Parakeet: Needs 1200 bytes free; 400 bytes are available')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Set up Large v3 Turbo Q5_0/ })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /Set up Small multilingual/ })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Use Parakeet instead' })).toBeDisabled()
   })
 

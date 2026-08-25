@@ -652,4 +652,19 @@ mod tests {
         assert_eq!(config.engine, Some(EngineChoice::Parakeet));
         assert_eq!(config.whisper_model, None);
     }
+
+    #[test]
+    fn recommended_activation_pins_whisper_small() {
+        let mut config = Config::default();
+        apply_plan_config(
+            &mut config,
+            SetupPlanId::Recommended,
+            HardwareProfile {
+                total_memory_bytes: Some(64 * 1024 * 1024 * 1024),
+            },
+        )
+        .unwrap();
+        assert_eq!(config.engine, Some(EngineChoice::Whisper));
+        assert_eq!(config.whisper_model.as_deref(), Some("small"));
+    }
 }

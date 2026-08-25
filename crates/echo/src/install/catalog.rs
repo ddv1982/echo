@@ -207,15 +207,8 @@ pub struct HardwareProfile {
 }
 
 #[must_use]
-pub fn recommended_model(profile: HardwareProfile) -> ComponentId {
-    const EIGHT_GIB: u64 = 8 * 1024 * 1024 * 1024;
-    const RESERVED_MEMORY_TOLERANCE: u64 = 512 * 1024 * 1024;
-    match profile.total_memory_bytes {
-        Some(bytes) if bytes.saturating_add(RESERVED_MEMORY_TOLERANCE) >= EIGHT_GIB => {
-            ComponentId::WhisperLargeV3TurboQ50
-        }
-        Some(_) | None => ComponentId::WhisperBaseQ51,
-    }
+pub fn recommended_model(_profile: HardwareProfile) -> ComponentId {
+    ComponentId::WhisperSmall
 }
 
 #[must_use]
@@ -301,36 +294,36 @@ mod tests {
     }
 
     #[test]
-    fn recommendation_uses_turbo_only_on_capable_machines() {
+    fn recommendation_uses_small_on_every_machine() {
         assert_eq!(
             recommended_model(HardwareProfile {
                 total_memory_bytes: None
             }),
-            ComponentId::WhisperBaseQ51
+            ComponentId::WhisperSmall
         );
         assert_eq!(
             recommended_model(HardwareProfile {
                 total_memory_bytes: Some(4 * 1024 * 1024 * 1024 - 1)
             }),
-            ComponentId::WhisperBaseQ51
+            ComponentId::WhisperSmall
         );
         assert_eq!(
             recommended_model(HardwareProfile {
                 total_memory_bytes: Some(8 * 1024 * 1024 * 1024 - 512 * 1024 * 1024 - 1)
             }),
-            ComponentId::WhisperBaseQ51
+            ComponentId::WhisperSmall
         );
         assert_eq!(
             recommended_model(HardwareProfile {
                 total_memory_bytes: Some(8 * 1024 * 1024 * 1024 - 512 * 1024 * 1024)
             }),
-            ComponentId::WhisperLargeV3TurboQ50
+            ComponentId::WhisperSmall
         );
         assert_eq!(
             recommended_model(HardwareProfile {
                 total_memory_bytes: Some(64 * 1024 * 1024 * 1024)
             }),
-            ComponentId::WhisperLargeV3TurboQ50
+            ComponentId::WhisperSmall
         );
     }
 }

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- New recommended setup installs and pins Whisper Small so supported Intel Vulkan systems use the qualified accelerator by default. Existing explicit model choices remain unchanged.
+
 ## v0.12.2
 
 - Linux packages now ship qualified Whisper Vulkan acceleration only when the packaged admission exactly matches the executable, runtime, model, VAD, decoding policy, DRM device, ICD files, and seeded Mesa cache.
