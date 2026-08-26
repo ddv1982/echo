@@ -196,6 +196,32 @@ impl AudioError {
     }
 }
 
+enum CaptureStreamState {
+    Capturing(Option<AudioError>),
+    Stopping,
+}
+
+impl Default for CaptureStreamState {
+    fn default() -> Self {
+        Self::Capturing(None)
+    }
+}
+
+impl CaptureStreamState {
+    fn report_error(&mut self, error: AudioError) {
+        if let Self::Capturing(slot) = self {
+            *slot = Some(error);
+        }
+    }
+
+    fn begin_shutdown(&mut self) -> Option<AudioError> {
+        match std::mem::replace(self, Self::Stopping) {
+            Self::Capturing(error) => error,
+            Self::Stopping => None,
+        }
+    }
+}
+
 fn map_cpal_error(error: cpal::Error) -> AudioError {
     use cpal::ErrorKind;
     let detail = error.to_string();
@@ -546,90 +572,90 @@ impl AudioCapture {
         let src_hz = config.sample_rate();
         let channels = config.channels();
         let collected = Arc::new(Mutex::new(Vec::<f32>::new()));
-        let err_slot: Arc<Mutex<Option<AudioError>>> = Arc::new(Mutex::new(None));
+        let stream_state = Arc::new(Mutex::new(CaptureStreamState::default()));
         let stream = match config.sample_format() {
             SampleFormat::I8 => build_stream::<i8>(
                 &self.device,
                 config.into(),
                 &collected,
-                &err_slot,
+                &stream_state,
                 meter,
             )?,
             SampleFormat::I16 => build_stream::<i16>(
                 &self.device,
                 config.into(),
                 &collected,
-                &err_slot,
+                &stream_state,
                 meter,
             )?,
             SampleFormat::I24 => build_stream::<I24>(
                 &self.device,
                 config.into(),
                 &collected,
-                &err_slot,
+                &stream_state,
                 meter,
             )?,
             SampleFormat::I32 => build_stream::<i32>(
                 &self.device,
                 config.into(),
                 &collected,
-                &err_slot,
+                &stream_state,
                 meter,
             )?,
             SampleFormat::I64 => build_stream::<i64>(
                 &self.device,
                 config.into(),
                 &collected,
-                &err_slot,
+                &stream_state,
                 meter,
             )?,
             SampleFormat::U8 => build_stream::<u8>(
                 &self.device,
                 config.into(),
                 &collected,
-                &err_slot,
+                &stream_state,
                 meter,
             )?,
             SampleFormat::U16 => build_stream::<u16>(
                 &self.device,
                 config.into(),
                 &collected,
-                &err_slot,
+                &stream_state,
                 meter,
             )?,
             SampleFormat::U24 => build_stream::<U24>(
                 &self.device,
                 config.into(),
                 &collected,
-                &err_slot,
+                &stream_state,
                 meter,
             )?,
             SampleFormat::U32 => build_stream::<u32>(
                 &self.device,
                 config.into(),
                 &collected,
-                &err_slot,
+                &stream_state,
                 meter,
             )?,
             SampleFormat::U64 => build_stream::<u64>(
                 &self.device,
                 config.into(),
                 &collected,
-                &err_slot,
+                &stream_state,
                 meter,
             )?,
             SampleFormat::F32 => build_stream::<f32>(
                 &self.device,
                 config.into(),
                 &collected,
-                &err_slot,
+                &stream_state,
                 meter,
             )?,
             SampleFormat::F64 => build_stream::<f64>(
                 &self.device,
                 config.into(),
                 &collected,
-                &err_slot,
+                &stream_state,
                 meter,
             )?,
             SampleFormat::DsdU8 | SampleFormat::DsdU16 | SampleFormat::DsdU32 => {
@@ -649,10 +675,7 @@ impl AudioCapture {
         while !self.cancel.is_cancelled() && started.elapsed() < max {
             std::thread::sleep(Duration::from_millis(10));
         }
-        drop(stream);
-        if let Some(msg) = err_slot.lock().expect("stream error lock").take() {
-            return Err(msg);
-        }
+        finish_capture_stream(stream, &stream_state)?;
         let samples = std::mem::take(&mut *collected.lock().expect("pcm lock"));
         Ok(CaptureResult::from_pcm(resample_to_16k_mono(
             &samples, src_hz, channels,
@@ -660,11 +683,27 @@ impl AudioCapture {
     }
 }
 
+fn finish_capture_stream<T>(
+    stream: T,
+    state: &Arc<Mutex<CaptureStreamState>>,
+) -> Result<(), AudioError> {
+    let result = match state
+        .lock()
+        .expect("stream state lock")
+        .begin_shutdown()
+    {
+        Some(error) => Err(error),
+        None => Ok(()),
+    };
+    drop(stream);
+    result
+}
+
 fn build_stream<T>(
     device: &cpal::Device,
     config: cpal::StreamConfig,
     collected: &Arc<Mutex<Vec<f32>>>,
-    err_slot: &Arc<Mutex<Option<AudioError>>>,
+    stream_state: &Arc<Mutex<CaptureStreamState>>,
     meter: Option<&LevelMeter>,
 ) -> Result<cpal::Stream, AudioError>
 where
@@ -672,7 +711,7 @@ where
     f32: cpal::FromSample<T>,
 {
     let collected = Arc::clone(collected);
-    let err_slot = Arc::clone(err_slot);
+    let stream_state = Arc::clone(stream_state);
     let meter = meter.cloned();
     device
         .build_input_stream(
@@ -694,7 +733,10 @@ where
                 }
             },
             move |err| {
-                *err_slot.lock().expect("stream error lock") = Some(map_cpal_error(err));
+                stream_state
+                    .lock()
+                    .expect("stream state lock")
+                    .report_error(map_cpal_error(err));
             },
             None,
         )
@@ -771,6 +813,36 @@ pub fn load_wav(path: &Path) -> Result<CaptureResult, AudioError> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    struct ShutdownError(Arc<Mutex<CaptureStreamState>>);
+
+    impl Drop for ShutdownError {
+        fn drop(&mut self) {
+            self.0
+                .lock()
+                .unwrap()
+                .report_error(AudioError::Disconnected("shutdown".to_string()));
+        }
+    }
+
+    #[test]
+    fn shutdown_only_stream_error_is_ignored() {
+        let state = Arc::new(Mutex::new(CaptureStreamState::default()));
+        assert!(finish_capture_stream(ShutdownError(Arc::clone(&state)), &state).is_ok());
+    }
+
+    #[test]
+    fn errors_reported_before_shutdown_still_fail_capture() {
+        let state = Arc::new(Mutex::new(CaptureStreamState::default()));
+        state
+            .lock()
+            .unwrap()
+            .report_error(AudioError::Busy("busy".to_string()));
+        assert!(matches!(
+            finish_capture_stream((), &state),
+            Err(AudioError::Busy(_))
+        ));
+    }
 
     fn previous_resample_to_16k_mono(
         interleaved: &[f32],
