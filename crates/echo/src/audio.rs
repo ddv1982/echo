@@ -649,14 +649,22 @@ impl AudioCapture {
         while !self.cancel.is_cancelled() && started.elapsed() < max {
             std::thread::sleep(Duration::from_millis(10));
         }
-        drop(stream);
-        if let Some(msg) = err_slot.lock().expect("stream error lock").take() {
-            return Err(msg);
-        }
+        finish_capture_stream(stream, &err_slot)?;
         let samples = std::mem::take(&mut *collected.lock().expect("pcm lock"));
         Ok(CaptureResult::from_pcm(resample_to_16k_mono(
             &samples, src_hz, channels,
         )))
+    }
+}
+
+fn finish_capture_stream<T>(
+    stream: T,
+    err_slot: &Arc<Mutex<Option<AudioError>>>,
+) -> Result<(), AudioError> {
+    drop(stream);
+    match err_slot.lock().expect("stream error lock").take() {
+        Some(error) => Err(error),
+        None => Ok(()),
     }
 }
 
@@ -771,6 +779,29 @@ pub fn load_wav(path: &Path) -> Result<CaptureResult, AudioError> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    struct ShutdownError(Arc<Mutex<Option<AudioError>>>);
+
+    impl Drop for ShutdownError {
+        fn drop(&mut self) {
+            *self.0.lock().unwrap() = Some(AudioError::Disconnected("shutdown".to_string()));
+        }
+    }
+
+    #[test]
+    fn intentional_stream_shutdown_does_not_discard_captured_audio() {
+        let error = Arc::new(Mutex::new(None));
+        assert!(finish_capture_stream(ShutdownError(Arc::clone(&error)), &error).is_ok());
+    }
+
+    #[test]
+    fn errors_reported_before_shutdown_still_fail_capture() {
+        let error = Arc::new(Mutex::new(Some(AudioError::Busy("busy".to_string()))));
+        assert!(matches!(
+            finish_capture_stream((), &error),
+            Err(AudioError::Busy(_))
+        ));
+    }
 
     fn previous_resample_to_16k_mono(
         interleaved: &[f32],
