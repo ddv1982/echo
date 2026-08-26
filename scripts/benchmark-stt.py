@@ -24,6 +24,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
+from process_observation import observe
+
 CHARACTER_ERROR_LANGUAGES = {"ja", "zh", "yue", "th", "lo", "km", "my"}
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RUN_BUNDLE_SCHEMA_VERSION = 1
@@ -492,18 +494,16 @@ def artifact_identity(
 
 
 def invoke_candidate(
-    command: list[str], environment: dict[str, str]
-) -> tuple[subprocess.CompletedProcess[str], float]:
+    command: list[str], environment: dict[str, str], args: argparse.Namespace
+) -> tuple[subprocess.CompletedProcess[str] | None, float, dict[str, object], OSError | None]:
     started = time.perf_counter_ns()
-    completed = subprocess.run(
-        command,
-        check=False,
-        capture_output=True,
-        text=True,
-        env=environment,
+    completed, observation, invocation_error = observe(
+        command, environment, timeout_seconds=args.observation_timeout,
+        interval_ms=args.observation_sample_interval_ms,
+        settle_window_ms=args.observation_settle_window_ms,
     )
     outer_ms = (time.perf_counter_ns() - started) / 1_000_000
-    return completed, outer_ms
+    return completed, outer_ms, observation.json(), invocation_error
 
 
 def capture_observation(
@@ -519,6 +519,7 @@ def capture_observation(
     vulkan_driver_files: Path | None,
     mesa_shader_cache_dir: Path | None,
     artifact_identities: dict[str, dict[str, object]],
+    args: argparse.Namespace,
 ) -> tuple[dict[str, object], float, dict[str, object]]:
     verify_utterance_unchanged(utterance)
     command = command_for(
@@ -531,9 +532,10 @@ def capture_observation(
     started_at = utc_now()
     completed: subprocess.CompletedProcess[str] | None = None
     invocation_error: OSError | None = None
+    resource_observation: dict[str, object] | None = None
     outer_ms = 0.0
     try:
-        completed, outer_ms = invoke_candidate(command, environment)
+        completed, outer_ms, resource_observation, invocation_error = invoke_candidate(command, environment, args)
     except OSError as error:
         invocation_error = error
     product: object | None = None
@@ -549,6 +551,12 @@ def capture_observation(
     stdout = completed.stdout if completed is not None else ""
     stderr = completed.stderr if completed is not None else str(invocation_error or "")
     return_code = completed.returncode if completed is not None else None
+    assert resource_observation is not None
+    observation_bytes = (json.dumps(resource_observation, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    observation_digest = sha256_bytes(observation_bytes)
+    resource_path = output_dir / "process-observations" / observation_digest / "process-observation.json"
+    resource_path.parent.mkdir(parents=True, exist_ok=True)
+    resource_reference = write_artifact(output_dir, resource_path, observation_bytes)
     raw_files = {
         "command": (
             "command.json",
@@ -605,6 +613,7 @@ def capture_observation(
         "candidate": candidate.label,
         "utterance": utterance["id"],
         **artifacts,
+        "processObservation": resource_reference,
     }
     if isinstance(product, dict) and isinstance(product.get("engine"), dict):
         engine = product["engine"]
@@ -809,6 +818,7 @@ def run_benchmark(args: argparse.Namespace) -> None:
                                 args.whisper_vulkan_driver_files,
                                 args.whisper_mesa_shader_cache_dir,
                                 artifact_identities,
+                                args,
                             )
                 for repeat in range(args.repeats):
                     for utterance in utterances:
@@ -831,6 +841,7 @@ def run_benchmark(args: argparse.Namespace) -> None:
                                     args.whisper_vulkan_driver_files,
                                     args.whisper_mesa_shader_cache_dir,
                                     artifact_identities,
+                                    args,
                                 )
                             )
                             reference_words = normalized_words(
@@ -1098,6 +1109,9 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--whisper-mesa-shader-cache-dir", type=Path)
     value.add_argument("--expected-echo-commit")
     value.add_argument("--expected-echo-binary-sha256")
+    value.add_argument("--observation-timeout", type=float, default=600)
+    value.add_argument("--observation-sample-interval-ms", type=int, default=100)
+    value.add_argument("--observation-settle-window-ms", type=int, default=100)
     value.add_argument("--output-dir", required=True, type=Path)
     return value
 
@@ -1121,6 +1135,8 @@ def main() -> int:
         parser().error("--repeats must be at least 1")
     if args.warmups < 0:
         parser().error("--warmups cannot be negative")
+    if args.observation_timeout <= 0 or args.observation_sample_interval_ms < 1 or args.observation_settle_window_ms < 0:
+        parser().error("invalid resource observation limits")
     if args.whisper_vulkan_driver_files is not None:
         args.whisper_vulkan_driver_files = args.whisper_vulkan_driver_files.resolve()
         if not args.whisper_vulkan_driver_files.is_file():

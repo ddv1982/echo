@@ -67,6 +67,12 @@ RESEARCH_GATE_NAMES = (
     "noNewHallucinations",
     "receiptConsistency",
 )
+RESOURCE_GATE_NAMES = (
+    "stabilitySuccess",
+    "memoryEvidence",
+    "memoryFloor",
+    "swapStable",
+)
 SCREEN_GATE_NAMES = tuple(name for name in RESEARCH_GATE_NAMES if name != "sampleSize")
 BINDING_GATE_NAMES = (
     "coverageComplete",
@@ -718,11 +724,16 @@ def cache_binding(
 
 
 def admission_decision(
-    revision: str, research_gates: dict[str, bool], binding_gates: dict[str, bool]
+    revision: str, research_gates: dict[str, bool], binding_gates: dict[str, bool],
+    require_resource_evidence: bool = False,
 ) -> str:
     if revision in PRE_RELEASE_REVISIONS:
         return "STOP"
     if any(not research_gates[name] for name in SCREEN_GATE_NAMES):
+        return "STOP"
+    if require_resource_evidence and any(
+        not research_gates[name] for name in RESOURCE_GATE_NAMES
+    ):
         return "STOP"
     if not binding_gates["exactRuntime"] or not binding_gates["cleanChildEnvironment"]:
         return "STOP"
@@ -824,6 +835,12 @@ def run_cell(
             sha256(args.vk_driver_files),
             "--output-dir",
             str(bundle_root),
+            "--observation-timeout",
+            str(args.observation_timeout),
+            "--observation-sample-interval-ms",
+            str(args.observation_sample_interval_ms),
+            "--observation-settle-window-ms",
+            str(args.observation_settle_window_ms),
             "--expected-echo-commit",
             args.expected_echo_commit,
             "--expected-echo-binary-sha256",
@@ -853,7 +870,13 @@ def run_cell(
             "vulkan",
             "--output-dir",
             str(analyzer_root),
+            "--minimum-available-memory-bytes",
+            str(args.minimum_available_memory_bytes),
+            "--maximum-sustained-swap-growth-bytes",
+            str(args.maximum_sustained_swap_growth_bytes),
         ]
+        if args.require_resource_evidence:
+            analyzer_command.append("--require-resource-evidence")
         run_command(analyzer_command, environment, cell_root, "analyzer")
         analysis = read_json(
             analyzer_root / "decision.json", "recomputed Phase 2 decision"
@@ -934,6 +957,8 @@ def run_cell(
             research_gates["hardwareDevice"] and receipt_ok
         )
         research_gates["receiptConsistency"] = receipt_ok
+        for name in RESOURCE_GATE_NAMES:
+            research_gates[name] = bool(phase2_gates.get(name))
         binding_gates = {
             "coverageComplete": bool(phase2_gates.get("coverageComplete")),
             "cacheEvidence": cache_ok and cache_documented,
@@ -942,7 +967,16 @@ def run_cell(
             "cleanChildEnvironment": exact_runtime,
             "exactRuntime": exact_runtime,
         }
-        decision = admission_decision(runtime.revision, research_gates, binding_gates)
+        resource_evidence = analysis.get("resourceEvidence")
+        if args.require_resource_evidence and (
+            not isinstance(resource_evidence, dict)
+            or resource_evidence.get("verdict") != "VERIFIED"
+        ):
+            for name in RESOURCE_GATE_NAMES:
+                research_gates[name] = False
+        decision = admission_decision(
+            runtime.revision, research_gates, binding_gates, args.require_resource_evidence
+        )
         result = {
             "schemaVersion": 1,
             "cell": {
@@ -986,8 +1020,11 @@ def run_cell(
             "receipt": receipt,
             "researchGates": research_gates,
             "bindingGates": binding_gates,
-            "researchPass": all(research_gates[name] for name in RESEARCH_GATE_NAMES),
-            "screenPass": all(research_gates[name] for name in SCREEN_GATE_NAMES),
+            "researchPass": all(research_gates[name] for name in RESEARCH_GATE_NAMES)
+            and (not args.require_resource_evidence or all(research_gates[name] for name in RESOURCE_GATE_NAMES)),
+            "screenPass": all(research_gates[name] for name in SCREEN_GATE_NAMES)
+            and (not args.require_resource_evidence or all(research_gates[name] for name in RESOURCE_GATE_NAMES)),
+            "resourceEvidence": resource_evidence,
             "decision": decision,
             "preReleaseInvestigativeOnly": runtime.revision in PRE_RELEASE_REVISIONS,
             "evidence": {
@@ -1285,9 +1322,16 @@ def self_test() -> None:
     gpu = candidate_label("base-q5_1", 4, cell, False)
     assert cpu != gpu and "cpu-only" in cpu and "cpu-only" not in gpu
     baseline_research = {name: True for name in RESEARCH_GATE_NAMES}
+    baseline_research.update({name: True for name in RESOURCE_GATE_NAMES})
     baseline_bindings = {name: True for name in BINDING_GATE_NAMES}
     assert (
         admission_decision("v1.9.2", baseline_research, baseline_bindings) == "PROCEED"
+    )
+    missing_resource = dict(baseline_research)
+    missing_resource["memoryEvidence"] = False
+    assert (
+        admission_decision("v1.9.2", missing_resource, baseline_bindings, True)
+        == "STOP"
     )
     asymmetric = dict(baseline_research)
     asymmetric["identityMatch"] = False
@@ -1515,6 +1559,12 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--warmups", type=int, default=1)
     result.add_argument("--seed", type=int, default=20260825)
     result.add_argument("--timeout", type=int, default=600)
+    result.add_argument("--observation-timeout", type=float, default=600)
+    result.add_argument("--observation-sample-interval-ms", type=int, default=100)
+    result.add_argument("--observation-settle-window-ms", type=int, default=100)
+    result.add_argument("--minimum-available-memory-bytes", type=int, default=0)
+    result.add_argument("--maximum-sustained-swap-growth-bytes", type=int, default=0)
+    result.add_argument("--require-resource-evidence", action="store_true")
     result.add_argument("--output", type=Path)
     return result
 
@@ -1542,6 +1592,14 @@ def main() -> int:
     ]
     if missing:
         raise ValueError("missing required arguments: " + ", ".join(missing))
+    if (
+        args.observation_timeout <= 0
+        or args.observation_sample_interval_ms < 1
+        or args.observation_settle_window_ms < 0
+        or args.minimum_available_memory_bytes < 0
+        or args.maximum_sustained_swap_growth_bytes < 0
+    ):
+        raise ValueError("invalid resource observation limits")
     args.echo_binary = args.echo_binary.resolve()
     args.fixture_manifest = args.fixture_manifest.resolve()
     args.coverage_manifest = args.coverage_manifest.resolve()
