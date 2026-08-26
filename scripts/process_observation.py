@@ -98,6 +98,35 @@ def _read_children(root: Path, pid: int) -> list[int] | None:
         return None
 
 
+def _parent_snapshot(root: Path) -> tuple[dict[int, list[int]], set[int]] | None:
+    try:
+        entries = list(root.iterdir())
+    except (FileNotFoundError, PermissionError, OSError):
+        return None
+    children: dict[int, list[int]] = {}
+    known: set[int] = set()
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            pid = int(entry.name)
+            lines = (entry / "status").read_text().splitlines()
+            parent = next(
+                int(line.partition(":")[2].strip())
+                for line in lines
+                if line.startswith("PPid:")
+            )
+        except FileNotFoundError:
+            continue
+        except (PermissionError, OSError, StopIteration, ValueError):
+            return None
+        known.add(pid)
+        children.setdefault(parent, []).append(pid)
+    for values in children.values():
+        values.sort()
+    return children, known
+
+
 def _gone_or_zombie(root: Path, pid: int) -> bool:
     process = root / str(pid)
     if not process.exists():
@@ -113,11 +142,21 @@ def _gone_or_zombie(root: Path, pid: int) -> bool:
 
 def _tree(root: Path, pid: int) -> tuple[list[int], bool]:
     pending, result, partial = [pid], [], False
+    fallback: tuple[dict[int, list[int]], set[int]] | None = None
     while pending:
         current = pending.pop()
         if current in result:
             continue
-        children = _read_children(root, current)
+        if fallback is None:
+            children = _read_children(root, current)
+            if children is None:
+                fallback = _parent_snapshot(root)
+                if fallback is not None:
+                    parent_map, known = fallback
+                    children = parent_map.get(current, []) if current in known else None
+        else:
+            parent_map, known = fallback
+            children = parent_map.get(current, []) if current in known else None
         if children is None and _gone_or_zombie(root, current):
             continue
         result.append(current)
@@ -410,6 +449,13 @@ def self_test() -> None:
         assert (
             sum(_read_status(root, pid)["VmRSS"] for pid in _tree(root, 1)[0]) == 7168
         )
+        for pid, parent in ((1, 0), (2, 1)):
+            status = root / str(pid) / "status"
+            status.write_text(f"PPid:\t{parent}\n" + status.read_text())
+            (root / str(pid) / "task" / str(pid) / "children").unlink()
+        assert _tree(root, 1) == ([1, 2], False)
+        (root / "1" / "task" / "1" / "children").write_text("2")
+        (root / "2" / "task" / "2" / "children").write_text("")
         (root / "2" / "status").unlink()
         assert _read_status(root, 2) is None
         (root / "2" / "status").write_text("State:\tZ (zombie)\n")
