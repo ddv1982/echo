@@ -13,11 +13,14 @@ import tempfile
 from pathlib import Path
 
 from whisper_release_common import (
+    package_inventory,
+    read_json_strict,
     runtime_identity,
     runtime_library_bindings,
     sha256_file,
     tree_sha256,
     verify_contained_symlinks,
+    verify_admission_set,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -43,24 +46,17 @@ BINDING_GATES = (
     "cleanChildEnvironment",
     "exactRuntime",
 )
+RESOURCE_GATES = (
+    "stabilitySuccess",
+    "memoryEvidence",
+    "memoryFloor",
+    "swapStable",
+)
 RECEIPT_PREFIX = "echo_whisper_runtime_receipt: "
 
 
 def read_json(path: Path, label: str) -> dict[str, object]:
-    def reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
-        result: dict[str, object] = {}
-        for key, value in pairs:
-            if key in result:
-                raise ValueError(f"{label} has duplicate key {key!r}")
-            result[key] = value
-        return result
-
-    value = json.loads(
-        path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicates
-    )
-    if not isinstance(value, dict):
-        raise ValueError(f"{label} must be an object")
-    return value
+    return read_json_strict(path, label)
 
 
 def verify_runtime_alias_bindings(recorded: object, runtime_cli: Path) -> None:
@@ -112,9 +108,35 @@ def selected_cell(sweep: dict[str, object], label: str) -> dict[str, object]:
     cell = matches[0]
     if cell.get("decision") != "PROCEED" or cell.get("researchPass") is not True:
         raise ValueError("sweep cell is not a confirmed research pass")
-    require_green(cell.get("researchGates"), RESEARCH_GATES, "research gates")
+    require_green(
+        cell.get("researchGates"),
+        (*RESEARCH_GATES, *RESOURCE_GATES),
+        "research and resource gates",
+    )
     require_green(cell.get("bindingGates"), BINDING_GATES, "binding gates")
     return cell
+
+
+def strict_nonnegative_integer(value: object, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{label} must be a non-negative integer")
+    return value
+
+
+def persisted_resource_thresholds(cell: dict[str, object]) -> tuple[int, int]:
+    recorded = cell.get("resourceEvidence")
+    if not isinstance(recorded, dict) or recorded.get("verdict") != "VERIFIED":
+        raise ValueError("promotion requires VERIFIED resource evidence")
+    return (
+        strict_nonnegative_integer(
+            recorded.get("minimumAvailableMemoryBytes"),
+            "minimum available memory threshold",
+        ),
+        strict_nonnegative_integer(
+            recorded.get("maximumSustainedSwapGrowthBytes"),
+            "maximum sustained swap threshold",
+        ),
+    )
 
 
 def replay_analysis(cell: dict[str, object], corpus: Path, scratch: Path) -> None:
@@ -123,6 +145,7 @@ def replay_analysis(cell: dict[str, object], corpus: Path, scratch: Path) -> Non
     if not isinstance(evidence, dict) or not isinstance(candidates, dict):
         raise ValueError("cell evidence and candidates are required")
     bundle = require_path(evidence.get("bundle"), "cell bundle")
+    minimum_memory, maximum_swap = persisted_resource_thresholds(cell)
     command = [
         sys.executable,
         str(REPO_ROOT / "scripts/analyze-stt-host-matrix.py"),
@@ -138,6 +161,11 @@ def replay_analysis(cell: dict[str, object], corpus: Path, scratch: Path) -> Non
         "vulkan",
         "--output-dir",
         str(scratch / "analysis"),
+        "--minimum-available-memory-bytes",
+        str(minimum_memory),
+        "--maximum-sustained-swap-growth-bytes",
+        str(maximum_swap),
+        "--require-resource-evidence",
     ]
     subprocess.run(command, cwd=REPO_ROOT, check=True, capture_output=True, text=True)
     replay = read_json(scratch / "analysis/decision.json", "replayed analysis")
@@ -159,9 +187,109 @@ def replay_analysis(cell: dict[str, object], corpus: Path, scratch: Path) -> Non
         "acceleratedP95OuterMs",
         "newHallucinations",
         "languages",
+        "resourceEvidence",
     ):
         if replay.get(field) != phase2.get(field):
             raise ValueError(f"replayed analysis changed {field}")
+
+
+def admitted_tuning(cell: dict[str, object]) -> dict[str, object]:
+    config = cell.get("cell")
+    evidence = cell.get("evidence")
+    candidates = cell.get("candidates")
+    if (
+        not isinstance(config, dict)
+        or not isinstance(evidence, dict)
+        or not isinstance(candidates, dict)
+    ):
+        raise ValueError("cell tuning evidence is incomplete")
+    values = {
+        "threads": config.get("threads"),
+        "beamSize": config.get("beamSize"),
+        "bestOf": config.get("bestOf"),
+        "noFallback": config.get("noFallback"),
+    }
+    if any(
+        isinstance(values[name], bool)
+        or not isinstance(values[name], int)
+        or values[name] < 1
+        for name in ("threads", "beamSize", "bestOf")
+    ) or not isinstance(values["noFallback"], bool):
+        raise ValueError("cell tuning has invalid types or bounds")
+    manifest = read_json(
+        require_path(evidence.get("bundle"), "cell bundle") / "run-manifest.json",
+        "benchmark run manifest",
+    )
+    records = manifest.get("candidates")
+    labels = {candidates.get("cpu"), candidates.get("accelerated")}
+    if not isinstance(records, list) or len(records) != 2 or None in labels:
+        raise ValueError("benchmark tuning candidates are incomplete")
+    by_label = {
+        record.get("label"): record for record in records if isinstance(record, dict)
+    }
+    if set(by_label) != labels:
+        raise ValueError("benchmark tuning candidates differ from the selected cell")
+    for label in labels:
+        record = by_label[label]
+        if any(
+            record.get(name) != value or type(record.get(name)) is not type(value)
+            for name, value in values.items()
+        ):
+            raise ValueError(
+                "benchmark candidate tuning differs from the selected cell"
+            )
+    return values
+
+
+def admitted_cache_probe(tuning: dict[str, object]) -> dict[str, object]:
+    return {
+        "backend": "vulkan",
+        "language": "en",
+        "prompt": "",
+        **tuning,
+    }
+
+
+def populated_cache_snapshot(
+    cycle_root: Path, cycle: dict[str, object]
+) -> tuple[Path, list[dict[str, object]]]:
+    snapshots = cycle.get("cacheSnapshots")
+    if not isinstance(snapshots, dict) or not isinstance(
+        snapshots.get("afterPopulated"), dict
+    ):
+        raise ValueError("cache cycle has no populated snapshot")
+    reference = snapshots["afterPopulated"]
+    raw = reference.get("path")
+    if not isinstance(raw, str):
+        raise ValueError("populated snapshot path is invalid")
+    snapshot = read_json(cycle_root / raw, "populated cache snapshot")
+    files = snapshot.get("files")
+    root = require_path(snapshot.get("root"), "populated cache root").resolve()
+    if (
+        root != (cycle_root / "mesa-cache").resolve()
+        or not isinstance(files, list)
+        or not files
+        or not root.is_dir()
+    ):
+        raise ValueError("populated cache snapshot has no files")
+    return root, files
+
+
+def verify_cache_snapshot(root: Path, expected: list[dict[str, object]]) -> None:
+    actual = []
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink() or (not path.is_file() and not path.is_dir()):
+            raise ValueError("cache seed contains an unsupported entry")
+        if path.is_file():
+            actual.append(
+                {
+                    "path": path.relative_to(root).as_posix(),
+                    "bytes": path.stat().st_size,
+                    "sha256": sha256_file(path),
+                }
+            )
+    if actual != expected:
+        raise ValueError("cache seed differs from the recorded populated snapshot")
 
 
 def verify_sweep_vad(cell: dict[str, object], expected_vad: Path) -> None:
@@ -337,13 +465,6 @@ def promote(args: argparse.Namespace) -> None:
         raise ValueError("sweep and cache-cycle ICD manifests differ")
     if sha256_file(icd_library) != selected_icd["library"]["sha256"]:
         raise ValueError("ICD library changed after qualification")
-    verify_runtime_probe(
-        runtime_probe,
-        runtime_dir,
-        icd_manifest,
-        cycle_path / "mesa-cache",
-        receipt,
-    )
     drm = [
         device
         for device in host["drmDevices"]
@@ -355,21 +476,17 @@ def promote(args: argparse.Namespace) -> None:
 
     package = output / "whisper-acceleration"
     package.mkdir(parents=True)
-    shutil.copytree(runtime_dir, package / "runtime", symlinks=True)
+    shutil.copytree(runtime_dir, package / "runtime", symlinks=False)
     verify_runtime_alias_bindings(
         qualified_runtime_bindings, package / "runtime/whisper-cli"
     )
     shutil.copy2(runtime_probe, package / "runtime/echo-whisper-runtime-probe")
-    cache_source = cycle_path / "mesa-cache"
-    shutil.copytree(cache_source, package / "cache-seed")
-    verify_contained_symlinks(package)
-    cache_sha = tree_sha256(package / "cache-seed")
-    tuning = {
-        "threads": int(cell_config["threads"]),
-        "beamSize": int(cell_config["beamSize"]),
-        "bestOf": int(cell_config["bestOf"]),
-        "noFallback": bool(cell_config["noFallback"]),
-    }
+    cache_source, expected_cache_files = populated_cache_snapshot(cycle_path, cycle)
+    tuning = admitted_tuning(cell)
+    cycle_probe = cycle_identity.get("probe")
+    expected_probe = admitted_cache_probe(tuning)
+    if not isinstance(cycle_probe, dict) or cycle_probe != expected_probe:
+        raise ValueError("cache-cycle probe settings differ from admitted tuning")
     admission_device = {
         "backend": receipt["backend"],
         "selectedIndex": receipt["selectedIndex"],
@@ -398,33 +515,57 @@ def promote(args: argparse.Namespace) -> None:
         "icdLibrarySha256": sha256_file(icd_library),
         "launchContractSchema": 1,
     }
-    gates = {name: True for name in (*RESEARCH_GATES, *BINDING_GATES)}
+    key = identity_key(identity)
+    cache_relative = f"cache-seeds/{key}"
+    shutil.copytree(cache_source, package / cache_relative)
+    verify_cache_snapshot(package / cache_relative, expected_cache_files)
+    with tempfile.TemporaryDirectory(
+        prefix="echo-whisper-promotion-probe-"
+    ) as probe_cache:
+        probe_cache_path = Path(probe_cache) / "mesa-cache"
+        shutil.copytree(package / cache_relative, probe_cache_path)
+        verify_runtime_probe(
+            runtime_probe,
+            runtime_dir,
+            icd_manifest,
+            probe_cache_path,
+            receipt,
+        )
+    verify_cache_snapshot(package / cache_relative, expected_cache_files)
+    verify_contained_symlinks(package)
+    cache_sha = tree_sha256(package / cache_relative)
+    gates = {name: True for name in (*RESEARCH_GATES, *BINDING_GATES, *RESOURCE_GATES)}
     accepted_at = parse_timestamp(sweep["completedAt"])
-    record = {
-        "schemaVersion": 1,
+    model_record = {
         "identity": identity,
-        "artifacts": {
-            "runtimeRelativePath": "runtime/whisper-cli",
-            "runtimeLibraryBindings": runtime_library_bindings(
-                package / "runtime/whisper-cli"
-            ),
-            "probeRelativePath": "runtime/echo-whisper-runtime-probe",
-            "probeSha256": sha256_file(runtime_probe),
-            "icdManifestPath": str(icd_manifest),
-            "icdLibraryPath": str(icd_library),
-            "cacheSeedRelativePath": "cache-seed",
-            "cacheSeedSha256": cache_sha,
-        },
-        "identityKey": identity_key(identity),
+        "identityKey": key,
         "evidenceSha256": sha256_file(sweep_path / "sweep.json"),
+        "icdManifestPath": str(icd_manifest),
+        "icdLibraryPath": str(icd_library),
+        "cacheSeed": {"relativePath": cache_relative, "sha256": cache_sha},
         "gates": gates,
         "verdict": "PASSED",
         "acceptedAt": accepted_at,
         "expiresAt": accepted_at + args.expires_days * 24 * 60 * 60,
     }
-    (package / "admission.json").write_text(
-        json.dumps(record, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    admission_set = {
+        "schemaVersion": 2,
+        "shared": {
+            "runtimeRelativePath": "runtime/whisper-cli",
+            "runtimeLibraryBindings": runtime_library_bindings(
+                package / "runtime/whisper-cli"
+            ),
+            "probeRelativePath": "runtime/echo-whisper-runtime-probe",
+            "probeSha256": sha256_file(package / "runtime/echo-whisper-runtime-probe"),
+        },
+        "records": [model_record],
+        "inventory": package_inventory(package),
+    }
+    (package / "admission-set.json").write_text(
+        json.dumps(admission_set, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
     )
+    verify_admission_set(package)
     config = {
         "bundle": {"resources": {str(package.resolve()) + "/": "whisper-acceleration/"}}
     }
@@ -432,13 +573,14 @@ def promote(args: argparse.Namespace) -> None:
         json.dumps(config, indent=2) + "\n", encoding="utf-8"
     )
     promotion = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "echoCommit": actual_commit,
         "echoBinarySha256": echo_sha,
-        "admissionIdentityKey": record["identityKey"],
-        "admissionSha256": sha256_file(package / "admission.json"),
+        "packageType": args.package_type,
+        "admissionIdentityKeys": [key],
+        "admissionSetSha256": sha256_file(package / "admission-set.json"),
         "runtimeIdentitySha256": runtime_sha,
-        "cacheSeedSha256": cache_sha,
+        "cacheSeedSha256ByIdentityKey": {key: cache_sha},
     }
     (output / "promotion.json").write_text(
         json.dumps(promotion, indent=2) + "\n", encoding="utf-8"
@@ -446,8 +588,170 @@ def promote(args: argparse.Namespace) -> None:
 
 
 def self_test() -> None:
+    resource_cell = {
+        "resourceEvidence": {
+            "verdict": "VERIFIED",
+            "minimumAvailableMemoryBytes": 4096,
+            "maximumSustainedSwapGrowthBytes": 64,
+        }
+    }
+    assert persisted_resource_thresholds(resource_cell) == (4096, 64)
+    for field, value in (
+        ("verdict", "INCONCLUSIVE"),
+        ("minimumAvailableMemoryBytes", True),
+    ):
+        changed = json.loads(json.dumps(resource_cell))
+        changed["resourceEvidence"][field] = value
+        try:
+            persisted_resource_thresholds(changed)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("invalid persisted resource evidence passed promotion")
+    green_cell = {
+        "cell": {"label": "qualified"},
+        "decision": "PROCEED",
+        "researchPass": True,
+        "researchGates": {name: True for name in (*RESEARCH_GATES, *RESOURCE_GATES)},
+        "bindingGates": {name: True for name in BINDING_GATES},
+    }
+    assert selected_cell({"cells": [green_cell]}, "qualified") is green_cell
+    failed_resource = json.loads(json.dumps(green_cell))
+    failed_resource["researchGates"]["memoryFloor"] = False
+    try:
+        selected_cell({"cells": [failed_resource]}, "qualified")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("failed resource gate passed promotion")
     with tempfile.TemporaryDirectory() as temporary:
+        from unittest.mock import patch
+
         root = Path(temporary)
+        bundle = root / "bundle"
+        bundle.mkdir()
+        corpus = root / "corpus.json"
+        corpus.write_text("{}", encoding="utf-8")
+        phase2 = {
+            field: None
+            for field in (
+                "decision",
+                "gates",
+                "expectedBackend",
+                "cpuCandidate",
+                "acceleratedCandidate",
+                "runsPerCandidate",
+                "cpuMedianOuterMs",
+                "acceleratedMedianOuterMs",
+                "medianReductionMs",
+                "medianSpeedupPercent",
+                "cpuP95OuterMs",
+                "acceleratedP95OuterMs",
+                "newHallucinations",
+                "languages",
+            )
+        }
+        phase2["resourceEvidence"] = resource_cell["resourceEvidence"]
+        replay_cell = {
+            **resource_cell,
+            "evidence": {"bundle": str(bundle)},
+            "candidates": {"cpu": "cpu", "accelerated": "gpu"},
+            "phase2": phase2,
+        }
+
+        def replay_run(command: list[str], **_: object) -> subprocess.CompletedProcess:
+            output = Path(command[command.index("--output-dir") + 1])
+            output.mkdir(parents=True)
+            (output / "decision.json").write_text(json.dumps(phase2), encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0)
+
+        with patch.object(subprocess, "run", side_effect=replay_run) as replayed:
+            replay_analysis(replay_cell, corpus, root / "replay")
+        replay_command = replayed.call_args.args[0]
+        assert (
+            replay_command[replay_command.index("--minimum-available-memory-bytes") + 1]
+            == "4096"
+        )
+        assert (
+            replay_command[
+                replay_command.index("--maximum-sustained-swap-growth-bytes") + 1
+            ]
+            == "64"
+        )
+        assert "--require-resource-evidence" in replay_command
+        tuning_cell = {
+            "cell": {"threads": 4, "beamSize": 1, "bestOf": 2, "noFallback": True},
+            "candidates": {"cpu": "cpu", "accelerated": "gpu"},
+            "evidence": {"bundle": str(bundle)},
+        }
+        (bundle / "run-manifest.json").write_text(
+            json.dumps(
+                {
+                    "candidates": [
+                        {
+                            "label": "cpu",
+                            "threads": 4,
+                            "beamSize": 1,
+                            "bestOf": 2,
+                            "noFallback": True,
+                        },
+                        {
+                            "label": "gpu",
+                            "threads": 4,
+                            "beamSize": 1,
+                            "bestOf": 2,
+                            "noFallback": True,
+                        },
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert admitted_tuning(tuning_cell)["noFallback"] is True
+        candidate_drift = json.loads(json.dumps(tuning_cell))
+        manifest = json.loads(
+            (bundle / "run-manifest.json").read_text(encoding="utf-8")
+        )
+        manifest["candidates"][1]["threads"] = 5
+        (bundle / "run-manifest.json").write_text(
+            json.dumps(manifest), encoding="utf-8"
+        )
+        try:
+            admitted_tuning(candidate_drift)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("candidate tuning drift passed promotion")
+        manifest["candidates"][1]["threads"] = 4
+        (bundle / "run-manifest.json").write_text(
+            json.dumps(manifest), encoding="utf-8"
+        )
+        invalid_tuning = json.loads(json.dumps(tuning_cell))
+        invalid_tuning["cell"]["noFallback"] = 1
+        try:
+            admitted_tuning(invalid_tuning)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("non-boolean fallback passed admitted tuning")
+        expected_probe = admitted_cache_probe(admitted_tuning(tuning_cell))
+        changed_probe = dict(expected_probe)
+        changed_probe["bestOf"] = 3
+        assert changed_probe != expected_probe
+        cache = root / "cache"
+        cache.mkdir()
+        (cache / "seed").write_bytes(b"seed")
+        expected_cache = [
+            {"path": "seed", "bytes": 4, "sha256": sha256_file(cache / "seed")}
+        ]
+        verify_cache_snapshot(cache, expected_cache)
+        (cache / "seed").write_bytes(b"changed")
+        try:
+            verify_cache_snapshot(cache, expected_cache)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("cache drift passed populated snapshot binding")
         (root / "b").mkdir()
         (root / "b/two").write_bytes(b"two")
         (root / "one").write_bytes(b"one")
@@ -522,6 +826,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vad", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--expires-days", type=int, default=30)
+    parser.add_argument("--package-type", choices=("deb", "rpm"))
     args = parser.parse_args()
     if not args.self_test and any(
         getattr(args, name) is None
@@ -536,6 +841,7 @@ def parse_args() -> argparse.Namespace:
             "model",
             "vad",
             "output",
+            "package_type",
         )
     ):
         parser.error("promotion requires every path and --cell")

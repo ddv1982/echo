@@ -5,6 +5,7 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 verify_root=$(mktemp -d "${TMPDIR:-/tmp}/echo-stt-benchmark.XXXXXX")
 trap 'rm -rf "$verify_root"' EXIT
 
+python3 "$repo_root/scripts/process_observation.py" --self-test
 python3 "$repo_root/scripts/benchmark-stt.py" --self-test
 python3 "$repo_root/scripts/probe-whisper-resident.py" --self-test
 if [[ ${ECHO_STT_BENCHMARK_SKIP_BUILD:-0} == 1 ]]; then
@@ -84,6 +85,13 @@ def assert_artifacts(output: pathlib.Path, artifact: dict[str, object]) -> None:
         contents = path.read_bytes()
         assert reference["bytes"] == len(contents)
         assert reference["sha256"] == hashlib.sha256(contents).hexdigest()
+    resource = artifact["processObservation"]
+    resource_path = output / resource["path"]
+    assert resource_path.name == "process-observation.json"
+    assert resource["sha256"] == hashlib.sha256(resource_path.read_bytes()).hexdigest()
+    observation = json.loads(resource_path.read_text(encoding="utf-8"))
+    assert observation["sampling"] in {"complete", "partial", "unavailable"}
+    assert observation["exit"] in {"success", "nonzero", "signaled", "timeout", "spawn-failed"}
 
 
 report = root / "report"

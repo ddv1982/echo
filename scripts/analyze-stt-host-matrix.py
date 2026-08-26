@@ -13,6 +13,7 @@ import subprocess
 import sys
 import unicodedata
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -634,6 +635,168 @@ def identity_from_product(
     return verify_identity(identity, f"{label} row.{row_field}", digest_cache)
 
 
+def validate_process_observation(
+    resource: object,
+    label: str,
+    *,
+    row_id: str,
+    candidate: str,
+    utterance: str,
+    command_sha256: str,
+) -> dict[str, object]:
+    value = require_object(resource, label)
+    expected_fields = {
+        "schemaVersion",
+        "sampling",
+        "processTreePeakRssBytes",
+        "processTreePeakSwapBytes",
+        "rootVmHwmBytes",
+        "hostMinMemAvailableBytes",
+        "hostSwapUsedBeforeBytes",
+        "hostSwapUsedPeakBytes",
+        "hostSwapUsedAfterSettleBytes",
+        "sampleCount",
+        "intervalMs",
+        "settleWindowMs",
+        "exit",
+        "returnCode",
+        "samplingIssues",
+        "samples",
+        "binding",
+    }
+    if set(value) != expected_fields or value.get("schemaVersion") != 1:
+        raise ValueError(f"{label} has an invalid field set or schema version")
+    sampling = value.get("sampling")
+    exit_state = value.get("exit")
+    if sampling not in {"complete", "partial", "unavailable"} or exit_state not in {
+        "success",
+        "nonzero",
+        "signaled",
+        "timeout",
+        "spawn-failed",
+    }:
+        raise ValueError(f"{label} has an invalid state")
+    for field, minimum in (
+        ("sampleCount", 0),
+        ("intervalMs", 1),
+        ("settleWindowMs", 0),
+    ):
+        require_int(value.get(field), f"{label}.{field}", minimum)
+    for field in (
+        "processTreePeakRssBytes",
+        "processTreePeakSwapBytes",
+        "rootVmHwmBytes",
+        "hostMinMemAvailableBytes",
+        "hostSwapUsedBeforeBytes",
+        "hostSwapUsedPeakBytes",
+        "hostSwapUsedAfterSettleBytes",
+    ):
+        if value.get(field) is not None:
+            require_int(value[field], f"{label}.{field}")
+    return_code = value.get("returnCode")
+    if isinstance(return_code, bool) or (
+        return_code is not None and not isinstance(return_code, int)
+    ):
+        raise ValueError(f"{label}.returnCode must be an integer or null")
+    consistent_exit = (
+        (exit_state == "success" and return_code == 0)
+        or (
+            exit_state == "nonzero" and isinstance(return_code, int) and return_code > 0
+        )
+        or (
+            exit_state in {"signaled", "timeout"}
+            and isinstance(return_code, int)
+            and return_code < 0
+        )
+        or (exit_state == "spawn-failed" and return_code is None)
+    )
+    if not consistent_exit:
+        raise ValueError(f"{label} exit and returnCode are inconsistent")
+    issues = value.get("samplingIssues")
+    if (
+        not isinstance(issues, list)
+        or not all(isinstance(issue, str) and issue for issue in issues)
+        or len(issues) != len(set(issues))
+    ):
+        raise ValueError(f"{label}.samplingIssues must contain unique strings")
+    raw_samples = value.get("samples")
+    if not isinstance(raw_samples, list) or value["sampleCount"] != len(raw_samples):
+        raise ValueError(f"{label}.sampleCount does not match samples")
+    samples: list[dict[str, object]] = []
+    previous_ns = -1
+    sample_fields = {
+        "monotonicNs",
+        "rssBytes",
+        "vmSwapBytes",
+        "memAvailableBytes",
+        "hostSwapUsedBytes",
+    }
+    for index, raw in enumerate(raw_samples):
+        sample = require_object(raw, f"{label}.samples[{index}]")
+        if set(sample) != sample_fields:
+            raise ValueError(f"{label}.samples[{index}] has invalid fields")
+        monotonic_ns = require_int(
+            sample.get("monotonicNs"), f"{label}.samples[{index}].monotonicNs"
+        )
+        if monotonic_ns <= previous_ns:
+            raise ValueError(f"{label} samples are not strictly monotonic")
+        previous_ns = monotonic_ns
+        for field in sample_fields - {"monotonicNs"}:
+            if sample.get(field) is not None:
+                require_int(sample[field], f"{label}.samples[{index}].{field}")
+        samples.append(sample)
+    binding = require_object(value.get("binding"), f"{label}.binding")
+    expected_binding = {
+        "rowId": row_id,
+        "candidate": candidate,
+        "utterance": utterance,
+        "commandSha256": command_sha256,
+    }
+    if set(binding) != set(expected_binding) or binding != expected_binding:
+        raise ValueError(f"{label} binding does not match its observation")
+
+    def aggregate(field: str, operation: Callable[[list[int]], int]) -> int | None:
+        numbers = [sample[field] for sample in samples if sample[field] is not None]
+        return operation(numbers) if numbers else None
+
+    derived = {
+        "processTreePeakRssBytes": aggregate("rssBytes", max),
+        "processTreePeakSwapBytes": aggregate("vmSwapBytes", max),
+        "hostMinMemAvailableBytes": aggregate("memAvailableBytes", min),
+        "hostSwapUsedBeforeBytes": samples[0]["hostSwapUsedBytes"] if samples else None,
+        "hostSwapUsedPeakBytes": aggregate("hostSwapUsedBytes", max),
+        "hostSwapUsedAfterSettleBytes": samples[-1]["hostSwapUsedBytes"]
+        if samples
+        else None,
+    }
+    if any(value[field] != expected for field, expected in derived.items()):
+        raise ValueError(f"{label} aggregate values do not match samples")
+    if sampling == "complete" and any(
+        expected is None for expected in derived.values()
+    ):
+        raise ValueError(f"{label} complete sampling is missing resource evidence")
+    process_samples = [sample for sample in samples if sample["rssBytes"] is not None]
+    if sampling == "complete" and (issues or len(process_samples) < 2):
+        raise ValueError(f"{label} complete sampling contains gaps")
+    if sampling == "complete" and (
+        not samples
+        or samples[0]["rssBytes"] is not None
+        or samples[0]["vmSwapBytes"] is not None
+        or samples[0]["memAvailableBytes"] is None
+        or samples[0]["hostSwapUsedBytes"] is None
+    ):
+        raise ValueError(f"{label} is missing its pre-launch host sample")
+    if value["settleWindowMs"] > 0 and (
+        not samples
+        or samples[-1]["rssBytes"] is not None
+        or samples[-1]["vmSwapBytes"] is not None
+        or samples[-1]["memAvailableBytes"] is None
+        or samples[-1]["hostSwapUsedBytes"] is None
+    ):
+        raise ValueError(f"{label} is missing its post-settle host sample")
+    return value
+
+
 def replay_artifact(
     bundle_root: Path,
     artifact: dict[str, object],
@@ -789,6 +952,27 @@ def replay_artifact(
     }
     if vad_artifact is not None:
         verified["vadArtifact"] = vad_artifact
+    resource_reference = artifact.get("processObservation")
+    if resource_reference is not None:
+        _, resource_contents = safe_artifact_file(
+            bundle_root, resource_reference, f"{label}.processObservation"
+        )
+        try:
+            raw_resource = require_object(
+                json.loads(resource_contents.decode("utf-8")),
+                f"{label} process observation",
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ValueError(f"{label} process observation is invalid JSON") from error
+        resource = validate_process_observation(
+            raw_resource,
+            f"{label} process observation",
+            row_id=row_id,
+            candidate=str(candidate["label"]),
+            utterance=binding.identifier,
+            command_sha256=sha256_bytes(contents["command"]),
+        )
+        verified["processObservation"] = resource
     return verified
 
 
@@ -1292,12 +1476,71 @@ def coverage_complete(corpus: dict[str, object]) -> bool:
     )
 
 
+def resource_evidence(
+    rows: list[dict[str, object]],
+    minimum_available_memory_bytes: int,
+    maximum_sustained_swap_growth_bytes: int,
+) -> tuple[str, dict[str, bool]]:
+    evidence = True
+    floor = True
+    swap_stable = True
+    not_verified = False
+    for row in rows:
+        observation = row.get("processObservation")
+        if isinstance(observation, dict) and observation.get("exit") != "success":
+            not_verified = True
+        if (
+            not isinstance(observation, dict)
+            or observation.get("sampling") != "complete"
+        ):
+            evidence = False
+            continue
+        fields = (
+            "sampleCount",
+            "processTreePeakRssBytes",
+            "processTreePeakSwapBytes",
+            "hostMinMemAvailableBytes",
+            "hostSwapUsedBeforeBytes",
+            "hostSwapUsedPeakBytes",
+            "hostSwapUsedAfterSettleBytes",
+        )
+        if any(
+            isinstance(observation.get(field), bool)
+            or not isinstance(observation.get(field), int)
+            or observation[field] < (1 if field == "sampleCount" else 0)
+            for field in fields
+        ):
+            evidence = False
+            continue
+        available = observation["hostMinMemAvailableBytes"]
+        before = observation["hostSwapUsedBeforeBytes"]
+        after = observation["hostSwapUsedAfterSettleBytes"]
+        floor = floor and available >= minimum_available_memory_bytes
+        swap_stable = (
+            swap_stable and after - before <= maximum_sustained_swap_growth_bytes
+        )
+    gates = {
+        "stabilitySuccess": not not_verified and evidence,
+        "memoryEvidence": evidence,
+        "memoryFloor": floor and evidence,
+        "swapStable": swap_stable and evidence,
+    }
+    if not_verified or (evidence and (not floor or not swap_stable)):
+        return "NOT_VERIFIED", gates
+    if not evidence:
+        return "INCONCLUSIVE", gates
+    return "VERIFIED", gates
+
+
 def summarize(
     rows: list[dict[str, object]],
     cpu_label: str,
     accelerated_label: str,
     expected_backend: str,
     coverage_complete: bool,
+    minimum_available_memory_bytes: int = 0,
+    maximum_sustained_swap_growth_bytes: int = 0,
+    require_resource_evidence: bool = False,
 ) -> dict[str, object]:
     cpu = candidate_rows(rows, cpu_label)
     accelerated = candidate_rows(rows, accelerated_label)
@@ -1437,6 +1680,11 @@ def summarize(
     )
     median_reduction = statistics.median(reductions)
     median_speedup = statistics.median(speedups)
+    resource_verdict, resource_gates = resource_evidence(
+        selected_rows,
+        minimum_available_memory_bytes,
+        maximum_sustained_swap_growth_bytes,
+    )
     gates = {
         "completePairs": complete_pairs,
         "pairIntegrity": pair_integrity,
@@ -1455,6 +1703,7 @@ def summarize(
         "perLanguageQuality": quality_ok,
         "noNewHallucinations": new_hallucinations == 0,
         "coverageComplete": coverage_complete,
+        **resource_gates,
     }
     return {
         "schemaVersion": 1,
@@ -1471,7 +1720,18 @@ def summarize(
         "newHallucinations": new_hallucinations,
         "languages": language_rows,
         "gates": gates,
-        "decision": "proceed" if all(gates.values()) else "stop",
+        "resourceEvidence": {
+            "verdict": resource_verdict,
+            "minimumAvailableMemoryBytes": minimum_available_memory_bytes,
+            "maximumSustainedSwapGrowthBytes": maximum_sustained_swap_growth_bytes,
+        },
+        "decision": "proceed"
+        if all(
+            passed
+            for name, passed in gates.items()
+            if require_resource_evidence or name not in resource_gates
+        )
+        else "stop",
         "claimBoundary": (
             "This corpus binds every required language and product-speech class. It qualifies "
             "CPU/Vulkan parity only for the exact measured identity, not general model quality. "
@@ -1666,6 +1926,168 @@ def self_test() -> None:
     assert not passed["gates"]["driverIcdIdentity"]
     assert not passed["gates"]["freshAndPopulatedCacheEvidence"]
     assert not passed["gates"]["resetEvidence"]
+    resource_required = summarize(
+        rows, "cpu", "gpu", "vulkan", True, require_resource_evidence=True
+    )
+    assert resource_required["resourceEvidence"]["verdict"] == "INCONCLUSIVE"
+    assert resource_required["decision"] == "stop"
+    resource_rows = json.loads(json.dumps(rows))
+    for row in resource_rows:
+        row["processObservation"] = {
+            "sampling": "complete",
+            "exit": "success",
+            "sampleCount": 1,
+            "processTreePeakRssBytes": 1,
+            "processTreePeakSwapBytes": 0,
+            "hostMinMemAvailableBytes": 100,
+            "hostSwapUsedBeforeBytes": 10,
+            "hostSwapUsedPeakBytes": 10,
+            "hostSwapUsedAfterSettleBytes": 10,
+        }
+    verified = resource_evidence(resource_rows, 50, 1)
+    assert verified[0] == "VERIFIED" and all(verified[1].values())
+    resource_rows[0]["processObservation"]["hostMinMemAvailableBytes"] = 49
+    assert resource_evidence(resource_rows, 50, 1)[0] == "NOT_VERIFIED"
+    resource_rows[0]["processObservation"]["hostMinMemAvailableBytes"] = 100
+    resource_rows[0]["processObservation"]["hostSwapUsedAfterSettleBytes"] = 12
+    assert resource_evidence(resource_rows, 50, 1)[0] == "NOT_VERIFIED"
+    resource_rows[0]["processObservation"]["hostSwapUsedAfterSettleBytes"] = 10
+    resource_rows[0]["processObservation"]["exit"] = "timeout"
+    assert resource_evidence(resource_rows, 50, 1)[0] == "NOT_VERIFIED"
+    resource_rows[0].pop("processObservation")
+    assert resource_evidence(resource_rows, 50, 1)[0] == "INCONCLUSIVE"
+    resource_rows[0]["processObservation"] = {
+        "sampling": "complete",
+        "exit": "success",
+        "sampleCount": 1,
+        "processTreePeakSwapBytes": 0,
+        "hostMinMemAvailableBytes": 100,
+        "hostSwapUsedBeforeBytes": 10,
+        "hostSwapUsedPeakBytes": 10,
+        "hostSwapUsedAfterSettleBytes": 10,
+    }
+    assert resource_evidence(resource_rows, 50, 1)[0] == "INCONCLUSIVE"
+    timeout_partial = {
+        "sampling": "partial",
+        "exit": "timeout",
+    }
+    assert (
+        resource_evidence([{"processObservation": timeout_partial}], 50, 1)[0]
+        == "NOT_VERIFIED"
+    )
+    valid_observation = {
+        "schemaVersion": 1,
+        "sampling": "complete",
+        "processTreePeakRssBytes": 20,
+        "processTreePeakSwapBytes": 2,
+        "rootVmHwmBytes": 25,
+        "hostMinMemAvailableBytes": 90,
+        "hostSwapUsedBeforeBytes": 10,
+        "hostSwapUsedPeakBytes": 12,
+        "hostSwapUsedAfterSettleBytes": 11,
+        "sampleCount": 4,
+        "intervalMs": 5,
+        "settleWindowMs": 5,
+        "exit": "success",
+        "returnCode": 0,
+        "samplingIssues": [],
+        "samples": [
+            {
+                "monotonicNs": 1,
+                "rssBytes": None,
+                "vmSwapBytes": None,
+                "memAvailableBytes": 100,
+                "hostSwapUsedBytes": 10,
+            },
+            {
+                "monotonicNs": 2,
+                "rssBytes": 20,
+                "vmSwapBytes": 2,
+                "memAvailableBytes": 90,
+                "hostSwapUsedBytes": 12,
+            },
+            {
+                "monotonicNs": 3,
+                "rssBytes": 15,
+                "vmSwapBytes": 1,
+                "memAvailableBytes": 92,
+                "hostSwapUsedBytes": 11,
+            },
+            {
+                "monotonicNs": 4,
+                "rssBytes": None,
+                "vmSwapBytes": None,
+                "memAvailableBytes": 95,
+                "hostSwapUsedBytes": 11,
+            },
+        ],
+        "binding": {
+            "rowId": "row",
+            "candidate": "gpu",
+            "utterance": "speech",
+            "commandSha256": "a" * 64,
+        },
+    }
+    validate_process_observation(
+        valid_observation,
+        "self-test",
+        row_id="row",
+        candidate="gpu",
+        utterance="speech",
+        command_sha256="a" * 64,
+    )
+    for field, replacement in (
+        ("processTreePeakRssBytes", 21),
+        ("hostSwapUsedBeforeBytes", 11),
+        ("hostSwapUsedAfterSettleBytes", 12),
+    ):
+        mutated = json.loads(json.dumps(valid_observation))
+        mutated[field] = replacement
+        try:
+            validate_process_observation(
+                mutated,
+                "self-test",
+                row_id="row",
+                candidate="gpu",
+                utterance="speech",
+                command_sha256="a" * 64,
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"invented process observation {field} was accepted")
+    no_samples = json.loads(json.dumps(valid_observation))
+    no_samples["samples"] = []
+    try:
+        validate_process_observation(
+            no_samples,
+            "self-test",
+            row_id="row",
+            candidate="gpu",
+            utterance="speech",
+            command_sha256="a" * 64,
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("process observation without samples was accepted")
+    incomplete = json.loads(json.dumps(valid_observation))
+    incomplete["samplingIssues"] = ["process-status-unavailable"]
+    try:
+        validate_process_observation(
+            incomplete,
+            "self-test",
+            row_id="row",
+            candidate="gpu",
+            utterance="speech",
+            command_sha256="a" * 64,
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(
+            "complete process observation with a sampling gap was accepted"
+        )
     silence_rows = json.loads(json.dumps(rows[:-1]))
     for row in silence_rows:
         row["language"] = "auto"
@@ -1712,6 +2134,9 @@ def main() -> int:
     parser.add_argument("--cpu-candidate")
     parser.add_argument("--accelerated-candidate")
     parser.add_argument("--expected-backend", default="vulkan")
+    parser.add_argument("--minimum-available-memory-bytes", type=int, default=0)
+    parser.add_argument("--maximum-sustained-swap-growth-bytes", type=int, default=0)
+    parser.add_argument("--require-resource-evidence", action="store_true")
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
     if args.self_test:
@@ -1726,6 +2151,11 @@ def main() -> int:
     ]
     if any(value is None for value in required):
         parser.error("runs, corpus manifest, candidates, and output dir are required")
+    if (
+        args.minimum_available_memory_bytes < 0
+        or args.maximum_sustained_swap_growth_bytes < 0
+    ):
+        parser.error("resource limits cannot be negative")
     try:
         rows, corpus = verify_bundle(args.runs, args.corpus_manifest)
         summary = summarize(
@@ -1734,6 +2164,9 @@ def main() -> int:
             args.accelerated_candidate,
             args.expected_backend,
             coverage_complete=coverage_complete(corpus),
+            minimum_available_memory_bytes=args.minimum_available_memory_bytes,
+            maximum_sustained_swap_growth_bytes=args.maximum_sustained_swap_growth_bytes,
+            require_resource_evidence=args.require_resource_evidence,
         )
         args.output_dir.mkdir(parents=True, exist_ok=True)
         (args.output_dir / "decision.json").write_text(
