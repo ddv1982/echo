@@ -73,6 +73,18 @@ CACHE_KEYS = sorted(
         "CMAKE_CXX_COMPILER",
     }
 )
+ABI_SYMBOL = re.compile(r"\b(GLIBC|GLIBCXX|CXXABI)_([0-9]+(?:\.[0-9]+)+)\b")
+SYSTEM_VULKAN_ROOTS = [
+    pathlib.Path(value)
+    for value in [
+        "/lib",
+        "/usr/lib",
+        "/lib64",
+        "/usr/lib64",
+        "/nix/store",
+        "/run/current-system/sw/lib",
+    ]
+]
 
 
 class VerificationError(RuntimeError):
@@ -214,6 +226,25 @@ def validate_package_filenames(files):
             fail(f"package contains an unexpected file: {name}")
 
 
+def verify_builder_contract(path):
+    text = path.read_text(encoding="utf-8")
+    required = [
+        "-DGGML_NATIVE=OFF",
+        "-DGGML_BACKEND_DL=ON",
+        "-DGGML_CPU_ALL_VARIANTS=ON",
+        "-DGGML_VULKAN=ON",
+        "-ffile-prefix-map=${scratch_dir}=",
+        "-fmacro-prefix-map=${scratch_dir}=",
+        "-fdebug-prefix-map=${scratch_dir}=",
+        "--create",
+        "--verify",
+        "--revision-info",
+    ]
+    missing = [value for value in required if value not in text]
+    if missing:
+        fail(f"runtime builder contract is missing {', '.join(missing)}")
+
+
 def artifact_id(files):
     encoded = json.dumps(
         files, ensure_ascii=True, separators=(",", ":"), sort_keys=True
@@ -268,6 +299,30 @@ def compiler_identity(cache, key):
     }
 
 
+def version_key(value):
+    return tuple(int(part) for part in value.split("."))
+
+
+def platform_abi(package, files):
+    required = {}
+    for path in elf_files(package, {"files": files}):
+        output = subprocess.run(
+            ["readelf", "--version-info", str(path)],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        ).stdout
+        for family, version in ABI_SYMBOL.findall(output):
+            current = required.get(family)
+            if current is None or version_key(version) > version_key(current):
+                required[family] = version
+    return {
+        "architecture": "x86_64",
+        "minimumSymbolVersions": dict(sorted(required.items())),
+    }
+
+
 def create_receipt(args):
     package = args.package.resolve()
     if not package.is_dir():
@@ -310,7 +365,12 @@ def create_receipt(args):
         },
         "files": files,
         "patches": patches,
+        "platformAbi": platform_abi(package, files),
         "privateElfDependencies": private_dependencies(package, files),
+        "reproducibility": {
+            "pathMapping": "/usr/src/echo-whisper-runtime",
+            "scope": "sameToolchain",
+        },
         "runtime": {
             "cpuVariants": variants,
             "portable": True,
@@ -319,6 +379,7 @@ def create_receipt(args):
         "schemaVersion": SCHEMA_VERSION,
         "source": {"commit": args.commit, "revision": args.revision},
         "sourceDateEpoch": args.source_date_epoch,
+        "trustBoundary": "buildObservation",
     }
     (package / "build-receipt.json").write_text(
         json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -339,7 +400,7 @@ def require_private_resolution(package, resolved, artifact):
 
 def require_system_vulkan_loader(resolved):
     path = resolved.resolve()
-    roots = [pathlib.Path("/lib"), pathlib.Path("/usr/lib")]
+    roots = [root.resolve() for root in SYSTEM_VULKAN_ROOTS if root.exists()]
     if not any(root == path or root in path.parents for root in roots):
         fail(f"Vulkan loader resolved outside an approved system library root: {path}")
 
@@ -353,11 +414,14 @@ def validate_contract(receipt, cache, package):
             "compiler",
             "files",
             "patches",
+            "platformAbi",
             "privateElfDependencies",
+            "reproducibility",
             "runtime",
             "schemaVersion",
             "source",
             "sourceDateEpoch",
+            "trustBoundary",
         },
         "receipt",
     )
@@ -375,6 +439,25 @@ def validate_contract(receipt, cache, package):
         if not receipt["compiler"][language]["version"]:
             fail(f"compiler.{language}.version is empty")
     require_exact_keys(receipt["source"], {"commit", "revision"}, "source")
+    require_exact_keys(
+        receipt["platformAbi"],
+        {"architecture", "minimumSymbolVersions"},
+        "platformAbi",
+    )
+    if receipt["platformAbi"]["architecture"] != "x86_64":
+        fail("platform ABI architecture is not x86_64")
+    for family, version in receipt["platformAbi"]["minimumSymbolVersions"].items():
+        if family not in {"GLIBC", "GLIBCXX", "CXXABI"} or not re.fullmatch(
+            r"[0-9]+(?:\.[0-9]+)+", version
+        ):
+            fail("platform ABI has an invalid symbol version")
+    if receipt["reproducibility"] != {
+        "pathMapping": "/usr/src/echo-whisper-runtime",
+        "scope": "sameToolchain",
+    }:
+        fail("reproducibility scope differs")
+    if receipt["trustBoundary"] != "buildObservation":
+        fail("build receipt trust boundary differs")
     require_exact_keys(
         receipt["cmake"], {"cachePath", "cacheSha256", "options"}, "cmake"
     )
@@ -411,6 +494,10 @@ def validate_contract(receipt, cache, package):
 
 def validate_receipt(package, repo_root):
     receipt_path = package / "build-receipt.json"
+    if receipt_path.is_symlink():
+        fail("build receipt must be a package-owned regular file")
+    if receipt_path.parent.resolve() != package.resolve():
+        fail("build receipt escapes the package")
     if receipt_path.is_file() and stat.S_IMODE(receipt_path.stat().st_mode) != 0o644:
         fail("build receipt mode differs from 0644")
     try:
@@ -440,6 +527,8 @@ def validate_receipt(package, repo_root):
         fail("runtime artifact ID differs")
     if receipt["privateElfDependencies"] != private_dependencies(package, files):
         fail("private ELF dependency receipt differs")
+    if receipt["platformAbi"] != platform_abi(package, files):
+        fail("platform ABI receipt differs")
     expected_patches = []
     for relative in [
         "patches/whisper.cpp/runtime-probe.patch",
@@ -469,7 +558,7 @@ def elf_files(package, receipt):
     return paths
 
 
-def verify_elf_resolution(package, receipt):
+def verify_elf_resolution(package, receipt, require_vulkan):
     stage = package.resolve()
     environment = os.environ | {"LD_LIBRARY_PATH": str(stage)}
     for path in elf_files(package, receipt):
@@ -482,6 +571,8 @@ def verify_elf_resolution(package, receipt):
         ).stdout
         if re.search(r"\((?:RPATH|RUNPATH)\)", dynamic):
             fail(f"ELF has an RPATH or RUNPATH: {path.name}")
+        if path.name == "libggml-vulkan.so" and not require_vulkan:
+            continue
         output = subprocess.run(
             ["ldd", str(path)],
             check=True,
@@ -557,11 +648,8 @@ def validate_vulkan_receipt(stderr):
             fail(f"Vulkan runtime probe emitted an invalid {key}")
 
 
-def verify_runtime_loading(package, receipt, require_vulkan):
-    cpu = run_probe(package, True)
-    if cpu.returncode != 0:
-        fail(f"CPU runtime probe failed: {cpu.stderr.strip()}")
-    selected_match = CPU_LOAD.search(cpu.stderr)
+def validate_cpu_probe(stderr, package, receipt, require_vulkan):
+    selected_match = CPU_LOAD.search(stderr)
     if not selected_match:
         fail("CPU runtime probe did not report the selected CPU module")
     selected_path = pathlib.Path(selected_match.group(1)).resolve()
@@ -570,12 +658,21 @@ def verify_runtime_loading(package, receipt, require_vulkan):
     selected = selected_path.name
     if selected not in receipt["runtime"]["cpuVariants"]:
         fail(f"CPU runtime probe selected an unreceipted variant: {selected}")
-    vulkan_match = VULKAN_LOAD.search(cpu.stderr)
-    if not vulkan_match:
-        fail("runtime loader did not load the packaged Vulkan module")
-    require_private_resolution(
-        package, pathlib.Path(vulkan_match.group(1)), "runtime loader"
-    )
+    vulkan_match = VULKAN_LOAD.search(stderr)
+    if require_vulkan:
+        if not vulkan_match:
+            fail("runtime loader did not load the packaged Vulkan module")
+        require_private_resolution(
+            package, pathlib.Path(vulkan_match.group(1)), "runtime loader"
+        )
+    return selected
+
+
+def verify_runtime_loading(package, receipt, require_vulkan):
+    cpu = run_probe(package, True)
+    if cpu.returncode != 0:
+        fail(f"CPU runtime probe failed: {cpu.stderr.strip()}")
+    selected = validate_cpu_probe(cpu.stderr, package, receipt, require_vulkan)
     help_result = subprocess.run(
         [str(package / "whisper-cli"), "--no-gpu", "--help"],
         env=os.environ | {"LD_LIBRARY_PATH": str(package)},
@@ -592,9 +689,9 @@ def verify_runtime_loading(package, receipt, require_vulkan):
         validate_vulkan_receipt(vulkan.stderr)
     print(f"selectedCpuVariant={selected}")
     print("selectedBackend=cpu")
-    print("gpuDisabled=true")
+    print("noGpuSwitchAvailable=true")
     print(f"artifactId={receipt['artifactId']}")
-    print("portable=true")
+    print("portableCpuDispatch=true")
 
 
 def verify_package(args):
@@ -603,7 +700,7 @@ def verify_package(args):
         fail(f"package is not a directory: {package}")
     repo_root = pathlib.Path(__file__).resolve().parent.parent
     receipt = validate_receipt(package, repo_root)
-    verify_elf_resolution(package, receipt)
+    verify_elf_resolution(package, receipt, args.require_vulkan)
     verify_runtime_loading(package, receipt, args.require_vulkan)
 
 
@@ -626,7 +723,15 @@ class ContractTests(unittest.TestCase):
             },
             "files": [],
             "patches": [],
+            "platformAbi": {
+                "architecture": "x86_64",
+                "minimumSymbolVersions": {},
+            },
             "privateElfDependencies": {},
+            "reproducibility": {
+                "pathMapping": "/usr/src/echo-whisper-runtime",
+                "scope": "sameToolchain",
+            },
             "runtime": {
                 "cpuVariants": EXPECTED_CPU_VARIANTS.copy(),
                 "portable": True,
@@ -638,6 +743,7 @@ class ContractTests(unittest.TestCase):
                 "revision": "v1.9.2",
             },
             "sourceDateEpoch": PINNED_REVISIONS["v1.9.2"][1],
+            "trustBoundary": "buildObservation",
         }
         self.cache = REQUIRED_OPTIONS.copy()
         self.temp = tempfile.TemporaryDirectory()
@@ -727,6 +833,40 @@ class ContractTests(unittest.TestCase):
             )
         with self.assertRaisesRegex(VerificationError, "approved system library root"):
             require_system_vulkan_loader(self.package / "libvulkan.so.1")
+        require_system_vulkan_loader(pathlib.Path("/usr/lib64/libvulkan.so.1"))
+
+    def test_builder_declares_the_portable_contract(self):
+        verify_builder_contract(
+            pathlib.Path(__file__).with_name("build-whisper-vulkan-receipt.sh")
+        )
+
+    def test_revision_info_is_authoritative(self):
+        self.assertEqual(
+            PINNED_REVISIONS["v1.9.2"],
+            ("306c88f4d1286aec1bf96e544632897886af5501", 1785851811),
+        )
+
+    def test_cpu_probe_does_not_require_vulkan(self):
+        cpu = self.package / "libggml-cpu-x64.so"
+        cpu.touch()
+        stderr = f"load_backend: loaded CPU backend from {cpu}\n"
+        self.assertEqual(
+            validate_cpu_probe(stderr, self.package, self.receipt, False),
+            cpu.name,
+        )
+        with self.assertRaisesRegex(VerificationError, "did not load"):
+            validate_cpu_probe(stderr, self.package, self.receipt, True)
+
+    def test_rejects_symlinked_build_receipt(self):
+        outside = self.package / "outside.json"
+        outside.write_text("{}", encoding="utf-8")
+        (self.package / "build-receipt.json").symlink_to(outside.name)
+        with self.assertRaisesRegex(VerificationError, "regular file"):
+            validate_receipt(self.package, pathlib.Path(__file__).parent.parent)
+
+    def test_rejects_invalid_platform_abi(self):
+        self.receipt["platformAbi"]["architecture"] = "aarch64"
+        self.assert_rejected("architecture")
 
 
 def parser():
@@ -743,17 +883,29 @@ def parser():
     verify = subcommands.add_parser("verify", add_help=False)
     verify.add_argument("package", type=pathlib.Path)
     verify.add_argument("--require-vulkan", action="store_true")
+    revision_info = subcommands.add_parser("revision-info", add_help=False)
+    revision_info.add_argument("revision")
     subcommands.add_parser("self-test", add_help=False)
     return result
 
 
 def main():
     arguments = sys.argv[1:]
-    if arguments and arguments[0] in {"--create", "--verify", "--self-test"}:
+    if arguments and arguments[0] in {
+        "--create",
+        "--revision-info",
+        "--verify",
+        "--self-test",
+    }:
         arguments[0] = arguments[0][2:]
     args = parser().parse_args(arguments)
     if args.command == "create":
         create_receipt(args)
+    elif args.command == "revision-info":
+        value = PINNED_REVISIONS.get(args.revision)
+        if value is None:
+            fail(f"unsupported revision: {args.revision}")
+        print(value[0], value[1])
     elif args.command == "verify":
         verify_package(args)
     else:

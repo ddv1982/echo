@@ -40,16 +40,6 @@ if [[ "${1:-}" == "--revision" ]]; then
     shift 2
 fi
 
-case "${revision}" in
-    v1.9.2)
-        expected_commit="306c88f4d1286aec1bf96e544632897886af5501"
-        ;;
-    v1.9.3)
-        expected_commit="371b5a7561823ab2bb32142d2751e35e7534727b"
-        ;;
-    *) die "unsupported revision: ${revision} (supported: v1.9.2, v1.9.3)" ;;
-esac
-
 check_source() {
     local source_dir="$1"
     [[ -d "${source_dir}/.git" || -f "${source_dir}/.git" ]] || die "source is not a Git worktree: ${source_dir}"
@@ -101,6 +91,11 @@ check_staged_runtime() {
 [[ -f "${receipt_patch}" ]] || die "receipt patch is missing: ${receipt_patch}"
 [[ -f "${probe_patch}" ]] || die "runtime probe patch is missing: ${probe_patch}"
 [[ -x "${runtime_verifier}" ]] || die "runtime verifier is missing or not executable: ${runtime_verifier}"
+revision_info="$("${runtime_verifier}" --revision-info "${revision}")" \
+    || die "unsupported revision: ${revision}"
+read -r expected_commit pinned_source_date_epoch <<<"${revision_info}"
+[[ "${expected_commit}" =~ ^[0-9a-f]{40}$ && "${pinned_source_date_epoch}" =~ ^[0-9]+$ ]] \
+    || die "runtime verifier returned an invalid revision record"
 
 if [[ "${1:-}" == "--check-source" ]]; then
     [[ $# -eq 2 ]] || { usage >&2; exit 2; }
@@ -118,6 +113,8 @@ output_dir="${output_parent}/$(basename -- "${output_dir}")"
 check_source "${source_dir}"
 source_date_epoch="$(git -C "${source_dir}" show -s --format=%ct "${expected_commit}")"
 [[ "${source_date_epoch}" =~ ^[0-9]+$ ]] || die "could not derive SOURCE_DATE_EPOCH"
+[[ "${source_date_epoch}" == "${pinned_source_date_epoch}" ]] \
+    || die "source commit timestamp differs from the pinned SOURCE_DATE_EPOCH"
 
 scratch_dir="$(mktemp -d "${TMPDIR:-/tmp}/echo-whisper-vulkan-receipt.XXXXXX")"
 worktree_dir="${scratch_dir}/source"

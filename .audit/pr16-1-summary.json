@@ -8,13 +8,23 @@
   },
   "runtime": {
     "artifactId": "317aa0de89d05f1abd6a4fd7bd8d993cdaa2b4946f131212ba04de321b5e1e32",
-    "buildReceiptSha256": "cb44e1689899bcdda63beff5589780ce280e195ff5f71d60f7d198488129e32b",
+    "buildReceiptSha256": "54e62ab9db695d3b125d4e8b7c13208baea59b90918de86c68ee7e9dae70f69a",
     "archiveSha256": "229a19acbb746f1e9a30641dc23a7f49abe8f90e3e9d9b48c81e5776dac87cbe",
-    "independentBuildsEqual": true,
+    "sameToolchainIndependentBuildsEqual": true,
     "cpuVariantCount": 14,
     "selectedCpuVariant": "libggml-cpu-alderlake.so",
     "vulkanReceiptVerified": true,
     "hostVulkanLoaderVerified": true,
+    "trustBoundary": "buildObservation",
+    "releaseBindingRequired": true,
+    "platformAbi": {
+      "architecture": "x86_64",
+      "minimumSymbolVersions": {
+        "CXXABI": "1.3.9",
+        "GLIBC": "2.38",
+        "GLIBCXX": "3.4.32"
+      }
+    },
     "options": {
       "GGML_NATIVE": "OFF",
       "GGML_BACKEND_DL": "ON",
@@ -74,7 +84,7 @@
     "exactReceiptEveryRun": true
   },
   "verification": {
-    "verifierSelfTests": 10,
+    "verifierSelfTests": 15,
     "frontendTests": 94,
     "responsiveBrowserTests": 2,
     "workspaceTestsPassed": true,
@@ -86,7 +96,14 @@
     "managedRuntimeArchivePassed": true
   },
   "liveLanes": {
-    "passed": [1, 2, 4, 5, 6, 7],
-    "rootVerificationPending": [3, 8, 9, 10]
+    "passed": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    "olderCpuMask": "QEMU Nehalem selected libggml-cpu-sse42.so",
+    "genericOnlyCpu": "QEMU Conroe selected libggml-cpu-x64.so",
+    "debEnvironment": "Ubuntu 24.04 package install and CPU transcription passed",
+    "rpmEnvironment": "Fedora 42 package install and CPU transcription passed",
+    "cpuWithoutVulkanLoader": "Ubuntu 24.04 selected CPU without loading Vulkan"
+  },
+  "abiBoundary": {
+    "debianBookworm": "unsupported because glibc 2.36 is below the recorded GLIBC 2.38 requirement"
   }
 }

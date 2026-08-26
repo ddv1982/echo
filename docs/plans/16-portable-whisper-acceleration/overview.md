@@ -20,7 +20,7 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
 - [ ] State the protocol and this plan to the operator, then stop. Start execution only on her explicit go.
 - [ ] On her go, arm a `/goal` with this exact text. "Run docs/plans/16-portable-whisper-acceleration/overview.md in PR 16.1 through PR 16.6 order. A PR is complete only when its unit, live, and perf evidence exists. Owners merge after a clean root verdict. PR 16.4 waits for operator review. Done means PR 16.5 ships portable cross-hardware Vulkan with CPU recovery, and PR 16.6 records a measured persistence decision."
 - [ ] Read these from trunk at program start. Re-read them at every tick.
-  - [ ] `git show origin/main:AGENTS.md`
+  - [ ] Run `git show origin/main:AGENTS.md` only when `git cat-file -e origin/main:AGENTS.md` succeeds. Otherwise record the user-supplied AGENTS instructions and the missing repo file.
   - [ ] `git show origin/main:docs/RELEASING.md`
   - [ ] Read `autopilot-full.md`, `opening-a-pr.md`, `pstack:swarm`, `cursor-team-kit:control-cli`, `cursor-team-kit:control-ui`, `pstack:interrogate`, and `pstack:show-me-your-work` from their installed plugin paths.
 - [ ] Inventory the required whisper.cpp source, Small and Large models, VAD model, free disk, local Vulkan device, and external Intel, AMD, NVIDIA, CPU-only, and dual-GPU hosts. Record owners and availability before spawning implementation owners.
