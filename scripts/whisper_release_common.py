@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import os
+import tempfile
 from pathlib import Path
 
 BUNDLE_MARKER = b"__TAURI_BUNDLE_TYPE_VAR_UNK"
@@ -8,6 +11,64 @@ BUNDLE_TOKENS = {
     "deb": b"__TAURI_BUNDLE_TYPE_VAR_DEB",
     "rpm": b"__TAURI_BUNDLE_TYPE_VAR_RPM",
     "appimage": b"__TAURI_BUNDLE_TYPE_VAR_APP",
+}
+MAX_ADMISSION_SET_BYTES = 1024 * 1024
+MAX_ADMISSION_RECORDS = 128
+MAX_PACKAGE_ENTRIES = 4096
+MAX_PACKAGE_ENTRY_BYTES = 1024 * 1024 * 1024
+MAX_PACKAGE_BYTES = 4 * 1024 * 1024 * 1024
+IDENTITY_FIELDS = {
+    "schemaVersion",
+    "echoCommit",
+    "echoBinarySha256",
+    "runtimeIdentitySha256",
+    "modelSha256",
+    "vadSha256",
+    "protocol",
+    "tuning",
+    "languagePolicy",
+    "promptPolicy",
+    "device",
+    "drmDriver",
+    "icdManifestSha256",
+    "icdLibrarySha256",
+    "launchContractSchema",
+}
+TUNING_FIELDS = {"threads", "beamSize", "bestOf", "noFallback"}
+DEVICE_FIELDS = {
+    "backend",
+    "selectedIndex",
+    "vendorId",
+    "deviceId",
+    "apiVersion",
+    "driverVersion",
+    "deviceUUID",
+    "driverUUID",
+    "pipelineCacheUUID",
+}
+GATE_FIELDS = {
+    "completePairs",
+    "pairIntegrity",
+    "sampleSize",
+    "backendTruth",
+    "identityMatch",
+    "hardwareDevice",
+    "medianReduction",
+    "medianSpeedup",
+    "p95Improved",
+    "perLanguageQuality",
+    "noNewHallucinations",
+    "receiptConsistency",
+    "coverageComplete",
+    "cacheEvidence",
+    "resetEvidence",
+    "driverIcdIdentity",
+    "cleanChildEnvironment",
+    "exactRuntime",
+    "stabilitySuccess",
+    "memoryEvidence",
+    "memoryFloor",
+    "swapStable",
 }
 
 
@@ -109,3 +170,284 @@ def verify_contained_symlinks(root: Path) -> None:
             resolved_root
         ):
             raise ValueError(f"symlink escapes package root: {path}")
+
+
+def read_json_strict(path: Path, label: str) -> dict[str, object]:
+    def unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        value: dict[str, object] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError(f"{label} has duplicate key {key!r}")
+            value[key] = item
+        return value
+
+    value = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique)
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} must be an object")
+    return value
+
+
+def safe_relative(value: object) -> bool:
+    if not isinstance(value, str) or not value or value.startswith("/"):
+        return False
+    return all(part not in ("", ".", "..") for part in value.split("/"))
+
+
+def sha256_string(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def lower_hex(value: object, length: int) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == length
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def positive_integer(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def package_inventory(root: Path) -> list[dict[str, object]]:
+    entries: list[dict[str, object]] = []
+    total = 0
+    for path in sorted(
+        root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()
+    ):
+        relative = path.relative_to(root).as_posix()
+        if relative == "admission-set.json" or path.is_dir():
+            continue
+        metadata = path.lstat()
+        if metadata.st_size > MAX_PACKAGE_ENTRY_BYTES:
+            raise ValueError(f"package entry exceeds 1 GiB: {relative}")
+        total += metadata.st_size
+        if total > MAX_PACKAGE_BYTES:
+            raise ValueError("package inventory exceeds 4 GiB")
+        if path.is_symlink():
+            target = os.readlink(path)
+            if not safe_relative(target):
+                raise ValueError(f"invalid package symlink target: {relative}")
+            resolved = (path.parent / target).resolve(strict=True)
+            if not resolved.is_relative_to(root.resolve()):
+                raise ValueError(f"symlink escapes package root: {path}")
+            entries.append(
+                {
+                    "path": relative,
+                    "kind": "symlink",
+                    "bytes": metadata.st_size,
+                    "sha256": None,
+                    "linkTarget": target,
+                }
+            )
+        elif path.is_file():
+            entries.append(
+                {
+                    "path": relative,
+                    "kind": "file",
+                    "bytes": metadata.st_size,
+                    "sha256": sha256_file(path),
+                    "linkTarget": None,
+                }
+            )
+        else:
+            raise ValueError(f"unsupported package entry: {relative}")
+    if not entries or len(entries) > MAX_PACKAGE_ENTRIES:
+        raise ValueError("package inventory is empty or exceeds 4096 entries")
+    return entries
+
+
+def verify_admission_set(root: Path) -> dict[str, object]:
+    manifest_path = root / "admission-set.json"
+    if manifest_path.stat().st_size > MAX_ADMISSION_SET_BYTES:
+        raise ValueError("admission set exceeds 1 MiB")
+    value = read_json_strict(manifest_path, "admission set")
+    if (
+        set(value) != {"schemaVersion", "shared", "records", "inventory"}
+        or value["schemaVersion"] != 2
+    ):
+        raise ValueError("invalid admission set fields or schema")
+    shared = value["shared"]
+    records = value["records"]
+    inventory = value["inventory"]
+    if not isinstance(shared, dict) or set(shared) != {
+        "runtimeRelativePath",
+        "runtimeLibraryBindings",
+        "probeRelativePath",
+        "probeSha256",
+    }:
+        raise ValueError("invalid shared runtime fields")
+    bindings = shared["runtimeLibraryBindings"]
+    if (
+        not safe_relative(shared["runtimeRelativePath"])
+        or not safe_relative(shared["probeRelativePath"])
+        or not sha256_string(shared["probeSha256"])
+        or not isinstance(bindings, dict)
+        or not bindings
+        or any(
+            not isinstance(name, str)
+            or ".so" not in name
+            or "/" in name
+            or not sha256_string(digest)
+            for name, digest in bindings.items()
+        )
+    ):
+        raise ValueError("invalid shared runtime values")
+    if not isinstance(records, list) or not 1 <= len(records) <= MAX_ADMISSION_RECORDS:
+        raise ValueError("invalid admission record count")
+    if inventory != package_inventory(root):
+        raise ValueError("package inventory differs from filesystem")
+    runtime = root / str(shared["runtimeRelativePath"])
+    probe = root / str(shared["probeRelativePath"])
+    if runtime_identity(runtime) != records[0]["identity"]["runtimeIdentitySha256"]:
+        raise ValueError("runtime identity changed")
+    if runtime_library_bindings(runtime) != shared["runtimeLibraryBindings"]:
+        raise ValueError("runtime library bindings changed")
+    if sha256_file(probe) != shared["probeSha256"]:
+        raise ValueError("runtime probe changed")
+    keys: set[str] = set()
+    identities: set[bytes] = set()
+    cache_paths: set[str] = set()
+    for record in records:
+        if not isinstance(record, dict) or set(record) != {
+            "identity",
+            "identityKey",
+            "evidenceSha256",
+            "icdManifestPath",
+            "icdLibraryPath",
+            "cacheSeed",
+            "gates",
+            "verdict",
+            "acceptedAt",
+            "expiresAt",
+        }:
+            raise ValueError("invalid admission record fields")
+        identity = record["identity"]
+        key = record["identityKey"]
+        expected_key = hashlib.sha256(
+            b"echo-whisper-admission-identity-v1\0"
+            + json.dumps(identity, ensure_ascii=False, separators=(",", ":")).encode()
+        ).hexdigest()
+        cache = record["cacheSeed"]
+        encoded_identity = json.dumps(
+            identity, sort_keys=True, separators=(",", ":")
+        ).encode()
+        if (
+            not isinstance(identity, dict)
+            or set(identity) != IDENTITY_FIELDS
+            or not isinstance(identity.get("tuning"), dict)
+            or set(identity["tuning"]) != TUNING_FIELDS
+            or not isinstance(identity.get("device"), dict)
+            or set(identity["device"]) != DEVICE_FIELDS
+        ):
+            raise ValueError("invalid admission identity fields")
+        tuning = identity["tuning"]
+        device = identity["device"]
+        if (
+            identity["schemaVersion"] != 1
+            or not lower_hex(identity["echoCommit"], 40)
+            or identity["protocol"] != "oneShotCli"
+            or identity["languagePolicy"] != "pinned"
+            or identity["promptPolicy"] != "empty"
+            or not positive_integer(identity["launchContractSchema"])
+            or not isinstance(identity["drmDriver"], str)
+            or not identity["drmDriver"]
+        ):
+            raise ValueError("invalid admission identity contract")
+        if (
+            not positive_integer(tuning["threads"])
+            or not positive_integer(tuning["beamSize"])
+            or not positive_integer(tuning["bestOf"])
+            or not isinstance(tuning["noFallback"], bool)
+        ):
+            raise ValueError("invalid admission tuning")
+        if (
+            device["backend"] != "vulkan"
+            or not isinstance(device["selectedIndex"], int)
+            or isinstance(device["selectedIndex"], bool)
+            or not positive_integer(device["vendorId"])
+            or not positive_integer(device["deviceId"])
+            or not isinstance(device["apiVersion"], int)
+            or isinstance(device["apiVersion"], bool)
+            or not isinstance(device["driverVersion"], int)
+            or isinstance(device["driverVersion"], bool)
+        ):
+            raise ValueError("invalid admission device")
+        if any(
+            not lower_hex(device[name], 32) or device[name] == "0" * 32
+            for name in ("deviceUUID", "driverUUID", "pipelineCacheUUID")
+        ):
+            raise ValueError("invalid admission device UUID")
+        digests = [
+            identity["echoBinarySha256"],
+            identity["runtimeIdentitySha256"],
+            identity["modelSha256"],
+            identity["icdManifestSha256"],
+            identity["icdLibrarySha256"],
+        ]
+        if identity["vadSha256"] is not None:
+            digests.append(identity["vadSha256"])
+        gates = record["gates"]
+        if (
+            any(not sha256_string(digest) for digest in digests)
+            or identity["runtimeIdentitySha256"]
+            != records[0]["identity"]["runtimeIdentitySha256"]
+            or not isinstance(gates, dict)
+            or set(gates) != GATE_FIELDS
+            or any(value is not True for value in gates.values())
+            or record["verdict"] != "PASSED"
+        ):
+            raise ValueError("invalid admission identity or gates")
+        if (
+            not isinstance(record["icdManifestPath"], str)
+            or not record["icdManifestPath"].startswith("/")
+            or not isinstance(record["icdLibraryPath"], str)
+            or not record["icdLibraryPath"].startswith("/")
+            or not sha256_string(record["evidenceSha256"])
+        ):
+            raise ValueError("invalid admission evidence or ICD paths")
+        if (
+            key != expected_key
+            or key in keys
+            or encoded_identity in identities
+            or not isinstance(cache, dict)
+            or set(cache) != {"relativePath", "sha256"}
+            or cache.get("relativePath") != f"cache-seeds/{key}"
+            or cache.get("relativePath") in cache_paths
+            or not sha256_string(cache.get("sha256"))
+        ):
+            raise ValueError("invalid or duplicate admission identity")
+        if tree_sha256(root / cache["relativePath"]) != cache.get("sha256"):
+            raise ValueError("cache seed changed")
+        keys.add(key)
+        identities.add(encoded_identity)
+        cache_paths.add(cache["relativePath"])
+    return value
+
+
+def self_test() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        (root / "runtime").mkdir()
+        (root / "runtime/file").write_bytes(b"file")
+        inventory = package_inventory(root)
+        assert inventory == [
+            {
+                "path": "runtime/file",
+                "kind": "file",
+                "bytes": 4,
+                "sha256": sha256_file(root / "runtime/file"),
+                "linkTarget": None,
+            }
+        ]
+        (root / "extra").write_bytes(b"extra")
+        assert package_inventory(root) != inventory
+    print("whisper_release_common: self-test passed")
+
+
+if __name__ == "__main__":
+    self_test()

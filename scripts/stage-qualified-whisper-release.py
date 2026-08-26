@@ -16,10 +16,12 @@ from whisper_release_common import (
     bundle_variant,
     runtime_identity,
     runtime_library_bindings,
+    read_json_strict,
     sha256_bytes,
     sha256_file,
     tree_sha256,
     verify_contained_symlinks,
+    verify_admission_set,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -27,10 +29,7 @@ CANONICAL_BINARY = REPO_ROOT / "target/release/echo-desktop"
 
 
 def read_json(path: Path) -> dict[str, object]:
-    value = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(value, dict):
-        raise ValueError(f"{path} must contain a JSON object")
-    return value
+    return read_json_strict(path, str(path))
 
 
 def variant_bytes(canonical: bytes, bundle_type: str) -> bytes:
@@ -105,46 +104,66 @@ def verify_extracted(
     resource = extracted / "usr/lib/io.github.ddv1982.echo/whisper-acceleration"
     if binary.read_bytes() != expected_binary:
         raise ValueError("packaged executable differs outside the Tauri bundle marker")
-    packaged_admission = resource / "admission.json"
+    packaged_admission = resource / "admission-set.json"
     if promotion_root is not None:
-        source_admission = promotion_root / "whisper-acceleration/admission.json"
+        source_resource = promotion_root / "whisper-acceleration"
+        verify_admission_set(source_resource)
+        source_admission = source_resource / "admission-set.json"
         if packaged_admission.read_bytes() != source_admission.read_bytes():
-            raise ValueError("packaged admission record changed")
-    admission = read_json(packaged_admission)
+            raise ValueError("packaged admission set changed")
+        source_inventory = {
+            path.relative_to(source_resource).as_posix(): path.read_bytes()
+            for path in source_resource.rglob("*")
+            if path.is_file() and not path.is_symlink()
+        }
+        packaged_inventory = {
+            path.relative_to(resource).as_posix(): path.read_bytes()
+            for path in resource.rglob("*")
+            if path.is_file() and not path.is_symlink()
+        }
+        if packaged_inventory != source_inventory:
+            raise ValueError("packaged acceleration tree changed")
+    admission = verify_admission_set(resource)
     verify_contained_symlinks(resource)
-    if admission["identity"]["echoBinarySha256"] != sha256_file(binary):
-        raise ValueError("admission record does not bind the packaged executable")
-    runtime = resource / admission["artifacts"]["runtimeRelativePath"]
-    if runtime_identity(runtime) != admission["identity"]["runtimeIdentitySha256"]:
+    records = admission["records"]
+    if any(
+        record["identity"]["echoBinarySha256"] != sha256_file(binary)
+        for record in records
+    ):
+        raise ValueError("admission set does not bind the packaged executable")
+    runtime = resource / admission["shared"]["runtimeRelativePath"]
+    runtime_digest = records[0]["identity"]["runtimeIdentitySha256"]
+    if runtime_identity(runtime) != runtime_digest:
         raise ValueError("packaged runtime identity changed")
     packaged_library_bindings = runtime_library_bindings(runtime)
-    if (
-        packaged_library_bindings
-        != admission["artifacts"]["runtimeLibraryBindings"]
-    ):
+    if packaged_library_bindings != admission["shared"]["runtimeLibraryBindings"]:
         raise ValueError("packaged runtime library alias admission changed")
     if promotion_root is not None:
         source_runtime = (
             promotion_root
             / "whisper-acceleration"
-            / admission["artifacts"]["runtimeRelativePath"]
+            / admission["shared"]["runtimeRelativePath"]
         )
         if packaged_library_bindings != runtime_library_bindings(source_runtime):
             raise ValueError("packaged runtime library alias bindings changed")
-    probe = resource / admission["artifacts"]["probeRelativePath"]
-    if sha256_file(probe) != admission["artifacts"]["probeSha256"]:
+    probe = resource / admission["shared"]["probeRelativePath"]
+    if sha256_file(probe) != admission["shared"]["probeSha256"]:
         raise ValueError("packaged runtime probe identity changed")
-    cache_seed = resource / admission["artifacts"]["cacheSeedRelativePath"]
-    if tree_sha256(cache_seed) != admission["artifacts"]["cacheSeedSha256"]:
-        raise ValueError("packaged cache seed identity changed")
+    cache_digests = {}
+    for record in records:
+        cache_seed = resource / record["cacheSeed"]["relativePath"]
+        if tree_sha256(cache_seed) != record["cacheSeed"]["sha256"]:
+            raise ValueError("packaged cache seed identity changed")
+        cache_digests[record["identityKey"]] = record["cacheSeed"]["sha256"]
+    identity_keys = sorted(record["identityKey"] for record in records)
     return {
-        "echoCommit": admission["identity"]["echoCommit"],
+        "echoCommit": records[0]["identity"]["echoCommit"],
         "binarySha256": sha256_file(binary),
-        "admissionSha256": sha256_file(packaged_admission),
-        "runtimeIdentitySha256": admission["identity"]["runtimeIdentitySha256"],
+        "admissionSetSha256": sha256_file(packaged_admission),
+        "runtimeIdentitySha256": runtime_digest,
         "runtimeLibraryBindings": packaged_library_bindings,
-        "cacheSeedSha256": admission["artifacts"]["cacheSeedSha256"],
-        "admissionIdentityKey": admission["identityKey"],
+        "cacheSeedSha256ByIdentityKey": cache_digests,
+        "admissionIdentityKeys": identity_keys,
     }
 
 
@@ -158,6 +177,8 @@ def bundle_one(
     promotion = read_json(promotion_root / "promotion.json")
     if promotion.get("echoCommit") != expected_commit:
         raise ValueError(f"{bundle_type} promotion belongs to another Echo commit")
+    if promotion.get("packageType") != bundle_type:
+        raise ValueError(f"{bundle_type} promotion has the wrong package type")
     expected_binary = variant_bytes(canonical, bundle_type)
     if promotion["echoBinarySha256"] != sha256_bytes(expected_binary):
         raise ValueError(f"{bundle_type} promotion does not bind its exact ELF variant")
@@ -188,6 +209,14 @@ def bundle_one(
     ) as temporary:
         extract_package(destination, bundle_type, Path(temporary))
         details = verify_extracted(Path(temporary), expected_binary, promotion_root)
+    for field in (
+        "admissionSetSha256",
+        "runtimeIdentitySha256",
+        "cacheSeedSha256ByIdentityKey",
+        "admissionIdentityKeys",
+    ):
+        if details[field] != promotion.get(field):
+            raise ValueError(f"{bundle_type} promotion {field} changed")
     return {
         "file": destination.name,
         "sha256": sha256_file(destination),
@@ -235,7 +264,7 @@ def stage(args: argparse.Namespace) -> None:
     shutil.copy2(canonical_path, raw)
     assets["binary"] = {"file": raw.name, "sha256": sha256_file(raw)}
     manifest = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "version": args.version,
         "echoCommit": args.commit,
         "assets": assets,
@@ -258,7 +287,7 @@ def verify_asset_inventory(root: Path, expected_files: set[str]) -> None:
 def verify_manifest(root: Path, expected_version: str, expected_commit: str) -> None:
     manifest = read_json(root / "qualified-release.json")
     if (
-        manifest.get("schemaVersion") != 1
+        manifest.get("schemaVersion") != 2
         or manifest.get("version") != expected_version
         or manifest.get("echoCommit") != expected_commit
     ):
@@ -313,11 +342,11 @@ def verify_manifest(root: Path, expected_version: str, expected_commit: str) -> 
         for field in (
             "echoCommit",
             "binarySha256",
-            "admissionSha256",
+            "admissionSetSha256",
             "runtimeIdentitySha256",
             "runtimeLibraryBindings",
-            "cacheSeedSha256",
-            "admissionIdentityKey",
+            "cacheSeedSha256ByIdentityKey",
+            "admissionIdentityKeys",
         ):
             if details[field] != assets[bundle_type].get(field):
                 raise ValueError(f"qualified {bundle_type} {field} changed")
@@ -396,8 +425,14 @@ def self_test() -> None:
         (inventory / "asset").write_bytes(b"asset")
         expected_inventory = {
             "qualified-release.json",
-            "asset",
+            "echo-desktop",
+            "echo.deb",
+            "echo.rpm",
         }
+        (inventory / "echo-desktop").write_bytes(b"binary")
+        (inventory / "echo.deb").write_bytes(b"deb")
+        (inventory / "echo.rpm").write_bytes(b"rpm")
+        (inventory / "asset").unlink()
         verify_asset_inventory(inventory, expected_inventory)
         (inventory / "unexpected.rpm").write_bytes(b"extra")
         try:
@@ -405,7 +440,9 @@ def self_test() -> None:
         except ValueError:
             pass
         else:
-            raise AssertionError("unexpected release asset passed inventory verification")
+            raise AssertionError(
+                "unexpected release asset passed inventory verification"
+            )
         package = root / "package"
         package.mkdir()
         outside = root / "outside"

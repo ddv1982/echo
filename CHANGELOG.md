@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Qualified Linux releases can compose exact Small and Large Turbo Whisper admissions into one schema-v2 package with a shared Vulkan runtime and identity-keyed cache seeds.
+- Promotion and release verification now reject resource-gate failures, duplicate identities, incompatible binaries or runtimes, and any missing, extra, changed, or type-shifted packaged file.
+
 ## v0.12.3
 
 - New recommended setup installs and pins Whisper Small, matching the model qualified for Vulkan acceleration. Existing explicit model and language choices remain unchanged, and automatic language detection stays on managed CPU until separately qualified.

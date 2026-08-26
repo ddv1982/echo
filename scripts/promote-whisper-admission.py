@@ -13,11 +13,14 @@ import tempfile
 from pathlib import Path
 
 from whisper_release_common import (
+    package_inventory,
+    read_json_strict,
     runtime_identity,
     runtime_library_bindings,
     sha256_file,
     tree_sha256,
     verify_contained_symlinks,
+    verify_admission_set,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -43,24 +46,17 @@ BINDING_GATES = (
     "cleanChildEnvironment",
     "exactRuntime",
 )
+RESOURCE_GATES = (
+    "stabilitySuccess",
+    "memoryEvidence",
+    "memoryFloor",
+    "swapStable",
+)
 RECEIPT_PREFIX = "echo_whisper_runtime_receipt: "
 
 
 def read_json(path: Path, label: str) -> dict[str, object]:
-    def reject_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
-        result: dict[str, object] = {}
-        for key, value in pairs:
-            if key in result:
-                raise ValueError(f"{label} has duplicate key {key!r}")
-            result[key] = value
-        return result
-
-    value = json.loads(
-        path.read_text(encoding="utf-8"), object_pairs_hook=reject_duplicates
-    )
-    if not isinstance(value, dict):
-        raise ValueError(f"{label} must be an object")
-    return value
+    return read_json_strict(path, label)
 
 
 def verify_runtime_alias_bindings(recorded: object, runtime_cli: Path) -> None:
@@ -112,7 +108,11 @@ def selected_cell(sweep: dict[str, object], label: str) -> dict[str, object]:
     cell = matches[0]
     if cell.get("decision") != "PROCEED" or cell.get("researchPass") is not True:
         raise ValueError("sweep cell is not a confirmed research pass")
-    require_green(cell.get("researchGates"), RESEARCH_GATES, "research gates")
+    require_green(
+        cell.get("researchGates"),
+        (*RESEARCH_GATES, *RESOURCE_GATES),
+        "research and resource gates",
+    )
     require_green(cell.get("bindingGates"), BINDING_GATES, "binding gates")
     return cell
 
@@ -355,15 +355,12 @@ def promote(args: argparse.Namespace) -> None:
 
     package = output / "whisper-acceleration"
     package.mkdir(parents=True)
-    shutil.copytree(runtime_dir, package / "runtime", symlinks=True)
+    shutil.copytree(runtime_dir, package / "runtime", symlinks=False)
     verify_runtime_alias_bindings(
         qualified_runtime_bindings, package / "runtime/whisper-cli"
     )
     shutil.copy2(runtime_probe, package / "runtime/echo-whisper-runtime-probe")
     cache_source = cycle_path / "mesa-cache"
-    shutil.copytree(cache_source, package / "cache-seed")
-    verify_contained_symlinks(package)
-    cache_sha = tree_sha256(package / "cache-seed")
     tuning = {
         "threads": int(cell_config["threads"]),
         "beamSize": int(cell_config["beamSize"]),
@@ -398,33 +395,43 @@ def promote(args: argparse.Namespace) -> None:
         "icdLibrarySha256": sha256_file(icd_library),
         "launchContractSchema": 1,
     }
-    gates = {name: True for name in (*RESEARCH_GATES, *BINDING_GATES)}
+    key = identity_key(identity)
+    cache_relative = f"cache-seeds/{key}"
+    shutil.copytree(cache_source, package / cache_relative)
+    verify_contained_symlinks(package)
+    cache_sha = tree_sha256(package / cache_relative)
+    gates = {name: True for name in (*RESEARCH_GATES, *BINDING_GATES, *RESOURCE_GATES)}
     accepted_at = parse_timestamp(sweep["completedAt"])
-    record = {
-        "schemaVersion": 1,
+    model_record = {
         "identity": identity,
-        "artifacts": {
-            "runtimeRelativePath": "runtime/whisper-cli",
-            "runtimeLibraryBindings": runtime_library_bindings(
-                package / "runtime/whisper-cli"
-            ),
-            "probeRelativePath": "runtime/echo-whisper-runtime-probe",
-            "probeSha256": sha256_file(runtime_probe),
-            "icdManifestPath": str(icd_manifest),
-            "icdLibraryPath": str(icd_library),
-            "cacheSeedRelativePath": "cache-seed",
-            "cacheSeedSha256": cache_sha,
-        },
-        "identityKey": identity_key(identity),
+        "identityKey": key,
         "evidenceSha256": sha256_file(sweep_path / "sweep.json"),
+        "icdManifestPath": str(icd_manifest),
+        "icdLibraryPath": str(icd_library),
+        "cacheSeed": {"relativePath": cache_relative, "sha256": cache_sha},
         "gates": gates,
         "verdict": "PASSED",
         "acceptedAt": accepted_at,
         "expiresAt": accepted_at + args.expires_days * 24 * 60 * 60,
     }
-    (package / "admission.json").write_text(
-        json.dumps(record, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    admission_set = {
+        "schemaVersion": 2,
+        "shared": {
+            "runtimeRelativePath": "runtime/whisper-cli",
+            "runtimeLibraryBindings": runtime_library_bindings(
+                package / "runtime/whisper-cli"
+            ),
+            "probeRelativePath": "runtime/echo-whisper-runtime-probe",
+            "probeSha256": sha256_file(package / "runtime/echo-whisper-runtime-probe"),
+        },
+        "records": [model_record],
+        "inventory": package_inventory(package),
+    }
+    (package / "admission-set.json").write_text(
+        json.dumps(admission_set, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
     )
+    verify_admission_set(package)
     config = {
         "bundle": {"resources": {str(package.resolve()) + "/": "whisper-acceleration/"}}
     }
@@ -432,13 +439,14 @@ def promote(args: argparse.Namespace) -> None:
         json.dumps(config, indent=2) + "\n", encoding="utf-8"
     )
     promotion = {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "echoCommit": actual_commit,
         "echoBinarySha256": echo_sha,
-        "admissionIdentityKey": record["identityKey"],
-        "admissionSha256": sha256_file(package / "admission.json"),
+        "packageType": args.package_type,
+        "admissionIdentityKeys": [key],
+        "admissionSetSha256": sha256_file(package / "admission-set.json"),
         "runtimeIdentitySha256": runtime_sha,
-        "cacheSeedSha256": cache_sha,
+        "cacheSeedSha256ByIdentityKey": {key: cache_sha},
     }
     (output / "promotion.json").write_text(
         json.dumps(promotion, indent=2) + "\n", encoding="utf-8"
@@ -446,6 +454,22 @@ def promote(args: argparse.Namespace) -> None:
 
 
 def self_test() -> None:
+    green_cell = {
+        "cell": {"label": "qualified"},
+        "decision": "PROCEED",
+        "researchPass": True,
+        "researchGates": {name: True for name in (*RESEARCH_GATES, *RESOURCE_GATES)},
+        "bindingGates": {name: True for name in BINDING_GATES},
+    }
+    assert selected_cell({"cells": [green_cell]}, "qualified") is green_cell
+    failed_resource = json.loads(json.dumps(green_cell))
+    failed_resource["researchGates"]["memoryFloor"] = False
+    try:
+        selected_cell({"cells": [failed_resource]}, "qualified")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("failed resource gate passed promotion")
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         (root / "b").mkdir()
@@ -522,6 +546,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vad", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--expires-days", type=int, default=30)
+    parser.add_argument("--package-type", choices=("deb", "rpm"))
     args = parser.parse_args()
     if not args.self_test and any(
         getattr(args, name) is None
@@ -536,6 +561,7 @@ def parse_args() -> argparse.Namespace:
             "model",
             "vad",
             "output",
+            "package_type",
         )
     ):
         parser.error("promotion requires every path and --cell")

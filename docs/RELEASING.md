@@ -35,9 +35,10 @@ Use this path when the release contains an admitted Whisper accelerator. Do not 
 1. Build `target/release/echo-desktop` from clean `origin/main`. Set `ECHO_BUILD_COMMIT` to the full main commit.
 2. Run `patch-tauri-bundle-type.py` to create the Debian and RPM ELF variants.
 3. Run the full Whisper qualification against each variant.
-4. Run `promote-whisper-admission.py` for each passing sweep.
-5. Run `stage-qualified-whisper-release.py` to bundle and verify the exact variants.
-6. Create a draft GitHub Release named `qualification-$commit`. Upload every staged file to that draft.
+4. Run `promote-whisper-admission.py --package-type deb` or `--package-type rpm` for each passing sweep.
+5. Compose the Small and Large promotions for each package type with `compose-whisper-admission-set.py`. The composer requires matching binaries, runtimes, probes, VAD contracts, and package types.
+6. Run `stage-qualified-whisper-release.py` with the two composed promotions. Staging verifies every record, cache seed, runtime file, and inventory entry in the source and extracted packages.
+7. Create a draft GitHub Release named `qualification-$commit`. Upload every staged file to that draft.
 
 The staging command has this shape:
 
@@ -57,7 +58,16 @@ gh release create "qualification-$commit" \
   target/whisper-release/assets/*
 ```
 
-The tag workflow downloads that draft. It extracts both packages and checks the executable, admission, runtime, and cache identities before it publishes the final release.
+Compose each package type before staging:
+
+```sh
+python3 scripts/compose-whisper-admission-set.py \
+  --promotion target/whisper-release/deb-small \
+  --promotion target/whisper-release/deb-large \
+  --output target/whisper-release/deb-promotion
+```
+
+The tag workflow downloads that draft. It extracts both packages and checks the executable, admission set, shared runtime, full inventory, and every cache identity before it publishes the final release.
 
 ### Push the application tag
 
