@@ -19,9 +19,10 @@ pub use whisper::WhisperEngine;
 pub(crate) use whisper::probe_vulkan_runtime_receipt;
 pub(crate) use whisper_acceleration::production_whisper_decision;
 pub use whisper_admission::{
-    admission_state_from_bytes, AdmissionArtifacts, AdmissionDeviceIdentity, AdmissionGates,
-    AdmissionIdentity, AdmissionIdentityKey, AdmissionRecord, AdmissionState, AdmissionTuning,
-    AdmissionVerdict, QuarantineReason, QuarantineRecord, MAX_ADMISSION_LIFETIME_SECS,
+    AdmissionDeviceIdentity, AdmissionGates, AdmissionIdentity, AdmissionIdentityKey, AdmissionSet,
+    AdmissionState, AdmissionTuning, AdmissionVerdict,
+    CacheSeedArtifact, ModelAdmission, PackageEntry, PackageEntryKind, QuarantineReason,
+    QuarantineRecord, SharedRuntimeArtifacts, MAX_ADMISSION_LIFETIME_SECS,
     MAX_QUARANTINE_LIFETIME_SECS,
 };
 pub use whisper_plan::{

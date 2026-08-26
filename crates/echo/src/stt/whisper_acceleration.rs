@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, File, OpenOptions};
 use std::io::Read;
 use std::num::NonZeroUsize;
@@ -12,8 +12,8 @@ use fs2::FileExt;
 use sha2::{Digest, Sha256};
 
 use super::whisper_admission::{
-    admission_state_from_bytes, AdmissionDeviceIdentity, AdmissionIdentity, AdmissionRecord,
-    AdmissionState,
+    admission_state, AdmissionDeviceIdentity, AdmissionIdentity, AdmissionSet, AdmissionState,
+    PackageEntry, PackageEntryKind,
 };
 use super::{
     probe_vulkan_runtime_receipt, runtime_library_bindings, whisper_runtime_launch,
@@ -63,36 +63,23 @@ pub(crate) fn select_qualified_package(
     if selection.require_package_ownership {
         verify_package_ownership(selection.package_root)?;
     }
-    let admission_path = selection.package_root.join("admission.json");
+    let admission_path = selection.package_root.join("admission-set.json");
     let admission_bytes = fs::read(&admission_path).map_err(|error| error.to_string())?;
-    if admission_bytes.len() > 1024 * 1024 {
-        return Err("Whisper admission record exceeds 1 MiB".to_string());
-    }
-    let record: AdmissionRecord =
-        serde_json::from_slice(&admission_bytes).map_err(|error| error.to_string())?;
+    let set = AdmissionSet::from_bytes(&admission_bytes)?;
+    verify_inventory(selection.package_root, &set.inventory)?;
     let runtime = package_path(
         selection.package_root,
-        &record.artifacts.runtime_relative_path,
+        &set.shared.runtime_relative_path,
         true,
     )?;
     let probe = package_path(
         selection.package_root,
-        &record.artifacts.probe_relative_path,
+        &set.shared.probe_relative_path,
         true,
     )?;
-    if sha256_file(&probe)? != record.artifacts.probe_sha256 {
+    if sha256_file(&probe)? != set.shared.probe_sha256 {
         return Err("Whisper runtime probe identity changed".to_string());
     }
-    let cache_seed = package_path(
-        selection.package_root,
-        &record.artifacts.cache_seed_relative_path,
-        false,
-    )?;
-    if tree_sha256(&cache_seed)? != record.artifacts.cache_seed_sha256 {
-        return Err("Whisper cache seed identity changed".to_string());
-    }
-    let icd_manifest = PathBuf::from(&record.artifacts.icd_manifest_path);
-    let icd_library = PathBuf::from(&record.artifacts.icd_library_path);
     let model_sha256 = sha256_file(&selection.managed_cpu.model.path)?;
     let vad_sha256 = selection
         .managed_cpu
@@ -102,51 +89,73 @@ pub(crate) fn select_qualified_package(
         .transpose()?;
     let runtime_launch = whisper_runtime_launch(&runtime);
     if runtime_library_bindings(&runtime).map_err(|error| error.to_string())?
-        != record.artifacts.runtime_library_bindings
+        != set.shared.runtime_library_bindings
     {
         return Err("Whisper runtime library alias bindings changed".to_string());
+    }
+    for record in &set.records {
+        let seed = package_path(
+            selection.package_root,
+            &record.cache_seed.relative_path,
+            false,
+        )?;
+        if tree_sha256(&seed)? != record.cache_seed.sha256 {
+            return Err("Whisper cache seed identity changed".to_string());
+        }
     }
     let runtime_identity = runtime_launch
         .identity_sha256
         .clone()
         .ok_or_else(|| "Whisper Vulkan runtime has no composite identity".to_string())?;
-    let identity = AdmissionIdentity {
-        schema_version: 1,
-        echo_commit: selection.echo_commit.to_string(),
-        echo_binary_sha256: sha256_file(selection.echo_binary)?,
-        runtime_identity_sha256: runtime_identity,
-        model_sha256,
-        vad_sha256,
-        protocol: "oneShotCli".to_string(),
-        tuning: record.identity.tuning.clone(),
-        language_policy: "pinned".to_string(),
-        prompt_policy: "empty".to_string(),
-        device: record.identity.device.clone(),
-        drm_driver: selection.host.drm_driver,
-        icd_manifest_sha256: sha256_file(&icd_manifest)?,
-        icd_library_sha256: sha256_file(&icd_library)?,
-        launch_contract_schema: 1,
+    let echo_binary_sha256 = sha256_file(selection.echo_binary)?;
+    let mut matches = Vec::new();
+    for record in &set.records {
+        if admission_state(record, &record.identity, None, selection.now) != AdmissionState::Passed
+        {
+            return Err("Whisper admission set contains an inactive record".to_string());
+        }
+        if record.identity.device.vendor_id != selection.host.drm_vendor_id
+            || record.identity.device.device_id != selection.host.drm_device_id
+            || record.identity.drm_driver != selection.host.drm_driver
+        {
+            continue;
+        }
+        let identity = AdmissionIdentity {
+            schema_version: 1,
+            echo_commit: selection.echo_commit.to_string(),
+            echo_binary_sha256: echo_binary_sha256.clone(),
+            runtime_identity_sha256: runtime_identity.clone(),
+            model_sha256: model_sha256.clone(),
+            vad_sha256: vad_sha256.clone(),
+            protocol: "oneShotCli".to_string(),
+            tuning: record.identity.tuning.clone(),
+            language_policy: "pinned".to_string(),
+            prompt_policy: "empty".to_string(),
+            device: record.identity.device.clone(),
+            drm_driver: selection.host.drm_driver.clone(),
+            icd_manifest_sha256: sha256_file(Path::new(&record.icd_manifest_path))?,
+            icd_library_sha256: sha256_file(Path::new(&record.icd_library_path))?,
+            launch_contract_schema: 1,
+        };
+        if identity == record.identity {
+            matches.push(record);
+        }
+    }
+    let [record] = matches.as_slice() else {
+        return Err("Whisper admission set requires exactly one full identity match".to_string());
     };
-    if identity.device.vendor_id != selection.host.drm_vendor_id
-        || identity.device.device_id != selection.host.drm_device_id
-    {
-        return Err("Whisper admission does not match the active DRM device".to_string());
-    }
-    if admission_state_from_bytes(
-        &identity,
-        Some(&admission_bytes),
-        None,
-        selection.now,
-    ) != AdmissionState::Passed
-    {
-        return Err("Whisper admission record did not pass exact selection".to_string());
-    }
+    let icd_manifest = PathBuf::from(&record.icd_manifest_path);
+    let cache_seed = package_path(
+        selection.package_root,
+        &record.cache_seed.relative_path,
+        false,
+    )?;
 
     let cache = populate_cache_seed(
         selection.cache_root,
         record.identity_key.as_str(),
         &cache_seed,
-        &record.artifacts.cache_seed_sha256,
+        &record.cache_seed.sha256,
     )?;
     let tuning = WhisperTuning {
         threads: NonZeroUsize::new(usize::from(record.identity.tuning.threads)),
@@ -185,7 +194,7 @@ pub(crate) fn select_qualified_package(
     fallback.force_cpu = true;
     fallback.allow_vad_retry = false;
     WhisperPlanDecision::qualified(
-        record.identity_key,
+        record.identity_key.clone(),
         primary,
         fallback,
         expected_receipt,
@@ -230,14 +239,11 @@ pub(crate) fn production_whisper_decision(
     let echo_binary = std::env::current_exe().ok()?.canonicalize().ok()?;
     let package_root = package_root(&echo_binary)?;
     verify_package_ownership(&package_root).ok()?;
-    let raw = fs::read(package_root.join("admission.json")).ok()?;
-    let record: AdmissionRecord = serde_json::from_slice(&raw).ok()?;
-    let host = observed_host(&record)?;
+    let raw = fs::read(package_root.join("admission-set.json")).ok()?;
+    let set = AdmissionSet::from_bytes(&raw).ok()?;
+    let host = observed_host(&set)?;
     let cache_root = echo_core::data_dir().join("whisper-acceleration-cache");
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()?
-        .as_secs();
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
     select_qualified_package(PackageSelection {
         package_root: &package_root,
         cache_root: &cache_root,
@@ -261,10 +267,10 @@ fn package_root(echo_binary: &Path) -> Option<PathBuf> {
         prefix.join("lib/io.github.ddv1982.echo/whisper-acceleration"),
     ]
     .into_iter()
-    .find(|candidate| candidate.join("admission.json").is_file())
+    .find(|candidate| candidate.join("admission-set.json").is_file())
 }
 
-fn observed_host(record: &AdmissionRecord) -> Option<ObservedWhisperHost> {
+fn observed_host(set: &AdmissionSet) -> Option<ObservedWhisperHost> {
     for entry in fs::read_dir("/sys/class/drm").ok()? {
         let Ok(entry) = entry else {
             continue;
@@ -279,18 +285,17 @@ fn observed_host(record: &AdmissionRecord) -> Option<ObservedWhisperHost> {
         ) else {
             continue;
         };
-        let Some(driver) = device
-            .join("driver")
-            .canonicalize()
-            .ok()
-            .and_then(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()))
-        else {
+        let Some(driver) = device.join("driver").canonicalize().ok().and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        }) else {
             continue;
         };
-        if vendor_id == record.identity.device.vendor_id
-            && device_id == record.identity.device.device_id
-            && driver == record.identity.drm_driver
-        {
+        if set.records.iter().any(|record| {
+            vendor_id == record.identity.device.vendor_id
+                && device_id == record.identity.device.device_id
+                && driver == record.identity.drm_driver
+        }) {
             return Some(ObservedWhisperHost {
                 drm_vendor_id: vendor_id,
                 drm_device_id: device_id,
@@ -504,14 +509,95 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn verify_inventory(root: &Path, expected: &[PackageEntry]) -> Result<(), String> {
+    let canonical_root = root.canonicalize().map_err(|error| error.to_string())?;
+    let expected: BTreeMap<_, _> = expected
+        .iter()
+        .map(|entry| (entry.path.as_str(), entry))
+        .collect();
+    let mut actual = BTreeMap::new();
+    collect_inventory(&canonical_root, &canonical_root, &mut actual)?;
+    if actual.len() != expected.len() {
+        return Err("Whisper package inventory has missing or extra entries".to_string());
+    }
+    for (path, observed) in actual {
+        let Some(entry) = expected.get(path.as_str()) else {
+            return Err("Whisper package inventory contains an unlisted entry".to_string());
+        };
+        if &observed != *entry {
+            return Err("Whisper package inventory identity changed".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn collect_inventory(
+    root: &Path,
+    directory: &Path,
+    entries: &mut BTreeMap<String, PackageEntry>,
+) -> Result<(), String> {
+    for entry in fs::read_dir(directory).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let path = entry.path();
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|error| error.to_string())?
+            .to_string_lossy()
+            .replace(std::path::MAIN_SEPARATOR, "/");
+        if relative == "admission-set.json" {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
+        if metadata.is_dir() {
+            collect_inventory(root, &path, entries)?;
+        } else if metadata.is_file() {
+            entries.insert(
+                relative.clone(),
+                PackageEntry {
+                    path: relative,
+                    kind: PackageEntryKind::File,
+                    bytes: metadata.len(),
+                    sha256: Some(sha256_file(&path)?),
+                    link_target: None,
+                },
+            );
+        } else if metadata.file_type().is_symlink() {
+            let target = fs::read_link(&path).map_err(|error| error.to_string())?;
+            let resolved = path
+                .parent()
+                .ok_or_else(|| "invalid package symlink".to_string())?
+                .join(&target)
+                .canonicalize()
+                .map_err(|error| error.to_string())?;
+            if !resolved.starts_with(root) {
+                return Err("Whisper package inventory symlink escapes its root".to_string());
+            }
+            entries.insert(
+                relative.clone(),
+                PackageEntry {
+                    path: relative,
+                    kind: PackageEntryKind::Symlink,
+                    bytes: metadata.len(),
+                    sha256: None,
+                    link_target: Some(
+                        target
+                            .to_string_lossy()
+                            .replace(std::path::MAIN_SEPARATOR, "/"),
+                    ),
+                },
+            );
+        } else {
+            return Err("Whisper package inventory contains an unsupported entry".to_string());
+        }
+    }
+    Ok(())
+}
+
 fn verify_package_ownership(root: &Path) -> Result<(), String> {
     let root = root.canonicalize().map_err(|error| error.to_string())?;
     verify_owned_entry(&root, &root)?;
     for entry in fs::read_dir(&root).map_err(|error| error.to_string())? {
-        verify_owned_tree(
-            &entry.map_err(|error| error.to_string())?.path(),
-            &root,
-        )?;
+        verify_owned_tree(&entry.map_err(|error| error.to_string())?.path(), &root)?;
     }
     Ok(())
 }
@@ -544,313 +630,5 @@ fn verify_owned_entry(path: &Path, root: &Path) -> Result<(), String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::os::unix::fs::PermissionsExt;
-
-    use super::*;
-    use crate::stt::{
-        AdmissionArtifacts, AdmissionGates, AdmissionIdentityKey, AdmissionTuning,
-        AdmissionVerdict, WhisperModelAsset, WhisperProtocol, WhisperRuntimeLaunch,
-    };
-
-    const NOW: u64 = 2_000_000_000;
-
-    fn scratch(label: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "echo-whisper-package-{label}-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        root
-    }
-
-    fn executable(path: &Path, body: &[u8]) {
-        fs::write(path, body).unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
-    }
-
-    fn gates() -> AdmissionGates {
-        AdmissionGates {
-            complete_pairs: true,
-            pair_integrity: true,
-            sample_size: true,
-            backend_truth: true,
-            identity_match: true,
-            hardware_device: true,
-            median_reduction: true,
-            median_speedup: true,
-            p95_improved: true,
-            per_language_quality: true,
-            no_new_hallucinations: true,
-            receipt_consistency: true,
-            coverage_complete: true,
-            cache_evidence: true,
-            reset_evidence: true,
-            driver_icd_identity: true,
-            clean_child_environment: true,
-            exact_runtime: true,
-        }
-    }
-
-    fn device() -> AdmissionDeviceIdentity {
-        AdmissionDeviceIdentity {
-            backend: "vulkan".to_string(),
-            selected_index: 0,
-            vendor_id: 0x8086,
-            device_id: 0x46a6,
-            api_version: 4_211_006,
-            driver_version: 104_865_800,
-            device_uuid: "8680a6460c0000000002000000000000".to_string(),
-            driver_uuid: "ee99561e45e1e718c6121d36d8345582".to_string(),
-            pipeline_cache_uuid: "35e9eb9761bf7afc9291ffc449ddf849".to_string(),
-        }
-    }
-
-    fn live_receipt(device_id: u32) -> WhisperVulkanReceipt {
-        let mut value = device();
-        value.device_id = device_id;
-        receipt(&value)
-    }
-
-    struct Fixture {
-        package: PathBuf,
-        cache: PathBuf,
-        echo: PathBuf,
-        runtime: PathBuf,
-        cpu_plan: WhisperExecutionPlan,
-    }
-
-    fn fixture(label: &str) -> Fixture {
-        let root = scratch(label);
-        let package = root.join("package");
-        let runtime_dir = package.join("runtime");
-        let seed = package.join("cache-seed/mesa_shader_cache");
-        fs::create_dir_all(&runtime_dir).unwrap();
-        fs::create_dir_all(&seed).unwrap();
-        let runtime = runtime_dir.join("whisper-cli");
-        let probe = runtime_dir.join("echo-whisper-runtime-probe");
-        let cpu = root.join("whisper-cpu");
-        let echo = root.join("echo-desktop");
-        let model = root.join("ggml-small.bin");
-        let vad = root.join("ggml-silero.bin");
-        let icd_manifest = root.join("intel_icd.json");
-        let icd_library = root.join("libvulkan_intel.so");
-        executable(&runtime, b"vulkan runtime");
-        executable(&probe, b"runtime probe");
-        fs::write(runtime_dir.join("libwhisper.so.1.9.2"), b"whisper").unwrap();
-        fs::write(runtime_dir.join("libwhisper.so.1"), b"whisper").unwrap();
-        fs::write(runtime_dir.join("libggml.so.0.18.1"), b"ggml").unwrap();
-        executable(&cpu, b"cpu runtime");
-        executable(&echo, b"echo binary");
-        fs::write(&model, format!("small model {label}")).unwrap();
-        fs::write(&vad, b"vad model").unwrap();
-        fs::write(&icd_manifest, b"icd manifest").unwrap();
-        fs::write(&icd_library, b"icd library").unwrap();
-        fs::write(seed.join("index"), b"shader cache").unwrap();
-        let tuning = AdmissionTuning {
-            threads: 4,
-            beam_size: 3,
-            best_of: 5,
-            no_fallback: false,
-        };
-        let identity = AdmissionIdentity {
-            schema_version: 1,
-            echo_commit: "4".repeat(40),
-            echo_binary_sha256: sha256_file(&echo).unwrap(),
-            runtime_identity_sha256: whisper_runtime_launch(&runtime)
-                .identity_sha256
-                .unwrap(),
-            model_sha256: sha256_file(&model).unwrap(),
-            vad_sha256: Some(sha256_file(&vad).unwrap()),
-            protocol: "oneShotCli".to_string(),
-            tuning,
-            language_policy: "pinned".to_string(),
-            prompt_policy: "empty".to_string(),
-            device: device(),
-            drm_driver: "i915".to_string(),
-            icd_manifest_sha256: sha256_file(&icd_manifest).unwrap(),
-            icd_library_sha256: sha256_file(&icd_library).unwrap(),
-            launch_contract_schema: 1,
-        };
-        let identity_key = AdmissionIdentityKey::for_identity(&identity);
-        let record = AdmissionRecord {
-            schema_version: 1,
-            identity,
-            identity_key,
-            evidence_sha256: "a".repeat(64),
-            gates: gates(),
-            verdict: AdmissionVerdict::Passed,
-            accepted_at: NOW - 60,
-            expires_at: NOW + 60,
-            artifacts: AdmissionArtifacts {
-                runtime_relative_path: "runtime/whisper-cli".to_string(),
-                runtime_library_bindings: runtime_library_bindings(&runtime).unwrap(),
-                probe_relative_path: "runtime/echo-whisper-runtime-probe".to_string(),
-                probe_sha256: sha256_file(&probe).unwrap(),
-                icd_manifest_path: icd_manifest.to_string_lossy().into_owned(),
-                icd_library_path: icd_library.to_string_lossy().into_owned(),
-                cache_seed_relative_path: "cache-seed".to_string(),
-                cache_seed_sha256: tree_sha256(&package.join("cache-seed")).unwrap(),
-            },
-        };
-        fs::write(
-            package.join("admission.json"),
-            serde_json::to_vec_pretty(&record).unwrap(),
-        )
-        .unwrap();
-        let cpu_plan = WhisperExecutionPlan {
-            runtime: WhisperRuntimeCandidate {
-                source: WhisperRuntimeSource::Managed,
-                backend: WhisperRuntimeBackend::Cpu,
-                launch: whisper_runtime_launch(&cpu),
-                cli: cpu,
-                server: None,
-            },
-            model: WhisperModelAsset {
-                name: "small".to_string(),
-                path: model.clone(),
-                multilingual: true,
-            },
-            vad: Some(vad),
-            tuning: WhisperTuning::runtime_defaults(),
-            protocol: WhisperProtocol::OneShotCli,
-            force_cpu: false,
-            timeout: std::time::Duration::from_secs(60),
-            allow_vad_retry: true,
-        };
-        Fixture {
-            package,
-            cache: root.join("cache"),
-            echo,
-            runtime,
-            cpu_plan,
-        }
-    }
-
-    fn selection<'a>(fixture: &'a Fixture, host: ObservedWhisperHost) -> PackageSelection<'a> {
-        fn test_probe(
-            _: &Path,
-            _: &WhisperRuntimeLaunch,
-            _: std::time::Duration,
-        ) -> Result<WhisperVulkanReceipt, String> {
-            Ok(live_receipt(0x46a6))
-        }
-        PackageSelection {
-            package_root: &fixture.package,
-            cache_root: &fixture.cache,
-            echo_binary: &fixture.echo,
-            echo_commit: "4444444444444444444444444444444444444444",
-            managed_cpu: fixture.cpu_plan.clone(),
-            host,
-            now: NOW,
-            require_package_ownership: false,
-            receipt_probe: test_probe,
-        }
-    }
-
-    #[test]
-    fn exact_package_selects_vulkan_and_seeds_its_identity_cache() {
-        let fixture = fixture("pass");
-        let decision = select_qualified_package(selection(
-            &fixture,
-            ObservedWhisperHost {
-                drm_vendor_id: 0x8086,
-                drm_device_id: 0x46a6,
-                drm_driver: "i915".to_string(),
-            },
-        ))
-        .unwrap();
-        assert!(matches!(
-            decision,
-            WhisperPlanDecision::QualifiedAccelerator(_)
-        ));
-        assert_eq!(fs::read_dir(&fixture.cache).unwrap().count(), 2);
-    }
-
-    #[test]
-    fn changed_runtime_hardware_and_untrusted_package_fail_closed() {
-        let changed_runtime = fixture("runtime-change");
-        fs::write(&changed_runtime.runtime, b"changed runtime").unwrap();
-        assert!(select_qualified_package(selection(
-            &changed_runtime,
-            ObservedWhisperHost {
-                drm_vendor_id: 0x8086,
-                drm_device_id: 0x46a6,
-                drm_driver: "i915".to_string(),
-            },
-        ))
-        .is_err());
-
-        let changed_alias = fixture("alias-change");
-        fs::write(
-            changed_alias.package.join("runtime/libwhisper.so.1"),
-            b"ggml",
-        )
-        .unwrap();
-        assert!(select_qualified_package(selection(
-            &changed_alias,
-            ObservedWhisperHost {
-                drm_vendor_id: 0x8086,
-                drm_device_id: 0x46a6,
-                drm_driver: "i915".to_string(),
-            },
-        ))
-        .is_err());
-
-        let changed_host = fixture("host-change");
-        assert!(select_qualified_package(selection(
-            &changed_host,
-            ObservedWhisperHost {
-                drm_vendor_id: 0x1002,
-                drm_device_id: 0x46a6,
-                drm_driver: "amdgpu".to_string(),
-            },
-        ))
-        .is_err());
-
-        let untrusted = fixture("untrusted");
-        let mut untrusted_selection = selection(
-            &untrusted,
-            ObservedWhisperHost {
-                drm_vendor_id: 0x8086,
-                drm_device_id: 0x46a6,
-                drm_driver: "i915".to_string(),
-            },
-        );
-        untrusted_selection.require_package_ownership = true;
-        assert!(select_qualified_package(untrusted_selection).is_err());
-
-        fn wrong_receipt(
-            _: &Path,
-            _: &WhisperRuntimeLaunch,
-            _: std::time::Duration,
-        ) -> Result<WhisperVulkanReceipt, String> {
-            Ok(live_receipt(0x9999))
-        }
-        let changed_receipt = fixture("receipt-change");
-        let mut changed_receipt_selection = selection(
-            &changed_receipt,
-            ObservedWhisperHost {
-                drm_vendor_id: 0x8086,
-                drm_device_id: 0x46a6,
-                drm_driver: "i915".to_string(),
-            },
-        );
-        changed_receipt_selection.receipt_probe = wrong_receipt;
-        assert!(select_qualified_package(changed_receipt_selection).is_err());
-    }
-
-    #[test]
-    fn tree_identity_is_order_stable_and_content_bound() {
-        let root = scratch("tree");
-        fs::create_dir_all(root.join("b")).unwrap();
-        fs::write(root.join("b/two"), b"two").unwrap();
-        fs::write(root.join("one"), b"one").unwrap();
-        let first = tree_sha256(&root).unwrap();
-        let second = tree_sha256(&root).unwrap();
-        assert_eq!(first, second);
-        fs::write(root.join("one"), b"changed").unwrap();
-        assert_ne!(first, tree_sha256(&root).unwrap());
-    }
-}
+#[path = "whisper_acceleration_tests.rs"]
+mod tests;
