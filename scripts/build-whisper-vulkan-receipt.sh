@@ -8,7 +8,8 @@ readonly script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly repo_root="$(cd -- "${script_dir}/.." && pwd)"
 readonly receipt_patch="${repo_root}/patches/whisper.cpp/runtime-receipt.patch"
 readonly probe_patch="${repo_root}/patches/whisper.cpp/runtime-probe.patch"
-readonly required_libraries=(libwhisper libggml libggml-base libggml-cpu libggml-vulkan)
+readonly runtime_verifier="${repo_root}/scripts/verify-whisper-vulkan-runtime.sh"
+readonly required_libraries=(libwhisper libggml libggml-base)
 
 die() {
     printf 'build-whisper-vulkan-receipt: %s\n' "$*" >&2
@@ -67,7 +68,6 @@ check_staged_runtime() {
     local library
     local ldd_output
     local resolved
-    local vulkan_path
 
     command -v readelf >/dev/null || die "readelf is required to verify runtime paths"
     stage_real="$(readlink -f -- "${stage_dir}")"
@@ -96,17 +96,11 @@ check_staged_runtime() {
         resolved="$(readlink -f -- "${resolved}")"
         [[ "${resolved}" == "${stage_real}/"* ]] || die "${library} did not resolve from the staged runtime: ${resolved}"
     done
-    vulkan_path="$(awk '$1 ~ /^libvulkan\.so\.1/ && $2 == "=>" { print $3; exit }' <<<"${ldd_output}")"
-    [[ -n "${vulkan_path}" ]] || die "ldd did not report libvulkan.so.1"
-    vulkan_path="$(readlink -f -- "${vulkan_path}")"
-    case "${vulkan_path}" in
-        /lib/*|/usr/lib/*) ;;
-        *) die "libvulkan.so.1 did not resolve from a host system library: ${vulkan_path}" ;;
-    esac
 }
 
 [[ -f "${receipt_patch}" ]] || die "receipt patch is missing: ${receipt_patch}"
 [[ -f "${probe_patch}" ]] || die "runtime probe patch is missing: ${probe_patch}"
+[[ -x "${runtime_verifier}" ]] || die "runtime verifier is missing or not executable: ${runtime_verifier}"
 
 if [[ "${1:-}" == "--check-source" ]]; then
     [[ $# -eq 2 ]] || { usage >&2; exit 2; }
@@ -122,11 +116,14 @@ output_dir="$2"
 output_parent="$(cd -- "$(dirname -- "${output_dir}")" && pwd)"
 output_dir="${output_parent}/$(basename -- "${output_dir}")"
 check_source "${source_dir}"
+source_date_epoch="$(git -C "${source_dir}" show -s --format=%ct "${expected_commit}")"
+[[ "${source_date_epoch}" =~ ^[0-9]+$ ]] || die "could not derive SOURCE_DATE_EPOCH"
 
 scratch_dir="$(mktemp -d "${TMPDIR:-/tmp}/echo-whisper-vulkan-receipt.XXXXXX")"
 worktree_dir="${scratch_dir}/source"
 build_dir="${scratch_dir}/build"
 stage_dir="${scratch_dir}/runtime"
+compiler_path_flags="-ffile-prefix-map=${scratch_dir}=/usr/src/echo-whisper-runtime -fmacro-prefix-map=${scratch_dir}=/usr/src/echo-whisper-runtime -fdebug-prefix-map=${scratch_dir}=/usr/src/echo-whisper-runtime"
 cleanup() {
     git -C "${source_dir}" worktree remove --force "${worktree_dir}" >/dev/null 2>&1 || true
     rm -rf -- "${scratch_dir}"
@@ -139,18 +136,33 @@ git -C "${worktree_dir}" apply "${receipt_patch}"
 git -C "${worktree_dir}" apply --check "${probe_patch}"
 git -C "${worktree_dir}" apply "${probe_patch}"
 
-cmake -S "${worktree_dir}" -B "${build_dir}" \
+SOURCE_DATE_EPOCH="${source_date_epoch}" cmake -S "${worktree_dir}" -B "${build_dir}" \
     -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_C_FLAGS="${compiler_path_flags}" \
+    -DCMAKE_CXX_FLAGS="${compiler_path_flags}" \
     -DCMAKE_SKIP_RPATH=ON \
     -DBUILD_SHARED_LIBS=ON \
+    -DGGML_NATIVE=OFF \
+    -DGGML_BACKEND_DL=ON \
+    -DGGML_CPU_ALL_VARIANTS=ON \
     -DGGML_VULKAN=ON \
     -DWHISPER_BUILD_TESTS=OFF \
     -DWHISPER_BUILD_EXAMPLES=ON \
     -DWHISPER_BUILD_SERVER=OFF
-cmake --build "${build_dir}" --config Release --target whisper-cli echo-whisper-runtime-probe --parallel
+SOURCE_DATE_EPOCH="${source_date_epoch}" cmake --build "${build_dir}" --config Release --target whisper-cli echo-whisper-runtime-probe --parallel
 
 mv -- "${build_dir}/bin" "${stage_dir}"
 check_staged_runtime "${stage_dir}"
+"${runtime_verifier}" --create \
+    "${stage_dir}" \
+    "${build_dir}/CMakeCache.txt" \
+    "${revision}" \
+    "${expected_commit}" \
+    "${source_date_epoch}" \
+    "${repo_root}" \
+    "${probe_patch}" \
+    "${receipt_patch}"
+"${runtime_verifier}" --verify "${stage_dir}"
 
 mv -- "${stage_dir}" "${output_dir}"
 trap - EXIT

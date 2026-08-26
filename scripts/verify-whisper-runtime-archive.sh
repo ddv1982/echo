@@ -5,6 +5,8 @@ repo_dir=$(cd "$(dirname "$0")/.." && pwd)
 archive_path=${1:-}
 scratch_dir=
 
+"$repo_dir/scripts/verify-whisper-vulkan-runtime.sh" --self-test
+
 if [ -z "$archive_path" ]; then
   scratch_dir=$(mktemp -d /tmp/echo-whisper-runtime.XXXXXX)
   trap 'rm -rf "$scratch_dir"' EXIT
