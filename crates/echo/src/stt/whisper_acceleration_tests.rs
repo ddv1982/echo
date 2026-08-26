@@ -287,6 +287,27 @@ fn exact_package_selects_vulkan_and_seeds_its_identity_cache() {
 }
 
 #[test]
+fn cache_identity_path_cannot_escape_through_a_symlink() {
+    let fixture = fixture("cache-symlink");
+    let record = &read_set(&fixture).records[0];
+    let destination = fixture.cache.join(record.identity_key.as_str());
+    let outside = scratch("cache-symlink-outside");
+    fs::create_dir_all(&fixture.cache).unwrap();
+    fs::write(outside.join(".echo-seed-sha256"), &record.cache_seed.sha256).unwrap();
+    std::os::unix::fs::symlink(&outside, &destination).unwrap();
+
+    assert!(select_qualified_package(selection(
+        &fixture,
+        ObservedWhisperHost {
+            drm_vendor_id: 0x8086,
+            drm_device_id: 0x46a6,
+            drm_driver: "i915".to_string(),
+        },
+    ))
+    .is_err());
+}
+
+#[test]
 fn small_and_large_records_select_and_seed_independently() {
     let mut fixture = fixture("dual-model");
     let small_plan = fixture.cpu_plan.clone();

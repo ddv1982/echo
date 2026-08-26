@@ -77,7 +77,6 @@ Admission schema v2 adds these gates:
 
 ```rust
 pub struct AdmissionGates {
-    // Existing gates remain.
     pub stability_success: bool,
     pub memory_evidence: bool,
     pub memory_floor: bool,

@@ -264,10 +264,10 @@ impl AdmissionSet {
         let mut keys = BTreeSet::new();
         let mut identities = BTreeSet::new();
         let mut cache_paths = BTreeSet::new();
+        let package_identity = &self.records[0].identity;
         for record in &self.records {
             if !identity_is_valid(&record.identity)
-                || record.identity.runtime_identity_sha256
-                    != self.records[0].identity.runtime_identity_sha256
+                || !same_package_contract(package_identity, &record.identity)
                 || record.identity_key != AdmissionIdentityKey::for_identity(&record.identity)
                 || !keys.insert(record.identity_key.clone())
                 || !identities.insert(record.identity.clone())
@@ -320,7 +320,9 @@ impl AdmissionSet {
                     .to_string_lossy()
                     .replace(std::path::MAIN_SEPARATOR, "/")
             }));
-        if required_shared.into_iter().any(|path| !paths.contains(&path))
+        if required_shared
+            .into_iter()
+            .any(|path| !paths.contains(&path))
             || self.records.iter().any(|record| {
                 let prefix = format!("{}/", record.cache_seed.relative_path);
                 !paths.iter().any(|path| path.starts_with(&prefix))
@@ -422,15 +424,16 @@ fn interval_is_current(start: u64, end: u64, now: u64, maximum: u64) -> bool {
 }
 
 fn identity_is_valid(identity: &AdmissionIdentity) -> bool {
-    [
-        identity.echo_binary_sha256.as_str(),
-        identity.runtime_identity_sha256.as_str(),
-        identity.model_sha256.as_str(),
-        identity.icd_manifest_sha256.as_str(),
-        identity.icd_library_sha256.as_str(),
-    ]
-    .into_iter()
-    .all(is_sha256)
+    identity.schema_version == IDENTITY_SCHEMA_VERSION
+        && [
+            identity.echo_binary_sha256.as_str(),
+            identity.runtime_identity_sha256.as_str(),
+            identity.model_sha256.as_str(),
+            identity.icd_manifest_sha256.as_str(),
+            identity.icd_library_sha256.as_str(),
+        ]
+        .into_iter()
+        .all(is_sha256)
         && identity.vad_sha256.as_deref().is_none_or(is_sha256)
         && is_lower_hex(&identity.echo_commit, 40)
         && identity.protocol == "oneShotCli"
@@ -451,6 +454,17 @@ fn identity_is_valid(identity: &AdmissionIdentity) -> bool {
         .into_iter()
         .all(|value| is_lower_hex(value, 32) && !value.bytes().all(|byte| byte == b'0'))
         && identity.launch_contract_schema > 0
+}
+
+fn same_package_contract(first: &AdmissionIdentity, candidate: &AdmissionIdentity) -> bool {
+    first.echo_commit == candidate.echo_commit
+        && first.echo_binary_sha256 == candidate.echo_binary_sha256
+        && first.runtime_identity_sha256 == candidate.runtime_identity_sha256
+        && first.vad_sha256 == candidate.vad_sha256
+        && first.protocol == candidate.protocol
+        && first.language_policy == candidate.language_policy
+        && first.prompt_policy == candidate.prompt_policy
+        && first.launch_contract_schema == candidate.launch_contract_schema
 }
 
 fn safe_library_name(value: &str) -> bool {
@@ -577,22 +591,43 @@ mod tests {
         let current = identity('a');
         let changed = identity('9');
         let passed = record(&current);
-        assert_eq!(admission_state(&passed, &current, None, NOW), AdmissionState::Passed);
+        assert_eq!(
+            admission_state(&passed, &current, None, NOW),
+            AdmissionState::Passed
+        );
 
         let mut stopped = passed.clone();
         stopped.verdict = AdmissionVerdict::Stopped;
-        assert_eq!(admission_state(&stopped, &current, None, NOW), AdmissionState::Stopped);
+        assert_eq!(
+            admission_state(&stopped, &current, None, NOW),
+            AdmissionState::Stopped
+        );
 
         let mut expired = passed.clone();
         expired.expires_at = NOW;
-        assert_eq!(admission_state(&expired, &current, None, NOW), AdmissionState::Unknown);
-        assert_eq!(admission_state(&record(&changed), &current, None, NOW), AdmissionState::Unknown);
+        assert_eq!(
+            admission_state(&expired, &current, None, NOW),
+            AdmissionState::Unknown
+        );
+        assert_eq!(
+            admission_state(&record(&changed), &current, None, NOW),
+            AdmissionState::Unknown
+        );
 
         let mut false_gate = passed.clone();
         false_gate.gates.memory_evidence = false;
-        assert_eq!(admission_state(&false_gate, &current, None, NOW), AdmissionState::Stopped);
-        assert_eq!(admission_state(&passed, &current, Some(&quarantine(&current)), NOW), AdmissionState::Quarantined);
-        assert_eq!(admission_state(&passed, &current, Some(&quarantine(&changed)), NOW), AdmissionState::Passed);
+        assert_eq!(
+            admission_state(&false_gate, &current, None, NOW),
+            AdmissionState::Stopped
+        );
+        assert_eq!(
+            admission_state(&passed, &current, Some(&quarantine(&current)), NOW),
+            AdmissionState::Quarantined
+        );
+        assert_eq!(
+            admission_state(&passed, &current, Some(&quarantine(&changed)), NOW),
+            AdmissionState::Passed
+        );
     }
 
     #[test]
@@ -601,31 +636,54 @@ mod tests {
         let mut future = record(&current);
         future.accepted_at = NOW + 1;
         future.expires_at = NOW + 2;
-        assert_eq!(admission_state(&future, &current, None, NOW), AdmissionState::Unknown);
+        assert_eq!(
+            admission_state(&future, &current, None, NOW),
+            AdmissionState::Unknown
+        );
 
         let mut too_long = record(&current);
         too_long.accepted_at = NOW;
         too_long.expires_at = NOW + MAX_ADMISSION_LIFETIME_SECS + 1;
-        assert_eq!(admission_state(&too_long, &current, None, NOW), AdmissionState::Unknown);
+        assert_eq!(
+            admission_state(&too_long, &current, None, NOW),
+            AdmissionState::Unknown
+        );
 
         let mut cpu = current.clone();
         cpu.device.backend = "cpu".into();
-        assert_eq!(admission_state(&record(&cpu), &cpu, None, NOW), AdmissionState::Unknown);
+        assert_eq!(
+            admission_state(&record(&cpu), &cpu, None, NOW),
+            AdmissionState::Unknown
+        );
         let mut zero_threads = current.clone();
         zero_threads.tuning.threads = 0;
-        assert_eq!(admission_state(&record(&zero_threads), &zero_threads, None, NOW), AdmissionState::Unknown);
+        assert_eq!(
+            admission_state(&record(&zero_threads), &zero_threads, None, NOW),
+            AdmissionState::Unknown
+        );
         let mut bad_uuid = current.clone();
         bad_uuid.device.device_uuid = "0".repeat(32);
-        assert_eq!(admission_state(&record(&bad_uuid), &bad_uuid, None, NOW), AdmissionState::Unknown);
+        assert_eq!(
+            admission_state(&record(&bad_uuid), &bad_uuid, None, NOW),
+            AdmissionState::Unknown
+        );
         let mut bad_schema = current.clone();
         bad_schema.schema_version = 2;
-        assert_eq!(admission_state(&record(&bad_schema), &bad_schema, None, NOW), AdmissionState::Unknown);
+        assert_eq!(
+            admission_state(&record(&bad_schema), &bad_schema, None, NOW),
+            AdmissionState::Unknown
+        );
     }
 
     #[test]
     fn promotion_identity_key_matches_the_cross_language_contract() {
         let mut value = identity('a');
-        value.tuning = AdmissionTuning { threads: 4, beam_size: 3, best_of: 5, no_fallback: false };
+        value.tuning = AdmissionTuning {
+            threads: 4,
+            beam_size: 3,
+            best_of: 5,
+            no_fallback: false,
+        };
         value.device.api_version = 4_211_006;
         value.device.driver_version = 104_865_800;
         value.device.device_uuid = "8680a6460c0000000002000000000000".into();
@@ -650,6 +708,28 @@ mod tests {
             AdmissionIdentityKey::for_identity(&changed)
         );
     }
+
+    #[test]
+    fn package_contract_allows_models_and_hardware_but_rejects_shared_drift() {
+        let first = identity('a');
+        let mut other = identity('9');
+        other.echo_binary_sha256 = first.echo_binary_sha256.clone();
+        other.model_sha256 = "9".repeat(64);
+        other.device.device_id += 1;
+        assert!(same_package_contract(&first, &other));
+
+        let mutations: [fn(&mut AdmissionIdentity); 3] = [
+            |value| value.echo_commit = "5".repeat(40),
+            |value| value.vad_sha256 = None,
+            |value| value.prompt_policy = "changed".to_string(),
+        ];
+        for mutate in mutations {
+            let mut changed = other.clone();
+            mutate(&mut changed);
+            assert!(!same_package_contract(&first, &changed));
+        }
+    }
+
     #[test]
     fn safe_paths_reject_escape_and_non_normal_components() {
         assert!(safe_relative("runtime/whisper-cli"));

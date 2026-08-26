@@ -495,10 +495,14 @@ def artifact_identity(
 
 def invoke_candidate(
     command: list[str], environment: dict[str, str], args: argparse.Namespace
-) -> tuple[subprocess.CompletedProcess[str] | None, float, dict[str, object], OSError | None]:
+) -> tuple[
+    subprocess.CompletedProcess[str] | None, float, dict[str, object], OSError | None
+]:
     started = time.perf_counter_ns()
     completed, observation, invocation_error = observe(
-        command, environment, timeout_seconds=args.observation_timeout,
+        command,
+        environment,
+        timeout_seconds=args.observation_timeout,
         interval_ms=args.observation_sample_interval_ms,
         settle_window_ms=args.observation_settle_window_ms,
     )
@@ -535,7 +539,9 @@ def capture_observation(
     resource_observation: dict[str, object] | None = None
     outer_ms = 0.0
     try:
-        completed, outer_ms, resource_observation, invocation_error = invoke_candidate(command, environment, args)
+        completed, outer_ms, resource_observation, invocation_error = invoke_candidate(
+            command, environment, args
+        )
     except OSError as error:
         invocation_error = error
     product: object | None = None
@@ -552,15 +558,29 @@ def capture_observation(
     stderr = completed.stderr if completed is not None else str(invocation_error or "")
     return_code = completed.returncode if completed is not None else None
     assert resource_observation is not None
-    observation_bytes = (json.dumps(resource_observation, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    command_text = json.dumps(command, indent=2, ensure_ascii=False) + "\n"
+    resource_observation["binding"] = {
+        "rowId": observation_id,
+        "candidate": candidate.label,
+        "utterance": utterance["id"],
+        "commandSha256": sha256_bytes(command_text.encode("utf-8")),
+    }
+    observation_bytes = (
+        json.dumps(resource_observation, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
     observation_digest = sha256_bytes(observation_bytes)
-    resource_path = output_dir / "process-observations" / observation_digest / "process-observation.json"
+    resource_path = (
+        output_dir
+        / "process-observations"
+        / observation_digest
+        / "process-observation.json"
+    )
     resource_path.parent.mkdir(parents=True, exist_ok=True)
     resource_reference = write_artifact(output_dir, resource_path, observation_bytes)
     raw_files = {
         "command": (
             "command.json",
-            json.dumps(command, indent=2, ensure_ascii=False) + "\n",
+            command_text,
         ),
         "environment": (
             "environment.json",
@@ -1135,7 +1155,11 @@ def main() -> int:
         parser().error("--repeats must be at least 1")
     if args.warmups < 0:
         parser().error("--warmups cannot be negative")
-    if args.observation_timeout <= 0 or args.observation_sample_interval_ms < 1 or args.observation_settle_window_ms < 0:
+    if (
+        args.observation_timeout <= 0
+        or args.observation_sample_interval_ms < 1
+        or args.observation_settle_window_ms < 0
+    ):
         parser().error("invalid resource observation limits")
     if args.whisper_vulkan_driver_files is not None:
         args.whisper_vulkan_driver_files = args.whisper_vulkan_driver_files.resolve()

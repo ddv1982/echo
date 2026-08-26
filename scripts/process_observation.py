@@ -158,6 +158,15 @@ def observe(
     stop = threading.Event()
     process = None
     root_hwm = None
+    baseline_available, baseline_swap = _host_values(proc_root)
+    samples.append(
+        ProcessTreeSample(
+            time.monotonic_ns(), None, None, baseline_available, baseline_swap
+        )
+    )
+    if baseline_available is None or baseline_swap is None:
+        partial = True
+        sampling_issues.add("host-memory-baseline-unavailable")
 
     def sample(settle: bool = False) -> None:
         nonlocal partial, process_sample_failures, root_hwm
@@ -173,13 +182,16 @@ def observe(
             return
         pids, unreadable = _tree(proc_root, process.pid)
         if unreadable:
+            partial = True
             sampling_issues.add("process-children-unavailable")
         rss = vm_swap = 0
         root_gone = False
         for pid in pids:
             status = _read_status(proc_root, pid)
             if status is None:
-                if pid == process.pid and process.poll() is not None:
+                if pid == process.pid and (
+                    process.poll() is not None or _gone_or_zombie(proc_root, pid)
+                ):
                     root_gone = True
                     break
                 if pid != process.pid and _gone_or_zombie(proc_root, pid):
@@ -188,6 +200,10 @@ def observe(
                 sampling_issues.add("process-status-unavailable")
                 continue
             if "VmRSS" not in status or "VmSwap" not in status:
+                if pid == process.pid:
+                    return
+                if pid != process.pid and _gone_or_zombie(proc_root, pid):
+                    continue
                 unreadable = True
                 sampling_issues.add("process-memory-fields-missing")
                 continue
@@ -198,6 +214,7 @@ def observe(
         if root_gone:
             return
         if unreadable:
+            partial = True
             process_sample_failures += 1
         if available is None or host_swap is None:
             partial = True
@@ -234,6 +251,11 @@ def observe(
             start_new_session=True,
         )
     except OSError as error:
+        host_swaps = [
+            sample.host_swap_used_bytes
+            for sample in samples
+            if sample.host_swap_used_bytes is not None
+        ]
         return (
             None,
             ProcessObservation(
@@ -242,17 +264,17 @@ def observe(
                 None,
                 None,
                 None,
-                None,
-                None,
-                None,
-                None,
-                0,
+                baseline_available,
+                baseline_swap,
+                max(host_swaps) if host_swaps else None,
+                baseline_swap,
+                len(samples),
                 interval_ms,
                 settle_window_ms,
                 "spawn-failed",
                 None,
-                ("spawn-failed",),
-                (),
+                tuple(sorted(sampling_issues | {"spawn-failed"})),
+                tuple(samples),
             ),
             error,
         )
@@ -268,6 +290,7 @@ def observe(
     thread = threading.Thread(target=sampler, daemon=True)
     thread.start()
     timed_out = False
+    group_outlived_root = False
     try:
         try:
             stdout, stderr = process.communicate(timeout=timeout_seconds)
@@ -287,11 +310,26 @@ def observe(
             except ProcessLookupError:
                 pass
             process.wait()
+    if not timed_out:
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            pass
+        else:
+            group_outlived_root = True
+            partial = True
+            sampling_issues.add("process-group-outlived-root")
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
     if settle_window_ms:
         time.sleep(settle_window_ms / 1000)
         sample(True)
     state = (
-        "timeout"
+        "signaled"
+        if group_outlived_root
+        else "timeout"
         if timed_out
         else "success"
         if process.returncode == 0
@@ -340,7 +378,7 @@ def observe(
         interval_ms,
         settle_window_ms,
         state,
-        process.returncode,
+        -signal.SIGKILL if group_outlived_root else process.returncode,
         tuple(sorted(sampling_issues)),
         tuple(samples),
     )
@@ -423,6 +461,24 @@ def self_test() -> None:
         while (Path("/proc") / str(child_pid)).exists() and time.monotonic() < deadline:
             time.sleep(0.01)
         assert not (Path("/proc") / str(child_pid)).exists()
+    with tempfile.TemporaryDirectory() as temporary:
+        child_pid_path = Path(temporary) / "outliving-child.pid"
+        child_code = (
+            "import pathlib, subprocess, sys; "
+            "child = subprocess.Popen([sys.executable, '-c', "
+            "'import time; time.sleep(10)'], stdout=subprocess.DEVNULL, "
+            "stderr=subprocess.DEVNULL); "
+            f"pathlib.Path({str(child_pid_path)!r}).write_text(str(child.pid))"
+        )
+        _, observation, _ = observe(
+            [sys.executable, "-c", child_code],
+            dict(os.environ),
+            timeout_seconds=2,
+            interval_ms=5,
+            settle_window_ms=0,
+        )
+        assert observation.exit == "signaled"
+        assert "process-group-outlived-root" in observation.sampling_issues
     _, observation, _ = observe(
         [sys.executable, "-c", "print('ok')"],
         dict(os.environ),

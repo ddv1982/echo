@@ -460,7 +460,15 @@ fn populate_cache_seed(
     let destination = cache_root.join(identity_key);
     let result = (|| {
         let marker = destination.join(".echo-seed-sha256");
+        if fs::symlink_metadata(&destination)
+            .is_ok_and(|metadata| metadata.file_type().is_symlink())
+        {
+            return Err("Whisper cache identity path is a symlink".to_string());
+        }
+        let marker_is_file =
+            fs::symlink_metadata(&marker).is_ok_and(|metadata| metadata.file_type().is_file());
         if destination.is_dir()
+            && marker_is_file
             && fs::read_to_string(&marker)
                 .ok()
                 .is_some_and(|value| value.trim() == expected_sha256)

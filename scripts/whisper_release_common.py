@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 
 BUNDLE_MARKER = b"__TAURI_BUNDLE_TYPE_VAR_UNK"
@@ -209,8 +210,12 @@ def lower_hex(value: object, length: int) -> bool:
     )
 
 
-def positive_integer(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+def bounded_integer(value: object, minimum: int, maximum: int) -> bool:
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and minimum <= value <= maximum
+    )
 
 
 def package_inventory(root: Path) -> list[dict[str, object]]:
@@ -299,6 +304,12 @@ def verify_admission_set(root: Path) -> dict[str, object]:
         raise ValueError("invalid shared runtime values")
     if not isinstance(records, list) or not 1 <= len(records) <= MAX_ADMISSION_RECORDS:
         raise ValueError("invalid admission record count")
+    first_record = records[0]
+    if not isinstance(first_record, dict):
+        raise ValueError("invalid admission record")
+    first_identity = first_record.get("identity")
+    if not isinstance(first_identity, dict) or set(first_identity) != IDENTITY_FIELDS:
+        raise ValueError("invalid admission identity fields")
     if inventory != package_inventory(root):
         raise ValueError("package inventory differs from filesystem")
     runtime = root / str(shared["runtimeRelativePath"])
@@ -312,6 +323,18 @@ def verify_admission_set(root: Path) -> dict[str, object]:
     keys: set[str] = set()
     identities: set[bytes] = set()
     cache_paths: set[str] = set()
+    contract_fields = (
+        "echoCommit",
+        "echoBinarySha256",
+        "runtimeIdentitySha256",
+        "vadSha256",
+        "protocol",
+        "languagePolicy",
+        "promptPolicy",
+        "launchContractSchema",
+    )
+    shared_contract = tuple(first_identity[field] for field in contract_fields)
+    current_time = int(time.time())
     for record in records:
         if not isinstance(record, dict) or set(record) != {
             "identity",
@@ -348,33 +371,30 @@ def verify_admission_set(root: Path) -> dict[str, object]:
         tuning = identity["tuning"]
         device = identity["device"]
         if (
-            identity["schemaVersion"] != 1
+            not bounded_integer(identity["schemaVersion"], 1, 1)
             or not lower_hex(identity["echoCommit"], 40)
             or identity["protocol"] != "oneShotCli"
             or identity["languagePolicy"] != "pinned"
             or identity["promptPolicy"] != "empty"
-            or not positive_integer(identity["launchContractSchema"])
+            or not bounded_integer(identity["launchContractSchema"], 1, 2**32 - 1)
             or not isinstance(identity["drmDriver"], str)
             or not identity["drmDriver"]
         ):
             raise ValueError("invalid admission identity contract")
         if (
-            not positive_integer(tuning["threads"])
-            or not positive_integer(tuning["beamSize"])
-            or not positive_integer(tuning["bestOf"])
+            not bounded_integer(tuning["threads"], 1, 65535)
+            or not bounded_integer(tuning["beamSize"], 1, 255)
+            or not bounded_integer(tuning["bestOf"], 1, 255)
             or not isinstance(tuning["noFallback"], bool)
         ):
             raise ValueError("invalid admission tuning")
         if (
             device["backend"] != "vulkan"
-            or not isinstance(device["selectedIndex"], int)
-            or isinstance(device["selectedIndex"], bool)
-            or not positive_integer(device["vendorId"])
-            or not positive_integer(device["deviceId"])
-            or not isinstance(device["apiVersion"], int)
-            or isinstance(device["apiVersion"], bool)
-            or not isinstance(device["driverVersion"], int)
-            or isinstance(device["driverVersion"], bool)
+            or not bounded_integer(device["selectedIndex"], 0, 2**32 - 1)
+            or not bounded_integer(device["vendorId"], 1, 2**32 - 1)
+            or not bounded_integer(device["deviceId"], 1, 2**32 - 1)
+            or not bounded_integer(device["apiVersion"], 0, 2**32 - 1)
+            or not bounded_integer(device["driverVersion"], 0, 2**32 - 1)
         ):
             raise ValueError("invalid admission device")
         if any(
@@ -392,16 +412,25 @@ def verify_admission_set(root: Path) -> dict[str, object]:
         if identity["vadSha256"] is not None:
             digests.append(identity["vadSha256"])
         gates = record["gates"]
+        contract = tuple(identity[field] for field in contract_fields)
         if (
             any(not sha256_string(digest) for digest in digests)
-            or identity["runtimeIdentitySha256"]
-            != records[0]["identity"]["runtimeIdentitySha256"]
+            or contract != shared_contract
             or not isinstance(gates, dict)
             or set(gates) != GATE_FIELDS
             or any(value is not True for value in gates.values())
             or record["verdict"] != "PASSED"
         ):
             raise ValueError("invalid admission identity or gates")
+        accepted_at = record["acceptedAt"]
+        expires_at = record["expiresAt"]
+        if (
+            not bounded_integer(accepted_at, 0, 2**64 - 1)
+            or not bounded_integer(expires_at, 0, 2**64 - 1)
+            or not accepted_at <= current_time < expires_at
+            or expires_at - accepted_at > 30 * 24 * 60 * 60
+        ):
+            raise ValueError("admission interval is not current or bounded")
         if (
             not isinstance(record["icdManifestPath"], str)
             or not record["icdManifestPath"].startswith("/")

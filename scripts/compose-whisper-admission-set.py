@@ -7,6 +7,7 @@ import json
 import shutil
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from whisper_release_common import (
@@ -230,8 +231,8 @@ def fixture(
             )
         },
         "verdict": "PASSED",
-        "acceptedAt": 1,
-        "expiresAt": 2,
+        "acceptedAt": int(time.time()) - 1,
+        "expiresAt": int(time.time()) + 60,
     }
     shared = {
         "runtimeRelativePath": "runtime/whisper-cli",
@@ -399,6 +400,49 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("Rust-incompatible identity passed verification")
+        for name, mutate in (
+            (
+                "numeric-bound",
+                lambda manifest: manifest["records"][0]["identity"][
+                    "tuning"
+                ].__setitem__("beamSize", 256),
+            ),
+            (
+                "expired",
+                lambda manifest: manifest["records"][0].update(
+                    {"acceptedAt": 1, "expiresAt": 2}
+                ),
+            ),
+            (
+                "long-interval",
+                lambda manifest: manifest["records"][0].update(
+                    {
+                        "acceptedAt": int(time.time()) - 1,
+                        "expiresAt": int(time.time()) + 31 * 24 * 60 * 60,
+                    }
+                ),
+            ),
+            (
+                "shared-contract",
+                lambda manifest: manifest["records"][1]["identity"].__setitem__(
+                    "echoCommit", "5" * 40
+                ),
+            ),
+        ):
+            candidate = root / f"invalid-{name}"
+            shutil.copytree(package, candidate)
+            candidate_manifest_path = candidate / "admission-set.json"
+            candidate_manifest = read_json_strict(candidate_manifest_path, name)
+            mutate(candidate_manifest)
+            candidate_manifest_path.write_text(
+                json.dumps(candidate_manifest, indent=2) + "\n", encoding="utf-8"
+            )
+            try:
+                verify_admission_set(candidate)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f"{name} admission mutation passed verification")
     print("compose-whisper-admission-set: self-test passed")
 
 

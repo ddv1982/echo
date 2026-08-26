@@ -648,12 +648,26 @@ def probe_receipt_consistency(
     return True, None, receipt
 
 
+def cache_probe_settings(threads: int, cell: Cell) -> dict[str, object]:
+    return {
+        "backend": "vulkan",
+        "language": "en",
+        "prompt": "",
+        "threads": threads,
+        "beamSize": cell.beam_size,
+        "bestOf": cell.best_of,
+        "noFallback": cell.no_fallback,
+    }
+
+
 def cache_binding(
     runtime: Runtime,
     cache: Cache,
     model_path: Path,
     vad_path: Path,
     vk_driver_files: Path,
+    threads: int,
+    cell: Cell,
 ) -> tuple[bool, bool, bool, str | None, object]:
     try:
         identity = cache.cycle.get("identity")
@@ -664,16 +678,19 @@ def cache_binding(
         cycle_model = identity_value.get("model")
         cycle_vad = identity_value.get("vad")
         host = identity_value.get("host")
+        cycle_probe = identity_value.get("probe")
         if (
             not isinstance(cycle_runtime, dict)
             or not isinstance(cycle_model, dict)
             or not isinstance(cycle_vad, dict)
             or not isinstance(host, dict)
+            or not isinstance(cycle_probe, dict)
         ):
             return False, False, False, "cache cycle identity is incomplete", None
         selected_manifest = host.get("selectedIcdManifest")
         if not isinstance(selected_manifest, dict):
             return False, False, False, "cache cycle has no selected ICD identity", None
+        expected_probe = cache_probe_settings(threads, cell)
         matches = (
             cycle_runtime.get("sha256") == runtime.sha256
             and cycle_runtime.get("identitySha256")
@@ -681,6 +698,7 @@ def cache_binding(
             and cycle_model.get("sha256") == sha256(model_path)
             and cycle_vad.get("sha256") == sha256(vad_path)
             and selected_manifest.get("sha256") == sha256(vk_driver_files)
+            and cycle_probe == expected_probe
         )
         snapshots = cache.cycle.get("cacheSnapshots")
         probes = cache.cycle.get("probes")
@@ -724,7 +742,9 @@ def cache_binding(
 
 
 def admission_decision(
-    revision: str, research_gates: dict[str, bool], binding_gates: dict[str, bool],
+    revision: str,
+    research_gates: dict[str, bool],
+    binding_gates: dict[str, bool],
     require_resource_evidence: bool = False,
 ) -> str:
     if revision in PRE_RELEASE_REVISIONS:
@@ -788,7 +808,13 @@ def run_cell(
         accelerated_label = candidate_label(args.model_name, args.threads, cell, False)
         cpu_label = candidate_label(args.model_name, args.threads, cell, True)
         cache_ok, driver_ok, reset_ok, cache_error, expected_receipt = cache_binding(
-            runtime, cache, args.model_path, args.vad_path, args.vk_driver_files
+            runtime,
+            cache,
+            args.model_path,
+            args.vad_path,
+            args.vk_driver_files,
+            args.threads,
+            cell,
         )
         preflight_receipt = runtime_preflight_receipt(
             args.runtime_probe,
@@ -975,7 +1001,10 @@ def run_cell(
             for name in RESOURCE_GATE_NAMES:
                 research_gates[name] = False
         decision = admission_decision(
-            runtime.revision, research_gates, binding_gates, args.require_resource_evidence
+            runtime.revision,
+            research_gates,
+            binding_gates,
+            args.require_resource_evidence,
         )
         result = {
             "schemaVersion": 1,
@@ -1021,9 +1050,15 @@ def run_cell(
             "researchGates": research_gates,
             "bindingGates": binding_gates,
             "researchPass": all(research_gates[name] for name in RESEARCH_GATE_NAMES)
-            and (not args.require_resource_evidence or all(research_gates[name] for name in RESOURCE_GATE_NAMES)),
+            and (
+                not args.require_resource_evidence
+                or all(research_gates[name] for name in RESOURCE_GATE_NAMES)
+            ),
             "screenPass": all(research_gates[name] for name in SCREEN_GATE_NAMES)
-            and (not args.require_resource_evidence or all(research_gates[name] for name in RESOURCE_GATE_NAMES)),
+            and (
+                not args.require_resource_evidence
+                or all(research_gates[name] for name in RESOURCE_GATE_NAMES)
+            ),
             "resourceEvidence": resource_evidence,
             "decision": decision,
             "preReleaseInvestigativeOnly": runtime.revision in PRE_RELEASE_REVISIONS,
@@ -1318,6 +1353,11 @@ def self_test() -> None:
         "identity=runtime=v1.9.2,cache=mesa,beam=2,best-of=5,fallback=none"
     )
     assert cell.beam_size == 2 and cell.best_of == 5 and cell.no_fallback
+    expected_probe = cache_probe_settings(4, cell)
+    assert expected_probe["threads"] == 4 and expected_probe["noFallback"] is True
+    changed_probe = dict(expected_probe)
+    changed_probe["beamSize"] = 3
+    assert changed_probe != cache_probe_settings(4, cell)
     cpu = candidate_label("base-q5_1", 4, cell, True)
     gpu = candidate_label("base-q5_1", 4, cell, False)
     assert cpu != gpu and "cpu-only" in cpu and "cpu-only" not in gpu
