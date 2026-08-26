@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "phase": "PR 16.1",
+  "source": {
+    "revision": "v1.9.2",
+    "commit": "306c88f4d1286aec1bf96e544632897886af5501",
+    "sourceDateEpoch": 1785851811
+  },
+  "runtime": {
+    "artifactId": "317aa0de89d05f1abd6a4fd7bd8d993cdaa2b4946f131212ba04de321b5e1e32",
+    "buildReceiptSha256": "cb44e1689899bcdda63beff5589780ce280e195ff5f71d60f7d198488129e32b",
+    "archiveSha256": "229a19acbb746f1e9a30641dc23a7f49abe8f90e3e9d9b48c81e5776dac87cbe",
+    "independentBuildsEqual": true,
+    "cpuVariantCount": 14,
+    "selectedCpuVariant": "libggml-cpu-alderlake.so",
+    "vulkanReceiptVerified": true,
+    "hostVulkanLoaderVerified": true,
+    "options": {
+      "GGML_NATIVE": "OFF",
+      "GGML_BACKEND_DL": "ON",
+      "GGML_CPU_ALL_VARIANTS": "ON",
+      "GGML_VULKAN": "ON"
+    }
+  },
+  "packageBytes": {
+    "oldVulkanRuntime": 45626016,
+    "newPortableRuntime": 59807467,
+    "growth": 14181451,
+    "cpuVariants": 15213328,
+    "growthBeyondCpuVariantsPercent": -6.782717101741315
+  },
+  "cpuPerformance": {
+    "small": {
+      "pairs": 10,
+      "baselineMedianMs": 3649.5,
+      "treatmentMedianMs": 3760.5,
+      "medianDeltaPercent": 3.0415125359638306,
+      "baselineP95Ms": 3836.5,
+      "treatmentP95Ms": 3881.3,
+      "p95DeltaPercent": 1.1677310048221035
+    },
+    "largeTurbo": {
+      "pairs": 10,
+      "baselineMedianMs": 18930.0,
+      "treatmentMedianMs": 19304.5,
+      "medianDeltaPercent": 1.9783412572635939,
+      "baselineP95Ms": 19330.45,
+      "treatmentP95Ms": 19522.85,
+      "p95DeltaPercent": 0.9953208538859615
+    },
+    "transcriptParity": true,
+    "negativeControlVerified": true
+  },
+  "vulkanPerformance": {
+    "small": {
+      "pairs": 10,
+      "baselineMedianMs": 1515.5,
+      "treatmentMedianMs": 1515.5,
+      "medianDeltaPercent": 0.0,
+      "baselineP95Ms": 1559.0,
+      "treatmentP95Ms": 1525.2,
+      "p95DeltaPercent": -2.1680564464400254
+    },
+    "largeTurbo": {
+      "pairs": 10,
+      "baselineMedianMs": 5687.0,
+      "treatmentMedianMs": 5708.5,
+      "medianDeltaPercent": 0.3780552136451565,
+      "baselineP95Ms": 5791.85,
+      "treatmentP95Ms": 5859.85,
+      "p95DeltaPercent": 1.1740635548227019
+    },
+    "transcriptParity": true,
+    "exactReceiptEveryRun": true
+  },
+  "verification": {
+    "verifierSelfTests": 10,
+    "frontendTests": 94,
+    "responsiveBrowserTests": 2,
+    "workspaceTestsPassed": true,
+    "clippyPassed": true,
+    "releaseBuildPassed": true,
+    "sttBenchmarkPassed": true,
+    "sttCorpusPassed": true,
+    "whisperAccelerationPassed": true,
+    "managedRuntimeArchivePassed": true
+  },
+  "liveLanes": {
+    "passed": [1, 2, 4, 5, 6, 7],
+    "rootVerificationPending": [3, 8, 9, 10]
+  }
+}
