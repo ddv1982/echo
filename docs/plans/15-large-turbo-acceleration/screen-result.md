@@ -2,11 +2,36 @@
 
 ## Verdict
 
-The greedy Large Turbo screen is `VERIFIED`. Full admission remains `INCOMPLETE` because the screen has one pair per fixture and cache reset evidence has only one physical boot.
+The original 28-fixture greedy screen justified building the multi-admission path, but it is no longer current qualification evidence. The review-hardened analyzer requires a pre-launch host baseline plus a row and command binding that the original observations did not record. A later `cargo clean` removed that local bundle, its first cache cycle, and four consented natural-speech captures, so the historical result cannot be migrated or replayed honestly.
 
-This result authorizes multi-admission implementation. It does not authorize production selection, promotion, packaging, or a release.
+An exact-implementation-head replacement screen now verifies the corrected measurement path on all twenty pinned multilingual FLEURS fixtures. It is `INCOMPLETE`, not admitted: it has one pair per fixture, no product-class coverage, and no retained earlier cache cycle for distinct-boot reset evidence.
 
-## Exact identity
+No result in this document authorizes production selection, promotion, packaging, or a release.
+
+## Exact implementation-head replacement screen
+
+The replacement used implementation commit `3d9c9c8f430862457da202caef9866c4917d6f78` and binary SHA-256 `02a409725318be7392c580746d0f46729e1cf2deabacafa19b525d03c8a28e15`. The follow-up commit changes only this result document and its audit row. The model, runtime, VAD, decoding, Intel device, and ICD identities match the historical screen. The Linux boot ID is `f4fd3d6f-e34d-4da7-a540-97426cc4ce67`.
+
+It ran one randomized CPU/Vulkan pair for each of twenty clean-read fixtures across English, Dutch, German, French, and Spanish:
+
+- CPU median: 19,268.614 ms.
+- Vulkan median: 6,045.114 ms.
+- Paired median reduction: 13,128.700 ms, or 68.485 percent.
+- CPU p95: 19,639.832 ms.
+- Vulkan p95: 6,277.844 ms.
+- Language quality: all five gates pass. English Vulkan WER was 1.136 percentage points lower; the other deltas were zero.
+- New silence hallucinations: 0.
+- Complete and successful process observations: 40 of 40.
+- Maximum simultaneous process-tree RSS: 816,693,248 bytes.
+- Maximum process-tree swap: 0 bytes.
+- Minimum host available memory: 18,317,242,368 bytes.
+- Maximum peak and sustained host swap growth: 0 bytes.
+
+Fresh analyzer replay accepts every strict observation field, raw-sample aggregate, command digest, and row binding. The screen still stops because `sampleSize`, `coverageComplete`, and `resetEvidence` are false. Recreating those facts requires new natural speech captures and another retained physical boot, not a compatibility exception.
+
+## Historical implementation screen
+
+### Exact identity
 
 - Echo commit: `69e4e65b718e94b0e618d5f069fdc33343510d79`.
 - Echo binary: `886911281522a9b0d4ca629926b27c05fc5ef113be7ef751cd18f91d80c4e3c7`.
@@ -20,7 +45,7 @@ This result authorizes multi-admission implementation. It does not authorize pro
 - ICD manifest: `09e7ca55461c3f2d65e5df6a6b8f06a7ce2c86fc58a93a18d2dbe3575623de83`.
 - Boot: `e8f95880-665d-4ab7-9d8e-afab394beac2`.
 
-## Hypothesis loop
+### Hypothesis loop
 
 ### Beam 3, best-of 5, fallback enabled
 
@@ -40,7 +65,7 @@ The same five targeted fixtures produced exact CPU/Vulkan transcript parity with
 
 Verdict: `VERIFIED` for a full screen.
 
-## Product screen
+### Product screen
 
 The screen ran 28 corpus fixtures with one randomized CPU/Vulkan pair each. It covered English, Dutch, German, French, and Spanish plus all eight product-speech classes.
 
@@ -56,7 +81,7 @@ The screen ran 28 corpus fixtures with one randomized CPU/Vulkan pair each. It c
 - Sample size: incomplete by design. The screen has one pair instead of ten.
 - Reset evidence: incomplete. A distinct physical boot is still required.
 
-## Resource screen
+### Resource screen
 
 Every one of the 56 process observations completed successfully.
 
@@ -71,7 +96,7 @@ Every one of the 56 process observations completed successfully.
 
 This is Linux process-tree and host-pressure evidence. It is not direct GPU-memory telemetry.
 
-## Throughput checkpoint
+### Throughput checkpoint
 
 The screen earns implementation. The final qualification does not start until a second boot exists and the implementation has merged.
 
@@ -85,11 +110,12 @@ Estimated measured time from the observed medians:
 
 The screen evidence occupied 8.1 MiB. Ten-repeat evidence for both models and both variants is expected to stay below 1 GiB, excluding reusable model and runtime inputs.
 
-## Stop gate
+## Current stop gate
 
 Do not promote Large until all of these are true:
 
-- A second cache cycle has the same exact Large identity and a distinct boot ID.
+- A new consented natural-speech capture set restores every required product class.
+- Two retained cache cycles have the same exact Large identity and distinct physical boot IDs.
 - The exact merged Debian and RPM executables each pass ten pairs per fixture.
 - Small is requalified for the same exact executables and new package schema.
 - The composed packages deep-verify both records and cache seeds.
