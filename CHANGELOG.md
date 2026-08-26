@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## v0.12.4
 
-- Qualified Linux releases can compose exact Small and Large Turbo Whisper admissions into one schema-v2 package with a shared Vulkan runtime and identity-keyed cache seeds.
+- Linux packages can accelerate both Whisper Small and Large v3 Turbo when the executable, model, runtime, Vulkan device, driver, decoding policy, and cache seed match their independently measured admission. Other identities stay on managed CPU.
+- Switching to a selected PipeWire microphone no longer discards a valid recording when the audio backend reports a disconnect during intentional stream shutdown.
+- Qualified releases compose exact Small and Large Turbo admissions into one schema-v2 package with a shared Vulkan runtime and identity-keyed cache seeds.
 - Promotion and release verification now reject resource-gate failures, duplicate identities, incompatible binaries or runtimes, and any missing, extra, changed, or type-shifted packaged file.
 
 ## v0.12.3
