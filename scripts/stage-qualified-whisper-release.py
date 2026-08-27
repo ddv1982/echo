@@ -10,6 +10,15 @@ import sys
 import tempfile
 from pathlib import Path
 
+from whisper_identity_v3 import (
+    ADMISSION_GATE_FIELDS,
+    build_record,
+    canonical_json_bytes,
+    verify_acceleration_set,
+    verify_release_binding_record,
+    verify_v3_promotion_metadata,
+    v3_promotion_metadata,
+)
 from whisper_release_common import (
     BUNDLE_MARKER,
     BUNDLE_TOKENS,
@@ -22,6 +31,8 @@ from whisper_release_common import (
     tree_sha256,
     verify_contained_symlinks,
     verify_admission_set,
+    verify_v3_reusable_filesystem,
+    v3_reusable_inventory,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -167,6 +178,123 @@ def verify_extracted(
     }
 
 
+def copy_v3_evidence(source_root: Path, destination_root: Path) -> dict[str, object]:
+    source = source_root / "whisper-acceleration"
+    acceleration_set = read_json(source / "acceleration-set.v3.json")
+    verify_acceleration_set(acceleration_set)
+    destination_root.mkdir(parents=True)
+    runtime_relative = Path(
+        acceleration_set["executionArtifact"]["value"]["runtimeRelativePath"]
+    ).parent
+    shutil.copytree(
+        source / runtime_relative, destination_root / runtime_relative, symlinks=True
+    )
+    for record in acceleration_set["performanceEvidence"]:
+        relative = Path(record["cacheSeed"]["relativePath"])
+        destination = destination_root / relative
+        if not destination.exists():
+            shutil.copytree(source / relative, destination, symlinks=True)
+    shutil.copy2(
+        source / "acceleration-set.v3.json",
+        destination_root / "acceleration-set.v3.json",
+    )
+    verify_contained_symlinks(destination_root)
+    verify_v3_reusable_filesystem(destination_root, acceleration_set)
+    return acceleration_set
+
+
+def v3_release_binding_input(
+    *,
+    acceleration_set: dict[str, object],
+    promotion: dict[str, object],
+    package_type: str,
+    version: str,
+    commit: str,
+    binary: bytes,
+) -> dict[str, object]:
+    verify_v3_promotion_metadata(promotion, acceleration_set)
+    return {
+        "schemaVersion": 3,
+        "packageType": package_type,
+        "version": version,
+        "echoCommit": commit,
+        "echoBinarySha256": sha256_bytes(binary),
+        "bundleMarker": package_type,
+        "accelerationSetSha256": promotion["accelerationSetSha256"],
+        "executionArtifactId": promotion["executionArtifactId"],
+        "allowedInferenceContractIds": promotion["inferenceContractIds"],
+        "allowedPerformanceEvidenceIds": promotion["performanceEvidenceIds"],
+        "reusableInventorySha256": promotion["reusableInventorySha256"],
+    }
+
+
+def write_v3_release_binding(
+    resource: Path,
+    acceleration_set: dict[str, object],
+    binding_input: dict[str, object],
+) -> dict[str, object]:
+    record = build_record("releaseBinding", binding_input)
+    verify_release_binding_record(record, acceleration_set)
+    (resource / "release-binding.v3.json").write_text(
+        json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return record
+
+
+def verify_extracted_v3(
+    extracted: Path,
+    expected_binary: bytes,
+    source_resource: Path | None,
+) -> dict[str, object]:
+    binary = extracted / "usr/bin/echo-desktop"
+    resource = extracted / "usr/lib/io.github.ddv1982.echo/whisper-acceleration"
+    if binary.read_bytes() != expected_binary:
+        raise ValueError(
+            "packaged v3 executable differs outside the Tauri bundle marker"
+        )
+    acceleration_set = read_json(resource / "acceleration-set.v3.json")
+    binding = read_json(resource / "release-binding.v3.json")
+    identities = verify_acceleration_set(acceleration_set)
+    verify_v3_reusable_filesystem(resource, acceleration_set)
+    binding_id = verify_release_binding_record(binding, acceleration_set)
+    if binding["value"]["echoBinarySha256"] != sha256_file(binary):
+        raise ValueError("v3 release binding does not match the packaged executable")
+    if source_resource is not None:
+        if (resource / "acceleration-set.v3.json").read_bytes() != (
+            source_resource / "acceleration-set.v3.json"
+        ).read_bytes():
+            raise ValueError("packaged v3 acceleration set changed")
+        source_inventory = {
+            path.relative_to(source_resource).as_posix(): path.read_bytes()
+            for path in source_resource.rglob("*")
+            if path.is_file()
+            and not path.is_symlink()
+            and path.name != "release-binding.v3.json"
+        }
+        packaged_inventory = {
+            path.relative_to(resource).as_posix(): path.read_bytes()
+            for path in resource.rglob("*")
+            if path.is_file()
+            and not path.is_symlink()
+            and path.name != "release-binding.v3.json"
+        }
+        if packaged_inventory != source_inventory:
+            raise ValueError("packaged v3 reusable evidence changed")
+    verify_contained_symlinks(resource)
+    return {
+        "binarySha256": sha256_file(binary),
+        "echoCommit": binding["value"]["echoCommit"],
+        "version": binding["value"]["version"],
+        "packageType": binding["value"]["packageType"],
+        "releaseBindingId": binding_id,
+        "executionArtifactId": identities["executionArtifactId"],
+        "inferenceContractIds": identities["inferenceContractIds"],
+        "performanceEvidenceIds": identities["performanceEvidenceIds"],
+        "physicalRequalificationRequired": False,
+        "reusedInferenceEvidence": True,
+    }
+
+
 def bundle_one(
     bundle_type: str,
     promotion_root: Path,
@@ -224,6 +352,73 @@ def bundle_one(
     }
 
 
+def bundle_v3_one(
+    bundle_type: str,
+    reusable_root: Path,
+    output: Path,
+    canonical: bytes,
+    version: str,
+    commit: str,
+) -> dict[str, object]:
+    promotion = read_json(reusable_root / "promotion-v3.json")
+    expected_binary = variant_bytes(canonical, bundle_type)
+    with tempfile.TemporaryDirectory(prefix=f"echo-v3-{bundle_type}-") as temporary:
+        temporary_root = Path(temporary)
+        resource = temporary_root / "whisper-acceleration"
+        acceleration_set = copy_v3_evidence(reusable_root, resource)
+        binding_input = v3_release_binding_input(
+            acceleration_set=acceleration_set,
+            promotion=promotion,
+            package_type=bundle_type,
+            version=version,
+            commit=commit,
+            binary=expected_binary,
+        )
+        write_v3_release_binding(resource, acceleration_set, binding_input)
+        config = {
+            "bundle": {
+                "resources": {str(resource.resolve()) + "/": "whisper-acceleration/"}
+            }
+        }
+        config_path = temporary_root / "tauri-acceleration-v3.conf.json"
+        config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+        preserve_old_bundle(f"v3-{bundle_type}")
+        subprocess.run(
+            [
+                "cargo",
+                "tauri",
+                "bundle",
+                "--ci",
+                "--bundles",
+                bundle_type,
+                "--config",
+                str(config_path),
+            ],
+            cwd=REPO_ROOT,
+            check=True,
+        )
+        packages = list(
+            (REPO_ROOT / f"target/release/bundle/{bundle_type}").glob(
+                f"*.{bundle_type}"
+            )
+        )
+        if len(packages) != 1:
+            raise ValueError(f"expected one {bundle_type} package")
+        destination = output / packages[0].name
+        shutil.copy2(packages[0], destination)
+        with tempfile.TemporaryDirectory(
+            prefix=f"echo-v3-{bundle_type}-extract-"
+        ) as extracted_temporary:
+            extracted = Path(extracted_temporary)
+            extract_package(destination, bundle_type, extracted)
+            details = verify_extracted_v3(extracted, expected_binary, resource)
+    return {
+        "file": destination.name,
+        "sha256": sha256_file(destination),
+        **details,
+    }
+
+
 def stage(args: argparse.Namespace) -> None:
     output = args.output.resolve()
     if output.exists():
@@ -252,23 +447,40 @@ def stage(args: argparse.Namespace) -> None:
     subprocess.run(
         ["npm", "run", "build", "--prefix", "frontend"], cwd=REPO_ROOT, check=True
     )
-    assets = {
-        "deb": bundle_one(
-            "deb", args.deb_promotion.resolve(), output, canonical, args.commit
-        ),
-        "rpm": bundle_one(
-            "rpm", args.rpm_promotion.resolve(), output, canonical, args.commit
-        ),
-    }
+    if args.reusable_evidence is not None:
+        reusable = args.reusable_evidence.resolve()
+        assets = {
+            bundle_type: bundle_v3_one(
+                bundle_type,
+                reusable,
+                output,
+                canonical,
+                args.version,
+                args.commit,
+            )
+            for bundle_type in ("deb", "rpm")
+        }
+    else:
+        assets = {
+            "deb": bundle_one(
+                "deb", args.deb_promotion.resolve(), output, canonical, args.commit
+            ),
+            "rpm": bundle_one(
+                "rpm", args.rpm_promotion.resolve(), output, canonical, args.commit
+            ),
+        }
     raw = output / "echo-desktop"
     shutil.copy2(canonical_path, raw)
     assets["binary"] = {"file": raw.name, "sha256": sha256_file(raw)}
     manifest = {
-        "schemaVersion": 2,
+        "schemaVersion": 3 if args.reusable_evidence is not None else 2,
         "version": args.version,
         "echoCommit": args.commit,
         "assets": assets,
     }
+    if args.reusable_evidence is not None:
+        manifest["physicalRequalificationRequired"] = False
+        manifest["reusedInferenceEvidence"] = True
     (output / "qualified-release.json").write_text(
         json.dumps(manifest, indent=2) + "\n",
         encoding="utf-8",
@@ -286,12 +498,18 @@ def verify_asset_inventory(root: Path, expected_files: set[str]) -> None:
 
 def verify_manifest(root: Path, expected_version: str, expected_commit: str) -> None:
     manifest = read_json(root / "qualified-release.json")
+    schema_version = manifest.get("schemaVersion")
     if (
-        manifest.get("schemaVersion") != 2
+        schema_version not in {2, 3}
         or manifest.get("version") != expected_version
         or manifest.get("echoCommit") != expected_commit
     ):
         raise ValueError("qualified release identity does not match the tag")
+    if schema_version == 3 and (
+        manifest.get("physicalRequalificationRequired") is not False
+        or manifest.get("reusedInferenceEvidence") is not True
+    ):
+        raise ValueError("v3 qualified release did not reuse inference evidence")
     assets = manifest.get("assets")
     if not isinstance(assets, dict) or set(assets) != {"deb", "rpm", "binary"}:
         raise ValueError("qualified release has the wrong asset set")
@@ -334,24 +552,46 @@ def verify_manifest(root: Path, expected_version: str, expected_commit: str) -> 
         ) as temporary:
             extracted = Path(temporary)
             extract_package(package, bundle_type, extracted)
-            details = verify_extracted(
-                extracted,
-                variant_bytes(canonical, bundle_type),
-                None,
-            )
-        for field in (
-            "echoCommit",
-            "binarySha256",
-            "admissionSetSha256",
-            "runtimeIdentitySha256",
-            "runtimeLibraryBindings",
-            "cacheSeedSha256ByIdentityKey",
-            "admissionIdentityKeys",
-        ):
+            if schema_version == 3:
+                details = verify_extracted_v3(
+                    extracted,
+                    variant_bytes(canonical, bundle_type),
+                    None,
+                )
+                fields = (
+                    "binarySha256",
+                    "releaseBindingId",
+                    "executionArtifactId",
+                    "inferenceContractIds",
+                    "performanceEvidenceIds",
+                    "physicalRequalificationRequired",
+                    "reusedInferenceEvidence",
+                )
+            else:
+                details = verify_extracted(
+                    extracted,
+                    variant_bytes(canonical, bundle_type),
+                    None,
+                )
+                fields = (
+                    "echoCommit",
+                    "binarySha256",
+                    "admissionSetSha256",
+                    "runtimeIdentitySha256",
+                    "runtimeLibraryBindings",
+                    "cacheSeedSha256ByIdentityKey",
+                    "admissionIdentityKeys",
+                )
+        for field in fields:
             if details[field] != assets[bundle_type].get(field):
                 raise ValueError(f"qualified {bundle_type} {field} changed")
         if details["echoCommit"] != expected_commit:
             raise ValueError(f"qualified {bundle_type} belongs to another commit")
+        if schema_version == 3 and (
+            details["version"] != expected_version
+            or details["packageType"] != bundle_type
+        ):
+            raise ValueError(f"qualified {bundle_type} release binding changed")
 
 
 def self_test() -> None:
@@ -469,6 +709,132 @@ def self_test() -> None:
         (runtime / "libwhisper.so.1").write_bytes(b"other library")
         assert runtime_identity(cli) == original
         assert runtime_library_bindings(cli) != original_bindings
+        fixture_path = (
+            REPO_ROOT / "crates/echo/tests/fixtures/whisper-v3-identities.json"
+        )
+        cases = read_json(fixture_path)["cases"]
+        reusable = root / "reusable"
+        reusable_resource = reusable / "whisper-acceleration"
+        reusable_runtime = reusable_resource / "runtime"
+        reusable_runtime.mkdir(parents=True)
+        (reusable_runtime / "whisper-cli").write_bytes(b"runtime")
+        (reusable_runtime / "echo-whisper-runtime-probe").write_bytes(b"probe")
+        evidence_id = cases["performanceEvidence"]["id"]
+        cache_relative = f"cache-seeds/{evidence_id}"
+        reusable_cache = reusable_resource / cache_relative
+        reusable_cache.mkdir(parents=True)
+        (reusable_cache / "seed").write_bytes(b"seed")
+        acceleration_set = {
+            "schemaVersion": 3,
+            "executionArtifact": build_record(
+                "executionArtifact", cases["executionArtifact"]["input"]
+            ),
+            "inferenceContracts": [
+                build_record("inferenceContract", cases["inferenceContract"]["input"])
+            ],
+            "localEnvironments": [
+                {
+                    "key": cases["localEnvironment"]["id"],
+                    "launch": {
+                        "icdManifestPath": "/usr/share/vulkan/icd.d/intel_icd.json",
+                        "icdLibraryPath": "/usr/lib/libvulkan_intel.so",
+                    },
+                    "value": cases["localEnvironment"]["input"],
+                }
+            ],
+            "performanceEvidence": [
+                {
+                    "cacheSeed": {
+                        "relativePath": cache_relative,
+                        "sha256": tree_sha256(reusable_cache),
+                    },
+                    "gates": {name: True for name in ADMISSION_GATE_FIELDS},
+                    "id": evidence_id,
+                    "value": cases["performanceEvidence"]["input"],
+                    "verdict": "PASSED",
+                }
+            ],
+            "reusableInventorySha256": "3" * 64,
+        }
+        acceleration_set["reusableInventorySha256"] = sha256_bytes(
+            canonical_json_bytes(
+                v3_reusable_inventory(reusable_resource, acceleration_set)
+            )
+        )
+        verify_acceleration_set(acceleration_set)
+        (reusable_resource / "acceleration-set.v3.json").write_text(
+            json.dumps(acceleration_set, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        promotion = v3_promotion_metadata(acceleration_set)
+        (reusable / "promotion-v3.json").write_text(
+            json.dumps(promotion, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        staged_resource = root / "staged-resource"
+        copied_set = copy_v3_evidence(reusable, staged_resource)
+        deb_binary = variant_bytes(canonical, "deb")
+        deb_input = v3_release_binding_input(
+            acceleration_set=copied_set,
+            promotion=promotion,
+            package_type="deb",
+            version="0.12.5",
+            commit="a" * 40,
+            binary=deb_binary,
+        )
+        deb_record = write_v3_release_binding(staged_resource, copied_set, deb_input)
+        extracted = root / "v3-extracted"
+        (extracted / "usr/bin").mkdir(parents=True)
+        (extracted / "usr/bin/echo-desktop").write_bytes(deb_binary)
+        extracted_resource = (
+            extracted / "usr/lib/io.github.ddv1982.echo/whisper-acceleration"
+        )
+        shutil.copytree(staged_resource, extracted_resource, symlinks=True)
+        details = verify_extracted_v3(extracted, deb_binary, staged_resource)
+        assert details["releaseBindingId"] == deb_record["id"]
+        assert details["physicalRequalificationRequired"] is False
+
+        def expect_filesystem_rejection(label, mutate):
+            candidate = root / f"v3-invalid-{label}"
+            shutil.copytree(extracted, candidate, symlinks=True)
+            candidate_resource = (
+                candidate / "usr/lib/io.github.ddv1982.echo/whisper-acceleration"
+            )
+            mutate(candidate_resource)
+            try:
+                verify_extracted_v3(candidate, deb_binary, None)
+            except ValueError:
+                return
+            raise AssertionError(f"v3 {label} filesystem mutation was accepted")
+
+        expect_filesystem_rejection(
+            "missing-cli", lambda resource: (resource / "runtime/whisper-cli").unlink()
+        )
+        expect_filesystem_rejection(
+            "missing-probe",
+            lambda resource: (resource / "runtime/echo-whisper-runtime-probe").unlink(),
+        )
+        expect_filesystem_rejection(
+            "changed-runtime",
+            lambda resource: (resource / "runtime/whisper-cli").write_bytes(b"changed"),
+        )
+        expect_filesystem_rejection(
+            "changed-cache",
+            lambda resource: (resource / cache_relative / "seed").write_bytes(
+                b"changed"
+            ),
+        )
+        expect_filesystem_rejection(
+            "extra-file",
+            lambda resource: (resource / "unexpected").write_bytes(b"extra"),
+        )
+        changed_version = dict(deb_input)
+        changed_version["version"] = "0.12.6"
+        changed_record = build_record("releaseBinding", changed_version)
+        assert changed_record["id"] != deb_record["id"]
+        assert (
+            changed_version["executionArtifactId"] == deb_input["executionArtifactId"]
+        )
     print("stage-qualified-whisper-release: self-test passed")
 
 
@@ -484,6 +850,7 @@ def main() -> int:
     parser.add_argument("--canonical-binary", type=Path)
     parser.add_argument("--deb-promotion", type=Path)
     parser.add_argument("--rpm-promotion", type=Path)
+    parser.add_argument("--reusable-evidence", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--version")
     parser.add_argument("--commit")
@@ -505,12 +872,13 @@ def main() -> int:
             value is None
             for value in (
                 args.canonical_binary,
-                args.deb_promotion,
-                args.rpm_promotion,
                 args.output,
                 args.version,
                 args.commit,
             )
+        ) or (
+            args.reusable_evidence is None
+            and (args.deb_promotion is None or args.rpm_promotion is None)
         ):
             parser.error(
                 "staging requires every binary, promotion, output, version, and commit argument"

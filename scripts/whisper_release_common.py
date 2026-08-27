@@ -7,7 +7,11 @@ import tempfile
 import time
 from pathlib import Path
 
-from whisper_identity_v3 import ADMISSION_GATE_FIELDS
+from whisper_identity_v3 import (
+    ADMISSION_GATE_FIELDS,
+    canonical_json_bytes,
+    verify_acceleration_set,
+)
 
 BUNDLE_MARKER = b"__TAURI_BUNDLE_TYPE_VAR_UNK"
 BUNDLE_TOKENS = {
@@ -243,6 +247,50 @@ def package_inventory(root: Path) -> list[dict[str, object]]:
     if not entries or len(entries) > MAX_PACKAGE_ENTRIES:
         raise ValueError("package inventory is empty or exceeds 4096 entries")
     return entries
+
+
+def prefixed_package_inventory(root: Path, prefix: str) -> list[dict[str, object]]:
+    entries = []
+    for entry in package_inventory(root):
+        copied = dict(entry)
+        copied["path"] = f"{prefix}/{entry['path']}"
+        entries.append(copied)
+    return entries
+
+
+def v3_reusable_inventory(
+    root: Path, acceleration_set: dict[str, object]
+) -> list[dict[str, object]]:
+    verify_acceleration_set(acceleration_set)
+    runtime_root = Path(
+        acceleration_set["executionArtifact"]["value"]["runtimeRelativePath"]
+    ).parent
+    expected = prefixed_package_inventory(root / runtime_root, str(runtime_root))
+    for record in acceleration_set["performanceEvidence"]:
+        relative = Path(record["cacheSeed"]["relativePath"])
+        expected.extend(prefixed_package_inventory(root / relative, str(relative)))
+
+    manifests = {"acceleration-set.v3.json", "release-binding.v3.json"}
+    actual = [
+        entry for entry in package_inventory(root) if entry["path"] not in manifests
+    ]
+
+    def by_path(entry: dict[str, object]) -> object:
+        return entry["path"]
+
+    if sorted(actual, key=by_path) != sorted(expected, key=by_path):
+        raise ValueError("v3 reusable filesystem differs from its declared inventory")
+    return expected
+
+
+def verify_v3_reusable_filesystem(
+    root: Path, acceleration_set: dict[str, object]
+) -> None:
+    inventory = v3_reusable_inventory(root, acceleration_set)
+    if sha256_bytes(canonical_json_bytes(inventory)) != acceleration_set.get(
+        "reusableInventorySha256"
+    ):
+        raise ValueError("v3 reusable filesystem digest differs")
 
 
 def verify_admission_set(root: Path) -> dict[str, object]:

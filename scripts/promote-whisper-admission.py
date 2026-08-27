@@ -12,6 +12,15 @@ import sys
 import tempfile
 from pathlib import Path
 
+from whisper_identity_v3 import (
+    ADMISSION_GATE_FIELDS,
+    build_record,
+    canonical_json_bytes,
+    inference_contract_id,
+    sha256_bytes,
+    verify_acceleration_set,
+    v3_promotion_metadata,
+)
 from whisper_release_common import (
     package_inventory,
     read_json_strict,
@@ -53,6 +62,150 @@ RESOURCE_GATES = (
     "swapStable",
 )
 RECEIPT_PREFIX = "echo_whisper_runtime_receipt: "
+
+
+def prefixed_inventory(root: Path, prefix: str) -> list[dict[str, object]]:
+    entries = []
+    for entry in package_inventory(root):
+        copied = dict(entry)
+        copied["path"] = f"{prefix}/{entry['path']}"
+        entries.append(copied)
+    return entries
+
+
+def write_v3_promotion(
+    *,
+    output: Path,
+    package: Path,
+    runtime_cli: Path,
+    runtime_probe: Path,
+    model: Path,
+    vad: Path,
+    tuning: dict[str, object],
+    receipt: dict[str, object],
+    drm_driver: str,
+    icd_manifest: Path,
+    icd_library: Path,
+    inference_contract_path: Path,
+    cache_source: Path,
+    cache_sha256: str,
+    sweep_path: Path,
+    corpus: Path,
+    cycle_path: Path,
+    phase2: dict[str, object],
+    accepted_at: int,
+    expires_at: int,
+) -> dict[str, object]:
+    contract_input = read_json_strict(inference_contract_path, "v3 inference contract")
+    contract_id = inference_contract_id(contract_input)
+    if (
+        contract_input["modelSha256"] != sha256_file(model)
+        or contract_input["vadSha256"] != sha256_file(vad)
+        or contract_input["tuning"] != tuning
+    ):
+        raise ValueError("v3 inference contract differs from promotion inputs")
+
+    build_receipt_path = runtime_cli.parent / "build-receipt.json"
+    build_receipt = read_json_strict(build_receipt_path, "runtime build receipt")
+    runtime_bindings = runtime_library_bindings(runtime_cli)
+    runtime_inventory = prefixed_inventory(package / "runtime", "runtime")
+    execution_input = {
+        "schemaVersion": 3,
+        "runtimeArtifactId": build_receipt.get("artifactId"),
+        "runtimeIdentitySha256": runtime_identity(runtime_cli),
+        "runtimeRelativePath": "runtime/whisper-cli",
+        "runtimeSha256": sha256_file(runtime_cli),
+        "runtimeLibraryBindings": runtime_bindings,
+        "probeRelativePath": "runtime/echo-whisper-runtime-probe",
+        "probeSha256": sha256_file(runtime_probe),
+        "buildReceiptSha256": sha256_file(build_receipt_path),
+        "reusableInventorySha256": sha256_bytes(
+            canonical_json_bytes(runtime_inventory)
+        ),
+    }
+    execution = build_record("executionArtifact", execution_input)
+    environment_input = {
+        "schemaVersion": 3,
+        "architecture": "x86_64",
+        "backend": receipt["backend"],
+        "vendorId": receipt["vendorId"],
+        "deviceId": receipt["deviceId"],
+        "apiVersion": receipt["apiVersion"],
+        "driverVersion": receipt["driverVersion"],
+        "deviceUUID": receipt["deviceUUID"],
+        "driverUUID": receipt["driverUUID"],
+        "pipelineCacheUUID": receipt["pipelineCacheUUID"],
+        "drmDriver": drm_driver,
+        "icdManifestSha256": sha256_file(icd_manifest),
+        "icdLibrarySha256": sha256_file(icd_library),
+    }
+    environment = {
+        "key": build_record("localEnvironment", environment_input)["id"],
+        "launch": {
+            "icdManifestPath": str(icd_manifest),
+            "icdLibraryPath": str(icd_library),
+        },
+        "value": environment_input,
+    }
+    gate_policy = {name: True for name in sorted(ADMISSION_GATE_FIELDS)}
+    coverage = {
+        "claimBoundary": phase2.get("claimBoundary"),
+        "languages": phase2.get("languages"),
+    }
+    evidence_input = {
+        "schemaVersion": 3,
+        "executionArtifactId": execution["id"],
+        "inferenceContractId": contract_id,
+        "localEnvironmentKey": environment["key"],
+        "measurementProtocol": "paired-product-sweep-v2",
+        "corpusManifestSha256": sha256_file(corpus),
+        "coverageManifestSha256": sha256_bytes(canonical_json_bytes(coverage)),
+        "observationBundleSha256": sha256_file(sweep_path / "sweep.json"),
+        "cacheCycleSha256": sha256_file(cycle_path / "cache-cycle.json"),
+        "gatePolicySha256": sha256_bytes(canonical_json_bytes(gate_policy)),
+        "acceptedAt": accepted_at,
+        "expiresAt": expires_at,
+    }
+    evidence = build_record("performanceEvidence", evidence_input)
+    cache_relative = f"cache-seeds/{evidence['id']}"
+    shutil.copytree(cache_source, package / cache_relative)
+    reusable_inventory = [
+        *runtime_inventory,
+        *prefixed_inventory(package / cache_relative, cache_relative),
+    ]
+    acceleration_set = {
+        "schemaVersion": 3,
+        "executionArtifact": execution,
+        "inferenceContracts": [build_record("inferenceContract", contract_input)],
+        "localEnvironments": [environment],
+        "performanceEvidence": [
+            {
+                "cacheSeed": {
+                    "relativePath": cache_relative,
+                    "sha256": cache_sha256,
+                },
+                "gates": gate_policy,
+                "id": evidence["id"],
+                "value": evidence_input,
+                "verdict": "PASSED",
+            }
+        ],
+        "reusableInventorySha256": sha256_bytes(
+            canonical_json_bytes(reusable_inventory)
+        ),
+    }
+    verify_acceleration_set(acceleration_set)
+    set_path = package / "acceleration-set.v3.json"
+    set_path.write_text(
+        json.dumps(acceleration_set, indent=2, ensure_ascii=False, sort_keys=True)
+        + "\n",
+        encoding="utf-8",
+    )
+    promotion = v3_promotion_metadata(acceleration_set)
+    (output / "promotion-v3.json").write_text(
+        json.dumps(promotion, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return promotion
 
 
 def read_json(path: Path, label: str) -> dict[str, object]:
@@ -548,6 +701,32 @@ def promote(args: argparse.Namespace) -> None:
         "acceptedAt": accepted_at,
         "expiresAt": accepted_at + args.expires_days * 24 * 60 * 60,
     }
+    if args.inference_contract_v3 is not None:
+        phase2 = cell.get("phase2")
+        if not isinstance(phase2, dict):
+            raise ValueError("selected cell has no phase2 evidence")
+        write_v3_promotion(
+            output=output,
+            package=package,
+            runtime_cli=package / "runtime/whisper-cli",
+            runtime_probe=package / "runtime/echo-whisper-runtime-probe",
+            model=model,
+            vad=vad,
+            tuning=tuning,
+            receipt=receipt,
+            drm_driver=drm[0]["driver"],
+            icd_manifest=icd_manifest,
+            icd_library=icd_library,
+            inference_contract_path=args.inference_contract_v3.resolve(),
+            cache_source=cache_source,
+            cache_sha256=cache_sha,
+            sweep_path=sweep_path,
+            corpus=args.corpus.resolve(),
+            cycle_path=cycle_path,
+            phase2=phase2,
+            accepted_at=accepted_at,
+            expires_at=model_record["expiresAt"],
+        )
     admission_set = {
         "schemaVersion": 2,
         "shared": {
@@ -776,6 +955,98 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("changed runtime alias passed qualification binding")
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        output = root / "promotion"
+        package = output / "whisper-acceleration"
+        runtime = package / "runtime"
+        runtime.mkdir(parents=True)
+        cli = runtime / "whisper-cli"
+        cli.write_bytes(b"cli")
+        (runtime / "libwhisper.so").write_bytes(b"library")
+        probe = runtime / "echo-whisper-runtime-probe"
+        probe.write_bytes(b"probe")
+        (runtime / "build-receipt.json").write_text(
+            json.dumps({"artifactId": "4" * 64}), encoding="utf-8"
+        )
+        model = root / "model.bin"
+        model.write_bytes(b"model")
+        vad = root / "vad.bin"
+        vad.write_bytes(b"vad")
+        tuning = {"threads": 4, "beamSize": 1, "bestOf": 2, "noFallback": True}
+        contract = {
+            "schemaVersion": 3,
+            "protocol": "oneShotCli",
+            "modelSha256": sha256_file(model),
+            "vadSha256": sha256_file(vad),
+            "tuning": tuning,
+            "requestPolicy": {
+                "language": "pinned",
+                "prompt": "empty",
+                "hints": "qualifiedOnly",
+            },
+            "behavior": {
+                "launchSchema": 1,
+                "receiptSchema": 1,
+                "telemetrySchema": 1,
+                "recoverySchema": 1,
+                "projectionSha256": "9" * 64,
+            },
+            "claimScope": "product-stt-corpus-v1",
+        }
+        contract_path = root / "inference-contract.v3.json"
+        contract_path.write_text(json.dumps(contract), encoding="utf-8")
+        cache = root / "cache"
+        cache.mkdir()
+        (cache / "seed").write_bytes(b"seed")
+        sweep = root / "sweep"
+        sweep.mkdir()
+        (sweep / "sweep.json").write_text("{}", encoding="utf-8")
+        corpus = root / "corpus.json"
+        corpus.write_text("{}", encoding="utf-8")
+        cycle = root / "cycle"
+        cycle.mkdir()
+        (cycle / "cache-cycle.json").write_text("{}", encoding="utf-8")
+        icd_manifest = root / "intel_icd.json"
+        icd_manifest.write_text("{}", encoding="utf-8")
+        icd_library = root / "libvulkan_intel.so"
+        icd_library.write_bytes(b"driver")
+        receipt = {
+            "backend": "vulkan",
+            "vendorId": 32902,
+            "deviceId": 18086,
+            "apiVersion": 4211006,
+            "driverVersion": 104865800,
+            "deviceUUID": "8680a6460c0000000002000000000000",
+            "driverUUID": "ee99561e45e1e718c6121d36d8345582",
+            "pipelineCacheUUID": "35e9eb9761bf7afc9291ffc449ddf849",
+        }
+        result = write_v3_promotion(
+            output=output,
+            package=package,
+            runtime_cli=cli,
+            runtime_probe=probe,
+            model=model,
+            vad=vad,
+            tuning=tuning,
+            receipt=receipt,
+            drm_driver="i915",
+            icd_manifest=icd_manifest,
+            icd_library=icd_library,
+            inference_contract_path=contract_path,
+            cache_source=cache,
+            cache_sha256=tree_sha256(cache),
+            sweep_path=sweep,
+            corpus=corpus,
+            cycle_path=cycle,
+            phase2={"claimBoundary": "small", "languages": ["en"]},
+            accepted_at=1000,
+            expires_at=2000,
+        )
+        assert result["executionArtifactId"]
+        assert result["inferenceContractIds"] == [inference_contract_id(contract)]
+        assert (package / "acceleration-set.v3.json").is_file()
+        assert (output / "promotion-v3.json").is_file()
     sample = {
         "schemaVersion": 1,
         "echoCommit": "4" * 40,
@@ -827,6 +1098,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--expires-days", type=int, default=30)
     parser.add_argument("--package-type", choices=("deb", "rpm"))
+    parser.add_argument("--inference-contract-v3", type=Path)
     args = parser.parse_args()
     if not args.self_test and any(
         getattr(args, name) is None

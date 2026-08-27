@@ -540,6 +540,25 @@ def verify_release_binding_record(record, acceleration_set):
     return binding_id
 
 
+def v3_promotion_metadata(acceleration_set):
+    identities = verify_acceleration_set(acceleration_set)
+    return {
+        "schemaVersion": 3,
+        "accelerationSetSha256": acceleration_set_sha256(acceleration_set),
+        "executionArtifactId": identities["executionArtifactId"],
+        "inferenceContractIds": identities["inferenceContractIds"],
+        "localEnvironmentKeys": identities["localEnvironmentKeys"],
+        "performanceEvidenceIds": identities["performanceEvidenceIds"],
+        "reusableInventorySha256": acceleration_set["reusableInventorySha256"],
+    }
+
+
+def verify_v3_promotion_metadata(promotion, acceleration_set):
+    if promotion != v3_promotion_metadata(acceleration_set):
+        fail("v3 promotion metadata differs from acceleration set")
+    return promotion
+
+
 def reverse_objects(value):
     if isinstance(value, dict):
         return {key: reverse_objects(value[key]) for key in reversed(value)}
