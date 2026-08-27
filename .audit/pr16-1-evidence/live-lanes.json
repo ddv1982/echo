@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "runtime": {
+    "artifactId": "317aa0de89d05f1abd6a4fd7bd8d993cdaa2b4946f131212ba04de321b5e1e32",
+    "archiveSha256": "f76c7b7ffe1d76ef6470300bb6d66b33433f3600ad1e964e181af699865af28f",
+    "buildReceiptSha256": "f3e0e18872f9587bf5e3113ad7d6b715bbbca621a26aa1bafdfa17575a1566cc",
+    "schemaVersion": 2
+  },
+  "lanes": [
+    {
+      "id": 1,
+      "result": "PASS",
+      "proof": "Ubuntu 24.04 without libvulkan transcribed with --no-gpu and parsed JSON",
+      "screenshot": "screenshots/cpu-only.png"
+    },
+    {
+      "id": 2,
+      "result": "PASS",
+      "proof": "Intel Alder Lake selected libggml-cpu-alderlake.so and transcribed with --no-gpu",
+      "screenshot": "screenshots/cpu-variant.png"
+    },
+    {
+      "id": 3,
+      "result": "PASS",
+      "proof": "QEMU Nehalem selected libggml-cpu-sse42.so without an illegal instruction",
+      "screenshot": "screenshots/cpu-baseline.png"
+    },
+    {
+      "id": 4,
+      "result": "PASS",
+      "proof": "removing the selected CPU module made verification fail before launch",
+      "screenshot": "screenshots/missing-variant.png"
+    },
+    {
+      "id": 5,
+      "result": "PASS",
+      "proof": "changing one receipted ELF byte made the artifact ID check fail",
+      "screenshot": "screenshots/runtime-drift.png"
+    },
+    {
+      "id": 6,
+      "result": "PASS",
+      "proof": "every ELF dependency resolved and private libraries stayed inside the package",
+      "screenshot": "screenshots/elf-bindings.png"
+    },
+    {
+      "id": 7,
+      "result": "PASS",
+      "proof": "two Vulkan-required verifier runs produced byte-identical receipts",
+      "screenshot": "screenshots/receipt-repeat.png"
+    },
+    {
+      "id": 8,
+      "packageSha256": "420ccd064d7b18524f96e7d5f4c7215905685de82ad71cedfb0c1becb0325d27",
+      "result": "PASS",
+      "proof": "a fresh Ubuntu 24.04 Debian package preserved the receipt and transcribed on CPU",
+      "screenshot": "screenshots/deb-cpu.png"
+    },
+    {
+      "id": 9,
+      "packageSha256": "410abb064940a3763ed9c58b17a8086ee1ebd7b7bb9cb8516a9de9a9b694b2ee",
+      "result": "PASS",
+      "proof": "a fresh Fedora 42 RPM preserved the receipt and transcribed on CPU",
+      "screenshot": "screenshots/rpm-cpu.png"
+    },
+    {
+      "id": 10,
+      "result": "PASS",
+      "proof": "QEMU Conroe selected the complete package's libggml-cpu-x64.so baseline",
+      "screenshot": "screenshots/cpu-generic.png"
+    }
+  ],
+  "unsupportedAbi": {
+    "environment": "Debian Bookworm",
+    "glibc": "2.36",
+    "minimumGlibc": "2.38",
+    "result": "EXPECTED_UNSUPPORTED_ABI"
+  }
+}

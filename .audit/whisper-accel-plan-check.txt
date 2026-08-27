@@ -1,0 +1,10 @@
+Build a portable managed runtime (PR 16.1)  boxes=25  files=3 build=3 you-see=1 verify-unit=2 verify-live=10 verify-perf=4 review-gate=0 merge=2
+Separate runtime evidence from app release identity (PR 16.2)  boxes=26  files=3 build=4 you-see=1 verify-unit=2 verify-live=10 verify-perf=4 review-gate=0 merge=2
+Add receipt-driven local selection (PR 16.3)  boxes=27  files=3 build=5 you-see=1 verify-unit=2 verify-live=10 verify-perf=4 review-gate=0 merge=2
+Ship Auto, GPU, and CPU modes with Vulkan (PR 16.4)  boxes=30  files=3 build=5 you-see=1 verify-unit=2 verify-live=10 verify-perf=4 review-gate=3 merge=2
+Retire exact-machine admission and simplify releases (PR 16.5)  boxes=26  files=3 build=4 you-see=1 verify-unit=2 verify-live=10 verify-perf=4 review-gate=0 merge=2
+Measure persistent model reuse before adding it (PR 16.6)  boxes=25  files=3 build=3 you-see=1 verify-unit=2 verify-live=10 verify-perf=4 review-gate=0 merge=2
+6 PR sections, 0 problems
+
+Command:
+node /home/vriesd/.codex/plugins/cache/cursor-plugins/pstack/0.14.5/skills/poteto-mode/scripts/check-plan.mjs docs/plans/16-portable-whisper-acceleration/overview.md

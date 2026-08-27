@@ -1,0 +1,124 @@
+{
+  "schemaVersion": 1,
+  "phase": "PR 16.1",
+  "source": {
+    "revision": "v1.9.2",
+    "commit": "306c88f4d1286aec1bf96e544632897886af5501",
+    "sourceDateEpoch": 1785851811
+  },
+  "runtime": {
+    "artifactId": "317aa0de89d05f1abd6a4fd7bd8d993cdaa2b4946f131212ba04de321b5e1e32",
+    "buildReceiptSha256": "f3e0e18872f9587bf5e3113ad7d6b715bbbca621a26aa1bafdfa17575a1566cc",
+    "archiveSha256": "f76c7b7ffe1d76ef6470300bb6d66b33433f3600ad1e964e181af699865af28f",
+    "receiptSchemaVersion": 2,
+    "sameToolchainIndependentBuildsEqual": true,
+    "cpuVariantCount": 14,
+    "selectedCpuVariant": "libggml-cpu-alderlake.so",
+    "vulkanReceiptVerified": true,
+    "hostVulkanLoaderVerified": true,
+    "trustBoundary": "buildObservation",
+    "releaseBindingRequired": true,
+    "platformAbi": {
+      "architecture": "x86_64",
+      "elfClass": "ELF64",
+      "machine": "Advanced Micro Devices X86-64",
+      "minimumSymbolVersions": {
+        "CXXABI": "1.3.9",
+        "GLIBC": "2.38",
+        "GLIBCXX": "3.4.32"
+      }
+    },
+    "options": {
+      "GGML_NATIVE": "OFF",
+      "GGML_BACKEND_DL": "ON",
+      "GGML_CPU_ALL_VARIANTS": "ON",
+      "GGML_VULKAN": "ON"
+    }
+  },
+  "packageBytes": {
+    "oldVulkanRuntime": 45626016,
+    "newPortableRuntime": 59807467,
+    "growth": 14181451,
+    "cpuVariants": 15213328,
+    "growthBeyondCpuVariantsPercent": -6.782717101741315
+  },
+  "performanceEvidence": {
+    "runManifest": ".audit/pr16-1-evidence/performance-runs.json",
+    "summary": ".audit/pr16-1-evidence/performance-summary.json",
+    "timings": ".audit/pr16-1-evidence/interleaved.tsv",
+    "verifiedBy": "scripts/verify-whisper-runtime-performance.py"
+  },
+  "cpuPerformance": {
+    "small": {
+      "pairs": 10,
+      "baselineMedianMs": 3533.5,
+      "treatmentMedianMs": 3619.5,
+      "medianDeltaPercent": 2.4338474600254707,
+      "baselineP95Ms": 3710.35,
+      "treatmentP95Ms": 3718.95,
+      "p95DeltaPercent": 0.23178406349805028
+    },
+    "largeTurbo": {
+      "pairs": 10,
+      "baselineMedianMs": 18717.0,
+      "treatmentMedianMs": 18911.5,
+      "medianDeltaPercent": 1.0391622589090133,
+      "baselineP95Ms": 19034.2,
+      "treatmentP95Ms": 19149.9,
+      "p95DeltaPercent": 0.6078532326023721
+    },
+    "transcriptParity": true,
+    "negativeControlVerified": true
+  },
+  "vulkanPerformance": {
+    "small": {
+      "pairs": 10,
+      "baselineMedianMs": 1499.0,
+      "treatmentMedianMs": 1495.0,
+      "medianDeltaPercent": -0.26684456304202797,
+      "baselineP95Ms": 1502.1,
+      "treatmentP95Ms": 1505.85,
+      "p95DeltaPercent": 0.2496504893149591
+    },
+    "largeTurbo": {
+      "pairs": 10,
+      "baselineMedianMs": 5771.5,
+      "treatmentMedianMs": 5779.0,
+      "medianDeltaPercent": 0.1299488867712033,
+      "baselineP95Ms": 5803.1,
+      "treatmentP95Ms": 5800.2,
+      "p95DeltaPercent": -0.04997329013803907
+    },
+    "transcriptParity": true,
+    "exactReceiptEveryRun": true
+  },
+  "verification": {
+    "verifierSelfTests": 29,
+    "frontendTests": 94,
+    "responsiveBrowserTests": 2,
+    "workspaceTestsPassed": true,
+    "clippyPassed": true,
+    "releaseBuildPassed": true,
+    "sttBenchmarkPassed": true,
+    "sttCorpusPassed": true,
+    "whisperAccelerationPassed": true,
+    "managedRuntimeArchivePassed": true,
+    "exactHeadWorkspaceRerunPassed": true,
+    "timingTestsPassedWithoutConcurrentBuildLoad": true,
+    "workspaceEvidence": ".audit/pr16-1-evidence/workspace-tests.txt",
+    "workspaceEvidenceSha256": "14edf5f45075e27c9a291bab42376110cb0fae8ee87e8587bb704451833baa38"
+  },
+  "liveLanes": {
+    "passed": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    "evidenceManifest": ".audit/pr16-1-evidence/live-lanes.json",
+    "screenshotCount": 10,
+    "olderCpuMask": "QEMU Nehalem selected libggml-cpu-sse42.so",
+    "genericOnlyCpu": "QEMU Conroe selected libggml-cpu-x64.so",
+    "debEnvironment": "Ubuntu 24.04 package install and CPU transcription passed",
+    "rpmEnvironment": "Fedora 42 package install and CPU transcription passed",
+    "cpuWithoutVulkanLoader": "Ubuntu 24.04 selected CPU without loading Vulkan"
+  },
+  "abiBoundary": {
+    "debianBookworm": "unsupported because glibc 2.36 is below the recorded GLIBC 2.38 requirement"
+  }
+}
