@@ -27,6 +27,8 @@ from whisper_release_common import (
     sha256_file,
     tree_sha256,
     verify_admission_set,
+    verify_v3_reusable_filesystem,
+    verify_v3_reusable_subset,
 )
 
 
@@ -49,6 +51,7 @@ def v3_source(path: Path) -> tuple[dict[str, object], dict[str, object], Path] |
     promotion = read_json_strict(promotion_path, "v3 promotion")
     acceleration_set = read_json_strict(set_path, "v3 acceleration set")
     verify_v3_promotion_metadata(promotion, acceleration_set)
+    verify_v3_reusable_subset(path / "whisper-acceleration", acceleration_set)
     return promotion, acceleration_set, path / "whisper-acceleration"
 
 
@@ -255,6 +258,29 @@ def compose(promotions: list[Path], output: Path) -> None:
     (output / "promotion.json").write_text(
         json.dumps(metadata, indent=2) + "\n", encoding="utf-8"
     )
+
+
+def compose_reusable(promotions: list[Path], output: Path) -> None:
+    output = output.resolve()
+    if output.exists():
+        raise ValueError(f"output already exists: {output}")
+    sources = [v3_source(path.resolve()) for path in promotions]
+    if not sources or any(source is None for source in sources):
+        raise ValueError("reusable composition requires only v3 promotions")
+    verified = [source for source in sources if source is not None]
+    first_set = verified[0][1]
+    first_package = verified[0][2]
+    runtime_root = Path(
+        first_set["executionArtifact"]["value"]["runtimeRelativePath"]
+    ).parent
+    package = output / "whisper-acceleration"
+    package.mkdir(parents=True)
+    shutil.copytree(first_package / runtime_root, package / runtime_root)
+    compose_v3(verified, package, output)
+    acceleration_set = read_json_strict(
+        package / "acceleration-set.v3.json", "composed reusable acceleration set"
+    )
+    verify_v3_reusable_filesystem(package, acceleration_set)
 
 
 def fixture(
@@ -487,6 +513,16 @@ def self_test() -> None:
         assert (output / "promotion-v3.json").read_bytes() == (
             second / "promotion-v3.json"
         ).read_bytes()
+        reusable = root / "reusable"
+        compose_reusable([small, large], reusable)
+        reusable_set = read_json_strict(
+            reusable / "whisper-acceleration/acceleration-set.v3.json",
+            "reusable-only acceleration set",
+        )
+        reusable_ids = verify_acceleration_set(reusable_set)
+        assert len(reusable_ids["inferenceContractIds"]) == 2
+        assert not (reusable / "promotion.json").exists()
+        assert not (reusable / "whisper-acceleration/admission-set.json").exists()
         duplicate = root / "duplicate"
         shutil.copytree(small, duplicate)
         try:
@@ -653,12 +689,15 @@ def main() -> int:
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--promotion", type=Path, action="append", default=[])
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--reusable-only", action="store_true")
     args = parser.parse_args()
     try:
         if args.self_test:
             self_test()
         elif args.output is None:
             parser.error("composition requires --output")
+        elif args.reusable_only:
+            compose_reusable(args.promotion, args.output)
         else:
             compose(args.promotion, args.output)
     except (KeyError, OSError, TypeError, ValueError) as error:

@@ -18,6 +18,7 @@ from whisper_identity_v3 import (
     canonical_json_bytes,
     inference_contract_id,
     sha256_bytes,
+    strict_json_loads,
     verify_acceleration_set,
     v3_promotion_metadata,
 )
@@ -91,7 +92,8 @@ def write_v3_promotion(
     cache_sha256: str,
     sweep_path: Path,
     corpus: Path,
-    cycle_path: Path,
+    performance_cycle_path: Path,
+    reset_cycle_path: Path,
     phase2: dict[str, object],
     accepted_at: int,
     expires_at: int,
@@ -161,7 +163,18 @@ def write_v3_promotion(
         "corpusManifestSha256": sha256_file(corpus),
         "coverageManifestSha256": sha256_bytes(canonical_json_bytes(coverage)),
         "observationBundleSha256": sha256_file(sweep_path / "sweep.json"),
-        "cacheCycleSha256": sha256_file(cycle_path / "cache-cycle.json"),
+        "cacheCycleSha256": sha256_bytes(
+            canonical_json_bytes(
+                {
+                    "performanceCycleSha256": sha256_file(
+                        performance_cycle_path / "cache-cycle.json"
+                    ),
+                    "resetCycleSha256": sha256_file(
+                        reset_cycle_path / "cache-cycle.json"
+                    ),
+                }
+            )
+        ),
         "gatePolicySha256": sha256_bytes(canonical_json_bytes(gate_policy)),
         "acceptedAt": accepted_at,
         "expiresAt": expires_at,
@@ -512,6 +525,67 @@ def verify_runtime_probe(
         raise ValueError("runtime probe did not reproduce the admitted receipt")
 
 
+def verified_cache_cycle(root: Path, label: str):
+    subprocess.run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "scripts/run-whisper-cache-cycle.py"),
+            "--validate-cycle",
+            str(root),
+        ],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return (
+        read_json(root / "cache-cycle.json", f"{label} cache cycle"),
+        read_json(root / "host-evidence.json", f"{label} host evidence"),
+    )
+
+
+def verify_cache_cycle_rebind(
+    performance_cycle: dict[str, object], reset_cycle: dict[str, object]
+) -> None:
+    if performance_cycle.get("identity") != reset_cycle.get("identity"):
+        raise ValueError("performance and reset cache cycles use different identities")
+    if performance_cycle.get("probes", {}).get("populated", {}).get(
+        "receipt"
+    ) != reset_cycle.get("probes", {}).get("populated", {}).get("receipt"):
+        raise ValueError("performance and reset cache cycles use different receipts")
+
+
+def verify_measured_behavior(
+    measured_commit: str, current_commit: str, inference_contract_path: Path
+) -> None:
+    if measured_commit == current_commit:
+        return
+    ancestor = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", measured_commit, current_commit],
+        cwd=REPO_ROOT,
+        check=False,
+    )
+    if ancestor.returncode != 0:
+        raise ValueError(
+            "measured Echo commit is not an ancestor of the current commit"
+        )
+    committed = subprocess.run(
+        [
+            "git",
+            "show",
+            f"{measured_commit}:crates/echo/tests/fixtures/whisper-behavior-v3.json",
+        ],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    measured_projection = strict_json_loads(committed).get("projectionSha256")
+    contract = read_json_strict(inference_contract_path, "v3 inference contract")
+    if contract.get("behavior", {}).get("projectionSha256") != measured_projection:
+        raise ValueError("measured Echo behavior differs from the inference contract")
+
+
 def promote(args: argparse.Namespace) -> None:
     output = args.output.resolve()
     if output.exists():
@@ -525,28 +599,16 @@ def promote(args: argparse.Namespace) -> None:
     with tempfile.TemporaryDirectory(prefix="echo-whisper-promotion-") as temporary:
         replay_analysis(cell, args.corpus.resolve(), Path(temporary))
 
-    cycle_path = args.cache_cycle.resolve()
     cell_evidence = cell.get("evidence")
-    if (
-        not isinstance(cell_evidence, dict)
-        or require_path(cell_evidence.get("cacheCycle"), "cell cache cycle").resolve()
-        != cycle_path
-    ):
-        raise ValueError("promotion cache cycle differs from the selected sweep cell")
-    subprocess.run(
-        [
-            sys.executable,
-            str(REPO_ROOT / "scripts/run-whisper-cache-cycle.py"),
-            "--validate-cycle",
-            str(cycle_path),
-        ],
-        cwd=REPO_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    cycle = read_json(cycle_path / "cache-cycle.json", "cache cycle")
-    host = read_json(cycle_path / "host-evidence.json", "host evidence")
+    if not isinstance(cell_evidence, dict):
+        raise ValueError("selected cell has no cache-cycle evidence")
+    performance_cycle_path = require_path(
+        cell_evidence.get("cacheCycle"), "cell cache cycle"
+    ).resolve()
+    reset_cycle_path = args.cache_cycle.resolve()
+    performance_cycle, _ = verified_cache_cycle(performance_cycle_path, "performance")
+    cycle, host = verified_cache_cycle(reset_cycle_path, "reset")
+    verify_cache_cycle_rebind(performance_cycle, cycle)
     if cycle.get("resetEvidence", {}).get("state") != "COMPLETE":
         raise ValueError("cache cycle lacks complete reset evidence")
 
@@ -573,8 +635,14 @@ def promote(args: argparse.Namespace) -> None:
         capture_output=True,
         text=True,
     ).stdout.strip()
-    if dirty or actual_commit != expected_commit:
-        raise ValueError("promotion requires the exact clean measured Echo commit")
+    if dirty:
+        raise ValueError("promotion requires a clean Echo checkout")
+    if actual_commit != expected_commit:
+        if args.inference_contract_v3 is None:
+            raise ValueError("v2 promotion requires the exact measured Echo commit")
+        verify_measured_behavior(
+            expected_commit, actual_commit, args.inference_contract_v3.resolve()
+        )
     echo_sha = sha256_file(echo_binary)
     if echo_sha != identity_block["echo"]["binary"]["sha256"]:
         raise ValueError("Echo binary changed after qualification")
@@ -634,7 +702,9 @@ def promote(args: argparse.Namespace) -> None:
         qualified_runtime_bindings, package / "runtime/whisper-cli"
     )
     shutil.copy2(runtime_probe, package / "runtime/echo-whisper-runtime-probe")
-    cache_source, expected_cache_files = populated_cache_snapshot(cycle_path, cycle)
+    cache_source, expected_cache_files = populated_cache_snapshot(
+        performance_cycle_path, performance_cycle
+    )
     tuning = admitted_tuning(cell)
     cycle_probe = cycle_identity.get("probe")
     expected_probe = admitted_cache_probe(tuning)
@@ -653,7 +723,7 @@ def promote(args: argparse.Namespace) -> None:
     }
     identity = {
         "schemaVersion": 1,
-        "echoCommit": actual_commit,
+        "echoCommit": expected_commit,
         "echoBinarySha256": echo_sha,
         "runtimeIdentitySha256": runtime_sha,
         "modelSha256": sha256_file(model),
@@ -722,7 +792,8 @@ def promote(args: argparse.Namespace) -> None:
             cache_sha256=cache_sha,
             sweep_path=sweep_path,
             corpus=args.corpus.resolve(),
-            cycle_path=cycle_path,
+            performance_cycle_path=performance_cycle_path,
+            reset_cycle_path=reset_cycle_path,
             phase2=phase2,
             accepted_at=accepted_at,
             expires_at=model_record["expiresAt"],
@@ -753,7 +824,7 @@ def promote(args: argparse.Namespace) -> None:
     )
     promotion = {
         "schemaVersion": 2,
-        "echoCommit": actual_commit,
+        "echoCommit": expected_commit,
         "echoBinarySha256": echo_sha,
         "packageType": args.package_type,
         "admissionIdentityKeys": [key],
@@ -767,6 +838,23 @@ def promote(args: argparse.Namespace) -> None:
 
 
 def self_test() -> None:
+    cycle = {
+        "identity": {"sha256": "a" * 64},
+        "probes": {"populated": {"receipt": {"backend": "vulkan"}}},
+    }
+    verify_cache_cycle_rebind(cycle, json.loads(json.dumps(cycle)))
+    for mutation in (
+        lambda changed: changed["identity"].update(sha256="b" * 64),
+        lambda changed: changed["probes"]["populated"]["receipt"].update(backend="cpu"),
+    ):
+        changed = json.loads(json.dumps(cycle))
+        mutation(changed)
+        try:
+            verify_cache_cycle_rebind(cycle, changed)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("mismatched cache-cycle rebind passed promotion")
     resource_cell = {
         "resourceEvidence": {
             "verdict": "VERIFIED",
@@ -1038,7 +1126,8 @@ def self_test() -> None:
             cache_sha256=tree_sha256(cache),
             sweep_path=sweep,
             corpus=corpus,
-            cycle_path=cycle,
+            performance_cycle_path=cycle,
+            reset_cycle_path=cycle,
             phase2={"claimBoundary": "small", "languages": ["en"]},
             accepted_at=1000,
             expires_at=2000,

@@ -32,7 +32,7 @@ from whisper_release_common import (
     verify_contained_symlinks,
     verify_admission_set,
     verify_v3_reusable_filesystem,
-    v3_reusable_inventory,
+    v3_declared_inventory,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -758,7 +758,7 @@ def self_test() -> None:
         }
         acceleration_set["reusableInventorySha256"] = sha256_bytes(
             canonical_json_bytes(
-                v3_reusable_inventory(reusable_resource, acceleration_set)
+                v3_declared_inventory(reusable_resource, acceleration_set)
             )
         )
         verify_acceleration_set(acceleration_set)

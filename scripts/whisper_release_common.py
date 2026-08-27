@@ -258,7 +258,7 @@ def prefixed_package_inventory(root: Path, prefix: str) -> list[dict[str, object
     return entries
 
 
-def v3_reusable_inventory(
+def v3_declared_inventory(
     root: Path, acceleration_set: dict[str, object]
 ) -> list[dict[str, object]]:
     verify_acceleration_set(acceleration_set)
@@ -270,6 +270,28 @@ def v3_reusable_inventory(
         relative = Path(record["cacheSeed"]["relativePath"])
         expected.extend(prefixed_package_inventory(root / relative, str(relative)))
 
+    return expected
+
+
+def verify_v3_reusable_subset(
+    root: Path, acceleration_set: dict[str, object]
+) -> list[dict[str, object]]:
+    inventory = v3_declared_inventory(root, acceleration_set)
+    if sha256_bytes(canonical_json_bytes(inventory)) != acceleration_set.get(
+        "reusableInventorySha256"
+    ):
+        raise ValueError("v3 reusable filesystem digest differs")
+    for record in acceleration_set["performanceEvidence"]:
+        relative = Path(record["cacheSeed"]["relativePath"])
+        if tree_sha256(root / relative) != record["cacheSeed"]["sha256"]:
+            raise ValueError("v3 cache seed differs from its evidence record")
+    return inventory
+
+
+def v3_reusable_inventory(
+    root: Path, acceleration_set: dict[str, object]
+) -> list[dict[str, object]]:
+    expected = verify_v3_reusable_subset(root, acceleration_set)
     manifests = {"acceleration-set.v3.json", "release-binding.v3.json"}
     actual = [
         entry for entry in package_inventory(root) if entry["path"] not in manifests
@@ -286,11 +308,7 @@ def v3_reusable_inventory(
 def verify_v3_reusable_filesystem(
     root: Path, acceleration_set: dict[str, object]
 ) -> None:
-    inventory = v3_reusable_inventory(root, acceleration_set)
-    if sha256_bytes(canonical_json_bytes(inventory)) != acceleration_set.get(
-        "reusableInventorySha256"
-    ):
-        raise ValueError("v3 reusable filesystem digest differs")
+    v3_reusable_inventory(root, acceleration_set)
 
 
 def verify_admission_set(root: Path) -> dict[str, object]:
