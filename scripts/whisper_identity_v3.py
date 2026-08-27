@@ -18,6 +18,32 @@ SHA256 = re.compile(r"[0-9a-f]{64}")
 COMMIT = re.compile(r"[0-9a-f]{40}")
 SAFE_PATH = re.compile(r"[A-Za-z0-9._+/-]+")
 LOWER_HEX_32 = re.compile(r"[0-9a-f]{32}")
+ADMISSION_GATE_FIELDS = frozenset(
+    {
+        "backendTruth",
+        "cacheEvidence",
+        "cleanChildEnvironment",
+        "completePairs",
+        "coverageComplete",
+        "driverIcdIdentity",
+        "exactRuntime",
+        "hardwareDevice",
+        "identityMatch",
+        "memoryEvidence",
+        "memoryFloor",
+        "medianReduction",
+        "medianSpeedup",
+        "noNewHallucinations",
+        "p95Improved",
+        "pairIntegrity",
+        "perLanguageQuality",
+        "receiptConsistency",
+        "resetEvidence",
+        "sampleSize",
+        "stabilitySuccess",
+        "swapStable",
+    }
+)
 
 
 class IdentityError(ValueError):
@@ -375,6 +401,145 @@ ID_FUNCTIONS = {
 }
 
 
+def sha256_bytes(value):
+    return hashlib.sha256(value).hexdigest()
+
+
+def build_record(name, value):
+    if name not in ID_FUNCTIONS:
+        fail(f"unsupported content record: {name}")
+    return {"id": ID_FUNCTIONS[name](value), "value": value}
+
+
+def verify_record(record, name):
+    if not isinstance(record, dict) or set(record) != {"id", "value"}:
+        fail(f"{name} record keys differ")
+    expected = ID_FUNCTIONS[name](record["value"])
+    if record["id"] != expected:
+        fail(f"{name} record ID differs")
+    return expected
+
+
+def require_absolute_path(value, context):
+    require_string(value, context)
+    if not Path(value).is_absolute() or "\x00" in value:
+        fail(f"{context} is not an absolute path")
+
+
+def acceleration_set_sha256(value):
+    return sha256_bytes(canonical_json_bytes(value))
+
+
+def verify_acceleration_set(value):
+    require_object(
+        value,
+        {
+            "executionArtifact",
+            "inferenceContracts",
+            "localEnvironments",
+            "performanceEvidence",
+            "reusableInventorySha256",
+            "schemaVersion",
+        },
+        "acceleration set",
+    )
+    require_schema(value["schemaVersion"], "acceleration set")
+    require_digest(value["reusableInventorySha256"], "reusable inventory")
+    execution_id = verify_record(value["executionArtifact"], "executionArtifact")
+
+    contracts = value["inferenceContracts"]
+    if not isinstance(contracts, list) or not contracts:
+        fail("inferenceContracts is not a non-empty array")
+    contract_ids = [verify_record(record, "inferenceContract") for record in contracts]
+    if contract_ids != sorted(set(contract_ids)):
+        fail("inferenceContracts is not sorted and unique")
+
+    environments = value["localEnvironments"]
+    if not isinstance(environments, list) or not environments:
+        fail("localEnvironments is not a non-empty array")
+    environment_keys = []
+    for record in environments:
+        if not isinstance(record, dict) or set(record) != {"key", "launch", "value"}:
+            fail("local environment record keys differ")
+        key = local_environment_key(record["value"])
+        if record["key"] != key:
+            fail("local environment record key differs")
+        require_object(
+            record["launch"],
+            {"icdLibraryPath", "icdManifestPath"},
+            "environment launch",
+        )
+        require_absolute_path(record["launch"]["icdManifestPath"], "ICD manifest path")
+        require_absolute_path(record["launch"]["icdLibraryPath"], "ICD library path")
+        environment_keys.append(key)
+    if environment_keys != sorted(set(environment_keys)):
+        fail("localEnvironments is not sorted and unique")
+
+    evidence = value["performanceEvidence"]
+    if not isinstance(evidence, list) or not evidence:
+        fail("performanceEvidence is not a non-empty array")
+    evidence_ids = []
+    for record in evidence:
+        require_object(
+            record,
+            {"cacheSeed", "gates", "id", "value", "verdict"},
+            "performance evidence record",
+        )
+        evidence_id = performance_evidence_id(record["value"])
+        if record["id"] != evidence_id:
+            fail("performance evidence record ID differs")
+        if record["value"]["executionArtifactId"] != execution_id:
+            fail("performance evidence execution artifact differs")
+        if record["value"]["inferenceContractId"] not in contract_ids:
+            fail("performance evidence inference contract is missing")
+        if record["value"]["localEnvironmentKey"] not in environment_keys:
+            fail("performance evidence local environment is missing")
+        require_object(record["cacheSeed"], {"relativePath", "sha256"}, "cache seed")
+        require_relative_path(record["cacheSeed"]["relativePath"], "cache seed path")
+        if record["cacheSeed"]["relativePath"] != f"cache-seeds/{evidence_id}":
+            fail("cache seed path does not match performance evidence ID")
+        require_digest(record["cacheSeed"]["sha256"], "cache seed digest")
+        gates = record["gates"]
+        if (
+            not isinstance(gates, dict)
+            or set(gates) != ADMISSION_GATE_FIELDS
+            or any(value is not True for value in gates.values())
+        ):
+            fail("performance evidence gates are not all true")
+        if record["verdict"] != "PASSED":
+            fail("performance evidence verdict is not PASSED")
+        evidence_ids.append(evidence_id)
+    if evidence_ids != sorted(set(evidence_ids)):
+        fail("performanceEvidence is not sorted and unique")
+    return {
+        "executionArtifactId": execution_id,
+        "inferenceContractIds": contract_ids,
+        "localEnvironmentKeys": environment_keys,
+        "performanceEvidenceIds": evidence_ids,
+    }
+
+
+def verify_release_binding_record(record, acceleration_set):
+    binding_id = verify_record(record, "releaseBinding")
+    identities = verify_acceleration_set(acceleration_set)
+    value = record["value"]
+    if value["accelerationSetSha256"] != acceleration_set_sha256(acceleration_set):
+        fail("release binding acceleration set digest differs")
+    if value["reusableInventorySha256"] != acceleration_set["reusableInventorySha256"]:
+        fail("release binding reusable inventory differs")
+    if value["executionArtifactId"] != identities["executionArtifactId"]:
+        fail("release binding execution artifact differs")
+    if not set(value["allowedInferenceContractIds"]).issubset(
+        identities["inferenceContractIds"]
+    ):
+        fail("release binding inference contract is missing")
+    if not set(value["allowedPerformanceEvidenceIds"]).issubset(
+        identities["performanceEvidenceIds"]
+    ):
+        fail("release binding performance evidence is missing")
+    return binding_id
+
+
 def reverse_objects(value):
     if isinstance(value, dict):
         return {key: reverse_objects(value[key]) for key in reversed(value)}
@@ -471,6 +636,69 @@ def self_test():
         pass
     else:
         fail("release binding accepted duplicate contract IDs")
+
+    execution = build_record("executionArtifact", cases["executionArtifact"]["input"])
+    contract = build_record("inferenceContract", cases["inferenceContract"]["input"])
+    environment = {
+        "key": cases["localEnvironment"]["id"],
+        "launch": {
+            "icdLibraryPath": "/usr/lib/libvulkan_intel.so",
+            "icdManifestPath": "/usr/share/vulkan/icd.d/intel_icd.json",
+        },
+        "value": cases["localEnvironment"]["input"],
+    }
+    evidence = {
+        "cacheSeed": {
+            "relativePath": f"cache-seeds/{cases['performanceEvidence']['id']}",
+            "sha256": "4" * 64,
+        },
+        "gates": {name: True for name in sorted(ADMISSION_GATE_FIELDS)},
+        "id": cases["performanceEvidence"]["id"],
+        "value": cases["performanceEvidence"]["input"],
+        "verdict": "PASSED",
+    }
+    acceleration_set = {
+        "executionArtifact": execution,
+        "inferenceContracts": [contract],
+        "localEnvironments": [environment],
+        "performanceEvidence": [evidence],
+        "reusableInventorySha256": "3" * 64,
+        "schemaVersion": 3,
+    }
+    identities = verify_acceleration_set(acceleration_set)
+    if identities["performanceEvidenceIds"] != [cases["performanceEvidence"]["id"]]:
+        fail("acceleration set returned the wrong evidence IDs")
+
+    binding_input = copy.deepcopy(cases["releaseBinding"]["input"])
+    binding_input["accelerationSetSha256"] = acceleration_set_sha256(acceleration_set)
+    binding_record = build_record("releaseBinding", binding_input)
+    verify_release_binding_record(binding_record, acceleration_set)
+    changed_version = copy.deepcopy(binding_input)
+    changed_version["version"] = "0.12.6"
+    if release_binding_id(changed_version) == binding_record["id"]:
+        fail("app version did not change the release binding")
+    changed_gates = copy.deepcopy(acceleration_set)
+    changed_gates["performanceEvidence"][0]["gates"]["backendTruth"] = False
+    try:
+        verify_acceleration_set(changed_gates)
+    except IdentityError:
+        pass
+    else:
+        fail("acceleration set accepted a false gate")
+    broken_reference = copy.deepcopy(acceleration_set)
+    broken_value = broken_reference["performanceEvidence"][0]["value"]
+    broken_value["inferenceContractId"] = "0" * 64
+    broken_id = performance_evidence_id(broken_value)
+    broken_reference["performanceEvidence"][0]["id"] = broken_id
+    broken_reference["performanceEvidence"][0]["cacheSeed"]["relativePath"] = (
+        f"cache-seeds/{broken_id}"
+    )
+    try:
+        verify_acceleration_set(broken_reference)
+    except IdentityError:
+        pass
+    else:
+        fail("acceleration set accepted a missing contract reference")
     print("whisper_identity_v3: self-test passed")
 
 

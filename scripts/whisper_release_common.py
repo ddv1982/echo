@@ -7,6 +7,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from whisper_identity_v3 import ADMISSION_GATE_FIELDS
+
 BUNDLE_MARKER = b"__TAURI_BUNDLE_TYPE_VAR_UNK"
 BUNDLE_TOKENS = {
     "deb": b"__TAURI_BUNDLE_TYPE_VAR_DEB",
@@ -47,30 +49,7 @@ DEVICE_FIELDS = {
     "driverUUID",
     "pipelineCacheUUID",
 }
-GATE_FIELDS = {
-    "completePairs",
-    "pairIntegrity",
-    "sampleSize",
-    "backendTruth",
-    "identityMatch",
-    "hardwareDevice",
-    "medianReduction",
-    "medianSpeedup",
-    "p95Improved",
-    "perLanguageQuality",
-    "noNewHallucinations",
-    "receiptConsistency",
-    "coverageComplete",
-    "cacheEvidence",
-    "resetEvidence",
-    "driverIcdIdentity",
-    "cleanChildEnvironment",
-    "exactRuntime",
-    "stabilitySuccess",
-    "memoryEvidence",
-    "memoryFloor",
-    "swapStable",
-}
+GATE_FIELDS = ADMISSION_GATE_FIELDS
 
 
 def sha256_bytes(value: bytes) -> str:
