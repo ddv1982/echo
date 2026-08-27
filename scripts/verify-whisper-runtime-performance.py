@@ -180,6 +180,13 @@ def validate_runtimes(manifest):
         fail("candidate runtime identity differs")
 
 
+def require_quality_gates(transcript_parity, receipts_exact):
+    if not transcript_parity:
+        fail("performance transcripts differ")
+    if not receipts_exact:
+        fail("candidate Vulkan receipts differ")
+
+
 def validate_runs(manifest):
     receipts = manifest["vulkanReceipts"]
     validate_receipts(receipts)
@@ -243,11 +250,10 @@ def validate_runs(manifest):
     }
     if set(receipts) != referenced_receipts:
         fail("Vulkan receipt map contains unreferenced evidence")
-    return (
-        groups,
-        all(len(values) == 1 for values in transcripts.values()),
-        len(candidate_vulkan_receipts) == 1,
-    )
+    transcript_parity = all(len(values) == 1 for values in transcripts.values())
+    receipts_exact = len(candidate_vulkan_receipts) == 1
+    require_quality_gates(transcript_parity, receipts_exact)
+    return groups, transcript_parity, receipts_exact
 
 
 def calculated_summary(manifest, manifest_path, tsv_path):
@@ -345,6 +351,12 @@ def verify(manifest_path, summary_path, tsv_path):
 def self_test():
     if not math.isclose(percentile95([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]), 9.55):
         fail("p95 interpolation self-test failed")
+    for values in [(False, True), (True, False)]:
+        try:
+            require_quality_gates(*values)
+        except EvidenceError:
+            continue
+        fail("quality-gate self-test failed")
     print("verify-whisper-runtime-performance: self-test ok")
 
 

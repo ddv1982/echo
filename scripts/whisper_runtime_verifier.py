@@ -12,6 +12,7 @@ import unittest
 
 
 SCHEMA_VERSION = 2
+UINT32_MAX = 2**32 - 1
 REPRODUCIBLE_FLAGS = (
     "-ffile-prefix-map=<SCRATCH_DIR>=/usr/src/echo-whisper-runtime "
     "-fmacro-prefix-map=<SCRATCH_DIR>=/usr/src/echo-whisper-runtime "
@@ -411,7 +412,16 @@ def platform_abi(package, files):
     }
 
 
+def require_fresh_receipt_outputs(package):
+    for name in ["build-receipt.json", "cmake-cache.txt"]:
+        path = package / name
+        if path.exists() or path.is_symlink():
+            fail(f"receipt output already exists: {name}")
+
+
 def create_receipt(args):
+    if args.package.is_symlink():
+        fail("package directory must not be a symlink")
     package = args.package.resolve()
     if not package.is_dir():
         fail(f"package is not a directory: {package}")
@@ -419,6 +429,7 @@ def create_receipt(args):
     if expected != (args.commit, args.source_date_epoch):
         fail("revision, commit, and SOURCE_DATE_EPOCH are not the pinned tuple")
 
+    require_fresh_receipt_outputs(package)
     cache_contract = package / "cmake-cache.txt"
     write_cache_contract(args.cmake_cache, cache_contract)
     normalize_package_modes(package)
@@ -680,9 +691,18 @@ def elf_files(package, receipt):
     return paths
 
 
+def runtime_environment(package, base=None):
+    source = os.environ if base is None else base
+    environment = {
+        key: value for key, value in source.items() if not key.startswith("LD_")
+    }
+    environment["LD_LIBRARY_PATH"] = str(package)
+    return environment
+
+
 def verify_elf_resolution(package, receipt, require_vulkan):
     stage = package.resolve()
-    environment = os.environ | {"LD_LIBRARY_PATH": str(stage)}
+    environment = runtime_environment(stage)
     for path in elf_files(package, receipt):
         found_vulkan_loader = False
         dynamic = subprocess.run(
@@ -726,7 +746,7 @@ def run_probe(package, cpu):
         command.append("--cpu")
     return subprocess.run(
         command,
-        env=os.environ | {"LD_LIBRARY_PATH": str(package)},
+        env=runtime_environment(package),
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -767,14 +787,14 @@ def validate_vulkan_receipt(stderr):
     ]
     if any(type(receipt[key]) is not int for key in integer_fields):
         fail("Vulkan runtime probe emitted invalid integer fields")
+    if any(not 0 <= receipt[key] <= UINT32_MAX for key in integer_fields):
+        fail("Vulkan runtime probe emitted a non-unsigned 32-bit integer")
     if receipt["schemaVersion"] != 1 or receipt["backend"] != "vulkan":
         fail("Vulkan runtime probe emitted an invalid receipt identity")
     if (
-        receipt["selectedIndex"] < 0
-        or receipt["vendorId"] <= 0
+        receipt["vendorId"] <= 0
         or receipt["deviceId"] <= 0
         or receipt["apiVersion"] <= 0
-        or receipt["driverVersion"] < 0
     ):
         fail("Vulkan runtime probe emitted an invalid selected device")
     for key in ["deviceUUID", "driverUUID", "pipelineCacheUUID"]:
@@ -811,7 +831,7 @@ def verify_runtime_loading(package, receipt, require_vulkan):
     selected = validate_cpu_probe(cpu.stderr, package, receipt, require_vulkan)
     help_result = subprocess.run(
         [str(package / "whisper-cli"), "--no-gpu", "--help"],
-        env=os.environ | {"LD_LIBRARY_PATH": str(package)},
+        env=runtime_environment(package),
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,

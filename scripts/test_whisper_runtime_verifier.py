@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 
+import whisper_runtime_verifier as verifier
 from whisper_runtime_verifier import (
     EXPECTED_CPU_VARIANTS,
     FIXED_PACKAGE_FILES,
@@ -278,12 +279,52 @@ class ContractTests(unittest.TestCase):
         with self.assertRaisesRegex(VerificationError, "integer fields"):
             validate_vulkan_receipt(stderr)
 
+    def test_vulkan_receipt_rejects_out_of_range_integers(self):
+        receipt = {
+            "apiVersion": 1,
+            "backend": "vulkan",
+            "deviceId": 1,
+            "deviceUUID": "1" * 32,
+            "driverUUID": "2" * 32,
+            "driverVersion": 1,
+            "pipelineCacheUUID": "3" * 32,
+            "schemaVersion": 1,
+            "selectedIndex": 2**32,
+            "vendorId": 1,
+        }
+        stderr = "echo_whisper_runtime_receipt: " + json.dumps(receipt)
+        with self.assertRaisesRegex(VerificationError, "unsigned 32-bit"):
+            validate_vulkan_receipt(stderr)
+
     def test_rejects_symlinked_build_receipt(self):
         outside = self.package / "outside.json"
         outside.write_text("{}", encoding="utf-8")
         (self.package / "build-receipt.json").symlink_to(outside.name)
         with self.assertRaisesRegex(VerificationError, "regular file"):
             validate_receipt(self.package, pathlib.Path(__file__).parent.parent)
+
+    def test_create_rejects_preexisting_output_symlinks(self):
+        outside = self.package / "outside.txt"
+        outside.write_text("unchanged\n", encoding="utf-8")
+        (self.package / "cmake-cache.txt").symlink_to(outside.name)
+        with self.assertRaisesRegex(VerificationError, "already exists"):
+            verifier.require_fresh_receipt_outputs(self.package)
+        self.assertEqual(outside.read_text(encoding="utf-8"), "unchanged\n")
+
+    def test_runtime_environment_strips_loader_injection(self):
+        environment = verifier.runtime_environment(
+            self.package,
+            {
+                "LD_AUDIT": "audit.so",
+                "LD_LIBRARY_PATH": "/outside",
+                "LD_PRELOAD": "preload.so",
+                "VK_DRIVER_FILES": "/driver.json",
+            },
+        )
+        self.assertEqual(environment["LD_LIBRARY_PATH"], str(self.package))
+        self.assertEqual(environment["VK_DRIVER_FILES"], "/driver.json")
+        self.assertNotIn("LD_AUDIT", environment)
+        self.assertNotIn("LD_PRELOAD", environment)
 
     def test_rejects_invalid_platform_abi(self):
         self.receipt["platformAbi"]["architecture"] = "aarch64"
