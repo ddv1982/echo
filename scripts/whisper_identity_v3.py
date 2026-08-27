@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import argparse
+import copy
 import hashlib
 import json
+import re
 from pathlib import Path
 
 
@@ -12,6 +14,10 @@ DOMAIN_PREFIXES = {
     "performanceEvidence": b"echo-whisper-performance-evidence-v3\0",
     "releaseBinding": b"echo-whisper-release-binding-v3\0",
 }
+SHA256 = re.compile(r"[0-9a-f]{64}")
+COMMIT = re.compile(r"[0-9a-f]{40}")
+SAFE_PATH = re.compile(r"[A-Za-z0-9._+/-]+")
+LOWER_HEX_32 = re.compile(r"[0-9a-f]{32}")
 
 
 class IdentityError(ValueError):
@@ -70,27 +76,293 @@ def canonical_json_bytes(value):
     ).encode("utf-8")
 
 
+def require_object(value, keys, context):
+    if not isinstance(value, dict) or set(value) != set(keys):
+        fail(f"{context} keys differ")
+
+
+def require_schema(value, context):
+    if type(value) is not int or value != 3:
+        fail(f"{context} schemaVersion is not 3")
+
+
+def require_digest(value, context):
+    if not isinstance(value, str) or SHA256.fullmatch(value) is None:
+        fail(f"{context} is not a lowercase SHA-256 digest")
+
+
+def require_string(value, context, allowed=None):
+    if not isinstance(value, str) or not value:
+        fail(f"{context} is not a non-empty string")
+    if allowed is not None and value not in allowed:
+        fail(f"{context} is unsupported")
+
+
+def require_uint(value, maximum, context, positive=False):
+    if type(value) is not int or not 0 <= value <= maximum or (positive and value == 0):
+        fail(f"{context} is out of range")
+
+
+def require_relative_path(value, context):
+    require_string(value, context)
+    path = Path(value)
+    if (
+        SAFE_PATH.fullmatch(value) is None
+        or path.is_absolute()
+        or value != path.as_posix()
+        or any(part in {"", ".", ".."} for part in path.parts)
+    ):
+        fail(f"{context} is not a safe relative path")
+
+
+def require_sorted_ids(value, context):
+    if not isinstance(value, list) or not value:
+        fail(f"{context} is not a non-empty array")
+    for item in value:
+        require_digest(item, context)
+    if value != sorted(set(value)):
+        fail(f"{context} is not sorted and unique")
+
+
+def validate_execution_artifact(value):
+    require_object(
+        value,
+        {
+            "buildReceiptSha256",
+            "probeRelativePath",
+            "probeSha256",
+            "reusableInventorySha256",
+            "runtimeArtifactId",
+            "runtimeIdentitySha256",
+            "runtimeLibraryBindings",
+            "runtimeRelativePath",
+            "runtimeSha256",
+            "schemaVersion",
+        },
+        "execution artifact",
+    )
+    require_schema(value["schemaVersion"], "execution artifact")
+    for key in [
+        "buildReceiptSha256",
+        "probeSha256",
+        "reusableInventorySha256",
+        "runtimeArtifactId",
+        "runtimeIdentitySha256",
+        "runtimeSha256",
+    ]:
+        require_digest(value[key], f"execution artifact {key}")
+    require_relative_path(value["runtimeRelativePath"], "runtime path")
+    require_relative_path(value["probeRelativePath"], "probe path")
+    bindings = value["runtimeLibraryBindings"]
+    if not isinstance(bindings, dict) or not bindings:
+        fail("runtimeLibraryBindings is not a non-empty object")
+    for name, digest in bindings.items():
+        if "/" in name:
+            fail("runtime library alias contains a path separator")
+        require_string(name, "runtime library alias")
+        require_digest(digest, f"runtime library {name}")
+
+
+def validate_inference_contract(value):
+    require_object(
+        value,
+        {
+            "behavior",
+            "claimScope",
+            "modelSha256",
+            "protocol",
+            "requestPolicy",
+            "schemaVersion",
+            "tuning",
+            "vadSha256",
+        },
+        "inference contract",
+    )
+    require_schema(value["schemaVersion"], "inference contract")
+    require_digest(value["modelSha256"], "modelSha256")
+    if value["vadSha256"] is not None:
+        require_digest(value["vadSha256"], "vadSha256")
+    require_string(value["protocol"], "protocol", {"oneShotCli"})
+    require_string(value["claimScope"], "claimScope")
+    require_object(
+        value["tuning"], {"beamSize", "bestOf", "noFallback", "threads"}, "tuning"
+    )
+    for key in ["beamSize", "bestOf", "threads"]:
+        require_uint(value["tuning"][key], 65535, f"tuning {key}", positive=True)
+    if type(value["tuning"]["noFallback"]) is not bool:
+        fail("tuning noFallback is not a boolean")
+    require_object(
+        value["requestPolicy"], {"hints", "language", "prompt"}, "requestPolicy"
+    )
+    require_string(value["requestPolicy"]["language"], "language policy", {"pinned"})
+    require_string(value["requestPolicy"]["prompt"], "prompt policy", {"empty"})
+    require_string(value["requestPolicy"]["hints"], "hints policy", {"qualifiedOnly"})
+    require_object(
+        value["behavior"],
+        {
+            "launchSchema",
+            "projectionSha256",
+            "receiptSchema",
+            "recoverySchema",
+            "telemetrySchema",
+        },
+        "behavior",
+    )
+    for key in ["launchSchema", "receiptSchema", "recoverySchema", "telemetrySchema"]:
+        require_uint(
+            value["behavior"][key], 2**32 - 1, f"behavior {key}", positive=True
+        )
+    require_digest(value["behavior"]["projectionSha256"], "behavior projection")
+
+
+def validate_local_environment(value):
+    require_object(
+        value,
+        {
+            "apiVersion",
+            "architecture",
+            "backend",
+            "deviceId",
+            "deviceUUID",
+            "drmDriver",
+            "driverUUID",
+            "driverVersion",
+            "icdLibrarySha256",
+            "icdManifestSha256",
+            "pipelineCacheUUID",
+            "schemaVersion",
+            "vendorId",
+        },
+        "local environment",
+    )
+    require_schema(value["schemaVersion"], "local environment")
+    require_string(value["architecture"], "architecture", {"x86_64"})
+    require_string(value["backend"], "backend", {"vulkan"})
+    require_string(value["drmDriver"], "DRM driver")
+    for key in ["apiVersion", "deviceId", "driverVersion", "vendorId"]:
+        require_uint(value[key], 2**32 - 1, key, positive=key != "driverVersion")
+    for key in ["deviceUUID", "driverUUID", "pipelineCacheUUID"]:
+        if (
+            not isinstance(value[key], str)
+            or LOWER_HEX_32.fullmatch(value[key]) is None
+        ):
+            fail(f"{key} is not 32 lowercase hexadecimal characters")
+    require_digest(value["icdManifestSha256"], "ICD manifest digest")
+    require_digest(value["icdLibrarySha256"], "ICD library digest")
+
+
+def validate_performance_evidence(value):
+    require_object(
+        value,
+        {
+            "acceptedAt",
+            "cacheCycleSha256",
+            "corpusManifestSha256",
+            "coverageManifestSha256",
+            "executionArtifactId",
+            "expiresAt",
+            "gatePolicySha256",
+            "inferenceContractId",
+            "localEnvironmentKey",
+            "measurementProtocol",
+            "observationBundleSha256",
+            "schemaVersion",
+        },
+        "performance evidence",
+    )
+    require_schema(value["schemaVersion"], "performance evidence")
+    for key in [
+        "cacheCycleSha256",
+        "corpusManifestSha256",
+        "coverageManifestSha256",
+        "executionArtifactId",
+        "gatePolicySha256",
+        "inferenceContractId",
+        "localEnvironmentKey",
+        "observationBundleSha256",
+    ]:
+        require_digest(value[key], f"performance evidence {key}")
+    require_string(
+        value["measurementProtocol"],
+        "measurement protocol",
+        {"paired-product-sweep-v2"},
+    )
+    require_uint(value["acceptedAt"], 2**64 - 1, "acceptedAt", positive=True)
+    require_uint(value["expiresAt"], 2**64 - 1, "expiresAt", positive=True)
+    if value["expiresAt"] <= value["acceptedAt"]:
+        fail("performance evidence expiry does not follow acceptance")
+
+
+def validate_release_binding(value):
+    require_object(
+        value,
+        {
+            "accelerationSetSha256",
+            "allowedInferenceContractIds",
+            "allowedPerformanceEvidenceIds",
+            "bundleMarker",
+            "echoBinarySha256",
+            "echoCommit",
+            "executionArtifactId",
+            "packageType",
+            "reusableInventorySha256",
+            "schemaVersion",
+            "version",
+        },
+        "release binding",
+    )
+    require_schema(value["schemaVersion"], "release binding")
+    require_string(value["packageType"], "package type", {"deb", "rpm"})
+    require_string(value["bundleMarker"], "bundle marker", {"deb", "rpm"})
+    if value["bundleMarker"] != value["packageType"]:
+        fail("bundle marker differs from package type")
+    require_string(value["version"], "version")
+    if (
+        not isinstance(value["echoCommit"], str)
+        or COMMIT.fullmatch(value["echoCommit"]) is None
+    ):
+        fail("Echo commit is not 40 lowercase hexadecimal characters")
+    for key in [
+        "accelerationSetSha256",
+        "echoBinarySha256",
+        "executionArtifactId",
+        "reusableInventorySha256",
+    ]:
+        require_digest(value[key], f"release binding {key}")
+    require_sorted_ids(
+        value["allowedInferenceContractIds"], "allowed inference contract IDs"
+    )
+    require_sorted_ids(
+        value["allowedPerformanceEvidenceIds"], "allowed performance evidence IDs"
+    )
+
+
 def content_id(prefix, value):
     return hashlib.sha256(prefix + canonical_json_bytes(value)).hexdigest()
 
 
 def execution_artifact_id(value):
+    validate_execution_artifact(value)
     return content_id(DOMAIN_PREFIXES["executionArtifact"], value)
 
 
 def inference_contract_id(value):
+    validate_inference_contract(value)
     return content_id(DOMAIN_PREFIXES["inferenceContract"], value)
 
 
 def local_environment_key(value):
+    validate_local_environment(value)
     return content_id(DOMAIN_PREFIXES["localEnvironment"], value)
 
 
 def performance_evidence_id(value):
+    validate_performance_evidence(value)
     return content_id(DOMAIN_PREFIXES["performanceEvidence"], value)
 
 
 def release_binding_id(value):
+    validate_release_binding(value)
     return content_id(DOMAIN_PREFIXES["releaseBinding"], value)
 
 
@@ -140,8 +412,17 @@ def verify_fixture(path):
             fail(f"{name} content ID differs")
         if ID_FUNCTIONS[name](reverse_objects(case["input"])) != derived:
             fail(f"{name} content ID depends on object insertion order")
-        mutation = dict(case["input"])
-        mutation["schemaVersion"] = 4
+        mutation = copy.deepcopy(case["input"])
+        if name == "executionArtifact":
+            mutation["runtimeSha256"] = "0" * 64
+        elif name == "inferenceContract":
+            mutation["modelSha256"] = "0" * 64
+        elif name == "localEnvironment":
+            mutation["driverVersion"] += 1
+        elif name == "performanceEvidence":
+            mutation["observationBundleSha256"] = "0" * 64
+        else:
+            mutation["echoBinarySha256"] = "0" * 64
         if ID_FUNCTIONS[name](mutation) == derived:
             fail(f"{name} content ID ignored a changed field")
     return fixture
@@ -165,6 +446,31 @@ def self_test():
         pass
     else:
         fail("strict JSON accepted a duplicate key")
+    cases = strict_json_file(fixture)["cases"]
+    invalid = copy.deepcopy(cases["executionArtifact"]["input"])
+    invalid["echoCommit"] = "a" * 40
+    try:
+        execution_artifact_id(invalid)
+    except IdentityError:
+        pass
+    else:
+        fail("execution artifact accepted app identity")
+    invalid = copy.deepcopy(cases["localEnvironment"]["input"])
+    invalid["executionArtifactId"] = cases["executionArtifact"]["id"]
+    try:
+        local_environment_key(invalid)
+    except IdentityError:
+        pass
+    else:
+        fail("local environment accepted runtime identity")
+    invalid = copy.deepcopy(cases["releaseBinding"]["input"])
+    invalid["allowedInferenceContractIds"] *= 2
+    try:
+        release_binding_id(invalid)
+    except IdentityError:
+        pass
+    else:
+        fail("release binding accepted duplicate contract IDs")
     print("whisper_identity_v3: self-test passed")
 
 
