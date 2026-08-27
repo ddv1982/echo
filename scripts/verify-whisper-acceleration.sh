@@ -7,6 +7,7 @@ python3 scripts/run-whisper-cache-cycle.py --self-test
 python3 scripts/sweep-whisper-admission.py --self-test
 python3 scripts/whisper_release_common.py
 python3 scripts/whisper_identity_v3.py --self-test
+python3 scripts/verify-whisper-behavior-contract.py --self-test
 python3 scripts/promote-whisper-admission.py --self-test
 python3 scripts/compose-whisper-admission-set.py --self-test
 python3 scripts/patch-tauri-bundle-type.py --self-test

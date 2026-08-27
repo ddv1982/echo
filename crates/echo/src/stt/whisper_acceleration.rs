@@ -15,6 +15,7 @@ use super::whisper_admission::{
     admission_state, AdmissionDeviceIdentity, AdmissionIdentity, AdmissionSet, AdmissionState,
     PackageEntry, PackageEntryKind,
 };
+use super::whisper_behavior::{RECEIPT_PROBE_TIMEOUT_SECS, VULKAN_RECEIPT_SCHEMA};
 use super::{
     probe_vulkan_runtime_receipt, runtime_library_bindings, whisper_runtime_launch,
     WhisperExecutionPlan, WhisperPlanDecision, WhisperRuntimeCandidate, WhisperTuning,
@@ -221,7 +222,11 @@ fn verify_live_receipt(
     {
         return Ok(());
     }
-    let observed = run_probe(probe, launch, std::time::Duration::from_secs(15))?;
+    let observed = run_probe(
+        probe,
+        launch,
+        std::time::Duration::from_secs(RECEIPT_PROBE_TIMEOUT_SECS),
+    )?;
     if &observed != expected {
         return Err("live Vulkan receipt differs from admission".to_string());
     }
@@ -313,7 +318,7 @@ fn read_hex(path: &Path) -> Option<u32> {
 
 fn receipt(value: &AdmissionDeviceIdentity) -> WhisperVulkanReceipt {
     WhisperVulkanReceipt {
-        schema_version: 1,
+        schema_version: VULKAN_RECEIPT_SCHEMA,
         backend: value.backend.clone(),
         selected_index: value.selected_index,
         vendor_id: value.vendor_id,

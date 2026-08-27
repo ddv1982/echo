@@ -5,6 +5,7 @@ mod runtime;
 mod whisper;
 mod whisper_acceleration;
 mod whisper_admission;
+mod whisper_behavior;
 mod whisper_identity;
 mod whisper_plan;
 mod whisper_probe;
