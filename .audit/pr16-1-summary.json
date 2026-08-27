@@ -84,7 +84,7 @@
     "exactReceiptEveryRun": true
   },
   "verification": {
-    "verifierSelfTests": 15,
+    "verifierSelfTests": 16,
     "frontendTests": 94,
     "responsiveBrowserTests": 2,
     "workspaceTestsPassed": true,

@@ -548,13 +548,16 @@ def elf_files(package, receipt):
         if entry["type"] != "file":
             continue
         path = package / entry["path"]
+        if path.name == "cmake-cache.txt":
+            continue
         result = subprocess.run(
             ["readelf", "-h", str(path)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        if result.returncode == 0:
-            paths.append(path)
+        if result.returncode != 0:
+            fail(f"required runtime file is not an ELF binary: {path.name}")
+        paths.append(path)
     return paths
 
 
@@ -833,7 +836,8 @@ class ContractTests(unittest.TestCase):
             )
         with self.assertRaisesRegex(VerificationError, "approved system library root"):
             require_system_vulkan_loader(self.package / "libvulkan.so.1")
-        require_system_vulkan_loader(pathlib.Path("/usr/lib64/libvulkan.so.1"))
+        root = next(value for value in SYSTEM_VULKAN_ROOTS if value.exists())
+        require_system_vulkan_loader(root / "libvulkan.so.1")
 
     def test_builder_declares_the_portable_contract(self):
         verify_builder_contract(
@@ -867,6 +871,15 @@ class ContractTests(unittest.TestCase):
     def test_rejects_invalid_platform_abi(self):
         self.receipt["platformAbi"]["architecture"] = "aarch64"
         self.assert_rejected("architecture")
+
+    def test_rejects_non_elf_runtime_file(self):
+        runtime = self.package / "libggml-cpu-x64.so"
+        runtime.touch()
+        with self.assertRaisesRegex(VerificationError, "not an ELF"):
+            elf_files(
+                self.package,
+                {"files": [{"path": runtime.name, "type": "file"}]},
+            )
 
 
 def parser():
