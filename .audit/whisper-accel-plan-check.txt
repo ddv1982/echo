@@ -7,4 +7,4 @@ Measure persistent model reuse before adding it (PR 16.6)  boxes=25  files=3 bui
 6 PR sections, 0 problems
 
 Command:
-node /home/vriesd/.codex/plugins/cache/cursor-plugins/pstack/0.14.3/skills/poteto-mode/scripts/check-plan.mjs docs/plans/16-portable-whisper-acceleration/overview.md
+node /home/vriesd/.codex/plugins/cache/cursor-plugins/pstack/0.14.5/skills/poteto-mode/scripts/check-plan.mjs docs/plans/16-portable-whisper-acceleration/overview.md

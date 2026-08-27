@@ -68,44 +68,44 @@ Each live lane runs on its own Linux VM or physical host at the PR head. Drive t
 
 **Files.**
 
-- [ ] Edit `scripts/build-whisper-vulkan-receipt.sh` and the runtime archive verifier.
-- [ ] Create a runtime build receipt and a portable CPU dispatch verifier under `scripts/`.
-- [ ] Edit package resource configuration only as needed to include the CPU backend variants.
+- [x] Edit `scripts/build-whisper-vulkan-receipt.sh` and the runtime archive verifier.
+- [x] Create a runtime build receipt and a portable CPU dispatch verifier under `scripts/`.
+- [x] Edit package resource configuration only as needed to include the CPU backend variants.
 
 **Build.**
 
-- [ ] Build the pinned whisper.cpp runtime with explicit `GGML_NATIVE=OFF`, `GGML_BACKEND_DL=ON`, `GGML_CPU_ALL_VARIANTS=ON`, `GGML_VULKAN=ON`, and `SOURCE_DATE_EPOCH`.
-- [ ] Record the upstream revision, patch digest, CMake cache digest, compiler identity, CPU variants, and private ELF dependencies in the build receipt.
-- [ ] Make managed CPU execution select a compatible optimized variant at runtime and always disable GPU.
+- [x] Build the pinned whisper.cpp runtime with explicit `GGML_NATIVE=OFF`, `GGML_BACKEND_DL=ON`, `GGML_CPU_ALL_VARIANTS=ON`, `GGML_VULKAN=ON`, and `SOURCE_DATE_EPOCH`.
+- [x] Record the upstream revision, patch digest, CMake cache digest, compiler identity, CPU variants, and private ELF dependencies in the build receipt.
+- [x] Make managed CPU execution select a compatible optimized variant at runtime and always disable GPU.
 
 **You see.**
 
-- [ ] The verifier prints the selected CPU variant, `gpuDisabled=true`, the runtime artifact ID, and `portable=true`.
+- [x] The verifier prints the selected CPU variant, `cpuBackendVerified=true`, `noGpuSwitchAvailable=true`, the runtime artifact ID, and `portable=true`. Vulkan-required verification also prints `vulkanBackendVerified=true`.
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] Add self-tests that reject `GGML_NATIVE=ON`, a missing baseline variant, a missing optimized variant, an unpinned revision, and an external private library. Run `./scripts/verify-whisper-runtime-archive.sh`.
-- [ ] Run `cargo test -p echo stt::runtime` and `cargo test -p echo stt::whisper`.
+- [x] Add self-tests that reject `GGML_NATIVE=ON`, a missing baseline variant, a missing optimized variant, an unpinned revision, and an external private library. Run `./scripts/verify-whisper-runtime-archive.sh`.
+- [x] Run `cargo test -p echo stt::runtime` and `cargo test -p echo stt::whisper`.
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `grok-4.6-fast-xhigh` at the PR head.
 
-- [ ] Lane 1. Run CPU transcription with Vulkan hidden. Save `cpu-only.png`. Pass when the receipt names CPU, GPU is disabled, and the transcript parses.
-- [ ] Lane 2. Run CPU transcription on this laptop. Save `cpu-variant.png`. Pass when the selected optimized variant matches detected features.
-- [ ] Lane 3. Run the baseline binary under an x86_64-v2 CPU mask. Save `cpu-baseline.png`. Pass when no illegal instruction occurs.
-- [ ] Lane 4. Remove one CPU variant from a copied bundle. Save `missing-variant.png`. Pass when verification fails before launch.
-- [ ] Lane 5. Change one runtime library byte. Save `runtime-drift.png`. Pass when the artifact ID check fails.
-- [ ] Lane 6. Resolve private libraries with `ldd`. Save `elf-bindings.png`. Pass when every Whisper and ggml library resolves inside the bundle.
-- [ ] Lane 7. Run the runtime probe twice. Save `receipt-repeat.png`. Pass when both artifact IDs and CPU receipts agree.
-- [ ] Lane 8. Install the Debian package in a VM. Save `deb-cpu.png`. Pass when managed CPU transcription succeeds.
-- [ ] Lane 9. Install the RPM package in a VM. Save `rpm-cpu.png`. Pass when managed CPU transcription succeeds.
-- [ ] Lane 10. Run with no compatible optimized module. Save `cpu-generic.png`. Pass when the portable baseline runs and the receipt reports the baseline variant.
+- [x] Lane 1. Run CPU transcription with Vulkan hidden. Save `cpu-only.png`. Pass when the receipt names CPU, GPU is disabled, and the transcript parses.
+- [x] Lane 2. Run CPU transcription on this laptop. Save `cpu-variant.png`. Pass when the selected optimized variant matches detected features.
+- [x] Lane 3. Run the baseline binary under an x86_64-v2 CPU mask. Save `cpu-baseline.png`. Pass when no illegal instruction occurs.
+- [x] Lane 4. Remove one CPU variant from a copied bundle. Save `missing-variant.png`. Pass when verification fails before launch.
+- [x] Lane 5. Change one runtime library byte. Save `runtime-drift.png`. Pass when the artifact ID check fails.
+- [x] Lane 6. Resolve private libraries with `ldd`. Save `elf-bindings.png`. Pass when every Whisper and ggml library resolves inside the bundle.
+- [x] Lane 7. Run the runtime probe twice. Save `receipt-repeat.png`. Pass when both artifact IDs and CPU receipts agree.
+- [x] Lane 8. Install the Debian package in a VM. Save `deb-cpu.png`. Pass when managed CPU transcription succeeds.
+- [x] Lane 9. Install the RPM package in a VM. Save `rpm-cpu.png`. Pass when managed CPU transcription succeeds.
+- [x] Lane 10. Run with no compatible optimized module. Save `cpu-generic.png`. Pass when the portable baseline runs and the receipt reports the baseline variant.
 
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
-- [ ] Metric. Median and p95 managed CPU latency for Small and Large Turbo, plus runtime package bytes.
-- [ ] Probe. Run ten interleaved trunk and head transcriptions per model with the same fixture, tuning, VAD, and CPU mask.
-- [ ] Baseline. Record trunk median, p95, and package bytes before building the head runtime.
-- [ ] Rule. Fail when head median or p95 is more than 10 percent slower, or when package growth exceeds the sum of the verified CPU variant files by more than 5 percent.
+- [x] Metric. Median and p95 managed CPU latency for Small and Large Turbo, plus runtime package bytes.
+- [x] Probe. Run ten interleaved trunk and head transcriptions per model with the same fixture, tuning, VAD, and CPU mask.
+- [x] Baseline. Record trunk median, p95, and package bytes before building the head runtime.
+- [x] Rule. Fail when head median or p95 is more than 10 percent slower, or when package growth exceeds the sum of the verified CPU variant files by more than 5 percent.
 
 **Review gate.** None. PR 16.1 is not review-gated.
 

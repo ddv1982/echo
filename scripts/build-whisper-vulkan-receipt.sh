@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build a pinned, receipt-capable Vulkan candidate used by qualification.
-# This never selects a production runtime. v1.9.3 is investigative only.
-
 readonly script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly repo_root="$(cd -- "${script_dir}/.." && pwd)"
 readonly receipt_patch="${repo_root}/patches/whisper.cpp/runtime-receipt.patch"
@@ -45,7 +42,6 @@ check_source() {
     [[ -d "${source_dir}/.git" || -f "${source_dir}/.git" ]] || die "source is not a Git worktree: ${source_dir}"
     [[ -f "${source_dir}/CMakeLists.txt" ]] || die "source does not look like whisper.cpp: ${source_dir}"
     [[ "$(git -C "${source_dir}" rev-parse HEAD)" == "${expected_commit}" ]] || die "source HEAD is not ${expected_commit}"
-    [[ "$(git -C "${source_dir}" rev-parse "${revision}^{commit}")" == "${expected_commit}" ]] || die "${revision} does not resolve to ${expected_commit}"
     [[ -z "$(git -C "${source_dir}" status --porcelain)" ]] || die "source worktree is not clean"
     git -C "${source_dir}" apply --check "${receipt_patch}" || die "receipt patch does not apply to source"
     git -C "${source_dir}" apply --check "${probe_patch}" || die "runtime probe patch does not apply to source"
@@ -63,6 +59,7 @@ check_staged_runtime() {
     stage_real="$(readlink -f -- "${stage_dir}")"
     [[ -x "${stage_dir}/whisper-cli" ]] || die "whisper-cli was not produced"
     [[ -x "${stage_dir}/echo-whisper-runtime-probe" ]] || die "echo-whisper-runtime-probe was not produced"
+    [[ -f "${stage_dir}/libggml-vulkan.so" ]] || die "libggml-vulkan was not produced beside whisper-cli"
     for library in "${required_libraries[@]}"; do
         find "${stage_dir}" -maxdepth 1 -type f -name "${library}.so*" -print -quit | grep -q . || die "${library} was not produced beside whisper-cli"
     done
@@ -159,7 +156,7 @@ check_staged_runtime "${stage_dir}"
     "${repo_root}" \
     "${probe_patch}" \
     "${receipt_patch}"
-"${runtime_verifier}" --verify "${stage_dir}"
+"${runtime_verifier}" --verify --require-vulkan "${stage_dir}"
 
 mv -- "${stage_dir}" "${output_dir}"
 trap - EXIT

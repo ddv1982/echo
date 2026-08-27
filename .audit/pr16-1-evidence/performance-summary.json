@@ -1,0 +1,55 @@
+{
+  "archiveSha256": "f76c7b7ffe1d76ef6470300bb6d66b33433f3600ad1e964e181af699865af28f",
+  "artifactId": "317aa0de89d05f1abd6a4fd7bd8d993cdaa2b4946f131212ba04de321b5e1e32",
+  "buildReceiptSha256": "f3e0e18872f9587bf5e3113ad7d6b715bbbca621a26aa1bafdfa17575a1566cc",
+  "candidateVulkanReceiptsExact": true,
+  "candidateWhisperCliSha256": "37382797bcad4b4bab155d4a59ac2d41664da19a9f7553c3838052d9efe59199",
+  "interleavedSha256": "9afedbb719b72c887ee7b88fdaab36ea4a6185460a05feeaefb77a58494cc928",
+  "packageBytes": 59807467,
+  "results": {
+    "cpu": {
+      "largeTurbo": {
+        "baselineMedianMs": 18717.0,
+        "baselineP95Ms": 19034.2,
+        "candidateMedianMs": 18911.5,
+        "candidateP95Ms": 19149.9,
+        "medianDeltaPercent": 1.0391622589090133,
+        "p95DeltaPercent": 0.6078532326023721,
+        "pairs": 10
+      },
+      "small": {
+        "baselineMedianMs": 3533.5,
+        "baselineP95Ms": 3710.35,
+        "candidateMedianMs": 3619.5,
+        "candidateP95Ms": 3718.95,
+        "medianDeltaPercent": 2.4338474600254707,
+        "p95DeltaPercent": 0.23178406349805028,
+        "pairs": 10
+      }
+    },
+    "vulkan": {
+      "largeTurbo": {
+        "baselineMedianMs": 5771.5,
+        "baselineP95Ms": 5803.1,
+        "candidateMedianMs": 5779.0,
+        "candidateP95Ms": 5800.2,
+        "medianDeltaPercent": 0.1299488867712033,
+        "p95DeltaPercent": -0.04997329013803907,
+        "pairs": 10
+      },
+      "small": {
+        "baselineMedianMs": 1499.0,
+        "baselineP95Ms": 1502.1,
+        "candidateMedianMs": 1495.0,
+        "candidateP95Ms": 1505.85,
+        "medianDeltaPercent": -0.26684456304202797,
+        "p95DeltaPercent": 0.2496504893149591,
+        "pairs": 10
+      }
+    }
+  },
+  "runManifestSha256": "09978a93b118aeee2d273939e84edf5b183a722f689aab30590d41041560dcd0",
+  "runs": 80,
+  "schemaVersion": 1,
+  "transcriptParity": true
+}
