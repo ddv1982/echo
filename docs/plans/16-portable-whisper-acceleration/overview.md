@@ -111,7 +111,7 @@ Each live lane runs on its own Linux VM or physical host at the PR head. Drive t
 
 **Merge.**
 
-- [ ] Record the exact runtime artifact ID and CPU dispatch receipt in the PR.
+- [x] Record the exact runtime artifact ID and CPU dispatch receipt in the PR.
 - [ ] Root gives a clean verdict at the exact head SHA, CI is green, and the owner squash-merges.
 
 ## Separate runtime evidence from app release identity (PR 16.2)
