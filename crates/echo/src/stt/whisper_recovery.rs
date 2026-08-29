@@ -7,7 +7,6 @@ use echo_core::{
     WhisperRecoveryTelemetry, WhisperRuntimeBackend,
 };
 
-use super::whisper_accel_cache::{LocalSelectionKey, LocalSelectionStore};
 use super::whisper_quarantine::{AcceleratorKey, QuarantineReason, MAX_QUARANTINE_LIFETIME_SECS};
 use super::whisper_plan::{QualifiedWhisperPlan, WhisperPlanDecision};
 use super::{QuarantineStore, WhisperEngine};
@@ -17,7 +16,6 @@ pub struct RecoveringWhisperEngine {
     quarantine: QuarantineStore,
     now: fn() -> u64,
     process_quarantine: Arc<Mutex<BTreeMap<String, u64>>>,
-    local_quarantine: Option<(LocalSelectionStore, LocalSelectionKey)>,
 }
 
 static PROCESS_QUARANTINE: OnceLock<Arc<Mutex<BTreeMap<String, u64>>>> = OnceLock::new();
@@ -32,20 +30,9 @@ impl RecoveringWhisperEngine {
             process_quarantine: Arc::clone(
                 PROCESS_QUARANTINE.get_or_init(|| Arc::new(Mutex::new(BTreeMap::new()))),
             ),
-            local_quarantine: None,
         }
     }
 
-    pub(crate) fn new_local(
-        decision: WhisperPlanDecision,
-        quarantine: QuarantineStore,
-        local_store: LocalSelectionStore,
-        local_key: LocalSelectionKey,
-    ) -> Self {
-        let mut engine = Self::new(decision, quarantine);
-        engine.local_quarantine = Some((local_store, local_key));
-        engine
-    }
 
     #[must_use]
     #[cfg(test)]
@@ -59,7 +46,6 @@ impl RecoveringWhisperEngine {
             quarantine,
             now,
             process_quarantine: Arc::new(Mutex::new(BTreeMap::new())),
-            local_quarantine: None,
         }
     }
 
@@ -168,13 +154,6 @@ impl RecoveringWhisperEngine {
         let _ = self
             .quarantine
             .record_failure(&plan.identity_key, quarantine_reason(failure), now);
-        if let Some((store, key)) = &self.local_quarantine {
-            if let Err(error) =
-                store.append_quarantine(key.clone(), quarantine_reason(failure), now)
-            {
-                eprintln!("Whisper local quarantine write failed: {error}");
-            }
-        }
         self.run_fallback(plan, pcm, options, true, failure)
     }
 
@@ -300,7 +279,6 @@ mod tests {
     };
 
     use super::*;
-    use crate::stt::whisper_accel_cache::{LocalSelectionKey, LocalSelectionStore};
     use crate::stt::{
         whisper_runtime_launch, AcceleratorKey, QuarantineStore, WhisperExecutionPlan,
         WhisperModelAsset, WhisperPlanDecision, WhisperRuntimeCandidate, WhisperTuning,
@@ -607,10 +585,7 @@ mod tests {
             )
             .unwrap();
             let store = QuarantineStore::at(root.join("quarantine.json"));
-            let local_key = LocalSelectionKey::parse(identity_key.as_str().to_string()).unwrap();
-            let local_store = LocalSelectionStore::at(root.join("local-state"));
-            let mut engine = RecoveringWhisperEngine::with_clock(decision, store, now);
-            engine.local_quarantine = Some((local_store.clone(), local_key.clone()));
+            let engine = RecoveringWhisperEngine::with_clock(decision, store, now);
             let transcript = engine
                 .transcribe(&Pcm16kMono::from_samples(vec![0; 160]), &options())
                 .unwrap();
@@ -624,14 +599,6 @@ mod tests {
             assert!(recovery.accelerated_attempted, "{label}");
             assert_eq!(recovery.fallback_reason, Some(reason), "{label}");
             assert!(engine.quarantine_is_active(NOW).unwrap(), "{label}");
-            assert!(
-                local_store
-                    .snapshot(&local_key, NOW)
-                    .unwrap()
-                    .active_quarantine
-                    .is_some(),
-                "{label}"
-            );
             if label == "crash" {
                 fs::remove_file(root.join("quarantine.json")).unwrap();
                 let transcript = engine

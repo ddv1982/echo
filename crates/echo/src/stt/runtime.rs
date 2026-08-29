@@ -35,6 +35,8 @@ pub(crate) fn whisper_runtime_launch(cli: &Path) -> WhisperRuntimeLaunch {
     }
 }
 
+// Only consumer was the portable package verifier, deleted in the next phase.
+#[allow(dead_code)]
 pub(crate) fn runtime_library_bindings(
     cli: &Path,
 ) -> std::io::Result<BTreeMap<String, String>> {

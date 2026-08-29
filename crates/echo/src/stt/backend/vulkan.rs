@@ -1,3 +1,7 @@
+// Unused between the planner's removal and the selectable GPU path that
+// replaces it. Every item here is the Vulkan capability the plan keeps.
+#![allow(dead_code)]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::Read;
@@ -7,15 +11,41 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use echo_core::WhisperVulkanReceipt;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::super::whisper::enumerate_vulkan_runtime_receipts;
-use super::super::whisper_accel_cache::{
-    DriverIcdFingerprint, LocalRouteObservation, StableVulkanReceipt,
-};
 use super::super::whisper_identity::{Sha256Digest, UuidDigest};
 use super::super::{probe_vulkan_runtime_receipt, VulkanRuntimeSelector, WhisperRuntimeLaunch};
+
+/// A Vulkan device receipt reduced to the fields that are stable across
+/// reboots and driver reloads. `selectedIndex` is deliberately absent: it
+/// reorders, which is why devices are pinned by UUID pair instead.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct StableVulkanReceipt {
+    pub backend: String,
+    pub vendor_id: u32,
+    pub device_id: u32,
+    pub api_version: u32,
+    pub driver_version: u32,
+    #[serde(rename = "deviceUUID")]
+    pub device_uuid: UuidDigest,
+    #[serde(rename = "driverUUID")]
+    pub driver_uuid: UuidDigest,
+    #[serde(rename = "pipelineCacheUUID")]
+    pub pipeline_cache_uuid: UuidDigest,
+}
+
+/// The driver and loader files behind a route. A package upgrade changes
+/// these digests, which is how a stale route is detected.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct DriverIcdFingerprint {
+    pub drm_driver: String,
+    pub icd_manifest_sha256: Sha256Digest,
+    pub icd_library_sha256: Sha256Digest,
+}
 
 const MAX_ICD_MANIFEST_BYTES: u64 = 64 * 1024;
 
@@ -172,31 +202,6 @@ impl VulkanBackend {
         Ok(receipt)
     }
 
-    pub(crate) fn restore(
-        &self,
-        observation: &LocalRouteObservation,
-    ) -> Result<LocalVulkanRoute, String> {
-        let manifest_path = observation
-            .manifest_path
-            .canonicalize()
-            .map_err(|error| error.to_string())?;
-        let library_path = observation
-            .library_path
-            .canonicalize()
-            .map_err(|error| error.to_string())?;
-        Ok(LocalVulkanRoute {
-            receipt: observation.stable_receipt.clone(),
-            selected_index: 0,
-            fingerprint: observation.fingerprint.clone(),
-            manifest_path,
-            library_path,
-            selector: VulkanRuntimeSelector::parse(
-                observation.stable_receipt.device_uuid.as_str().to_string(),
-                observation.stable_receipt.driver_uuid.as_str().to_string(),
-            )?,
-            cached_ready: Some(observation.ready_receipt.runtime_receipt()),
-        })
-    }
 
     fn probe_timeout(&self) -> Result<Duration, String> {
         let Some(deadline) = self.deadline else {
