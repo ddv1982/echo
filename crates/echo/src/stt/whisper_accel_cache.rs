@@ -193,14 +193,6 @@ impl CalibrationObservation {
     }
 }
 
-pub(crate) const AUTO_GPU_MIN_IMPROVEMENT_MS: u64 = 250;
-
-#[must_use]
-pub(crate) fn gpu_beats_cpu(cpu_infer_ms: u64, gpu_infer_ms: u64) -> bool {
-    cpu_infer_ms.saturating_sub(gpu_infer_ms) >= AUTO_GPU_MIN_IMPROVEMENT_MS
-        && gpu_infer_ms.saturating_mul(5) <= cpu_infer_ms.saturating_mul(4)
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct LocalQuarantineObservation {
@@ -260,6 +252,7 @@ pub(crate) struct NewLocalRouteObservation {
     pub observed_at: u64,
 }
 
+#[allow(dead_code)]
 pub(crate) struct CalibrationLease(File);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -280,6 +273,7 @@ pub(crate) struct ModelRouteView {
 }
 
 pub(crate) struct NewCalibrationObservation {
+    #[allow(dead_code)]
     pub key: LocalSelectionKey,
     pub verdict: CalibrationVerdict,
     pub cpu_infer_ms: u64,
@@ -300,6 +294,7 @@ impl LocalSelectionStore {
         Self { root }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn append_calibration(
         &self,
         new: NewCalibrationObservation,
@@ -422,6 +417,7 @@ impl LocalSelectionStore {
         Ok(directory.join(format!("{job_id}.json")))
     }
 
+    #[allow(dead_code)]
     pub(crate) fn job_paths(&self) -> Result<Vec<PathBuf>, String> {
         let directory = self.root.join("jobs");
         let entries = match fs::read_dir(&directory) {
@@ -449,6 +445,7 @@ impl LocalSelectionStore {
         Ok(paths)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn job_is_complete(&self, job_id: &str) -> bool {
         self.root
             .join("job-results")
@@ -456,6 +453,7 @@ impl LocalSelectionStore {
             .is_file()
     }
 
+    #[allow(dead_code)]
     pub(crate) fn publish_job_result<T: Serialize>(
         &self,
         job_id: &str,
@@ -469,6 +467,7 @@ impl LocalSelectionStore {
         Ok(directory.join(format!("{job_id}.json")))
     }
 
+    #[allow(dead_code)]
     pub(crate) fn try_claim(
         &self,
         execution_artifact_id: &ExecutionArtifactId,
@@ -495,6 +494,7 @@ impl LocalSelectionStore {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn try_claim_package_verification(
         &self,
     ) -> Result<Option<CalibrationLease>, String> {

@@ -120,17 +120,15 @@
         "acceleratedAttempted",
         "fallbackReason"
       ],
-      "schema": 2,
+      "schema": 3,
       "selectionFields": [
         "preference",
         "cachedDecision",
-        "localKey",
-        "calibrationPending",
-        "proofOnly"
+        "localKey"
       ]
     }
   },
-  "projectionSha256": "e45b8c5256e0ce5518352da0cc13ee5fb4b9d56ba9ac1c24e6fd2107cea4bb7b",
+  "projectionSha256": "22dd42e88cdd73451d2bbbbf2c7ca9e4941aa9264d1d7368761b1371677ef99e",
   "watchedPaths": [
     "crates/echo-core/src/engine.rs",
     "crates/echo/src/stt/backend/vulkan.rs",
@@ -139,7 +137,6 @@
     "crates/echo/src/stt/whisper_acceleration.rs",
     "crates/echo/src/stt/whisper_admission.rs",
     "crates/echo/src/stt/whisper_behavior.rs",
-    "crates/echo/src/stt/whisper_calibration.rs",
     "crates/echo/src/stt/whisper_plan.rs",
     "crates/echo/src/stt/whisper_planner.rs",
     "crates/echo/src/stt/whisper_portable.rs",

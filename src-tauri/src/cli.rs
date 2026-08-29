@@ -25,14 +25,6 @@ enum Command {
     Rec(RecArgs),
     Transcribe(TranscribeArgs),
     Languages(LanguagesArgs),
-    #[command(hide = true)]
-    WhisperCalibrate(WhisperCalibrateArgs),
-}
-
-#[derive(Debug, Args)]
-struct WhisperCalibrateArgs {
-    #[arg(long)]
-    job: PathBuf,
 }
 
 #[derive(Debug, Args)]
@@ -192,13 +184,6 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> i32 {
             Ok(()) => 0,
             Err(message) => {
                 eprintln!("{message}");
-                1
-            }
-        },
-        Some(Command::WhisperCalibrate(args)) => match echo::stt::run_calibration_job(&args.job) {
-            Ok(()) => 0,
-            Err(message) => {
-                eprintln!("whisper-calibrate: {message}");
                 1
             }
         },
@@ -556,8 +541,6 @@ fn positive_u8(raw: &str) -> Result<u8, String> {
 
 #[cfg(test)]
 mod tests {
-    use clap::CommandFactory;
-
     use super::*;
 
     #[test]
@@ -565,22 +548,5 @@ mod tests {
         assert_eq!(one_trailing_newline("hello".into()), "hello\n");
         assert_eq!(one_trailing_newline("hello\n\n".into()), "hello\n");
         assert_eq!(one_trailing_newline(String::new()), "\n");
-    }
-
-    #[test]
-    fn calibration_owner_is_callable_but_hidden_from_product_help() {
-        let help = Cli::command().render_long_help().to_string();
-        assert!(!help.contains("whisper-calibrate"));
-        assert!(matches!(
-            Cli::try_parse_from([
-                "echo-desktop",
-                "whisper-calibrate",
-                "--job",
-                "/tmp/job.json"
-            ])
-            .unwrap()
-            .command,
-            Some(Command::WhisperCalibrate(_))
-        ));
     }
 }

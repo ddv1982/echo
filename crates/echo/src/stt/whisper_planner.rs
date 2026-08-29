@@ -364,8 +364,7 @@ fn selection(
         preference,
         cached_decision,
         local_key,
-        calibration_pending: false,
-        proof_only: false,
+        ..Default::default()
     }
 }
 
@@ -569,8 +568,6 @@ mod tests {
         let selection = transcript.detail.whisper.unwrap().selection.unwrap();
         assert_eq!(selection.preference, WhisperAccelerationPreference::Auto);
         assert_eq!(selection.cached_decision, WhisperCachedDecision::Unknown);
-        assert!(!selection.calibration_pending);
-        assert!(!selection.proof_only);
     }
 
     #[test]
@@ -596,7 +593,6 @@ mod tests {
             .unwrap();
         let selection = transcript.detail.whisper.unwrap().selection.unwrap();
         assert_eq!(selection.cached_decision, WhisperCachedDecision::Unknown);
-        assert!(!selection.calibration_pending);
     }
 
     #[test]
@@ -632,7 +628,6 @@ mod tests {
             .unwrap();
         let selection = transcript.detail.whisper.unwrap().selection.unwrap();
         assert_eq!(selection.cached_decision, WhisperCachedDecision::Unknown);
-        assert!(!selection.calibration_pending);
     }
 
     #[test]

@@ -129,13 +129,11 @@ pub(super) fn projection() -> Value {
                 "acceleratedAttempted",
                 "fallbackReason"
             ],
-            "schema": 2,
+            "schema": 3,
             "selectionFields": [
                 "preference",
                 "cachedDecision",
-                "localKey",
-                "calibrationPending",
-                "proofOnly"
+                "localKey"
             ]
         }
     })

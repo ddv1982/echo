@@ -264,8 +264,7 @@ fn quarantine_reason(reason: WhisperRecoveryReason) -> QuarantineReason {
         WhisperRecoveryReason::IdentityMismatch => QuarantineReason::IdentityMismatch,
         WhisperRecoveryReason::RuntimeFailure
         | WhisperRecoveryReason::Quarantined
-        | WhisperRecoveryReason::QuarantineUnreadable
-        | WhisperRecoveryReason::PolicyMismatch => QuarantineReason::RuntimeFailure,
+        | WhisperRecoveryReason::QuarantineUnreadable => QuarantineReason::RuntimeFailure,
     }
 }
 

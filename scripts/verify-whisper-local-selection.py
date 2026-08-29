@@ -160,9 +160,6 @@ def verify_live(args: argparse.Namespace) -> dict[str, object]:
         raise ValueError("cold baseline did not use managed CPU")
     if runtime_backend(cold) not in {"cpu", "vulkan"}:
         raise ValueError("cold Auto did not use CPU or Vulkan")
-    cold_selection = selection(cold)
-    if cold_selection.get("calibrationPending") is True:
-        raise ValueError("cold Auto reported pending calibration")
     gpu_cold, gpu_cold_wall = run_transcription(
         binary, fixture, args.model, "gpu", output / "gpu-cold"
     )
@@ -180,7 +177,6 @@ def verify_live(args: argparse.Namespace) -> dict[str, object]:
         runtime_backend(gpu) != "vulkan"
         or runtime_backend(warm) != "vulkan"
         or warm_selection["cachedDecision"] != "vulkan"
-        or warm_selection["calibrationPending"] is not False
         or gpu_selection["localKey"] != warm_selection["localKey"]
     ):
         raise ValueError("warm Auto or explicit GPU did not share the Vulkan route")
@@ -215,8 +211,6 @@ def verify_live(args: argparse.Namespace) -> dict[str, object]:
     corrupt, _ = run_transcription(binary, fixture, args.model, "auto", corrupt_root)
     if view.read_text(encoding="utf-8") != "{corrupt\n":
         raise ValueError("corrupt cache was not preserved")
-    if selection(corrupt).get("calibrationPending") is True:
-        raise ValueError("corrupt cache Auto reported pending calibration")
     if runtime_backend(gpu) == "vulkan" and runtime_backend(corrupt) != "vulkan":
         raise ValueError("corrupt cache Auto on a GPU host did not use Vulkan")
 

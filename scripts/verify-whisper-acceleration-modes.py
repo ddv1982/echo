@@ -92,11 +92,7 @@ def verify_live(args: argparse.Namespace) -> dict[str, object]:
         raise ValueError("cold Auto did not use CPU or Vulkan")
     if backend(gpu) == "vulkan" and backend(auto_cold) != "vulkan":
         raise ValueError("cold Auto on a GPU host did not use Vulkan")
-    if selection(auto_cold).get("calibrationPending") is True:
-        raise ValueError("cold Auto reported pending calibration")
     auto_warm = transcribe(binary, fixture, args.model, "auto", output / "auto")
-    if selection(auto_warm).get("calibrationPending") is True:
-        raise ValueError("warm Auto reported pending calibration")
     if backend(gpu) == "vulkan" and backend(auto_warm) != "vulkan":
         raise ValueError("warm Auto on a GPU host did not use Vulkan")
     auto_language = transcribe(

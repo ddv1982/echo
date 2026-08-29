@@ -54,8 +54,22 @@ pub struct WhisperSelectionTelemetry {
     pub cached_decision: WhisperCachedDecision,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_key: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub calibration_pending: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub proof_only: bool,
+}
+
+impl Default for WhisperSelectionTelemetry {
+    fn default() -> Self {
+        Self {
+            preference: WhisperAccelerationPreference::Auto,
+            cached_decision: WhisperCachedDecision::Unknown,
+            local_key: None,
+            calibration_pending: false,
+            proof_only: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,7 +130,6 @@ pub enum WhisperRecoveryReason {
     ReceiptMismatch,
     CpuFallback,
     IdentityMismatch,
-    PolicyMismatch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

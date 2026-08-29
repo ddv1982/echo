@@ -8,7 +8,6 @@ mod whisper_accel_cache;
 mod whisper_acceleration;
 mod whisper_admission;
 mod whisper_behavior;
-mod whisper_calibration;
 mod whisper_identity;
 mod whisper_plan;
 mod whisper_planner;
@@ -39,7 +38,6 @@ pub use whisper_admission::{
     PackageEntry, PackageEntryKind, QuarantineReason, QuarantineRecord, SharedRuntimeArtifacts,
     MAX_ADMISSION_LIFETIME_SECS, MAX_QUARANTINE_LIFETIME_SECS,
 };
-pub use whisper_calibration::run_calibration_job;
 pub use whisper_identity::{
     ExecutionArtifactId, IdentityError as WhisperIdentityError, InferenceContractId,
     LocalEnvironmentKey, PerformanceEvidenceId, ReleaseBindingId,

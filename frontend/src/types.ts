@@ -193,8 +193,8 @@ export interface LastRunPerformance {
     preference: 'auto' | 'gpu' | 'cpu'
     cachedDecision: 'unknown' | 'cpu' | 'vulkan'
     localKey?: string
-    calibrationPending: boolean
-    proofOnly: boolean
+    calibrationPending?: boolean
+    proofOnly?: boolean
   } | null
   recovery?: {
     identityKey: string

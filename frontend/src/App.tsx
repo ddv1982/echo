@@ -1500,7 +1500,6 @@ function SettingsView({
                     label="Acceleration"
                     value={whisperAccelerationLabel(status.lastRun.performance)}
                     tone={
-                      status.lastRun.performance.selection.calibrationPending ||
                       status.lastRun.performance.recovery?.fallbackReason
                         ? 'attention'
                         : 'ok'

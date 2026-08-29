@@ -406,10 +406,3 @@ fn completed_job_history_does_not_exhaust_pending_queue() {
         .unwrap();
     assert_eq!(store.job_paths().unwrap().len(), 1);
 }
-
-#[test]
-fn gpu_eligibility_requires_percent_and_absolute_improvement() {
-    assert!(gpu_beats_cpu(2000, 1000));
-    assert!(!gpu_beats_cpu(300, 200));
-    assert!(!gpu_beats_cpu(2000, 1700));
-}
