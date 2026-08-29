@@ -260,7 +260,9 @@ def require_path(value: object, label: str) -> Path:
     return Path(value)
 
 
-def selected_cell(sweep: dict[str, object], label: str) -> dict[str, object]:
+def selected_cell(
+    sweep: dict[str, object], label: str, *, allow_reset_rebind: bool = False
+) -> dict[str, object]:
     cells = sweep.get("cells")
     if not isinstance(cells, list):
         raise ValueError("sweep cells must be an array")
@@ -272,14 +274,38 @@ def selected_cell(sweep: dict[str, object], label: str) -> dict[str, object]:
     if len(matches) != 1:
         raise ValueError(f"expected one sweep cell named {label}")
     cell = matches[0]
-    if cell.get("decision") != "PROCEED" or cell.get("researchPass") is not True:
+    allowed_decisions = {"PROCEED", "INCOMPLETE"} if allow_reset_rebind else {"PROCEED"}
+    if (
+        cell.get("decision") not in allowed_decisions
+        or cell.get("researchPass") is not True
+    ):
         raise ValueError("sweep cell is not a confirmed research pass")
     require_green(
         cell.get("researchGates"),
         (*RESEARCH_GATES, *RESOURCE_GATES),
         "research and resource gates",
     )
-    require_green(cell.get("bindingGates"), BINDING_GATES, "binding gates")
+    binding_gates = cell.get("bindingGates")
+    if allow_reset_rebind:
+        if not isinstance(binding_gates, dict) or set(binding_gates) != set(
+            BINDING_GATES
+        ):
+            raise ValueError("binding gates have the wrong gate set")
+        rebind_gate_names = tuple(
+            name for name in BINDING_GATES if name != "resetEvidence"
+        )
+        require_green(
+            {name: binding_gates[name] for name in rebind_gate_names},
+            rebind_gate_names,
+            "binding gates except reset evidence",
+        )
+        if binding_gates.get("resetEvidence") not in {
+            False,
+            True,
+        }:
+            raise ValueError("binding reset gate is missing")
+    else:
+        require_green(binding_gates, BINDING_GATES, "binding gates")
     return cell
 
 
@@ -595,7 +621,11 @@ def promote(args: argparse.Namespace) -> None:
     sweep = read_json(sweep_path / "sweep.json", "sweep")
     if status.get("state") != "complete" or sweep.get("researchPass") is not True:
         raise ValueError("sweep is not complete and green")
-    cell = selected_cell(sweep, args.cell)
+    cell = selected_cell(
+        sweep,
+        args.cell,
+        allow_reset_rebind=args.inference_contract_v3 is not None,
+    )
     with tempfile.TemporaryDirectory(prefix="echo-whisper-promotion-") as temporary:
         replay_analysis(cell, args.corpus.resolve(), Path(temporary))
 
@@ -883,6 +913,19 @@ def self_test() -> None:
         "bindingGates": {name: True for name in BINDING_GATES},
     }
     assert selected_cell({"cells": [green_cell]}, "qualified") is green_cell
+    reset_rebind = json.loads(json.dumps(green_cell))
+    reset_rebind["decision"] = "INCOMPLETE"
+    reset_rebind["bindingGates"]["resetEvidence"] = False
+    assert (
+        selected_cell({"cells": [reset_rebind]}, "qualified", allow_reset_rebind=True)
+        is reset_rebind
+    )
+    try:
+        selected_cell({"cells": [reset_rebind]}, "qualified")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("incomplete reset gate passed ordinary promotion")
     failed_resource = json.loads(json.dumps(green_cell))
     failed_resource["researchGates"]["memoryFloor"] = False
     try:
