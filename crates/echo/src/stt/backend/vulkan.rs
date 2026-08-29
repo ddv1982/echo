@@ -463,11 +463,12 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs a real Vulkan device and ECHO_TEST_VULKAN_PROBE"]
     fn live_uuid_selector_when_probe_is_supplied() {
-        let Some(probe) = std::env::var_os("ECHO_TEST_VULKAN_PROBE") else {
-            return;
-        };
-        let probe = PathBuf::from(probe);
+        let probe = PathBuf::from(
+            std::env::var_os("ECHO_TEST_VULKAN_PROBE")
+                .expect("ECHO_TEST_VULKAN_PROBE names the packaged runtime probe"),
+        );
         let backend = VulkanBackend::system(
             probe.clone(),
             WhisperRuntimeLaunch {
