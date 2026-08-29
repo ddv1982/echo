@@ -140,6 +140,19 @@ impl SpeechRuntimeInventory {
                 });
             }
         }
+        if let Some(root) = active(ComponentId::WhisperVulkanRuntime) {
+            let cli = root.join("whisper-cli");
+            if cli.is_file() {
+                provenance.insert(cli.clone(), ComponentId::WhisperVulkanRuntime);
+                whisper_runtimes.push(WhisperRuntimeCandidate {
+                    source: WhisperRuntimeSource::Managed,
+                    backend: WhisperRuntimeBackend::Vulkan,
+                    launch: whisper_runtime_launch(&cli),
+                    cli,
+                    server: None,
+                });
+            }
+        }
         if let Some(cli) = ["whisper-cli", "whisper-cpp", "whisper"]
             .into_iter()
             .find_map(path_of)
