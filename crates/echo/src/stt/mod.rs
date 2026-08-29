@@ -5,8 +5,6 @@ mod parakeet;
 mod runtime;
 mod whisper;
 mod whisper_accel_cache;
-mod whisper_acceleration;
-mod whisper_admission;
 mod whisper_behavior;
 mod whisper_identity;
 mod whisper_plan;
@@ -23,7 +21,6 @@ pub use runtime::SpeechRuntimeInventory;
 pub(crate) use runtime::{runtime_library_bindings, whisper_runtime_launch};
 pub(crate) use whisper::probe_vulkan_runtime_receipt;
 pub use whisper::WhisperEngine;
-pub(crate) use whisper_acceleration::production_whisper_decision;
 pub(crate) use whisper_planner::{
     local_whisper_engine_from_process, resolved_whisper_acceleration,
 };
@@ -32,11 +29,6 @@ pub(crate) use whisper_planner::{
 pub fn whisper_acceleration_factory_default() -> echo_core::WhisperAccelerationPreference {
     echo_core::WhisperAccelerationPreference::Auto
 }
-pub use whisper_admission::{
-    AdmissionDeviceIdentity, AdmissionGates, AdmissionIdentity, AdmissionSet, AdmissionState,
-    AdmissionTuning, AdmissionVerdict, CacheSeedArtifact, ModelAdmission, PackageEntry,
-    PackageEntryKind, SharedRuntimeArtifacts, MAX_ADMISSION_LIFETIME_SECS,
-};
 pub use whisper_quarantine::{
     AcceleratorKey, QuarantineReason, QuarantineRecord, MAX_QUARANTINE_LIFETIME_SECS,
 };
