@@ -16,8 +16,8 @@ from whisper_identity_v3 import (
     verify_fixture,
 )
 
-BEHAVIOR_PATH = Path("crates/echo/tests/fixtures/whisper-behavior-v3.json")
-IDENTITIES_PATH = Path("crates/echo/tests/fixtures/whisper-v3-identities.json")
+BEHAVIOR_PATH = Path("scripts/fixtures/whisper-behavior-v3.json")
+IDENTITIES_PATH = Path("scripts/fixtures/whisper-v3-identities.json")
 BEHAVIOR_FIELDS = {"projection", "projectionSha256", "schemaVersion", "watchedPaths"}
 COMMIT = re.compile(r"[0-9a-f]{40}")
 REQUEST_POLICY = {

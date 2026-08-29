@@ -137,13 +137,8 @@
     "crates/echo-core/src/engine.rs",
     "crates/echo/src/stt/backend/vulkan.rs",
     "crates/echo/src/stt/whisper.rs",
-    "crates/echo/src/stt/whisper_accel_cache.rs",
-    "crates/echo/src/stt/whisper_acceleration.rs",
-    "crates/echo/src/stt/whisper_admission.rs",
     "crates/echo/src/stt/whisper_behavior.rs",
     "crates/echo/src/stt/whisper_plan.rs",
-    "crates/echo/src/stt/whisper_planner.rs",
-    "crates/echo/src/stt/whisper_portable.rs",
     "crates/echo/src/stt/whisper_probe.rs",
     "crates/echo/src/stt/whisper_recovery.rs",
     "crates/echo/src/transcribe.rs"

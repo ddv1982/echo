@@ -413,7 +413,7 @@ def fixture(
 def add_v3_fixture(root: Path, model_seed: str) -> None:
     fixture_path = (
         Path(__file__).resolve().parent.parent
-        / "crates/echo/tests/fixtures/whisper-v3-identities.json"
+        / "scripts/fixtures/whisper-v3-identities.json"
     )
     cases = read_json_strict(fixture_path, "v3 identity fixture")["cases"]
     package = root / "whisper-acceleration"

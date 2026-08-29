@@ -624,7 +624,7 @@ def verify_fixture(path):
 def self_test():
     fixture = (
         Path(__file__).resolve().parent.parent
-        / "crates/echo/tests/fixtures/whisper-v3-identities.json"
+        / "scripts/fixtures/whisper-v3-identities.json"
     )
     verify_fixture(fixture)
     try:
