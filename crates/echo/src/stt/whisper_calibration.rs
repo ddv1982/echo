@@ -31,6 +31,7 @@ const JOB_SCHEMA_VERSION: u32 = 1;
 const JOB_RESULT_SCHEMA_VERSION: u32 = 1;
 const MAX_JOB_BYTES: u64 = 64 * 1024;
 const OWNER_DEADLINE: Duration = Duration::from_secs(5 * 60);
+const CALIBRATION_START_GRACE: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -270,6 +271,10 @@ pub fn run_calibration_job(path: &Path) -> Result<(), String> {
     let requested = read_job(path)?;
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
     requested.validate_authority(path, &executable)?;
+    std::thread::sleep(CALIBRATION_START_GRACE);
+    if crate::rec::session_active() {
+        return Ok(());
+    }
     let store = LocalSelectionStore::at(requested.state_root.clone());
     let Some(package_lease) =
         wait_for_lease(owner_started, || store.try_claim_package_verification())?
