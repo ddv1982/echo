@@ -1,3 +1,7 @@
+// Orphaned by the planner's removal. Deleted in the next phase; kept for
+// one commit so the planner deletion stands alone.
+#![allow(dead_code)]
+
 use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::Read;
