@@ -21,7 +21,7 @@ pub use whisper::WhisperEngine;
 
 #[must_use]
 pub fn whisper_acceleration_factory_default() -> echo_core::WhisperAccelerationPreference {
-    echo_core::WhisperAccelerationPreference::Auto
+    echo_core::WhisperAccelerationPreference::Cpu
 }
 
 /// An explicit override wins, then the environment, then the config file,

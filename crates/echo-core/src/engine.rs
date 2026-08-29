@@ -63,7 +63,7 @@ pub struct WhisperSelectionTelemetry {
 impl Default for WhisperSelectionTelemetry {
     fn default() -> Self {
         Self {
-            preference: WhisperAccelerationPreference::Auto,
+            preference: WhisperAccelerationPreference::Cpu,
             cached_decision: WhisperCachedDecision::Unknown,
             local_key: None,
             calibration_pending: false,
@@ -72,22 +72,24 @@ impl Default for WhisperSelectionTelemetry {
     }
 }
 
+/// Which backend the user asked for. There is no automatic mode: a guess the
+/// user cannot see is what this setting used to be, and it never guessed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum WhisperAccelerationPreference {
-    /// Echo through 0.12.5 offered a `gpu` preference that no code path ever
-    /// distinguished from `auto`. Saved configs and history rows still carry it.
-    #[serde(alias = "gpu")]
-    Auto,
+    /// Legacy `auto` resolves here. Auto never accelerated anything in a
+    /// shipped build, so CPU is what those configs were already getting.
+    #[serde(alias = "auto")]
     Cpu,
+    Gpu,
 }
 
 impl WhisperAccelerationPreference {
     #[must_use]
     pub fn parse(raw: &str) -> Option<Self> {
         match raw {
-            "auto" | "gpu" => Some(Self::Auto),
-            "cpu" => Some(Self::Cpu),
+            "cpu" | "auto" => Some(Self::Cpu),
+            "gpu" => Some(Self::Gpu),
             _ => None,
         }
     }
@@ -95,8 +97,8 @@ impl WhisperAccelerationPreference {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Auto => "auto",
             Self::Cpu => "cpu",
+            Self::Gpu => "gpu",
         }
     }
 }
@@ -296,13 +298,20 @@ mod tests {
     }
 
     #[test]
-    fn retired_gpu_acceleration_preference_loads_as_auto() {
-        let preference: WhisperAccelerationPreference = serde_json::from_str(r#""gpu""#).unwrap();
-        assert_eq!(preference, WhisperAccelerationPreference::Auto);
-        assert_eq!(
-            WhisperAccelerationPreference::parse("gpu"),
-            Some(WhisperAccelerationPreference::Auto)
-        );
-        assert_eq!(preference.as_str(), "auto");
+    fn legacy_acceleration_preferences_migrate_in_opposite_directions() {
+        // Configs written before 0.12.6 hold "gpu" and meant it; configs
+        // written after hold "auto", which only ever ran on the CPU.
+        for (raw, expected) in [
+            ("auto", WhisperAccelerationPreference::Cpu),
+            ("cpu", WhisperAccelerationPreference::Cpu),
+            ("gpu", WhisperAccelerationPreference::Gpu),
+        ] {
+            let loaded: WhisperAccelerationPreference =
+                serde_json::from_str(&format!("\"{raw}\"")).unwrap();
+            assert_eq!(loaded, expected, "{raw}");
+            assert_eq!(WhisperAccelerationPreference::parse(raw), Some(expected));
+        }
+        assert_eq!(WhisperAccelerationPreference::Cpu.as_str(), "cpu");
+        assert_eq!(WhisperAccelerationPreference::Gpu.as_str(), "gpu");
     }
 }

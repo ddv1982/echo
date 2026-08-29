@@ -1371,14 +1371,14 @@ function SettingsView({
                   {overrideHint(
                     settings.whisperAcceleration.source,
                     'ECHO_WHISPER_ACCELERATION',
-                    'Auto runs on the GPU when this machine has a qualified one, and on the CPU otherwise. Pick CPU to rule the GPU out.',
+                    'CPU always works. GPU is measured on Intel and unproven on other vendors, and falls back to CPU when it cannot run.',
                   )}
                 </span>
               </div>
               <div className="segmented-control" role="group" aria-label="Whisper acceleration">
                 {([
-                  { value: 'auto', label: 'Auto' },
                   { value: 'cpu', label: 'CPU' },
+                  { value: 'gpu', label: 'GPU' },
                 ] as const).map((option) => (
                   <button
                     type="button"
