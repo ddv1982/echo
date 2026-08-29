@@ -517,7 +517,7 @@ pub(crate) fn enumerate_vulkan_runtime_receipts(
     binary: &Path,
     launch: &WhisperRuntimeLaunch,
     timeout: Duration,
-) -> Result<Vec<echo_core::WhisperVulkanReceipt>, String> {
+) -> Result<(Vec<echo_core::WhisperVulkanReceipt>, String), String> {
     let (output, _) = run_attempt(
         binary,
         Some(launch),
@@ -526,10 +526,16 @@ pub(crate) fn enumerate_vulkan_runtime_receipts(
         timeout,
     )
     .map_err(|error| error.to_string())?;
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+        return Err(stderr);
     }
-    parse_vulkan_devices(&String::from_utf8_lossy(&output.stdout))
+    // Receipts arrive on stdout; the human-readable device names the picker
+    // shows are only ever printed to stderr.
+    Ok((
+        parse_vulkan_devices(&String::from_utf8_lossy(&output.stdout))?,
+        stderr,
+    ))
 }
 
 fn command_for_runtime(binary: &Path, launch: Option<&WhisperRuntimeLaunch>) -> Command {

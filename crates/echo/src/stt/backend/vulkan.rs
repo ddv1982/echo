@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::super::whisper::enumerate_vulkan_runtime_receipts;
+use super::super::whisper_probe::vulkan_device;
 use super::super::whisper_identity::{Sha256Digest, UuidDigest};
 use super::super::{probe_vulkan_runtime_receipt, VulkanRuntimeSelector, WhisperRuntimeLaunch};
 
@@ -47,6 +48,57 @@ pub(crate) struct DriverIcdFingerprint {
     pub icd_library_sha256: Sha256Digest,
 }
 
+/// One Vulkan device the loader reported, as offered in Settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GpuDevice {
+    pub id: VulkanDeviceId,
+    pub name: String,
+    pub vendor_id: u32,
+    pub device_id: u32,
+    pub drm_driver: Option<String>,
+    /// A rasterizer running on the CPU. Listed so the choice is visible, never
+    /// chosen automatically.
+    pub software: bool,
+}
+
+/// The stable identity of a Vulkan device. `selectedIndex` reorders across
+/// reboots and driver updates, so a device is pinned by this pair instead.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VulkanDeviceId {
+    #[serde(rename = "deviceUUID")]
+    pub device_uuid: String,
+    #[serde(rename = "driverUUID")]
+    pub driver_uuid: String,
+}
+
+impl LocalVulkanRoute {
+    pub(crate) fn device(&self) -> GpuDevice {
+        GpuDevice {
+            id: VulkanDeviceId {
+                device_uuid: self.receipt.device_uuid.as_str().to_string(),
+                driver_uuid: self.receipt.driver_uuid.as_str().to_string(),
+            },
+            name: self
+                .name
+                .clone()
+                .unwrap_or_else(|| "Unnamed Vulkan device".to_string()),
+            vendor_id: self.receipt.vendor_id,
+            device_id: self.receipt.device_id,
+            drm_driver: self.drm_driver.clone(),
+            software: self.software,
+        }
+    }
+}
+
+fn is_software(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    ["llvmpipe", "lavapipe", "swiftshader", "softpipe"]
+        .iter()
+        .any(|marker| name.contains(marker))
+}
+
 const MAX_ICD_MANIFEST_BYTES: u64 = 64 * 1024;
 
 #[derive(Debug, Deserialize)]
@@ -69,6 +121,11 @@ pub(crate) struct LocalVulkanRoute {
     pub library_path: PathBuf,
     pub selector: VulkanRuntimeSelector,
     pub cached_ready: Option<WhisperVulkanReceipt>,
+    /// Human-readable name from the runtime's own enumeration output.
+    pub name: Option<String>,
+    /// Kernel driver behind the device, absent for software rasterizers.
+    pub drm_driver: Option<String>,
+    pub software: bool,
 }
 
 pub(crate) struct VulkanBackend {
@@ -135,7 +192,7 @@ impl VulkanBackend {
             launch.vulkan_driver_files = Some(manifest_path.clone());
             launch.vulkan_selector = None;
             launch.mesa_shader_cache_dir = None;
-            let observed = match enumerate_vulkan_runtime_receipts(
+            let (observed, stderr) = match enumerate_vulkan_runtime_receipts(
                 &self.probe,
                 &launch,
                 self.probe_timeout()?,
@@ -144,11 +201,15 @@ impl VulkanBackend {
                 Err(_) => continue,
             };
             for receipt in observed {
-                let Ok(drm_driver) = drm_driver(&self.drm_root, &receipt) else {
-                    continue;
-                };
+                // A missing render node means no kernel driver backs this
+                // device, which is how a software rasterizer presents. It is
+                // listed and labelled rather than dropped, so the picker can
+                // show every device the loader reports.
+                let drm_driver = drm_driver(&self.drm_root, &receipt).ok();
+                let name = vulkan_device(&stderr, receipt.selected_index as usize);
+                let software = drm_driver.is_none() || name.as_deref().is_some_and(is_software);
                 let fingerprint = DriverIcdFingerprint {
-                    drm_driver,
+                    drm_driver: drm_driver.clone().unwrap_or_default(),
                     ..fingerprint.clone()
                 };
                 let stable = stable_receipt(&receipt)?;
@@ -162,6 +223,9 @@ impl VulkanBackend {
                     library_path: library_path.clone(),
                     selector,
                     cached_ready: None,
+                    name,
+                    drm_driver,
+                    software,
                 });
             }
         }
@@ -455,6 +519,60 @@ mod tests {
         assert_eq!(routes[0].selected_index, 0);
         assert_eq!(routes[0].fingerprint.drm_driver, "i915");
         assert_eq!(backend.ready(&routes[0]).unwrap().selected_index, 0);
+
+        let device = routes[0].device();
+        assert_eq!(device.drm_driver.as_deref(), Some("i915"));
+        assert!(!device.software);
+        assert_eq!(device.vendor_id, 0x8086);
+        assert_eq!(device.id.device_uuid.len(), 32);
+        assert_ne!(device.id.device_uuid, device.id.driver_uuid);
+    }
+
+    #[test]
+    fn a_device_without_a_render_node_is_listed_as_software() {
+        let root = scratch();
+        let icd = root.join("icd");
+        fs::create_dir_all(&icd).unwrap();
+        fs::write(icd.join("libfake.so"), b"library").unwrap();
+        fs::write(
+            icd.join("fake.json"),
+            r#"{"ICD":{"library_path":"./libfake.so","api_version":"1.3.0"},"file_format_version":"1.0.1"}"#,
+        )
+        .unwrap();
+        // An empty DRM root means no kernel driver backs the device, which is
+        // how a software rasterizer presents. It must be listed, not dropped.
+        let drm = root.join("drm");
+        fs::create_dir_all(&drm).unwrap();
+
+        let probe = root.join("probe");
+        fs::write(
+            &probe,
+            format!(
+                "#!/bin/sh
+if [ \"$1\" = --list-vulkan-json ]; then printf '%s\\n' 'echo_whisper_vulkan_device: {}'; printf '%s\\n' 'ggml_vulkan: 0 = llvmpipe (LLVM 20.1.8) (0)' >&2; exit 0; fi
+exit 1
+",
+                receipt(0),
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&probe, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let backend = VulkanBackend {
+            probe,
+            base_launch: WhisperRuntimeLaunch::default(),
+            icd_directories: vec![icd],
+            drm_root: drm,
+            timeout: Duration::from_secs(2),
+            deadline: None,
+            require_trusted_icds: false,
+        };
+        let routes = backend.enumerate().unwrap();
+        assert_eq!(routes.len(), 1, "a software rasterizer stays visible");
+        let device = routes[0].device();
+        assert!(device.software);
+        assert_eq!(device.drm_driver, None);
+        assert!(device.name.contains("llvmpipe"), "{}", device.name);
     }
 
     #[test]
