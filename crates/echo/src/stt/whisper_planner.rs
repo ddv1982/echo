@@ -195,9 +195,6 @@ impl WhisperAccelerationPlanner {
         );
         primary.tuning = tuning;
         primary.timeout = managed_cpu.timeout;
-        if test_fault("gpu-timeout") {
-            primary.timeout = Duration::from_millis(1);
-        }
         primary.allow_vad_retry = false;
         let mut fallback = managed_cpu.clone();
         fallback.tuning = tuning;

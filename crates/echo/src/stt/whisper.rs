@@ -232,11 +232,20 @@ impl WhisperEngine {
                     WhisperFiles::Explicit(plan)
                         if plan.runtime.backend == WhisperRuntimeBackend::Vulkan
                 )
-                && std::env::var("ECHO_WHISPER_TEST_FAULT").as_deref()
-                    == Ok("backend-fallback"))
+                && std::env::var("ECHO_WHISPER_TEST_FAULT").as_deref() == Ok("backend-fallback"))
     }
 
     fn timeout(&self) -> Duration {
+        if cfg!(debug_assertions)
+            && matches!(
+                &self.files,
+                WhisperFiles::Explicit(plan)
+                    if plan.runtime.backend == WhisperRuntimeBackend::Vulkan
+            )
+            && std::env::var("ECHO_WHISPER_TEST_FAULT").as_deref() == Ok("gpu-timeout")
+        {
+            return Duration::from_millis(1);
+        }
         match &self.files {
             WhisperFiles::Explicit(plan) => plan.timeout,
             WhisperFiles::Discover(_) => Duration::from_secs(ONE_SHOT_TIMEOUT_SECS),
@@ -427,10 +436,11 @@ fn run_attempt(
         .spawn()
         .map_err(|error| EngineError::Infer(error.to_string()))?;
     let process_start_ms = elapsed_ms(spawn_started);
-    let pid = rustix::process::Pid::from_raw(i32::try_from(child.id()).map_err(|_| {
-        EngineError::Infer("Whisper child process ID is out of range".to_string())
-    })?)
-    .ok_or_else(|| EngineError::Infer("Whisper child process ID is zero".to_string()))?;
+    let pid =
+        rustix::process::Pid::from_raw(i32::try_from(child.id()).map_err(|_| {
+            EngineError::Infer("Whisper child process ID is out of range".to_string())
+        })?)
+        .ok_or_else(|| EngineError::Infer("Whisper child process ID is zero".to_string()))?;
     let (sender, receiver) = mpsc::sync_channel(1);
     std::thread::spawn(move || {
         let _ = sender.send(child.wait_with_output());
@@ -495,7 +505,7 @@ pub(crate) fn probe_vulkan_runtime_receipt(
         false,
         timeout,
     )
-        .map_err(|error| error.to_string())?;
+    .map_err(|error| error.to_string())?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     if !output.status.success() {
         return Err(stderr.into_owned());
@@ -551,22 +561,17 @@ fn command_for_runtime(binary: &Path, launch: Option<&WhisperRuntimeLaunch>) -> 
         command.env("MESA_SHADER_CACHE_DIR", path);
     }
     if let Some(selector) = &launch.vulkan_selector {
-        command.env(
-            "ECHO_WHISPER_VULKAN_DEVICE_UUID",
-            selector.device_uuid(),
-        );
-        command.env(
-            "ECHO_WHISPER_VULKAN_DRIVER_UUID",
-            selector.driver_uuid(),
-        );
+        command.env("ECHO_WHISPER_VULKAN_DEVICE_UUID", selector.device_uuid());
+        command.env("ECHO_WHISPER_VULKAN_DRIVER_UUID", selector.driver_uuid());
     }
     command
 }
 
 fn is_inference_environment_selector(name: &std::ffi::OsStr) -> bool {
     let name = name.to_string_lossy().to_ascii_uppercase();
-    CLEARED_ENVIRONMENT_PREFIXES.iter()
-    .any(|prefix| name.starts_with(prefix))
+    CLEARED_ENVIRONMENT_PREFIXES
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
 }
 
 fn should_retry_without_vad(stderr: &str) -> bool {
