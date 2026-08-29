@@ -22,8 +22,8 @@
       "prefix": "echo-whisper-execution-artifact-v3\u0000"
     },
     "inferenceContract": {
-      "canonical": "{\"behavior\":{\"launchSchema\":1,\"projectionSha256\":\"22dd42e88cdd73451d2bbbbf2c7ca9e4941aa9264d1d7368761b1371677ef99e\",\"receiptSchema\":1,\"recoverySchema\":1,\"telemetrySchema\":3},\"claimScope\":\"product-stt-corpus-v1\",\"modelSha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"protocol\":\"oneShotCli\",\"requestPolicy\":{\"hints\":\"qualifiedOnly\",\"language\":\"pinned\",\"prompt\":\"empty\"},\"schemaVersion\":3,\"tuning\":{\"beamSize\":1,\"bestOf\":2,\"noFallback\":true,\"threads\":4},\"vadSha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}",
-      "id": "c2f8a803f60617fccd428d557ea005f4da03941adcff020cd353353a028ffcdf",
+      "canonical": "{\"behavior\":{\"launchSchema\":1,\"projectionSha256\":\"48ee391163052efc50401787d2f2d9c1aaa63138756bd3c9384e12f88527be66\",\"receiptSchema\":1,\"recoverySchema\":1,\"telemetrySchema\":3},\"claimScope\":\"product-stt-corpus-v1\",\"modelSha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"protocol\":\"oneShotCli\",\"requestPolicy\":{\"hints\":\"qualifiedOnly\",\"language\":\"pinned\",\"prompt\":\"empty\"},\"schemaVersion\":3,\"tuning\":{\"beamSize\":1,\"bestOf\":2,\"noFallback\":true,\"threads\":4},\"vadSha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}",
+      "id": "4a9809aba8e8e56a70ca682965b24703e957d597bc5702956c724492b9101b9a",
       "input": {
         "schemaVersion": 3,
         "protocol": "oneShotCli",
@@ -45,7 +45,7 @@
           "receiptSchema": 1,
           "telemetrySchema": 3,
           "recoverySchema": 1,
-          "projectionSha256": "22dd42e88cdd73451d2bbbbf2c7ca9e4941aa9264d1d7368761b1371677ef99e"
+          "projectionSha256": "48ee391163052efc50401787d2f2d9c1aaa63138756bd3c9384e12f88527be66"
         },
         "claimScope": "product-stt-corpus-v1"
       },
