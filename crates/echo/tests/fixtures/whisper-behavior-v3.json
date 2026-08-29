@@ -125,10 +125,14 @@
         "preference",
         "cachedDecision",
         "localKey"
+      ],
+      "selectionPreferences": [
+        "auto",
+        "cpu"
       ]
     }
   },
-  "projectionSha256": "22dd42e88cdd73451d2bbbbf2c7ca9e4941aa9264d1d7368761b1371677ef99e",
+  "projectionSha256": "48ee391163052efc50401787d2f2d9c1aaa63138756bd3c9384e12f88527be66",
   "watchedPaths": [
     "crates/echo-core/src/engine.rs",
     "crates/echo/src/stt/backend/vulkan.rs",

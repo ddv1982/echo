@@ -134,7 +134,8 @@ pub(super) fn projection() -> Value {
                 "preference",
                 "cachedDecision",
                 "localKey"
-            ]
+            ],
+            "selectionPreferences": ["auto", "cpu"]
         }
     })
 }
