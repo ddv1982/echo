@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "kebab-case")]
 pub enum ComponentId {
     WhisperRuntime,
+    WhisperVulkanRuntime,
     WhisperBaseQ51,
     WhisperSmall,
     WhisperLargeV3TurboQ50,
@@ -20,6 +21,7 @@ impl ComponentId {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::WhisperRuntime => "whisper-runtime",
+            Self::WhisperVulkanRuntime => "whisper-vulkan-runtime",
             Self::WhisperBaseQ51 => "whisper-base-q5-1",
             Self::WhisperSmall => "whisper-small",
             Self::WhisperLargeV3TurboQ50 => "whisper-large-v3-turbo-q5-0",
@@ -73,6 +75,18 @@ pub const COMPONENTS: &[ComponentSpec] = &[
         installed_bytes: 18_284_400,
         format: ArtifactFormat::TarGzip,
         inventory_key: Some("whisper-runtime"),
+    },
+    ComponentSpec {
+        id: ComponentId::WhisperVulkanRuntime,
+        label: "Whisper GPU runtime",
+        version: "1.9.2-vulkan",
+        url: "https://github.com/ddv1982/echo/releases/download/whisper-vulkan-runtime-1.9.2/echo-whisper-vulkan-runtime.tar.gz",
+        artifact_name: "echo-whisper-vulkan-runtime.tar.gz",
+        artifact_size: 19_831_999,
+        artifact_sha256: "fd5f29c7df97ec32b5561947eac503a5f252896363b2ab277a6faf444c534494",
+        installed_bytes: 59_816_721,
+        format: ArtifactFormat::TarGzip,
+        inventory_key: Some("whisper-vulkan-runtime"),
     },
     ComponentSpec {
         id: ComponentId::WhisperBaseQ51,

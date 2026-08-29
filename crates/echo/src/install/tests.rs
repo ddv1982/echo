@@ -57,6 +57,54 @@ fn operation_ids_do_not_reuse_generation_names() {
 
 #[cfg(unix)]
 #[test]
+#[ignore = "needs the pinned Vulkan runtime archive"]
+fn pinned_vulkan_runtime_archive_installs() {
+    let archive = std::env::var_os("ECHO_PINNED_VULKAN_ARCHIVE")
+        .map(PathBuf::from)
+        .expect("ECHO_PINNED_VULKAN_ARCHIVE");
+    let body = fs::read(&archive).unwrap();
+    let spec = component(ComponentId::WhisperVulkanRuntime);
+    assert_eq!(body.len() as u64, spec.artifact_size);
+    assert_eq!(format!("{:x}", Sha256::digest(&body)), spec.artifact_sha256);
+
+    let root = scratch("pinned-vulkan-runtime");
+    let transport = FixtureTransport(Mutex::new(VecDeque::from([body])));
+    let installer = Installer {
+        store: ManagedStore::new(&root),
+        transport: &transport,
+        disk: &UnlimitedDisk,
+        probe: &AcceptProbe,
+    };
+    let record = installer
+        .ensure_component(
+            ComponentId::WhisperVulkanRuntime,
+            false,
+            &OperationId::fixture("92"),
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
+    assert_eq!(record.artifact_sha256, spec.artifact_sha256);
+
+    let payload = installer
+        .store
+        .active_root(ComponentId::WhisperVulkanRuntime)
+        .unwrap()
+        .unwrap();
+    // Extraction flattens payload members to their basename, so the archive's
+    // runtime/ prefix does not survive into the installed tree.
+    assert!(payload.join("libggml-vulkan.so").is_file());
+    assert!(payload.join("echo-whisper-runtime-probe").is_file());
+    assert!(payload.join("whisper-cli").is_file());
+    assert_eq!(
+        fs::read_link(payload.join("libwhisper.so")).unwrap(),
+        Path::new("libwhisper.so.1")
+    );
+    installer.store.verify(ComponentId::WhisperVulkanRuntime).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
 #[ignore = "downloads the pinned Whisper runtime archive"]
 fn pinned_whisper_runtime_archive_installs() {
     let archive = std::env::var_os("ECHO_PINNED_WHISPER_ARCHIVE")

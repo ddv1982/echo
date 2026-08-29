@@ -260,6 +260,229 @@
           "size": 910680
         }
       ]
+    },
+    "whisper-vulkan-runtime": {
+      "archive": "echo-whisper-vulkan-runtime.tar.gz",
+      "entries": 28,
+      "expandedBytes": 59816721,
+      "payload": [
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 420,
+          "path": "runtime/build-receipt.json",
+          "sha256": "cc861d6069b25d5070809db95bac098e91326149f88886f9082d7ac09dae3de7",
+          "size": 9297
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "runtime/echo-whisper-runtime-probe",
+          "sha256": "94acc77b179b58d1106ad05512660b0901a276e90dc5ebdd0eacd555b249eb2b",
+          "size": 16584
+        },
+        {
+          "kind": "symlink",
+          "linkTarget": "libggml-base.so.0",
+          "mode": 511,
+          "path": "runtime/libggml-base.so",
+          "sha256": "6754c4902cf311c3c4af69dde928c9b31b859ca585d624bb62c384e04e75baf9",
+          "size": 0
+        },
+        {
+          "kind": "symlink",
+          "linkTarget": "libggml-base.so.0.18.1",
+          "mode": 511,
+          "path": "runtime/libggml-base.so.0",
+          "sha256": "6754c4902cf311c3c4af69dde928c9b31b859ca585d624bb62c384e04e75baf9",
+          "size": 0
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "runtime/libggml-base.so.0.18.1",
+          "sha256": "6754c4902cf311c3c4af69dde928c9b31b859ca585d624bb62c384e04e75baf9",
+          "size": 918352
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "runtime/libggml-cpu-alderlake.so",
+          "sha256": "e13bc1f604e827e0dff7849d11c6a81fd34afb08601bea4f2a76526d03ffdcbb",
+          "size": 1028768
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "runtime/libggml-cpu-cannonlake.so",
+          "sha256": "252816c0dc3efb1734d94782404282f05327261d3c8a32ed8f02a79728834f39",
+          "size": 1180424
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "runtime/libggml-cpu-cascadelake.so",
+          "sha256": "646b8cbd380a5b87482acdb02beed60bf1966e8e6f181f48671b4c0b8e6dfbaa",
+          "size": 1176328
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "runtime/libggml-cpu-cooperlake.so",
+          "sha256": "fc9aed0d361db60d49ec788fd340ef6206e31b25377bb8fc128f16f19f558dcf",
+          "size": 1176328
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "runtime/libggml-cpu-haswell.so",
+          "sha256": "17b34db4b5bfc2a246aef4aec3b8876179d9bc1deba6039602b5932630fedc63",
+          "size": 1032864
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "runtime/libggml-cpu-icelake.so",
+          "sha256": "83c3641a60dccf3bb44f9318588e306f6a3b460c8450377178cd1c72b712ecac",
+          "size": 1176328
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "runtime/libggml-cpu-ivybridge.so",
+          "sha256": "2efd06596d5ef54cad721c54c0078b91f518fb5553013b82ca17297052773411",
+          "size": 963016
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "runtime/libggml-cpu-piledriver.so",
+          "sha256": "24306afe891df4cb242b2a77151aa7cc636e3831336a951cd3ef8b4fb17753fc",
+          "size": 963016
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "runtime/libggml-cpu-sandybridge.so",
+          "sha256": "f53da89000a8d76924c552bbaa8496bd4c6b88c2e5597e77ec1856685f164fdf",
+          "size": 967112
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "runtime/libggml-cpu-sapphirerapids.so",
+          "sha256": "416007821ad35fb1e287f4254c8f71df1b731bf11095b95e7231e12daed4a1a5",
+          "size": 1409856
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "runtime/libggml-cpu-skylakex.so",
+          "sha256": "6950eacf6b6a3c3f7998a15c2ed229fc769f4f5932728f033eb14d3e4e990825",
+          "size": 1180424
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "runtime/libggml-cpu-sse42.so",
+          "sha256": "545958bc662132b9f84ac5f75f424bdee7c9070432449605538bc1c42e008f95",
+          "size": 893256
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "runtime/libggml-cpu-x64.so",
+          "sha256": "211c9f1a345cc12a4a69db7ee22b05aa3008a520ca0970cd66c959ded4079331",
+          "size": 889280
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "runtime/libggml-cpu-zen4.so",
+          "sha256": "a698a9bb186f762e5bff126b9438bb9c2d2d2b6ab9adb702679b6383baddd49c",
+          "size": 1176328
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "runtime/libggml-vulkan.so",
+          "sha256": "7e4f5928bb31717ad3518b4cf889478ace8a78f1f7a926f826833d05bc9c403d",
+          "size": 41973848
+        },
+        {
+          "kind": "symlink",
+          "linkTarget": "libggml.so.0",
+          "mode": 511,
+          "path": "runtime/libggml.so",
+          "sha256": "dc6ea382b46ff5b5f30fcbb1451eea99334bb446ba11e775656de13840349510",
+          "size": 0
+        },
+        {
+          "kind": "symlink",
+          "linkTarget": "libggml.so.0.18.1",
+          "mode": 511,
+          "path": "runtime/libggml.so.0",
+          "sha256": "dc6ea382b46ff5b5f30fcbb1451eea99334bb446ba11e775656de13840349510",
+          "size": 0
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "runtime/libggml.so.0.18.1",
+          "sha256": "dc6ea382b46ff5b5f30fcbb1451eea99334bb446ba11e775656de13840349510",
+          "size": 55768
+        },
+        {
+          "kind": "symlink",
+          "linkTarget": "libwhisper.so.1",
+          "mode": 511,
+          "path": "runtime/libwhisper.so",
+          "sha256": "62f1eb14088b4cbbdf030fbb4593b9ac7edf594ae4394af9d9a9b930dcde1c47",
+          "size": 0
+        },
+        {
+          "kind": "symlink",
+          "linkTarget": "libwhisper.so.1.9.2",
+          "mode": 511,
+          "path": "runtime/libwhisper.so.1",
+          "sha256": "62f1eb14088b4cbbdf030fbb4593b9ac7edf594ae4394af9d9a9b930dcde1c47",
+          "size": 0
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "runtime/libwhisper.so.1.9.2",
+          "sha256": "62f1eb14088b4cbbdf030fbb4593b9ac7edf594ae4394af9d9a9b930dcde1c47",
+          "size": 631176
+        },
+        {
+          "kind": "file",
+          "linkTarget": null,
+          "mode": 493,
+          "path": "runtime/whisper-cli",
+          "sha256": "37382797bcad4b4bab155d4a59ac2d41664da19a9f7553c3838052d9efe59199",
+          "size": 998368
+        }
+      ]
     }
   },
   "schemaVersion": 1

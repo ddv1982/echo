@@ -150,6 +150,9 @@ fn external_components(
                 }]
             })
             .unwrap_or_default(),
+        // A system whisper-cli is never Vulkan-capable, so there is no
+        // external equivalent to offer for the GPU runtime.
+        ComponentId::WhisperVulkanRuntime => Vec::new(),
         ComponentId::WhisperBaseQ51 => external_model(inventory, "base-q5_1"),
         ComponentId::WhisperSmall => external_model(inventory, "small"),
         ComponentId::WhisperLargeV3TurboQ50 => external_model(inventory, "large-v3-turbo-q5_0"),

@@ -169,7 +169,7 @@ impl Installer<'_> {
                 return Err(InstallError::Cancelled);
             }
             match id {
-                ComponentId::WhisperRuntime => {
+                ComponentId::WhisperRuntime | ComponentId::WhisperVulkanRuntime => {
                     self.probe.probe(id, &payload.join("whisper-cli"), cancel)?
                 }
                 ComponentId::SherpaRuntime => {

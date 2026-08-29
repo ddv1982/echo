@@ -29,6 +29,15 @@ Treat a green suite as proof of the CPU path, the settings plumbing, the parsers
 
 **Live device lanes, phases 10 and 12.** `scripts/verify-whisper-acceleration-modes.py --verify-live` drives the built binary through its lanes and asserts the backend is `vulkan` where expected and that CPU recovery fires under `ECHO_WHISPER_TEST_FAULT=no-devices`. It is operator-only and appears in no workflow. Run it by hand on a Vulkan host.
 
+**Archive install, phase 7.** The Vulkan runtime archive is not published until phase 12, so its install path is proven against a local copy:
+
+```bash
+ECHO_PINNED_VULKAN_ARCHIVE=<path> cargo test -p echo --lib \
+  install::tests::pinned_vulkan_runtime_archive_installs -- --ignored --exact
+```
+
+This verifies the archive size and digest against the catalog, every payload entry, symlink resolution, and executable bits. Until phase 12 publishes the archive, the catalog digest describes an artifact that exists only where an operator built it.
+
 **Enumeration, phase 8.** Confirm the device list on a host with a usable GPU, and confirm an empty list rather than an error on a host without one.
 
 ## Thresholds

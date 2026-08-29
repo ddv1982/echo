@@ -239,6 +239,7 @@ export interface LanguageOptions {
 
 export type ComponentId =
   | 'whisper-runtime'
+  | 'whisper-vulkan-runtime'
   | 'whisper-base-q5-1'
   | 'whisper-small'
   | 'whisper-large-v3-turbo-q5-0'
