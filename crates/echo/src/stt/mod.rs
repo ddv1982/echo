@@ -8,7 +8,6 @@ mod whisper_accel_cache;
 mod whisper_acceleration;
 mod whisper_admission;
 mod whisper_behavior;
-mod whisper_calibration;
 mod whisper_identity;
 mod whisper_plan;
 mod whisper_planner;
@@ -25,7 +24,14 @@ pub(crate) use runtime::{runtime_library_bindings, whisper_runtime_launch};
 pub(crate) use whisper::probe_vulkan_runtime_receipt;
 pub use whisper::WhisperEngine;
 pub(crate) use whisper_acceleration::production_whisper_decision;
-pub(crate) use whisper_planner::local_whisper_engine_from_process;
+pub(crate) use whisper_planner::{
+    local_whisper_engine_from_process, resolved_whisper_acceleration,
+};
+
+#[must_use]
+pub fn whisper_acceleration_factory_default() -> echo_core::WhisperAccelerationPreference {
+    echo_core::WhisperAccelerationPreference::Auto
+}
 pub use whisper_admission::{
     AdmissionDeviceIdentity, AdmissionGates, AdmissionIdentity, AdmissionIdentityKey, AdmissionSet,
     AdmissionState, AdmissionTuning, AdmissionVerdict, CacheSeedArtifact, ModelAdmission,
@@ -37,13 +43,12 @@ pub use whisper_identity::{
     LocalEnvironmentKey, PerformanceEvidenceId, ReleaseBindingId,
 };
 pub use whisper_plan::{
-    preferred_runtime, WhisperExecutionPlan, WhisperModelAsset, WhisperPlanDecision,
-    VulkanRuntimeSelector, WhisperProtocol, WhisperRuntimeCandidate, WhisperRuntimeLaunch,
+    preferred_runtime, VulkanRuntimeSelector, WhisperExecutionPlan, WhisperModelAsset,
+    WhisperPlanDecision, WhisperProtocol, WhisperRuntimeCandidate, WhisperRuntimeLaunch,
     WhisperTuning, WhisperTuningOverride,
 };
 pub use whisper_quarantine::QuarantineStore;
 pub use whisper_recovery::RecoveringWhisperEngine;
-pub use whisper_calibration::run_calibration_job;
 
 use std::path::PathBuf;
 

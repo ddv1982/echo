@@ -222,6 +222,8 @@ struct LastRunPerformance {
     parse_ms: u64,
     attempt_count: usize,
     tuning: WhisperTuningTelemetry,
+    selection: Option<echo_core::WhisperSelectionTelemetry>,
+    recovery: Option<echo_core::WhisperRecoveryTelemetry>,
 }
 
 fn project_last_run_performance(detail: &RunDetail) -> Option<LastRunPerformance> {
@@ -241,6 +243,8 @@ fn project_last_run_performance(detail: &RunDetail) -> Option<LastRunPerformance
         parse_ms: whisper.parse_ms,
         attempt_count: whisper.attempts.len(),
         tuning: whisper.tuning,
+        selection: whisper.selection.clone(),
+        recovery: whisper.recovery.clone(),
     })
 }
 
@@ -268,6 +272,7 @@ struct Settings {
     hud: SettingField<bool>,
     record_seconds: SettingField<u32>,
     language: SettingField<String>,
+    whisper_acceleration: SettingField<String>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -278,6 +283,7 @@ struct SettingsEnv {
     hud: Option<String>,
     record_seconds: Option<String>,
     language: Option<String>,
+    whisper_acceleration: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1457,6 +1463,7 @@ fn process_settings_env() -> SettingsEnv {
         hud: env::var("ECHO_HUD").ok(),
         record_seconds: env::var("ECHO_RECORD_SECONDS").ok(),
         language: env::var("ECHO_LANGUAGE").ok(),
+        whisper_acceleration: env::var("ECHO_WHISPER_ACCELERATION").ok(),
     }
 }
 
@@ -1499,6 +1506,19 @@ fn settings_from(
             file.language.map(|choice| choice.as_str().to_string()),
             language_default.to_string(),
         ),
+        whisper_acceleration: setting_field(
+            env.whisper_acceleration
+                .as_deref()
+                .and_then(echo_core::WhisperAccelerationPreference::parse)
+                .map(echo_core::WhisperAccelerationPreference::as_str)
+                .map(str::to_string),
+            file.whisper_acceleration
+                .map(echo_core::WhisperAccelerationPreference::as_str)
+                .map(str::to_string),
+            echo::stt::whisper_acceleration_factory_default()
+                .as_str()
+                .to_string(),
+        ),
     })
 }
 
@@ -1533,6 +1553,13 @@ fn config_from_values_with_base(
         Some(raw) => Some(
             echo_core::LanguageChoice::parse(raw)
                 .ok_or_else(|| format!("unknown language {raw}"))?,
+        ),
+    };
+    config.whisper_acceleration = match settings.whisper_acceleration.value.as_deref() {
+        None => None,
+        Some(raw) => Some(
+            echo_core::WhisperAccelerationPreference::parse(raw)
+                .ok_or_else(|| format!("unknown Whisper acceleration {raw}"))?,
         ),
     };
     Ok(config)
@@ -2915,6 +2942,11 @@ mod settings_tests {
                 effective: "en".into(),
                 source: SettingSource::Default,
             },
+            whisper_acceleration: SettingField {
+                value: Some("gpu".into()),
+                effective: "cpu".into(),
+                source: SettingSource::Default,
+            },
         };
         config_from_values(&incoming)
             .unwrap()
@@ -2937,6 +2969,9 @@ mod settings_tests {
         assert_eq!(got.language.value.as_deref(), Some("de"));
         assert_eq!(got.language.effective, "de");
         assert_eq!(got.language.source, SettingSource::File);
+        assert_eq!(got.whisper_acceleration.value.as_deref(), Some("gpu"));
+        assert_eq!(got.whisper_acceleration.effective, "gpu");
+        assert_eq!(got.whisper_acceleration.source, SettingSource::File);
     }
 
     #[test]

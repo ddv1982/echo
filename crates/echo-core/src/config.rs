@@ -4,6 +4,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::cleanup::CleanupMode;
+use crate::engine::WhisperAccelerationPreference;
 use crate::language::LanguageChoice;
 use crate::paths::{config_path, set_aside_corrupt, write_atomic};
 
@@ -90,6 +91,8 @@ pub struct Config {
     pub microphone: Option<MicrophoneSelection>,
     #[serde(default)]
     pub language: Option<LanguageChoice>,
+    #[serde(default)]
+    pub whisper_acceleration: Option<WhisperAccelerationPreference>,
 }
 
 impl Config {
@@ -177,6 +180,7 @@ mod tests {
                 last_seen_label: "USB Mic".into(),
             }),
             language: Some(LanguageChoice::Auto),
+            whisper_acceleration: Some(WhisperAccelerationPreference::Gpu),
         };
         original.save_to(&path).unwrap();
         assert_eq!(Config::load_from(&path).unwrap(), original);
@@ -194,6 +198,7 @@ mod tests {
         assert_eq!(loaded.record_seconds, None);
         assert_eq!(loaded.microphone, None);
         assert_eq!(loaded.language, None);
+        assert_eq!(loaded.whisper_acceleration, None);
     }
 
     #[test]

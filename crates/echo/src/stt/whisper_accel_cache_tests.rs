@@ -64,8 +64,8 @@ fn eligible(key: LocalSelectionKey, observed_at: u64) -> NewCalibrationObservati
     NewCalibrationObservation {
         key,
         verdict: CalibrationVerdict::GpuEligible,
-        cpu_infer_ms: 200,
-        gpu_infer_ms: Some(100),
+        cpu_infer_ms: 2000,
+        gpu_infer_ms: Some(1000),
         transcript_parity: Some(true),
         ready_receipt: Some(observed.clone()),
         result_receipt: Some(observed),

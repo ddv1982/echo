@@ -423,6 +423,18 @@ describe('Echo desktop shell', () => {
 
     // The engine override lives in Advanced.
     fireEvent.click(await screen.findByText('Advanced'))
+    expect(screen.getByRole('group', { name: 'Whisper acceleration' })).toBeInTheDocument()
+    expect(
+      screen.getByText(/Auto uses GPU when a compatible local Vulkan device is available/),
+    ).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'GPU' }))
+    await waitFor(async () => {
+      expect((await getSettings()).whisperAcceleration).toEqual({
+        value: 'gpu',
+        effective: 'gpu',
+        source: 'file',
+      })
+    })
     fireEvent.click(await screen.findByRole('button', { name: 'Parakeet' }))
     await waitFor(() => expect(screen.queryByLabelText('Speech model')).not.toBeInTheDocument())
     expect(screen.getByText('Parakeet TDT 0.6B v3')).toBeInTheDocument()

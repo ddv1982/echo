@@ -25,14 +25,6 @@ enum Command {
     Rec(RecArgs),
     Transcribe(TranscribeArgs),
     Languages(LanguagesArgs),
-    #[command(hide = true)]
-    WhisperCalibrate(WhisperCalibrateArgs),
-}
-
-#[derive(Debug, Args)]
-struct WhisperCalibrateArgs {
-    #[arg(long)]
-    job: PathBuf,
 }
 
 #[derive(Debug, Args)]
@@ -67,6 +59,8 @@ struct TranscribeArgs {
     whisper_best_of: Option<u8>,
     #[arg(long)]
     whisper_no_fallback: bool,
+    #[arg(long, value_enum)]
+    whisper_acceleration: Option<CliWhisperAcceleration>,
     #[arg(long, hide = true)]
     whisper_no_gpu: bool,
     #[arg(long, hide = true)]
@@ -111,6 +105,23 @@ impl From<CatalogEngine> for EngineChoice {
         match value {
             CatalogEngine::Whisper => Self::Whisper,
             CatalogEngine::Parakeet => Self::Parakeet,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum CliWhisperAcceleration {
+    Auto,
+    Gpu,
+    Cpu,
+}
+
+impl From<CliWhisperAcceleration> for echo_core::WhisperAccelerationPreference {
+    fn from(value: CliWhisperAcceleration) -> Self {
+        match value {
+            CliWhisperAcceleration::Auto => Self::Auto,
+            CliWhisperAcceleration::Gpu => Self::Gpu,
+            CliWhisperAcceleration::Cpu => Self::Cpu,
         }
     }
 }
@@ -176,13 +187,6 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> i32 {
                 1
             }
         },
-        Some(Command::WhisperCalibrate(args)) => match echo::stt::run_calibration_job(&args.job) {
-            Ok(()) => 0,
-            Err(message) => {
-                eprintln!("whisper-calibrate: {message}");
-                1
-            }
-        },
         None => {
             eprintln!("error: a command is required");
             2
@@ -242,6 +246,7 @@ fn run_transcribe(args: TranscribeArgs) -> Result<(), CliFailure> {
         || args.whisper_beam_size.is_some()
         || args.whisper_best_of.is_some()
         || args.whisper_no_fallback
+        || args.whisper_acceleration.is_some()
         || args.whisper_no_gpu
         || args.whisper_vulkan_driver_files.is_some()
         || args.whisper_mesa_shader_cache_dir.is_some();
@@ -274,6 +279,7 @@ fn run_transcribe(args: TranscribeArgs) -> Result<(), CliFailure> {
         language: args.language,
         whisper_tuning,
         whisper_force_cpu: args.whisper_no_gpu,
+        whisper_acceleration: args.whisper_acceleration.map(Into::into),
         whisper_vulkan_driver_files: args.whisper_vulkan_driver_files,
         whisper_mesa_shader_cache_dir: args.whisper_mesa_shader_cache_dir,
     };
@@ -535,8 +541,6 @@ fn positive_u8(raw: &str) -> Result<u8, String> {
 
 #[cfg(test)]
 mod tests {
-    use clap::CommandFactory;
-
     use super::*;
 
     #[test]
@@ -544,22 +548,5 @@ mod tests {
         assert_eq!(one_trailing_newline("hello".into()), "hello\n");
         assert_eq!(one_trailing_newline("hello\n\n".into()), "hello\n");
         assert_eq!(one_trailing_newline(String::new()), "\n");
-    }
-
-    #[test]
-    fn calibration_owner_is_callable_but_hidden_from_product_help() {
-        let help = Cli::command().render_long_help().to_string();
-        assert!(!help.contains("whisper-calibrate"));
-        assert!(matches!(
-            Cli::try_parse_from([
-                "echo-desktop",
-                "whisper-calibrate",
-                "--job",
-                "/tmp/job.json"
-            ])
-            .unwrap()
-            .command,
-            Some(Command::WhisperCalibrate(_))
-        ));
     }
 }

@@ -1366,6 +1366,43 @@ function SettingsView({
           <>
             <div className="setting-row">
               <div>
+                <strong>Whisper acceleration</strong>
+                <span>
+                  {overrideHint(
+                    settings.whisperAcceleration.source,
+                    'ECHO_WHISPER_ACCELERATION',
+                    'Auto uses GPU when a compatible local Vulkan device is available. Otherwise CPU. CPU forces --no-gpu. Automatic language and hints run on the same backend.',
+                  )}
+                </span>
+              </div>
+              <div className="segmented-control" role="group" aria-label="Whisper acceleration">
+                {([
+                  { value: 'auto', label: 'Auto' },
+                  { value: 'gpu', label: 'GPU' },
+                  { value: 'cpu', label: 'CPU' },
+                ] as const).map((option) => (
+                  <button
+                    type="button"
+                    key={option.value}
+                    data-active={settings.whisperAcceleration.effective === option.value}
+                    disabled={settings.whisperAcceleration.source === 'env' || settingsWritePending}
+                    onClick={() =>
+                      void patch(
+                        'whisperAcceleration',
+                        option.value === settings.whisperAcceleration.effective &&
+                          settings.whisperAcceleration.source === 'default'
+                          ? null
+                          : option.value,
+                      )
+                    }
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="setting-row">
+              <div>
                 <strong>Speech engine</strong>
                 <span>{overrideHint(settings.engine.source, 'ECHO_ENGINE', 'Which local engine transcribes recordings.')}</span>
               </div>
@@ -1458,6 +1495,17 @@ function SettingsView({
                   label="Runtime"
                   value={whisperRuntimeLabel(status.lastRun.performance)}
                 />
+                {status.lastRun.performance.selection ? (
+                  <SettingLine
+                    label="Acceleration"
+                    value={whisperAccelerationLabel(status.lastRun.performance)}
+                    tone={
+                      status.lastRun.performance.recovery?.fallbackReason
+                        ? 'attention'
+                        : 'ok'
+                    }
+                  />
+                ) : null}
                 <SettingLine
                   label="Whisper timing"
                   value={`WAV ${status.lastRun.performance.audioEncodeMs} ms · process ${status.lastRun.performance.childWallMs} ms · parse ${status.lastRun.performance.parseMs} ms`}
@@ -1480,6 +1528,19 @@ function SettingsView({
       </details>
     </div>
   )
+}
+
+function whisperAccelerationLabel(performance: NonNullable<LastRun['performance']>) {
+  const selection = performance.selection
+  if (!selection) return 'Unknown'
+  const preference =
+    selection.preference === 'auto' ? 'Auto' : selection.preference === 'gpu' ? 'GPU' : 'CPU'
+  const backend = backendLabel(performance.backend)
+  const device = performance.device ? ` · ${performance.device}` : ''
+  if (performance.recovery?.fallbackReason) {
+    return `${preference} · ${backend}${device} · recovered (${performance.recovery.fallbackReason})`
+  }
+  return `${preference} · ${backend}${device}`
 }
 
 function whisperModeLabel(mode: 'coldCli' | 'coldFallback') {

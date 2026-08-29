@@ -186,9 +186,8 @@ pub(crate) struct CalibrationObservation {
 }
 
 impl CalibrationObservation {
-    pub(crate) fn is_gpu_eligible(&self) -> bool {
-        self.verdict == CalibrationVerdict::GpuEligible
-            && self.transcript_parity == Some(true)
+    fn has_receipts_and_parity(&self) -> bool {
+        self.transcript_parity == Some(true)
             && self.ready_receipt.is_some()
             && self.result_receipt.is_some()
     }
@@ -253,6 +252,7 @@ pub(crate) struct NewLocalRouteObservation {
     pub observed_at: u64,
 }
 
+#[allow(dead_code)]
 pub(crate) struct CalibrationLease(File);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -273,6 +273,7 @@ pub(crate) struct ModelRouteView {
 }
 
 pub(crate) struct NewCalibrationObservation {
+    #[allow(dead_code)]
     pub key: LocalSelectionKey,
     pub verdict: CalibrationVerdict,
     pub cpu_infer_ms: u64,
@@ -293,6 +294,7 @@ impl LocalSelectionStore {
         Self { root }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn append_calibration(
         &self,
         new: NewCalibrationObservation,
@@ -401,6 +403,7 @@ impl LocalSelectionStore {
         Ok(observations.pop())
     }
 
+    #[allow(dead_code)]
     pub(crate) fn publish_job<T: Serialize>(
         &self,
         job_id: &str,
@@ -414,6 +417,7 @@ impl LocalSelectionStore {
         Ok(directory.join(format!("{job_id}.json")))
     }
 
+    #[allow(dead_code)]
     pub(crate) fn job_paths(&self) -> Result<Vec<PathBuf>, String> {
         let directory = self.root.join("jobs");
         let entries = match fs::read_dir(&directory) {
@@ -441,6 +445,7 @@ impl LocalSelectionStore {
         Ok(paths)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn job_is_complete(&self, job_id: &str) -> bool {
         self.root
             .join("job-results")
@@ -448,6 +453,7 @@ impl LocalSelectionStore {
             .is_file()
     }
 
+    #[allow(dead_code)]
     pub(crate) fn publish_job_result<T: Serialize>(
         &self,
         job_id: &str,
@@ -461,6 +467,7 @@ impl LocalSelectionStore {
         Ok(directory.join(format!("{job_id}.json")))
     }
 
+    #[allow(dead_code)]
     pub(crate) fn try_claim(
         &self,
         execution_artifact_id: &ExecutionArtifactId,
@@ -487,6 +494,7 @@ impl LocalSelectionStore {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn try_claim_package_verification(
         &self,
     ) -> Result<Option<CalibrationLease>, String> {
@@ -574,10 +582,10 @@ impl LocalSelectionStore {
         let snapshot = self.snapshot(&view.key, unix_time())?;
         if route.as_ref().map(|route| &route.key) != Some(&view.key)
             || snapshot.active_quarantine.is_some()
-            || !snapshot
+            || snapshot
                 .latest_calibration
                 .as_ref()
-                .is_some_and(CalibrationObservation::is_gpu_eligible)
+                .is_some_and(|calibration| !calibration.has_receipts_and_parity())
         {
             return Ok(None);
         }
@@ -872,6 +880,7 @@ fn observation_id() -> String {
     format!("{:x}", digest.finalize())[..32].to_string()
 }
 
+#[allow(dead_code)]
 pub(crate) fn new_record_id() -> String {
     observation_id()
 }

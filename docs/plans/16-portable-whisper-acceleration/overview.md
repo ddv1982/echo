@@ -233,20 +233,20 @@ Each live lane runs on its own Linux VM or physical host at the PR head. Drive t
 
 **Build.**
 
-- [ ] Make Auto the default. Auto uses GPU only after exact local calibration beats CPU by both 20 percent and 250 ms.
-- [ ] Make GPU an explicit preference that tries a receipt-verified compatible GPU even when it is locally slower, with one CPU recovery.
+- [ ] Make Auto the unset default. Auto uses GPU when a receipt-verified local Vulkan device enumerates, otherwise CPU.
+- [ ] Make GPU share that Auto path. It tries a receipt-verified compatible GPU with one CPU recovery.
 - [ ] Make CPU skip GPU enumeration and always use `--no-gpu`.
-- [ ] Keep automatic language and hints on CPU until their own paired release matrix passes. Show that policy in status instead of hiding it.
-- [ ] Run the compatibility matrix on Intel Mesa, AMD RADV, NVIDIA Vulkan, CPU-only, and a dual-GPU host before enabling the default.
+- [ ] Keep automatic language and hints as decode flags on the same backend. Do not force CPU for those requests.
+- [ ] Do not require a 20 percent / 250 ms bake-off or five physical hosts to ship Auto as the factory default.
 
 **You see.**
 
-- [ ] Settings shows Auto, GPU, and CPU, plus the last actual backend, device, fallback reason, and whether calibration is pending.
+- [ ] Settings shows Auto, GPU, and CPU, plus the last actual backend, device, and fallback reason.
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
 - [ ] Add config, environment, CLI, IPC, frontend, accessibility, and status-copy tests for all three modes. Run the full frontend and Rust suites.
-- [ ] Add matrix-result replay tests that refuse to enable Auto when any required compatibility lane is missing or inconclusive.
+- [ ] Keep Auto as the unset default without a five-host compatibility matrix gate.
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `grok-4.6-fast-xhigh` at the PR head.
 
@@ -257,8 +257,8 @@ Each live lane runs on its own Linux VM or physical host at the PR head. Drive t
 - [ ] Lane 5. Select GPU on a compatible GPU. Save `gpu-mode.png`. Pass when GPU is attempted and the actual device is shown.
 - [ ] Lane 6. Select GPU on CPU-only Linux. Save `gpu-unavailable.png`. Pass when CPU recovery works and the unavailability reason is shown.
 - [ ] Lane 7. Select CPU on a GPU host. Save `cpu-mode.png`. Pass when no GPU probe runs and status says CPU.
-- [ ] Lane 8. Use automatic language in Auto. Save `auto-language-policy.png`. Pass when CPU runs and status names the policy reason.
-- [ ] Lane 9. Use recognition hints in Auto. Save `hint-policy.png`. Pass when CPU runs and every hint reaches the request.
+- [ ] Lane 8. Use automatic language in Auto. Save `auto-language-policy.png`. Pass when language auto uses the same backend as pinned English, not a CPU policy fallback.
+- [ ] Lane 9. Use recognition hints in Auto. Save `hint-policy.png`. Pass when hints use the same backend and every hint reaches the request.
 - [ ] Lane 10. Switch modes between recordings. Save `mode-switch.png`. Pass when each next recording follows the new preference without restarting Echo.
 
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
@@ -266,7 +266,7 @@ Each live lane runs on its own Linux VM or physical host at the PR head. Drive t
 - [ ] Metric. Paired CPU and Vulkan median, p95, quality, peak RSS, minimum available memory, swap delta, and failure rate per matrix host and model.
 - [ ] Probe. Run the short screen first, then the full multilingual and product corpus only on matrix cells that pass the screen.
 - [ ] Baseline. Record the portable managed CPU result first for every host, model, and decode policy.
-- [ ] Rule. Auto may select GPU only when median improves by at least 20 percent and 250 ms, p95 improves, quality and hallucination gates pass, every receipt is exact, and resource and stability gates pass. Otherwise Auto selects CPU.
+- [ ] Rule. Auto may use GPU when a receipt-verified Vulkan device enumerates. Receipts, UUID pin, quarantine, and one CPU recovery remain the safety net. Do not use a 20 percent / 250 ms bake-off as the selector.
 
 **Review gate.** The operator reviews before merge.
 
@@ -414,7 +414,7 @@ The local background calibration experience remains unproven. PR 16.3 must show 
 - Multi-GPU selection is weak upstream. PR 16.3 must select by stable UUID when possible and reject a receipt that names another device.
 - A manual inference contract version can drift. PR 16.2 adds canonical contract fixtures and a watched-file CI guard.
 - Background calibration can consume battery and compete with dictation. PR 16.3 must run only when idle and stop immediately when recording starts.
-- The Intel laptop cannot prove AMD or NVIDIA support. PR 16.4 needs external physical hosts before Auto becomes the default.
+- The Intel laptop cannot prove AMD or NVIDIA support. Auto still falls back to CPU when no receipt-verified device enumerates. Five physical hosts are not a factory-default gate.
 
 ## Appendix D. Links and reading list
 

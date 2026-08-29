@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use echo_core::{
-    DecodeOptions, Engine, EngineError, EngineId, LanguageChoice, Pcm16kMono, Transcript,
-    WhisperRecoveryReason, WhisperRecoveryTelemetry, WhisperRuntimeBackend,
+    DecodeOptions, Engine, EngineError, EngineId, Pcm16kMono, Transcript, WhisperRecoveryReason,
+    WhisperRecoveryTelemetry, WhisperRuntimeBackend,
 };
 
 use super::whisper_accel_cache::{LocalSelectionKey, LocalSelectionStore};
@@ -107,15 +107,6 @@ impl RecoveringWhisperEngine {
         options: &DecodeOptions,
     ) -> Result<Transcript, EngineError> {
         let now = (self.now)();
-        if options.language == LanguageChoice::Auto || !options.hints.is_empty() {
-            return self.run_fallback(
-                plan,
-                pcm,
-                options,
-                false,
-                WhisperRecoveryReason::PolicyMismatch,
-            );
-        }
         match self.process_quarantined(&plan.identity_key, now) {
             Ok(true) => {
                 return self.run_fallback(
@@ -273,8 +264,7 @@ fn quarantine_reason(reason: WhisperRecoveryReason) -> QuarantineReason {
         WhisperRecoveryReason::IdentityMismatch => QuarantineReason::IdentityMismatch,
         WhisperRecoveryReason::RuntimeFailure
         | WhisperRecoveryReason::Quarantined
-        | WhisperRecoveryReason::QuarantineUnreadable
-        | WhisperRecoveryReason::PolicyMismatch => QuarantineReason::RuntimeFailure,
+        | WhisperRecoveryReason::QuarantineUnreadable => QuarantineReason::RuntimeFailure,
     }
 }
 
@@ -513,15 +503,12 @@ mod tests {
         let transcript = engine
             .transcribe(&Pcm16kMono::from_samples(vec![0; 160]), &auto)
             .unwrap();
-        assert_eq!(transcript.raw, "CPU");
-        assert_eq!(fs::read_to_string(gpu_marker).unwrap().lines().count(), 1);
-        assert_eq!(fs::read_to_string(cpu_marker).unwrap().lines().count(), 1);
+        assert_eq!(transcript.raw, "GPU");
+        assert_eq!(fs::read_to_string(&gpu_marker).unwrap().lines().count(), 2);
+        assert!(!cpu_marker.exists());
         let recovery = transcript.detail.whisper.unwrap().recovery.unwrap();
-        assert!(!recovery.accelerated_attempted);
-        assert_eq!(
-            recovery.fallback_reason,
-            Some(WhisperRecoveryReason::PolicyMismatch)
-        );
+        assert!(recovery.accelerated_attempted);
+        assert_eq!(recovery.fallback_reason, None);
     }
 
     #[test]

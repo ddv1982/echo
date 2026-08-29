@@ -114,7 +114,7 @@ pub(super) fn projection() -> Value {
             ],
             "fallback": "managedCpuOnce",
             "quarantineLifetimeSeconds": MAX_QUARANTINE_LIFETIME_SECS,
-            "requestPolicyMismatchFallsBack": true,
+            "requestPolicyMismatchFallsBack": false,
             "schema": 1
         },
         "telemetry": {
@@ -129,13 +129,11 @@ pub(super) fn projection() -> Value {
                 "acceleratedAttempted",
                 "fallbackReason"
             ],
-            "schema": 2,
+            "schema": 3,
             "selectionFields": [
                 "preference",
                 "cachedDecision",
-                "localKey",
-                "calibrationPending",
-                "proofOnly"
+                "localKey"
             ]
         }
     })

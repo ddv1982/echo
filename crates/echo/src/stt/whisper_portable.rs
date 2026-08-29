@@ -31,6 +31,7 @@ pub(crate) fn installed_package_root(echo_binary: &Path) -> Option<PathBuf> {
     .find(|candidate| candidate.join("portable-selection.v1.json").is_file())
 }
 
+#[allow(dead_code)]
 pub(crate) fn portable_execution_id(root: &Path) -> Option<ExecutionArtifactId> {
     let raw = fs::read(root.join("portable-selection.v1.json")).ok()?;
     PortableSelection::from_bytes(&raw)

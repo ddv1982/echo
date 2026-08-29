@@ -85,6 +85,9 @@ impl VulkanBackend {
     }
 
     pub(crate) fn enumerate(&self) -> Result<Vec<LocalVulkanRoute>, String> {
+        if cfg!(debug_assertions) && std::env::var("ECHO_WHISPER_TEST_FAULT").as_deref() == Ok("no-devices") {
+            return Ok(Vec::new());
+        }
         let libraries = loader_libraries()?;
         let mut routes = Vec::new();
         for manifest_path in discover_manifests(&self.icd_directories, self.require_trusted_icds)? {

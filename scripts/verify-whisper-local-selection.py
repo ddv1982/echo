@@ -92,19 +92,6 @@ def clone_calibrated_state(source_root: Path, destination_root: Path) -> None:
     shutil.copytree(state_root(source_root), destination)
 
 
-def wait_for_calibration(root: Path, expected_jobs: int, timeout: float = 180) -> None:
-    deadline = time.monotonic() + timeout
-    state = state_root(root)
-    while time.monotonic() < deadline:
-        jobs = list((state / "jobs").glob("*.json"))
-        results = list((state / "job-results").glob("*.json"))
-        routes = list((state / "scopes").glob("*/*/routes/*.json"))
-        if len(jobs) == expected_jobs and len(results) == expected_jobs and routes:
-            return
-        time.sleep(0.25)
-    raise ValueError("background calibration did not finish within its deadline")
-
-
 def run_test(repo: Path, name: str, build_commit: str | None = None) -> str:
     environment = dict(os.environ)
     dependency_prefix = (
@@ -169,20 +156,17 @@ def verify_live(args: argparse.Namespace) -> dict[str, object]:
     cold, cold_wall = run_transcription(
         binary, fixture, args.model, "auto", baseline_root
     )
-    if runtime_backend(cpu) != "cpu" or runtime_backend(cold) != "cpu":
-        raise ValueError("cold baseline or Auto did not use managed CPU")
-    cold_selection = selection(cold)
-    if (
-        cold_selection["cachedDecision"] != "unknown"
-        or cold_selection["calibrationPending"] is not True
-    ):
-        raise ValueError("cold Auto did not report pending calibration")
-    wait_for_calibration(baseline_root, 1)
+    if runtime_backend(cpu) != "cpu":
+        raise ValueError("cold baseline did not use managed CPU")
+    if runtime_backend(cold) not in {"cpu", "vulkan"}:
+        raise ValueError("cold Auto did not use CPU or Vulkan")
     gpu_cold, gpu_cold_wall = run_transcription(
         binary, fixture, args.model, "gpu", output / "gpu-cold"
     )
     if runtime_backend(gpu_cold) != "vulkan":
         raise ValueError("explicit GPU with an empty local store did not use Vulkan")
+    if runtime_backend(gpu_cold) == "vulkan" and runtime_backend(cold) != "vulkan":
+        raise ValueError("cold Auto on a GPU host did not use Vulkan")
     warm, warm_wall = run_transcription(
         binary, fixture, args.model, "auto", baseline_root
     )
@@ -190,13 +174,12 @@ def verify_live(args: argparse.Namespace) -> dict[str, object]:
     warm_selection = selection(warm)
     gpu_selection = selection(gpu)
     if (
-        runtime_backend(warm) != "cpu"
+        runtime_backend(gpu) != "vulkan"
+        or runtime_backend(warm) != "vulkan"
         or warm_selection["cachedDecision"] != "vulkan"
-        or warm_selection["calibrationPending"] is not False
-        or runtime_backend(gpu) != "vulkan"
         or gpu_selection["localKey"] != warm_selection["localKey"]
     ):
-        raise ValueError("warm Auto or explicit GPU differs from the calibrated route")
+        raise ValueError("warm Auto or explicit GPU did not share the Vulkan route")
     expected_failures = {
         "wrong-receipt": "receiptMismatch",
         "backend-fallback": "cpuFallback",
@@ -226,12 +209,10 @@ def verify_live(args: argparse.Namespace) -> dict[str, object]:
     [view] = list((state_root(corrupt_root) / "views/models").glob("*.json"))
     view.write_text("{corrupt\n", encoding="utf-8")
     corrupt, _ = run_transcription(binary, fixture, args.model, "auto", corrupt_root)
-    if (
-        runtime_backend(corrupt) != "cpu"
-        or selection(corrupt)["calibrationPending"] is not True
-        or view.read_text(encoding="utf-8") != "{corrupt\n"
-    ):
-        raise ValueError("corrupt cache was not preserved with CPU recalibration")
+    if view.read_text(encoding="utf-8") != "{corrupt\n":
+        raise ValueError("corrupt cache was not preserved")
+    if runtime_backend(gpu) == "vulkan" and runtime_backend(corrupt) != "vulkan":
+        raise ValueError("corrupt cache Auto on a GPU host did not use Vulkan")
 
     driver_root = output / "driver-change"
     clone_calibrated_state(baseline_root, driver_root)
@@ -297,10 +278,8 @@ def verify_live(args: argparse.Namespace) -> dict[str, object]:
         if process.returncode != 0:
             raise ValueError(f"concurrent Auto failed: {stderr}")
         concurrent.append(strict_json(stdout, "concurrent transcription JSON"))
-    wait_for_calibration(concurrent_root, 2)
-    state = state_root(concurrent_root)
-    if len(list((state / "keys").glob("*/calibration/*.json"))) != 1:
-        raise ValueError("concurrent owners repeated calibration")
+    if any(runtime_backend(payload) not in {"cpu", "vulkan"} for payload in concurrent):
+        raise ValueError("concurrent Auto did not use CPU or Vulkan")
 
     perf_output = run_test(
         repo,

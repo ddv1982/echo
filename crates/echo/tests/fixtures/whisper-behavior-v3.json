@@ -105,7 +105,7 @@
       ],
       "fallback": "managedCpuOnce",
       "quarantineLifetimeSeconds": 86400,
-      "requestPolicyMismatchFallsBack": true,
+      "requestPolicyMismatchFallsBack": false,
       "schema": 1
     },
     "telemetry": {
@@ -120,17 +120,15 @@
         "acceleratedAttempted",
         "fallbackReason"
       ],
-      "schema": 2,
+      "schema": 3,
       "selectionFields": [
         "preference",
         "cachedDecision",
-        "localKey",
-        "calibrationPending",
-        "proofOnly"
+        "localKey"
       ]
     }
   },
-  "projectionSha256": "1ce859f67abd9b92b9c7f3574cd0ac08aa5d9a7e9742920cca8c8dec67701e15",
+  "projectionSha256": "22dd42e88cdd73451d2bbbbf2c7ca9e4941aa9264d1d7368761b1371677ef99e",
   "watchedPaths": [
     "crates/echo-core/src/engine.rs",
     "crates/echo/src/stt/backend/vulkan.rs",
@@ -139,7 +137,6 @@
     "crates/echo/src/stt/whisper_acceleration.rs",
     "crates/echo/src/stt/whisper_admission.rs",
     "crates/echo/src/stt/whisper_behavior.rs",
-    "crates/echo/src/stt/whisper_calibration.rs",
     "crates/echo/src/stt/whisper_plan.rs",
     "crates/echo/src/stt/whisper_planner.rs",
     "crates/echo/src/stt/whisper_portable.rs",

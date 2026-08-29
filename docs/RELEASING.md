@@ -28,6 +28,11 @@ to become a release requirement.
 
 ## Publish
 
+Unset Whisper acceleration is Auto. Auto uses a receipt-verified Vulkan
+device when one enumerates, otherwise managed CPU. CPU in Settings remains
+an explicit opt-out and always passes `--no-gpu`. Automatic language and
+recognition hints run on the same backend as the rest of the decode.
+
 ### Stage a qualified Whisper acceleration release
 
 Use this path when the release contains an admitted Whisper accelerator. Do not let the tag workflow rebuild the qualified executable.
