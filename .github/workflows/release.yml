@@ -354,8 +354,11 @@ jobs:
           if-no-files-found: error
 
   github-release:
-    if: github.ref_type == 'tag'
-    needs: [linux-packages, qualified-release-assets]
+    if: >-
+      github.ref_type == 'tag' &&
+      needs.linux-packages.result == 'success' &&
+      needs.qualified-release-assets.result == 'success'
+    needs: [linux-packages, qualified-release-assets, appimage]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -381,30 +384,43 @@ jobs:
           name: echo-${{ github.ref_name }}-qualified-release
           path: release-assets/qualified
 
+      - uses: actions/download-artifact@v8
+        if: needs.appimage.result == 'success'
+        continue-on-error: true
+        with:
+          name: ${{ env.ARTIFACT_STEM }}-appimage
+          path: release-assets/appimage
+
       - name: Extract release notes
         run: python3 scripts/changelog-notes.py "${{ github.ref_name }}" > release-notes.md
 
-      - name: Attach qualified GitHub Release
-        if: needs.qualified-release-assets.outputs.has_qualified == 'true'
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
-        with:
-          body_path: release-notes.md
-          files: |
-            release-assets/qualified/*.deb
-            release-assets/qualified/*.rpm
-            release-assets/qualified/echo-desktop
-            release-assets/qualified/qualified-release.json
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          fail_on_unmatched_files: true
+      - name: Stage GitHub Release files
+        env:
+          HAS_QUALIFIED: ${{ needs.qualified-release-assets.outputs.has_qualified }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets/publish
+          if [ "$HAS_QUALIFIED" = "true" ]; then
+            cp release-assets/qualified/*.deb \
+              release-assets/qualified/*.rpm \
+              release-assets/qualified/echo-desktop \
+              release-assets/qualified/qualified-release.json \
+              release-assets/publish/
+          else
+            cp release-assets/packages/deb/*.deb \
+              release-assets/packages/rpm/*.rpm \
+              release-assets/bin/echo-desktop \
+              release-assets/publish/
+          fi
+          if [ -d release-assets/appimage ]; then
+            find release-assets/appimage -name '*.AppImage' -exec cp {} release-assets/publish/ \;
+          fi
+          ls -l release-assets/publish
 
       - name: Attach GitHub Release
-        if: needs.qualified-release-assets.outputs.has_qualified != 'true'
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           body_path: release-notes.md
-          files: |
-            release-assets/packages/deb/*.deb
-            release-assets/packages/rpm/*.rpm
-            release-assets/bin/echo-desktop
+          files: release-assets/publish/*
           prerelease: ${{ contains(github.ref_name, '-') }}
           fail_on_unmatched_files: true
