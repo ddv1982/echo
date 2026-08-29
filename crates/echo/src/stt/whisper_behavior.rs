@@ -82,7 +82,11 @@ pub(super) fn projection() -> Value {
                 "noFallback": "-nf",
                 "threads": "-t"
             },
-            "vadFlags": ["--vad", "-vm"]
+            "vadFlags": ["--vad", "-vm"],
+            "vulkanSelectorKeys": [
+                "ECHO_WHISPER_VULKAN_DEVICE_UUID",
+                "ECHO_WHISPER_VULKAN_DRIVER_UUID"
+            ]
         },
         "receipt": {
             "backend": VULKAN_BACKEND,
@@ -125,7 +129,14 @@ pub(super) fn projection() -> Value {
                 "acceleratedAttempted",
                 "fallbackReason"
             ],
-            "schema": 1
+            "schema": 2,
+            "selectionFields": [
+                "preference",
+                "cachedDecision",
+                "localKey",
+                "calibrationPending",
+                "proofOnly"
+            ]
         }
     })
 }
