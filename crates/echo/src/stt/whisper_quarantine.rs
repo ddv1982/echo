@@ -18,10 +18,6 @@ impl AcceleratorKey {
         &self.0
     }
 
-    pub(crate) fn from_digest(digest: String) -> Self {
-        Self(digest)
-    }
-
     pub(crate) fn parse(value: String) -> Result<Self, String> {
         if value.len() == 64
             && value
