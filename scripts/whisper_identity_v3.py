@@ -19,6 +19,7 @@ COMMIT = re.compile(r"[0-9a-f]{40}")
 SAFE_PATH = re.compile(r"[A-Za-z0-9._+/-]+")
 LOWER_HEX_32 = re.compile(r"[0-9a-f]{32}")
 INFERENCE_CLAIM_SCOPE = "product-stt-corpus-v1"
+MAX_EVIDENCE_LIFETIME_SECS = 30 * 24 * 60 * 60
 ADMISSION_GATE_FIELDS = frozenset(
     {
         "backendTruth",
@@ -316,8 +317,9 @@ def validate_performance_evidence(value):
     )
     require_uint(value["acceptedAt"], 2**64 - 1, "acceptedAt", positive=True)
     require_uint(value["expiresAt"], 2**64 - 1, "expiresAt", positive=True)
-    if value["expiresAt"] <= value["acceptedAt"]:
-        fail("performance evidence expiry does not follow acceptance")
+    lifetime = value["expiresAt"] - value["acceptedAt"]
+    if lifetime <= 0 or lifetime > MAX_EVIDENCE_LIFETIME_SECS:
+        fail("performance evidence lifetime is invalid")
 
 
 def validate_release_binding(value):

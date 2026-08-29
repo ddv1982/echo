@@ -393,6 +393,7 @@ impl PerformanceEvidenceId {
         if input.measurement_protocol != "paired-product-sweep-v2"
             || input.accepted_at == 0
             || input.expires_at <= input.accepted_at
+            || input.expires_at - input.accepted_at > 30 * 24 * 60 * 60
         {
             return Err(IdentityError("invalid performance evidence".to_string()));
         }

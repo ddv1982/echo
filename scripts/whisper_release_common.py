@@ -273,10 +273,39 @@ def v3_declared_inventory(
     return expected
 
 
+def verify_v3_execution_files(root: Path, acceleration_set: dict[str, object]) -> None:
+    expected = acceleration_set["executionArtifact"]["value"]
+    runtime_relative = Path(expected["runtimeRelativePath"])
+    probe_relative = Path(expected["probeRelativePath"])
+    runtime = root / runtime_relative
+    probe = root / probe_relative
+    receipt_path = runtime.parent / "build-receipt.json"
+    if not runtime.is_file() or not probe.is_file() or not receipt_path.is_file():
+        raise ValueError("v3 execution artifact files are missing")
+    receipt = read_json_strict(receipt_path, "runtime build receipt")
+    runtime_inventory = prefixed_package_inventory(
+        runtime.parent, runtime_relative.parent.as_posix()
+    )
+    actual = {
+        "runtimeArtifactId": receipt.get("artifactId"),
+        "runtimeIdentitySha256": runtime_identity(runtime),
+        "runtimeSha256": sha256_file(runtime),
+        "runtimeLibraryBindings": runtime_library_bindings(runtime),
+        "probeSha256": sha256_file(probe),
+        "buildReceiptSha256": sha256_file(receipt_path),
+        "reusableInventorySha256": sha256_bytes(
+            canonical_json_bytes(runtime_inventory)
+        ),
+    }
+    if any(actual[field] != expected[field] for field in actual):
+        raise ValueError("v3 runtime files differ from the execution artifact")
+
+
 def verify_v3_reusable_subset(
     root: Path, acceleration_set: dict[str, object]
 ) -> list[dict[str, object]]:
     inventory = v3_declared_inventory(root, acceleration_set)
+    verify_v3_execution_files(root, acceleration_set)
     if sha256_bytes(canonical_json_bytes(inventory)) != acceleration_set.get(
         "reusableInventorySha256"
     ):

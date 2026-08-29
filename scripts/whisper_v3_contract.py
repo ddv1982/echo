@@ -149,7 +149,11 @@ def verify_measured_inference_contract(
 
 
 def verify_reusable_evidence_for_commit(
-    *, repo_root: Path, commit: str, acceleration_set: dict[str, object]
+    *,
+    repo_root: Path,
+    commit: str,
+    acceleration_set: dict[str, object],
+    now: int,
 ) -> dict[str, object]:
     current = behavior_at_commit(repo_root, commit)
     identities = verify_acceleration_set(acceleration_set)
@@ -162,4 +166,8 @@ def verify_reusable_evidence_for_commit(
             raise ValueError(
                 "reusable v3 evidence differs from current inference behavior"
             )
+    for record in acceleration_set["performanceEvidence"]:
+        value = record["value"]
+        if not value["acceptedAt"] <= now <= value["expiresAt"]:
+            raise ValueError("reusable v3 performance evidence is not active")
     return identities

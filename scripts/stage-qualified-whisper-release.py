@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from whisper_identity_v3 import (
@@ -25,6 +26,7 @@ from whisper_release_common import (
     BUNDLE_MARKER,
     BUNDLE_TOKENS,
     bundle_variant,
+    package_inventory,
     runtime_identity,
     runtime_library_bindings,
     read_json_strict,
@@ -495,6 +497,7 @@ def stage(args: argparse.Namespace) -> None:
             repo_root=REPO_ROOT,
             commit=args.commit,
             acceleration_set=reusable_set,
+            now=int(time.time()),
         )
         assets = {
             bundle_type: bundle_v3_one(
@@ -797,18 +800,46 @@ def self_test() -> None:
         reusable_resource = reusable / "whisper-acceleration"
         reusable_runtime = reusable_resource / "runtime"
         reusable_runtime.mkdir(parents=True)
-        (reusable_runtime / "whisper-cli").write_bytes(b"runtime")
-        (reusable_runtime / "echo-whisper-runtime-probe").write_bytes(b"probe")
-        evidence_id = cases["performanceEvidence"]["id"]
+        reusable_cli = reusable_runtime / "whisper-cli"
+        reusable_probe = reusable_runtime / "echo-whisper-runtime-probe"
+        reusable_receipt = reusable_runtime / "build-receipt.json"
+        reusable_cli.write_bytes(b"runtime")
+        reusable_probe.write_bytes(b"probe")
+        (reusable_runtime / "libwhisper.so").write_bytes(b"library")
+        reusable_receipt.write_text(
+            json.dumps({"artifactId": "4" * 64}), encoding="utf-8"
+        )
+        runtime_inventory = []
+        for entry in package_inventory(reusable_runtime):
+            copied = dict(entry)
+            copied["path"] = f"runtime/{entry['path']}"
+            runtime_inventory.append(copied)
+        execution_input = {
+            "schemaVersion": 3,
+            "runtimeArtifactId": "4" * 64,
+            "runtimeIdentitySha256": runtime_identity(reusable_cli),
+            "runtimeRelativePath": "runtime/whisper-cli",
+            "runtimeSha256": sha256_file(reusable_cli),
+            "runtimeLibraryBindings": runtime_library_bindings(reusable_cli),
+            "probeRelativePath": "runtime/echo-whisper-runtime-probe",
+            "probeSha256": sha256_file(reusable_probe),
+            "buildReceiptSha256": sha256_file(reusable_receipt),
+            "reusableInventorySha256": sha256_bytes(
+                canonical_json_bytes(runtime_inventory)
+            ),
+        }
+        execution = build_record("executionArtifact", execution_input)
+        evidence_input = json.loads(json.dumps(cases["performanceEvidence"]["input"]))
+        evidence_input["executionArtifactId"] = execution["id"]
+        evidence = build_record("performanceEvidence", evidence_input)
+        evidence_id = evidence["id"]
         cache_relative = f"cache-seeds/{evidence_id}"
         reusable_cache = reusable_resource / cache_relative
         reusable_cache.mkdir(parents=True)
         (reusable_cache / "seed").write_bytes(b"seed")
         acceleration_set = {
             "schemaVersion": 3,
-            "executionArtifact": build_record(
-                "executionArtifact", cases["executionArtifact"]["input"]
-            ),
+            "executionArtifact": execution,
             "inferenceContracts": [
                 build_record("inferenceContract", cases["inferenceContract"]["input"])
             ],
@@ -830,7 +861,7 @@ def self_test() -> None:
                     },
                     "gates": {name: True for name in ADMISSION_GATE_FIELDS},
                     "id": evidence_id,
-                    "value": cases["performanceEvidence"]["input"],
+                    "value": evidence_input,
                     "verdict": "PASSED",
                 }
             ],
@@ -842,6 +873,30 @@ def self_test() -> None:
             )
         )
         verify_acceleration_set(acceleration_set)
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        verify_reusable_evidence_for_commit(
+            repo_root=REPO_ROOT,
+            commit=head,
+            acceleration_set=acceleration_set,
+            now=evidence_input["acceptedAt"] + 1,
+        )
+        try:
+            verify_reusable_evidence_for_commit(
+                repo_root=REPO_ROOT,
+                commit=head,
+                acceleration_set=acceleration_set,
+                now=evidence_input["expiresAt"] + 1,
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("expired reusable evidence was accepted")
         (reusable_resource / "acceleration-set.v3.json").write_text(
             json.dumps(acceleration_set, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
@@ -851,6 +906,24 @@ def self_test() -> None:
             json.dumps(promotion, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+        forged = root / "forged-runtime"
+        shutil.copytree(reusable, forged)
+        forged_resource = forged / "whisper-acceleration"
+        (forged_resource / "runtime/whisper-cli").write_bytes(b"changed runtime")
+        forged_set = read_json(forged_resource / "acceleration-set.v3.json")
+        forged_set["reusableInventorySha256"] = sha256_bytes(
+            canonical_json_bytes(v3_declared_inventory(forged_resource, forged_set))
+        )
+        (forged_resource / "acceleration-set.v3.json").write_text(
+            json.dumps(forged_set, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        try:
+            copy_v3_evidence(forged, root / "forged-staged-resource")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("forged runtime retained the old execution artifact")
         staged_resource = root / "staged-resource"
         copied_set = copy_v3_evidence(reusable, staged_resource)
         measured_commit = "a" * 40

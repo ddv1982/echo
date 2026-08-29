@@ -24,6 +24,7 @@ from whisper_release_common import (
     package_inventory,
     read_json_strict,
     runtime_identity,
+    runtime_library_bindings,
     sha256_file,
     tree_sha256,
     verify_admission_set,
@@ -298,6 +299,9 @@ def fixture(
     (runtime / "whisper-cli").write_bytes(runtime_bytes)
     (runtime / "libwhisper.so").write_bytes(b"lib")
     (runtime / "echo-whisper-runtime-probe").write_bytes(b"probe")
+    (runtime / "build-receipt.json").write_text(
+        json.dumps({"artifactId": "4" * 64}), encoding="utf-8"
+    )
     (cache / "seed").write_text(key_seed, encoding="utf-8")
     identity = {
         "schemaVersion": 1,
@@ -413,7 +417,27 @@ def add_v3_fixture(root: Path, model_seed: str) -> None:
     )
     cases = read_json_strict(fixture_path, "v3 identity fixture")["cases"]
     package = root / "whisper-acceleration"
-    execution = build_record("executionArtifact", cases["executionArtifact"]["input"])
+    runtime = package / "runtime"
+    runtime_cli = runtime / "whisper-cli"
+    runtime_probe = runtime / "echo-whisper-runtime-probe"
+    build_receipt = runtime / "build-receipt.json"
+    execution = build_record(
+        "executionArtifact",
+        {
+            "schemaVersion": 3,
+            "runtimeArtifactId": "4" * 64,
+            "runtimeIdentitySha256": runtime_identity(runtime_cli),
+            "runtimeRelativePath": "runtime/whisper-cli",
+            "runtimeSha256": sha256_file(runtime_cli),
+            "runtimeLibraryBindings": runtime_library_bindings(runtime_cli),
+            "probeRelativePath": "runtime/echo-whisper-runtime-probe",
+            "probeSha256": sha256_file(runtime_probe),
+            "buildReceiptSha256": sha256_file(build_receipt),
+            "reusableInventorySha256": sha256_bytes(
+                canonical_json_bytes(prefixed_inventory(runtime, "runtime"))
+            ),
+        },
+    )
     contract_input = copy.deepcopy(cases["inferenceContract"]["input"])
     contract_input["modelSha256"] = model_seed * 64
     contract = build_record("inferenceContract", contract_input)
