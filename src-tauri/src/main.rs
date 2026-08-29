@@ -2969,8 +2969,8 @@ mod settings_tests {
         assert_eq!(got.language.value.as_deref(), Some("de"));
         assert_eq!(got.language.effective, "de");
         assert_eq!(got.language.source, SettingSource::File);
-        assert_eq!(got.whisper_acceleration.value.as_deref(), Some("gpu"));
-        assert_eq!(got.whisper_acceleration.effective, "gpu");
+        assert_eq!(got.whisper_acceleration.value.as_deref(), Some("auto"));
+        assert_eq!(got.whisper_acceleration.effective, "auto");
         assert_eq!(got.whisper_acceleration.source, SettingSource::File);
     }
 

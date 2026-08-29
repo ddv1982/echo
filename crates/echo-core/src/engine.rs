@@ -75,8 +75,10 @@ impl Default for WhisperSelectionTelemetry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum WhisperAccelerationPreference {
+    /// Echo through 0.12.5 offered a `gpu` preference that no code path ever
+    /// distinguished from `auto`. Saved configs and history rows still carry it.
+    #[serde(alias = "gpu")]
     Auto,
-    Gpu,
     Cpu,
 }
 
@@ -84,8 +86,7 @@ impl WhisperAccelerationPreference {
     #[must_use]
     pub fn parse(raw: &str) -> Option<Self> {
         match raw {
-            "auto" => Some(Self::Auto),
-            "gpu" => Some(Self::Gpu),
+            "auto" | "gpu" => Some(Self::Auto),
             "cpu" => Some(Self::Cpu),
             _ => None,
         }
@@ -95,7 +96,6 @@ impl WhisperAccelerationPreference {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Auto => "auto",
-            Self::Gpu => "gpu",
             Self::Cpu => "cpu",
         }
     }
@@ -293,5 +293,16 @@ mod tests {
         assert!(runtime.device.is_none());
         assert!(runtime.library_path.is_none());
         assert!(runtime.identity_sha256.is_none());
+    }
+
+    #[test]
+    fn retired_gpu_acceleration_preference_loads_as_auto() {
+        let preference: WhisperAccelerationPreference = serde_json::from_str(r#""gpu""#).unwrap();
+        assert_eq!(preference, WhisperAccelerationPreference::Auto);
+        assert_eq!(
+            WhisperAccelerationPreference::parse("gpu"),
+            Some(WhisperAccelerationPreference::Auto)
+        );
+        assert_eq!(preference.as_str(), "auto");
     }
 }

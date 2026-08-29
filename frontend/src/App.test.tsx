@@ -425,13 +425,14 @@ describe('Echo desktop shell', () => {
     fireEvent.click(await screen.findByText('Advanced'))
     expect(screen.getByRole('group', { name: 'Whisper acceleration' })).toBeInTheDocument()
     expect(
-      screen.getByText(/Auto uses GPU when a compatible local Vulkan device is available/),
+      screen.getByText(/Auto runs on the GPU when this machine has a qualified one/),
     ).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'GPU' }))
+    expect(screen.queryByRole('button', { name: 'GPU' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'CPU' }))
     await waitFor(async () => {
       expect((await getSettings()).whisperAcceleration).toEqual({
-        value: 'gpu',
-        effective: 'gpu',
+        value: 'cpu',
+        effective: 'cpu',
         source: 'file',
       })
     })
