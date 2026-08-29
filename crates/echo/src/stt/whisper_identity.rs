@@ -74,7 +74,7 @@ fn write_canonical(value: &Value, output: &mut String) -> Result<(), IdentityErr
     Ok(())
 }
 
-fn canonical_json_bytes(value: &Value) -> Result<Vec<u8>, IdentityError> {
+pub(crate) fn canonical_json_bytes(value: &Value) -> Result<Vec<u8>, IdentityError> {
     let mut output = String::new();
     write_canonical(value, &mut output)?;
     Ok(output.into_bytes())
@@ -210,11 +210,46 @@ pub struct ExecutionArtifactInput {
     pub runtime_identity_sha256: Sha256Digest,
     pub runtime_relative_path: SafeRelativePath,
     pub runtime_sha256: Sha256Digest,
+    #[serde(deserialize_with = "deserialize_unique_bindings")]
     pub runtime_library_bindings: std::collections::BTreeMap<String, Sha256Digest>,
     pub probe_relative_path: SafeRelativePath,
     pub probe_sha256: Sha256Digest,
     pub build_receipt_sha256: Sha256Digest,
     pub reusable_inventory_sha256: Sha256Digest,
+}
+
+fn deserialize_unique_bindings<'de, D>(
+    deserializer: D,
+) -> Result<std::collections::BTreeMap<String, Sha256Digest>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::{Error, MapAccess, Visitor};
+
+    struct UniqueBindings;
+
+    impl<'de> Visitor<'de> for UniqueBindings {
+        type Value = std::collections::BTreeMap<String, Sha256Digest>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("unique runtime library bindings")
+        }
+
+        fn visit_map<A>(self, mut access: A) -> Result<Self::Value, A::Error>
+        where
+            A: MapAccess<'de>,
+        {
+            let mut bindings = std::collections::BTreeMap::new();
+            while let Some((name, digest)) = access.next_entry()? {
+                if bindings.insert(name, digest).is_some() {
+                    return Err(A::Error::custom("duplicate runtime library binding"));
+                }
+            }
+            Ok(bindings)
+        }
+    }
+
+    deserializer.deserialize_map(UniqueBindings)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
