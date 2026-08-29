@@ -96,8 +96,8 @@ from that tag run.
 ## Verify
 
 Confirm that the workflow is green and the Release has a Debian package, an
-RPM, and `echo-desktop`. A qualified acceleration release also includes
-`qualified-release.json`:
+RPM, and `echo-desktop`. Include the AppImage when that job succeeds. A
+qualified acceleration release also includes `qualified-release.json`:
 
 ```sh
 gh run list --workflow release.yml --limit 5
