@@ -1371,14 +1371,13 @@ function SettingsView({
                   {overrideHint(
                     settings.whisperAcceleration.source,
                     'ECHO_WHISPER_ACCELERATION',
-                    'Auto uses GPU when a compatible local Vulkan device is available. Otherwise CPU. CPU forces --no-gpu. Automatic language and hints run on the same backend.',
+                    'Auto runs on the GPU when this machine has a qualified one, and on the CPU otherwise. Pick CPU to rule the GPU out.',
                   )}
                 </span>
               </div>
               <div className="segmented-control" role="group" aria-label="Whisper acceleration">
                 {([
                   { value: 'auto', label: 'Auto' },
-                  { value: 'gpu', label: 'GPU' },
                   { value: 'cpu', label: 'CPU' },
                 ] as const).map((option) => (
                   <button
@@ -1533,8 +1532,7 @@ function SettingsView({
 function whisperAccelerationLabel(performance: NonNullable<LastRun['performance']>) {
   const selection = performance.selection
   if (!selection) return 'Unknown'
-  const preference =
-    selection.preference === 'auto' ? 'Auto' : selection.preference === 'gpu' ? 'GPU' : 'CPU'
+  const preference = selection.preference === 'auto' ? 'Auto' : 'CPU'
   const backend = backendLabel(performance.backend)
   const device = performance.device ? ` · ${performance.device}` : ''
   if (performance.recovery?.fallbackReason) {

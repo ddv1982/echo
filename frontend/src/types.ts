@@ -190,7 +190,7 @@ export interface LastRunPerformance {
     noFallback: boolean | null
   }
   selection?: {
-    preference: 'auto' | 'gpu' | 'cpu'
+    preference: 'auto' | 'cpu'
     cachedDecision: 'unknown' | 'cpu' | 'vulkan'
     localKey?: string
     calibrationPending?: boolean

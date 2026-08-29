@@ -180,7 +180,7 @@ mod tests {
                 last_seen_label: "USB Mic".into(),
             }),
             language: Some(LanguageChoice::Auto),
-            whisper_acceleration: Some(WhisperAccelerationPreference::Gpu),
+            whisper_acceleration: Some(WhisperAccelerationPreference::Cpu),
         };
         original.save_to(&path).unwrap();
         assert_eq!(Config::load_from(&path).unwrap(), original);

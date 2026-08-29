@@ -111,8 +111,8 @@ impl From<CatalogEngine> for EngineChoice {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum CliWhisperAcceleration {
+    #[value(alias = "gpu")]
     Auto,
-    Gpu,
     Cpu,
 }
 
@@ -120,7 +120,6 @@ impl From<CliWhisperAcceleration> for echo_core::WhisperAccelerationPreference {
     fn from(value: CliWhisperAcceleration) -> Self {
         match value {
             CliWhisperAcceleration::Auto => Self::Auto,
-            CliWhisperAcceleration::Gpu => Self::Gpu,
             CliWhisperAcceleration::Cpu => Self::Cpu,
         }
     }
