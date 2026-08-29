@@ -25,6 +25,7 @@ def transcribe(
     root: Path,
     language: str = "en",
     extra: list[str] | None = None,
+    fault: str | None = None,
 ) -> dict[str, object]:
     environment = dict(os.environ)
     environment.update(
@@ -34,6 +35,10 @@ def transcribe(
         }
     )
     environment.pop("ECHO_WHISPER_ACCELERATION", None)
+    if fault is None:
+        environment.pop("ECHO_WHISPER_TEST_FAULT", None)
+    else:
+        environment["ECHO_WHISPER_TEST_FAULT"] = fault
     command = [
         str(binary),
         "transcribe",
@@ -109,6 +114,38 @@ def verify_live(args: argparse.Namespace) -> dict[str, object]:
         raise ValueError("automatic language did not stay on CPU")
     if selection(auto_language).get("policyReason") != "automaticLanguage":
         raise ValueError("automatic language did not name the policy reason")
+    hints_root = output / "auto-hints"
+    (hints_root / "data/echo").mkdir(parents=True)
+    (hints_root / "data/echo/dictionary.json").write_text(
+        json.dumps(
+            {
+                "entries": [
+                    {
+                        "spoken": "clawed code",
+                        "written": "Claude Code",
+                        "created_at": 1,
+                    }
+                ]
+            }
+        )
+        + "\n"
+    )
+    auto_hints = transcribe(binary, fixture, args.model, "auto", hints_root)
+    if backend(auto_hints) != "cpu":
+        raise ValueError("recognition hints did not stay on CPU")
+    if selection(auto_hints).get("policyReason") != "recognitionHints":
+        raise ValueError("recognition hints did not name the policy reason")
+    switched = transcribe(binary, fixture, args.model, "cpu", output / "switch")
+    if backend(switched) != "cpu":
+        raise ValueError("mode switch to CPU did not use CPU")
+    switched_gpu = transcribe(binary, fixture, args.model, "gpu", output / "switch")
+    if backend(switched_gpu) != "vulkan":
+        raise ValueError("mode switch to GPU did not use Vulkan")
+    gpu_unavailable = transcribe(
+        binary, fixture, args.model, "gpu", output / "gpu-unavailable", fault="no-devices"
+    )
+    if backend(gpu_unavailable) != "cpu":
+        raise ValueError("GPU mode with no devices did not recover on CPU")
     report = {
         "schemaVersion": 1,
         "echoCommit": args.commit,
@@ -118,10 +155,14 @@ def verify_live(args: argparse.Namespace) -> dict[str, object]:
             "autoWarm": "PASS" if backend(auto_warm) in {"cpu", "vulkan"} else "FAIL",
             "gpuMode": "PASS",
             "autoLanguage": "PASS",
+            "autoHints": "PASS",
+            "modeSwitch": "PASS",
+            "gpuUnavailableSimulated": "PASS",
         },
         "autoWarmBackend": backend(auto_warm),
         "autoWarmSelection": selection(auto_warm),
         "gpuDevice": gpu["whisper"]["runtime"].get("device"),
+        "physicalHostsMissing": ["amdRadv", "nvidiaVulkan", "cpuOnly", "dualGpu"],
     }
     if report["lanes"]["autoWarm"] != "PASS":
         raise ValueError("warm Auto did not produce a CPU or Vulkan backend")
@@ -130,6 +171,10 @@ def verify_live(args: argparse.Namespace) -> dict[str, object]:
     (output / "auto-warm.json").write_text(json.dumps(auto_warm, indent=2) + "\n")
     (output / "gpu.json").write_text(json.dumps(gpu, indent=2) + "\n")
     (output / "auto-language.json").write_text(json.dumps(auto_language, indent=2) + "\n")
+    (output / "auto-hints.json").write_text(json.dumps(auto_hints, indent=2) + "\n")
+    (output / "mode-switch-cpu.json").write_text(json.dumps(switched, indent=2) + "\n")
+    (output / "mode-switch-gpu.json").write_text(json.dumps(switched_gpu, indent=2) + "\n")
+    (output / "gpu-unavailable.json").write_text(json.dumps(gpu_unavailable, indent=2) + "\n")
     (output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     return report
 

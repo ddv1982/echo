@@ -715,6 +715,46 @@ mod tests {
     }
 
     #[test]
+    fn recognition_hints_stay_on_cpu_and_name_the_policy() {
+        let root = scratch();
+        let model = root.join("model.bin");
+        fs::write(&model, b"model").unwrap();
+        let cpu_marker = root.join("cpu-ran");
+        let dictionary_path = root.join("dictionary.json");
+        fs::write(
+            &dictionary_path,
+            r#"{"entries":[{"spoken":"clawed code","written":"Claude Code","created_at":1}]}"#,
+        )
+        .unwrap();
+        let hints = RecognitionHints::from_dictionary(
+            &echo_core::Dictionary::load_from(&dictionary_path).unwrap(),
+        );
+        assert!(!hints.is_empty());
+        let (planner, _) =
+            planner_fixture(&root, &model, Arc::new(AtomicUsize::new(0)), cpu_marker.clone());
+        let engine = ReceiptDrivenWhisperEngine {
+            managed_cpu: cpu_plan(&root, &model, &cpu_marker),
+            planner,
+            preference: WhisperAccelerationPreference::Auto,
+        };
+        let transcript = engine
+            .transcribe(
+                &Pcm16kMono::from_samples(vec![0; 160]),
+                &DecodeOptions {
+                    language: echo_core::LanguageChoice::Pinned(Language::ENGLISH),
+                    hints,
+                },
+            )
+            .unwrap();
+        let selection = transcript.detail.whisper.unwrap().selection.unwrap();
+        assert_eq!(selection.cached_decision, WhisperCachedDecision::Cpu);
+        assert_eq!(
+            selection.policy_reason,
+            Some(WhisperAccelerationPolicyReason::RecognitionHints)
+        );
+    }
+
+    #[test]
     fn cached_warm_planner_p95_is_bounded() {
         let root = scratch();
         let model = root.join("model.bin");
