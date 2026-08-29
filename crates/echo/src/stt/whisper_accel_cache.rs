@@ -9,7 +9,7 @@ use fs2::FileExt;
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::whisper_admission::{QuarantineReason, MAX_QUARANTINE_LIFETIME_SECS};
+use super::whisper_quarantine::{QuarantineReason, MAX_QUARANTINE_LIFETIME_SECS};
 use super::whisper_identity::{
     canonical_json_bytes, ExecutionArtifactId, IdentityError, InferenceContractId, Sha256Digest,
     UuidDigest,

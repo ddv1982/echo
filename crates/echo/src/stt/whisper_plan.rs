@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use echo_core::{WhisperRuntimeBackend, WhisperRuntimeSource, WhisperVulkanReceipt};
 
-use super::whisper_admission::AdmissionIdentityKey;
+use super::whisper_quarantine::AcceleratorKey;
 use super::whisper_behavior::{ONE_SHOT_TIMEOUT_SECS, VULKAN_BACKEND, VULKAN_RECEIPT_SCHEMA};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,7 +29,7 @@ pub enum WhisperPlanDecision {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QualifiedWhisperPlan {
-    pub(crate) identity_key: AdmissionIdentityKey,
+    pub(crate) identity_key: AcceleratorKey,
     pub(crate) primary: WhisperExecutionPlan,
     pub(crate) fallback: WhisperExecutionPlan,
     pub(crate) expected_receipt: WhisperVulkanReceipt,
@@ -49,7 +49,7 @@ impl WhisperPlanDecision {
     }
 
     pub fn qualified(
-        identity_key: AdmissionIdentityKey,
+        identity_key: AcceleratorKey,
         primary: WhisperExecutionPlan,
         fallback: WhisperExecutionPlan,
         expected_receipt: WhisperVulkanReceipt,
@@ -247,7 +247,7 @@ mod tests {
     use super::*;
     use echo_core::WhisperVulkanReceipt;
 
-    use crate::stt::AdmissionIdentityKey;
+    use crate::stt::AcceleratorKey;
 
     fn candidate(source: WhisperRuntimeSource, name: &str) -> WhisperRuntimeCandidate {
         WhisperRuntimeCandidate {
@@ -361,7 +361,7 @@ mod tests {
 
     #[test]
     fn qualified_plan_requires_exact_accelerator_and_managed_cpu_contracts() {
-        let key: AdmissionIdentityKey = serde_json::from_str(&format!("\"{}\"", "a".repeat(64)))
+        let key: AcceleratorKey = serde_json::from_str(&format!("\"{}\"", "a".repeat(64)))
             .unwrap();
         let accelerated = plan(WhisperRuntimeSource::System, WhisperRuntimeBackend::Vulkan);
         let cpu = plan(WhisperRuntimeSource::Managed, WhisperRuntimeBackend::Cpu);

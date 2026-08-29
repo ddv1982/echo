@@ -2,7 +2,7 @@ use std::os::unix::fs::PermissionsExt;
 
 use super::*;
 use crate::stt::{
-    AdmissionGates, AdmissionIdentityKey, AdmissionTuning, AdmissionVerdict, CacheSeedArtifact,
+    AdmissionGates, AcceleratorKey, AdmissionTuning, AdmissionVerdict, CacheSeedArtifact,
     ModelAdmission, SharedRuntimeArtifacts, WhisperModelAsset, WhisperProtocol,
     WhisperRuntimeLaunch,
 };
@@ -129,7 +129,7 @@ fn fixture(label: &str) -> Fixture {
         icd_library_sha256: sha256_file(&icd_library).unwrap(),
         launch_contract_schema: 1,
     };
-    let identity_key = AdmissionIdentityKey::for_identity(&identity);
+    let identity_key = AcceleratorKey::for_identity(&identity);
     let mut record = ModelAdmission {
         identity,
         identity_key,
@@ -249,7 +249,7 @@ fn add_large_record(fixture: &mut Fixture) {
     record.identity.tuning.beam_size = 1;
     record.identity.tuning.best_of = 2;
     record.identity.tuning.no_fallback = true;
-    record.identity_key = AdmissionIdentityKey::for_identity(&record.identity);
+    record.identity_key = AcceleratorKey::for_identity(&record.identity);
     let seed_path = format!("cache-seeds/{}", record.identity_key.as_str());
     copy_tree(
         &fixture
@@ -395,7 +395,7 @@ fn same_model_on_two_hardware_identities_selects_the_exact_host() {
     let mut set = read_set(&fixture);
     let mut other = set.records[0].clone();
     other.identity.device.device_id = 0x9999;
-    other.identity_key = AdmissionIdentityKey::for_identity(&other.identity);
+    other.identity_key = AcceleratorKey::for_identity(&other.identity);
     other.cache_seed.relative_path = format!("cache-seeds/{}", other.identity_key.as_str());
     copy_tree(
         &fixture
@@ -425,7 +425,7 @@ fn two_live_tuning_identities_are_ambiguous() {
     other.identity.tuning.beam_size = 1;
     other.identity.tuning.best_of = 2;
     other.identity.tuning.no_fallback = true;
-    other.identity_key = AdmissionIdentityKey::for_identity(&other.identity);
+    other.identity_key = AcceleratorKey::for_identity(&other.identity);
     other.cache_seed.relative_path = format!("cache-seeds/{}", other.identity_key.as_str());
     copy_tree(
         &fixture
@@ -460,7 +460,7 @@ fn inactive_unrelated_record_disables_the_complete_set() {
         fs::write(&fixture.cpu_plan.model.path, format!("small model {label}")).unwrap();
         let mut set = read_set(&fixture);
         set.records[0].identity.model_sha256 = sha256_file(&fixture.cpu_plan.model.path).unwrap();
-        set.records[0].identity_key = AdmissionIdentityKey::for_identity(&set.records[0].identity);
+        set.records[0].identity_key = AcceleratorKey::for_identity(&set.records[0].identity);
         match mutate {
             0 => set.records[1].expires_at = NOW,
             1 => set.records[1].verdict = AdmissionVerdict::Stopped,
@@ -641,7 +641,7 @@ fn strict_set_parser_rejects_unknown_duplicates_and_empty_sets() {
     let mut distinct_duplicate_cache = set.clone();
     let mut other = distinct_duplicate_cache.records[0].clone();
     other.identity.model_sha256 = "9".repeat(64);
-    other.identity_key = AdmissionIdentityKey::for_identity(&other.identity);
+    other.identity_key = AcceleratorKey::for_identity(&other.identity);
     distinct_duplicate_cache.records.push(other);
     assert!(
         AdmissionSet::from_bytes(&serde_json::to_vec(&distinct_duplicate_cache).unwrap()).is_err()
