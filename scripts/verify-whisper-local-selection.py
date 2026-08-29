@@ -105,13 +105,15 @@ def wait_for_calibration(root: Path, expected_jobs: int, timeout: float = 180) -
     raise ValueError("background calibration did not finish within its deadline")
 
 
-def run_test(repo: Path, name: str) -> str:
+def run_test(repo: Path, name: str, build_commit: str | None = None) -> str:
     environment = dict(os.environ)
     dependency_prefix = (
         repo.parent / "echo/target/pr16-1/deps/usr/lib/x86_64-linux-gnu/pkgconfig"
     )
     if dependency_prefix.is_dir():
         environment["PKG_CONFIG_PATH"] = str(dependency_prefix)
+    if build_commit is not None:
+        environment["ECHO_BUILD_COMMIT"] = build_commit
     result = subprocess.run(
         ["cargo", "test", "-p", "echo", name, "--", "--nocapture"],
         cwd=repo,
@@ -141,6 +143,26 @@ def verify_live(args: argparse.Namespace) -> dict[str, object]:
     )
     if hashlib.sha256(binary.read_bytes()).hexdigest() != binding["echoBinarySha256"]:
         raise ValueError("portable selection package belongs to another Echo binary")
+    repo = Path(__file__).resolve().parent.parent
+    source_check = subprocess.run(
+        [
+            "git",
+            "diff",
+            "--quiet",
+            args.trunk_commit,
+            "--",
+            "crates/echo/src/stt/whisper_acceleration.rs",
+        ],
+        cwd=repo,
+    )
+    if source_check.returncode != 0:
+        raise ValueError("production Whisper decision differs from the trunk baseline")
+
+    trunk, trunk_wall = run_transcription(
+        args.trunk_binary.resolve(), fixture, args.model, "cpu", output / "trunk"
+    )
+    if runtime_backend(trunk) != "cpu":
+        raise ValueError("trunk baseline did not use managed CPU")
 
     baseline_root = output / "cold"
     cpu, cpu_wall = run_transcription(binary, fixture, args.model, "cpu", baseline_root)
@@ -280,23 +302,40 @@ def verify_live(args: argparse.Namespace) -> dict[str, object]:
     if len(list((state / "keys").glob("*/calibration/*.json"))) != 1:
         raise ValueError("concurrent owners repeated calibration")
 
-    repo = Path(__file__).resolve().parent.parent
     perf_output = run_test(
         repo,
-        "stt::whisper_accel_cache::tests::model_view_is_disposable_and_rotates_on_file_change",
+        "stt::whisper_planner::tests::cached_warm_planner_p95_is_bounded",
     )
-    match = re.search(r"cached_model_view_p95_us=(\d+)", perf_output)
+    match = re.search(r"cached_warm_planner_p95_us=(\d+)", perf_output)
     if match is None:
         raise ValueError("warm planner performance test emitted no p95")
     cached_p95_ms = int(match.group(1)) / 1000
     if cached_p95_ms > 25:
         raise ValueError(f"cached planner p95 is {cached_p95_ms:.3f} ms")
+    decision_output = run_test(
+        repo,
+        "stt::whisper_acceleration::tests::production_decision_p95_is_bounded",
+        args.trunk_commit,
+    )
+    match = re.search(r"production_decision_p95_ns=(\d+)", decision_output)
+    if match is None:
+        raise ValueError("production decision performance test emitted no p95")
+    decision_p95_ms = int(match.group(1)) / 1_000_000
 
     delay_percent = ((cold_wall / cpu_wall) - 1) * 100
     if delay_percent > 5:
         raise ValueError(f"cold Auto delay is {delay_percent:.3f} percent")
     report = {
         "schemaVersion": 1,
+        "echoCommit": binding["echoCommit"],
+        "echoBinarySha256": binding["echoBinarySha256"],
+        "portableSelectionBindingSha256": hashlib.sha256(
+            (package.parent / "portable-selection-binding.v1.json").read_bytes()
+        ).hexdigest(),
+        "runtimeArtifactId": strict_json(
+            (package.parent / "runtime/build-receipt.json").read_text(encoding="utf-8"),
+            "runtime build receipt",
+        )["artifactId"],
         "executionArtifactId": portable["executionArtifact"]["id"],
         "inferenceContractIds": [
             contract["id"] for contract in portable["inferenceContracts"]
@@ -305,6 +344,12 @@ def verify_live(args: argparse.Namespace) -> dict[str, object]:
             "cpuWallMs": round(cpu_wall * 1000, 3),
             "autoWallMs": round(cold_wall * 1000, 3),
             "delayPercent": round(delay_percent, 3),
+        },
+        "trunk": {
+            "commit": args.trunk_commit,
+            "productionDecisionSourceUnchanged": True,
+            "productionDecisionP95Ms": decision_p95_ms,
+            "managedCpuFirstResultMs": round(trunk_wall * 1000, 3),
         },
         "warm": {
             "autoWallMs": round(warm_wall * 1000, 3),
@@ -328,6 +373,7 @@ def verify_live(args: argparse.Namespace) -> dict[str, object]:
         "faultInjection": "debug-build-only installed CLI",
     }
     (output / "cpu.json").write_text(json.dumps(cpu, indent=2) + "\n")
+    (output / "trunk.json").write_text(json.dumps(trunk, indent=2) + "\n")
     (output / "auto-cold.json").write_text(json.dumps(cold, indent=2) + "\n")
     (output / "auto-warm.json").write_text(json.dumps(warm, indent=2) + "\n")
     (output / "gpu-cold.json").write_text(json.dumps(gpu_cold, indent=2) + "\n")
@@ -358,6 +404,8 @@ def main() -> int:
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--verify-live", action="store_true")
     parser.add_argument("--echo-binary", type=Path)
+    parser.add_argument("--trunk-binary", type=Path)
+    parser.add_argument("--trunk-commit")
     parser.add_argument("--fixture", type=Path)
     parser.add_argument("--model", default="small")
     parser.add_argument("--output", type=Path)
@@ -366,9 +414,18 @@ def main() -> int:
         if args.self_test:
             self_test()
         elif args.verify_live:
-            if args.echo_binary is None or args.fixture is None or args.output is None:
+            if any(
+                value is None
+                for value in (
+                    args.echo_binary,
+                    args.trunk_binary,
+                    args.trunk_commit,
+                    args.fixture,
+                    args.output,
+                )
+            ):
                 parser.error(
-                    "--verify-live requires --echo-binary, --fixture, and --output"
+                    "--verify-live requires both binaries, trunk commit, fixture, and output"
                 )
             print(json.dumps(verify_live(args), indent=2))
         else:

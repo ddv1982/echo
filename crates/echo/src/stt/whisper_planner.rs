@@ -486,10 +486,13 @@ mod tests {
     use echo_core::{Language, RecognitionHints};
 
     use super::*;
-    use crate::stt::whisper_accel_cache::new_record_id;
+    use crate::stt::whisper_accel_cache::{
+        new_record_id, CalibrationVerdict, DriverIcdFingerprint, NewCalibrationObservation,
+        NewLocalRouteObservation, StableVulkanReceipt, VulkanReceiptObservation,
+    };
     use crate::stt::whisper_identity::{
         CommitDigest, ExecutionArtifactId, ExecutionArtifactInput, InferenceContractId,
-        InferenceContractInput, PackageType, SafeRelativePath, Sha256Digest,
+        InferenceContractInput, PackageType, SafeRelativePath, Sha256Digest, UuidDigest,
     };
     use crate::stt::whisper_portable::{
         CalibrationFixture, ExecutionArtifactRecord, InferenceContractRecord, LegacyExactIndex,
@@ -653,5 +656,96 @@ mod tests {
         assert_eq!(selection.cached_decision, WhisperCachedDecision::Unknown);
         assert!(selection.calibration_pending);
         assert!(selection.proof_only);
+    }
+
+    #[test]
+    fn cached_warm_planner_p95_is_bounded() {
+        let root = scratch();
+        let model = root.join("model.bin");
+        fs::write(&model, b"model").unwrap();
+        let marker = root.join("cpu-ran");
+        let (planner, contract_id) =
+            planner_fixture(&root, &model, Arc::new(AtomicUsize::new(0)), marker.clone());
+        let execution_id = planner
+            .package
+            .package
+            .selection
+            .execution_artifact
+            .id
+            .clone();
+        let manifest = root.join("intel_icd.json");
+        let library = root.join("libvulkan_intel.so");
+        fs::write(&manifest, b"manifest").unwrap();
+        fs::write(&library, b"library").unwrap();
+        let stable_receipt = StableVulkanReceipt {
+            backend: "vulkan".to_string(),
+            vendor_id: 0x8086,
+            device_id: 0x46a6,
+            api_version: 1,
+            driver_version: 2,
+            device_uuid: UuidDigest::parse("1".repeat(32)).unwrap(),
+            driver_uuid: UuidDigest::parse("2".repeat(32)).unwrap(),
+            pipeline_cache_uuid: UuidDigest::parse("3".repeat(32)).unwrap(),
+        };
+        let fingerprint = DriverIcdFingerprint {
+            drm_driver: "i915".to_string(),
+            icd_manifest_sha256: Sha256Digest::parse("4".repeat(64)).unwrap(),
+            icd_library_sha256: Sha256Digest::parse("5".repeat(64)).unwrap(),
+        };
+        let key =
+            LocalSelectionKey::derive(&execution_id, &contract_id, &stable_receipt, &fingerprint)
+                .unwrap();
+        let ready_receipt = VulkanReceiptObservation {
+            stable: stable_receipt.clone(),
+            selected_index: 0,
+        };
+        planner
+            .store
+            .append_route(NewLocalRouteObservation {
+                execution_artifact_id: execution_id.clone(),
+                inference_contract_id: contract_id.clone(),
+                key: key.clone(),
+                stable_receipt,
+                ready_receipt: ready_receipt.clone(),
+                fingerprint,
+                manifest_path: manifest,
+                library_path: library,
+                observed_at: 1,
+            })
+            .unwrap();
+        planner
+            .store
+            .append_calibration(NewCalibrationObservation {
+                key: key.clone(),
+                verdict: CalibrationVerdict::GpuEligible,
+                cpu_infer_ms: 2,
+                gpu_infer_ms: Some(1),
+                transcript_parity: Some(true),
+                ready_receipt: Some(ready_receipt.clone()),
+                result_receipt: Some(ready_receipt),
+                observed_at: 1,
+            })
+            .unwrap();
+        planner
+            .store
+            .write_model_view(&model, None, execution_id, contract_id.clone(), key)
+            .unwrap();
+        let plan = cpu_plan(&root, &model, &marker);
+        let options = DecodeOptions {
+            language: echo_core::LanguageChoice::Pinned(Language::ENGLISH),
+            hints: RecognitionHints::default(),
+        };
+        let mut timings = (0..100)
+            .map(|_| {
+                let started = Instant::now();
+                let contract = planner.contract(&plan, &options).unwrap().unwrap();
+                assert_eq!(contract.id, contract_id);
+                assert!(planner.cached_route(contract).unwrap().is_some());
+                started.elapsed()
+            })
+            .collect::<Vec<_>>();
+        timings.sort();
+        println!("cached_warm_planner_p95_us={}", timings[94].as_micros());
+        assert!(timings[94] <= Duration::from_millis(25));
     }
 }
