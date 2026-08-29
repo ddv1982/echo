@@ -331,7 +331,31 @@ def persisted_resource_thresholds(cell: dict[str, object]) -> tuple[int, int]:
     )
 
 
-def replay_analysis(cell: dict[str, object], corpus: Path, scratch: Path) -> None:
+def replay_field_matches(
+    field: str, replayed: object, measured: object, allow_app_identity_rebind: bool
+) -> bool:
+    if replayed == measured:
+        return True
+    if (
+        not allow_app_identity_rebind
+        or field != "gates"
+        or not isinstance(replayed, dict)
+        or not isinstance(measured, dict)
+    ):
+        return False
+    adjusted = dict(replayed)
+    if adjusted.get("identityMatch") is False and measured.get("identityMatch") is True:
+        adjusted["identityMatch"] = True
+    return adjusted == measured
+
+
+def replay_analysis(
+    cell: dict[str, object],
+    corpus: Path,
+    scratch: Path,
+    *,
+    allow_app_identity_rebind: bool = False,
+) -> None:
     evidence = cell.get("evidence")
     candidates = cell.get("candidates")
     if not isinstance(evidence, dict) or not isinstance(candidates, dict):
@@ -381,7 +405,12 @@ def replay_analysis(cell: dict[str, object], corpus: Path, scratch: Path) -> Non
         "languages",
         "resourceEvidence",
     ):
-        if replay.get(field) != phase2.get(field):
+        if not replay_field_matches(
+            field,
+            replay.get(field),
+            phase2.get(field),
+            allow_app_identity_rebind,
+        ):
             raise ValueError(f"replayed analysis changed {field}")
 
 
@@ -627,7 +656,12 @@ def promote(args: argparse.Namespace) -> None:
         allow_reset_rebind=args.inference_contract_v3 is not None,
     )
     with tempfile.TemporaryDirectory(prefix="echo-whisper-promotion-") as temporary:
-        replay_analysis(cell, args.corpus.resolve(), Path(temporary))
+        replay_analysis(
+            cell,
+            args.corpus.resolve(),
+            Path(temporary),
+            allow_app_identity_rebind=args.inference_contract_v3 is not None,
+        )
 
     cell_evidence = cell.get("evidence")
     if not isinstance(cell_evidence, dict):
@@ -868,6 +902,13 @@ def promote(args: argparse.Namespace) -> None:
 
 
 def self_test() -> None:
+    measured_gates = {"identityMatch": True, "quality": True}
+    replayed_gates = {"identityMatch": False, "quality": True}
+    assert replay_field_matches("gates", replayed_gates, measured_gates, True)
+    assert not replay_field_matches("gates", replayed_gates, measured_gates, False)
+    changed_gates = dict(replayed_gates)
+    changed_gates["quality"] = False
+    assert not replay_field_matches("gates", changed_gates, measured_gates, True)
     cycle = {
         "identity": {"sha256": "a" * 64},
         "probes": {"populated": {"receipt": {"backend": "vulkan"}}},
