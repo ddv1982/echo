@@ -7,7 +7,6 @@ mod whisper;
 mod whisper_behavior;
 mod whisper_identity;
 mod whisper_plan;
-mod whisper_portable;
 mod whisper_probe;
 mod whisper_quarantine;
 mod whisper_recovery;
@@ -16,7 +15,7 @@ pub use cache::{InstalledModel, ModelCache, ModelInventory, WhisperFamily};
 pub use fake::FakeEngine;
 pub use parakeet::ParakeetEngine;
 pub use runtime::SpeechRuntimeInventory;
-pub(crate) use runtime::{runtime_library_bindings, whisper_runtime_launch};
+pub(crate) use runtime::whisper_runtime_launch;
 pub(crate) use whisper::probe_vulkan_runtime_receipt;
 pub use whisper::WhisperEngine;
 
@@ -42,10 +41,7 @@ pub(crate) fn resolved_whisper_acceleration(
 pub use whisper_quarantine::{
     AcceleratorKey, QuarantineReason, QuarantineRecord, MAX_QUARANTINE_LIFETIME_SECS,
 };
-pub use whisper_identity::{
-    ExecutionArtifactId, IdentityError as WhisperIdentityError, InferenceContractId,
-    LocalEnvironmentKey, PerformanceEvidenceId, ReleaseBindingId,
-};
+pub use whisper_identity::{IdentityError as WhisperIdentityError, Sha256Digest, UuidDigest};
 pub use whisper_plan::{
     preferred_runtime, VulkanRuntimeSelector, WhisperExecutionPlan, WhisperModelAsset,
     WhisperPlanDecision, WhisperProtocol, WhisperRuntimeCandidate, WhisperRuntimeLaunch,
