@@ -616,6 +616,7 @@
 
 .segmented-control {
   display: flex;
+  flex: none;
   border: 1px solid hsl(var(--border-subtle));
   border-radius: var(--radius-sm);
   background: hsl(var(--surface-raised));
@@ -624,6 +625,7 @@
 
 .segmented-control button {
   border: 0;
+  white-space: nowrap;
   border-radius: var(--radius-sm);
   background: transparent;
   color: hsl(var(--text-secondary));
