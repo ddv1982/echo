@@ -88,15 +88,16 @@ git push origin vX.Y.Z
 The tag workflow checks that the tag is on `main`, matches the workspace
 version, and has release notes. It then builds with the pinned Tauri CLI,
 requires exactly one Debian package and one RPM, verifies their embedded
-versions, and uploads those artifacts plus `echo-desktop`. A release-candidate
-job downloads the artifacts and verifies the exact directory layout consumed
-by the publisher. A separate job with release-write permission creates the
-GitHub Release only after all required artifacts are available.
+versions, and uploads those artifacts plus `echo-desktop`. If a
+`qualification-$commit` draft exists, the publisher attaches those qualified
+packages instead. If it does not, the publisher attaches the Linux packages
+from that tag run.
 
 ## Verify
 
-Confirm that the workflow is green and the Release has all three required
-assets plus `qualified-release.json` for an acceleration release:
+Confirm that the workflow is green and the Release has a Debian package, an
+RPM, and `echo-desktop`. A qualified acceleration release also includes
+`qualified-release.json`:
 
 ```sh
 gh run list --workflow release.yml --limit 5

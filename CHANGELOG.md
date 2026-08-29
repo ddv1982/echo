@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.12.6
+
+- Unset Whisper acceleration is Auto. Auto uses a receipt-verified local Vulkan device when one enumerates, otherwise managed CPU. CPU remains an explicit opt-out.
+- Automatic language and recognition hints run on the same backend as the rest of the decode.
+- Local GPU selection pins the device by UUID, requires an exact Vulkan receipt, quarantines a failed identity for 24 hours, and recovers once on CPU.
+- Version tags publish Debian, RPM, and echo-desktop when no `qualification-$commit` draft exists.
+
 ## v0.12.5
 
 - Unset Whisper acceleration is Auto. Auto uses a receipt-verified local Vulkan device when one enumerates, otherwise managed CPU. CPU remains an explicit opt-out.

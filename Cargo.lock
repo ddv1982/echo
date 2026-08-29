@@ -1157,7 +1157,7 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "echo"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "bzip2",
  "cpal",
@@ -1178,7 +1178,7 @@ dependencies = [
 
 [[package]]
 name = "echo-core"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -1186,7 +1186,7 @@ dependencies = [
 
 [[package]]
 name = "echo-desktop"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "ashpd",
  "clap",
@@ -5972,7 +5972,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "xtask"
-version = "0.12.5"
+version = "0.12.6"
 dependencies = [
  "png 0.18.1",
  "resvg",

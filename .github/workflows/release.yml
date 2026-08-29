@@ -303,10 +303,25 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
+    outputs:
+      has_qualified: ${{ steps.detect.outputs.has_qualified }}
     steps:
       - uses: actions/checkout@v7
 
+      - name: Detect qualification draft
+        id: detect
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "qualification-${GITHUB_SHA}" >/dev/null 2>&1; then
+            echo "has_qualified=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_qualified=false" >> "$GITHUB_OUTPUT"
+            echo "no qualification-${GITHUB_SHA} draft; tag will publish linux-packages"
+          fi
+
       - name: Download qualified tagged assets
+        if: steps.detect.outputs.has_qualified == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -314,11 +329,13 @@ jobs:
           gh release download "qualification-${GITHUB_SHA}" --dir release-assets/qualified
 
       - name: Install qualified asset verification dependencies
+        if: steps.detect.outputs.has_qualified == 'true'
         run: |
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y cpio p7zip-full rpm
 
       - name: Verify qualified tagged assets
+        if: steps.detect.outputs.has_qualified == 'true'
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
@@ -330,6 +347,7 @@ jobs:
             --require-production-ready
 
       - uses: actions/upload-artifact@v7
+        if: steps.detect.outputs.has_qualified == 'true'
         with:
           name: echo-${{ github.ref_name }}-qualified-release
           path: release-assets/qualified
@@ -337,15 +355,28 @@ jobs:
 
   github-release:
     if: github.ref_type == 'tag'
-    needs: qualified-release-assets
+    needs: [linux-packages, qualified-release-assets]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write
+    env:
+      ARTIFACT_STEM: echo-${{ github.ref_name }}-linux
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/download-artifact@v8
+        with:
+          name: ${{ env.ARTIFACT_STEM }}
+          path: release-assets/packages
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ env.ARTIFACT_STEM }}-bin
+          path: release-assets/bin
+
+      - uses: actions/download-artifact@v8
+        if: needs.qualified-release-assets.outputs.has_qualified == 'true'
         with:
           name: echo-${{ github.ref_name }}-qualified-release
           path: release-assets/qualified
@@ -353,7 +384,8 @@ jobs:
       - name: Extract release notes
         run: python3 scripts/changelog-notes.py "${{ github.ref_name }}" > release-notes.md
 
-      - name: Attach GitHub Release
+      - name: Attach qualified GitHub Release
+        if: needs.qualified-release-assets.outputs.has_qualified == 'true'
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           body_path: release-notes.md
@@ -362,5 +394,17 @@ jobs:
             release-assets/qualified/*.rpm
             release-assets/qualified/echo-desktop
             release-assets/qualified/qualified-release.json
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: true
+
+      - name: Attach GitHub Release
+        if: needs.qualified-release-assets.outputs.has_qualified != 'true'
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        with:
+          body_path: release-notes.md
+          files: |
+            release-assets/packages/deb/*.deb
+            release-assets/packages/rpm/*.rpm
+            release-assets/bin/echo-desktop
           prerelease: ${{ contains(github.ref_name, '-') }}
           fail_on_unmatched_files: true
