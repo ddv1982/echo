@@ -74,6 +74,22 @@ def prefixed_inventory(root: Path, prefix: str) -> list[dict[str, object]]:
     return entries
 
 
+def coverage_claim(phase2: dict[str, object]) -> dict[str, object]:
+    languages = phase2.get("languages")
+    if isinstance(languages, dict):
+        language_names = sorted(languages)
+    elif isinstance(languages, list) and all(
+        isinstance(language, str) for language in languages
+    ):
+        language_names = sorted(set(languages))
+    else:
+        raise ValueError("phase2 coverage has no language set")
+    claim_boundary = phase2.get("claimBoundary")
+    if not isinstance(claim_boundary, str) or not claim_boundary:
+        raise ValueError("phase2 coverage has no claim boundary")
+    return {"claimBoundary": claim_boundary, "languages": language_names}
+
+
 def write_v3_promotion(
     *,
     output: Path,
@@ -150,10 +166,7 @@ def write_v3_promotion(
         "value": environment_input,
     }
     gate_policy = {name: True for name in sorted(ADMISSION_GATE_FIELDS)}
-    coverage = {
-        "claimBoundary": phase2.get("claimBoundary"),
-        "languages": phase2.get("languages"),
-    }
+    coverage = coverage_claim(phase2)
     evidence_input = {
         "schemaVersion": 3,
         "executionArtifactId": execution["id"],
@@ -903,6 +916,12 @@ def promote(args: argparse.Namespace) -> None:
 
 
 def self_test() -> None:
+    assert coverage_claim(
+        {
+            "claimBoundary": "measured corpus",
+            "languages": {"nl": {"wer": 0.1}, "en": {"wer": 0.2}},
+        }
+    ) == {"claimBoundary": "measured corpus", "languages": ["en", "nl"]}
     measured_gates = {"identityMatch": True, "quality": True}
     replayed_gates = {"identityMatch": False, "quality": True}
     assert replay_field_matches("gates", replayed_gates, measured_gates, True)
