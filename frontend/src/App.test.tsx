@@ -424,6 +424,9 @@ describe('Echo desktop shell', () => {
     // The engine override lives in Advanced.
     fireEvent.click(await screen.findByText('Advanced'))
     expect(screen.getByRole('group', { name: 'Whisper acceleration' })).toBeInTheDocument()
+    expect(
+      screen.getByText(/Auto uses GPU when a compatible local Vulkan device is available/),
+    ).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'GPU' }))
     await waitFor(async () => {
       expect((await getSettings()).whisperAcceleration).toEqual({

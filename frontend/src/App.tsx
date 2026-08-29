@@ -1371,7 +1371,7 @@ function SettingsView({
                   {overrideHint(
                     settings.whisperAcceleration.source,
                     'ECHO_WHISPER_ACCELERATION',
-                    'Auto uses GPU only after local calibration beats CPU by 20% and 250 ms. Automatic language and hints stay on CPU.',
+                    'Auto uses GPU when a compatible local Vulkan device is available. Otherwise CPU. CPU forces --no-gpu. Automatic language and hints run on the same backend.',
                   )}
                 </span>
               </div>
@@ -1538,15 +1538,6 @@ function whisperAccelerationLabel(performance: NonNullable<LastRun['performance'
     selection.preference === 'auto' ? 'Auto' : selection.preference === 'gpu' ? 'GPU' : 'CPU'
   const backend = backendLabel(performance.backend)
   const device = performance.device ? ` · ${performance.device}` : ''
-  if (selection.calibrationPending) {
-    return `${preference} · ${backend}${device} · calibration pending`
-  }
-  if (selection.policyReason === 'automaticLanguage') {
-    return `${preference} · CPU · automatic language stays on CPU`
-  }
-  if (selection.policyReason === 'recognitionHints') {
-    return `${preference} · CPU · recognition hints stay on CPU`
-  }
   if (performance.recovery?.fallbackReason) {
     return `${preference} · ${backend}${device} · recovered (${performance.recovery.fallbackReason})`
   }

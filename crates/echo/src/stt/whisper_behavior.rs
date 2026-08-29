@@ -114,7 +114,7 @@ pub(super) fn projection() -> Value {
             ],
             "fallback": "managedCpuOnce",
             "quarantineLifetimeSeconds": MAX_QUARANTINE_LIFETIME_SECS,
-            "requestPolicyMismatchFallsBack": true,
+            "requestPolicyMismatchFallsBack": false,
             "schema": 1
         },
         "telemetry": {

@@ -16,9 +16,8 @@ pub use cleanup::{Cleanup, CleanupError, CleanupMode, OffCleanup, RulesCleanup};
 pub use config::{resolve, Config, EngineChoice, MicrophoneSelection};
 pub use dictionary::{DictEntry, Dictionary, RecognitionHints, Rewrite};
 pub use engine::{
-    DecodeOptions, Engine, EngineError, RunDetail, Transcript, WhisperAttemptTelemetry,
-    WhisperAccelerationPolicyReason, WhisperAccelerationPreference, WhisperCachedDecision,
-    WhisperRecoveryReason,
+    DecodeOptions, Engine, EngineError, RunDetail, Transcript, WhisperAccelerationPreference,
+    WhisperAttemptTelemetry, WhisperCachedDecision, WhisperRecoveryReason,
     WhisperRecoveryTelemetry, WhisperRetryReason, WhisperRunMode, WhisperRunTelemetry,
     WhisperRuntimeBackend, WhisperRuntimeSource, WhisperRuntimeTelemetry,
     WhisperSelectionTelemetry, WhisperTuningTelemetry, WhisperVulkanReceipt,

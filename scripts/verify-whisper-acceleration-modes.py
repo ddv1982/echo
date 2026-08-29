@@ -6,7 +6,6 @@ import json
 import os
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 
@@ -75,18 +74,6 @@ def selection(payload: dict[str, object]) -> dict[str, object]:
     return payload["whisper"].get("selection") or {}
 
 
-def wait_for_calibration(root: Path, timeout: float = 180) -> None:
-    state = root / "data/echo/whisper-local-selection/v1"
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        routes = list((state / "scopes").glob("*/*/routes/*.json")) if state.exists() else []
-        results = list((state / "job-results").glob("*.json")) if state.exists() else []
-        if routes and results:
-            return
-        time.sleep(0.25)
-    raise ValueError("background calibration did not finish")
-
-
 def verify_live(args: argparse.Namespace) -> dict[str, object]:
     output = args.output.resolve()
     if output.exists():
@@ -97,23 +84,26 @@ def verify_live(args: argparse.Namespace) -> dict[str, object]:
     cpu = transcribe(binary, fixture, args.model, "cpu", output / "cpu")
     if backend(cpu) != "cpu":
         raise ValueError("CPU mode did not use managed CPU")
-    auto_cold = transcribe(binary, fixture, args.model, "auto", output / "auto")
-    if backend(auto_cold) != "cpu":
-        raise ValueError("cold Auto did not stay on CPU")
-    wait_for_calibration(output / "auto")
-    auto_warm = transcribe(binary, fixture, args.model, "auto", output / "auto")
-    if selection(auto_warm).get("calibrationPending") is True:
-        raise ValueError("warm Auto still reports pending calibration")
     gpu = transcribe(binary, fixture, args.model, "gpu", output / "gpu")
     if backend(gpu) != "vulkan":
         raise ValueError("GPU mode did not use Vulkan")
+    auto_cold = transcribe(binary, fixture, args.model, "auto", output / "auto")
+    if backend(auto_cold) not in {"cpu", "vulkan"}:
+        raise ValueError("cold Auto did not use CPU or Vulkan")
+    if backend(gpu) == "vulkan" and backend(auto_cold) != "vulkan":
+        raise ValueError("cold Auto on a GPU host did not use Vulkan")
+    if selection(auto_cold).get("calibrationPending") is True:
+        raise ValueError("cold Auto reported pending calibration")
+    auto_warm = transcribe(binary, fixture, args.model, "auto", output / "auto")
+    if selection(auto_warm).get("calibrationPending") is True:
+        raise ValueError("warm Auto reported pending calibration")
+    if backend(gpu) == "vulkan" and backend(auto_warm) != "vulkan":
+        raise ValueError("warm Auto on a GPU host did not use Vulkan")
     auto_language = transcribe(
         binary, fixture, args.model, "auto", output / "auto-language", language="auto"
     )
-    if backend(auto_language) != "cpu":
-        raise ValueError("automatic language did not stay on CPU")
-    if selection(auto_language).get("policyReason") != "automaticLanguage":
-        raise ValueError("automatic language did not name the policy reason")
+    if backend(gpu) == "vulkan" and backend(auto_language) != "vulkan":
+        raise ValueError("automatic language did not use Vulkan on a GPU host")
     hints_root = output / "auto-hints"
     (hints_root / "data/echo").mkdir(parents=True)
     (hints_root / "data/echo/dictionary.json").write_text(
@@ -131,10 +121,8 @@ def verify_live(args: argparse.Namespace) -> dict[str, object]:
         + "\n"
     )
     auto_hints = transcribe(binary, fixture, args.model, "auto", hints_root)
-    if backend(auto_hints) != "cpu":
-        raise ValueError("recognition hints did not stay on CPU")
-    if selection(auto_hints).get("policyReason") != "recognitionHints":
-        raise ValueError("recognition hints did not name the policy reason")
+    if backend(gpu) == "vulkan" and backend(auto_hints) != "vulkan":
+        raise ValueError("recognition hints did not use Vulkan on a GPU host")
     switched = transcribe(binary, fixture, args.model, "cpu", output / "switch")
     if backend(switched) != "cpu":
         raise ValueError("mode switch to CPU did not use CPU")
@@ -162,7 +150,6 @@ def verify_live(args: argparse.Namespace) -> dict[str, object]:
         "autoWarmBackend": backend(auto_warm),
         "autoWarmSelection": selection(auto_warm),
         "gpuDevice": gpu["whisper"]["runtime"].get("device"),
-        "physicalHostsMissing": ["amdRadv", "nvidiaVulkan", "cpuOnly", "dualGpu"],
     }
     if report["lanes"]["autoWarm"] != "PASS":
         raise ValueError("warm Auto did not produce a CPU or Vulkan backend")

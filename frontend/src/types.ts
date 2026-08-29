@@ -195,7 +195,6 @@ export interface LastRunPerformance {
     localKey?: string
     calibrationPending: boolean
     proofOnly: boolean
-    policyReason?: 'automaticLanguage' | 'recognitionHints' | 'compatMatrixIncomplete'
   } | null
   recovery?: {
     identityKey: string

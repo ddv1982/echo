@@ -28,11 +28,10 @@ to become a release requirement.
 
 ## Publish
 
-Portable Whisper Auto becomes the factory default only after the compatibility
-matrix records a `pass` on Intel Mesa, AMD RADV, NVIDIA Vulkan, CPU-only, and
-dual-GPU Linux x86_64 hosts. Until that file is complete, Echo keeps CPU as
-the unset default. Users can still pick Auto or GPU in Settings. Automatic
-language and recognition hints stay on CPU.
+Unset Whisper acceleration is Auto. Auto uses a receipt-verified Vulkan
+device when one enumerates, otherwise managed CPU. CPU in Settings remains
+an explicit opt-out and always passes `--no-gpu`. Automatic language and
+recognition hints run on the same backend as the rest of the decode.
 
 ### Stage a qualified Whisper acceleration release
 

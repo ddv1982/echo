@@ -186,18 +186,10 @@ pub(crate) struct CalibrationObservation {
 }
 
 impl CalibrationObservation {
-    pub(crate) fn is_gpu_eligible(&self) -> bool {
-        self.verdict == CalibrationVerdict::GpuEligible
-            && self.transcript_parity == Some(true)
+    fn has_receipts_and_parity(&self) -> bool {
+        self.transcript_parity == Some(true)
             && self.ready_receipt.is_some()
             && self.result_receipt.is_some()
-            && self
-                .gpu_infer_ms
-                .is_some_and(|gpu| gpu_beats_cpu(self.cpu_infer_ms, gpu))
-    }
-
-    pub(crate) fn is_cpu_settled(&self) -> bool {
-        self.verdict == CalibrationVerdict::CpuOnly && self.transcript_parity == Some(true)
     }
 }
 
@@ -416,6 +408,7 @@ impl LocalSelectionStore {
         Ok(observations.pop())
     }
 
+    #[allow(dead_code)]
     pub(crate) fn publish_job<T: Serialize>(
         &self,
         job_id: &str,
@@ -589,10 +582,10 @@ impl LocalSelectionStore {
         let snapshot = self.snapshot(&view.key, unix_time())?;
         if route.as_ref().map(|route| &route.key) != Some(&view.key)
             || snapshot.active_quarantine.is_some()
-            || !snapshot
+            || snapshot
                 .latest_calibration
                 .as_ref()
-                .is_some_and(CalibrationObservation::is_gpu_eligible)
+                .is_some_and(|calibration| !calibration.has_receipts_and_parity())
         {
             return Ok(None);
         }
@@ -887,6 +880,7 @@ fn observation_id() -> String {
     format!("{:x}", digest.finalize())[..32].to_string()
 }
 
+#[allow(dead_code)]
 pub(crate) fn new_record_id() -> String {
     observation_id()
 }

@@ -92,6 +92,7 @@ struct CalibrationJobResult {
 }
 
 impl CalibrationJob {
+    #[allow(dead_code)]
     pub(crate) fn new(
         package_root: PathBuf,
         state_root: PathBuf,
@@ -109,30 +110,6 @@ impl CalibrationJob {
             echo_binary,
             execution_artifact_id: Some(execution_artifact_id),
             inference_contract_id: Some(inference_contract_id),
-            model_name: model.name.clone(),
-            model_path: model.path.clone(),
-            model_multilingual: model.multilingual,
-            vad_path,
-            created_at: unix_time(),
-        }
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn deferred(
-        package_root: PathBuf,
-        state_root: PathBuf,
-        echo_binary: PathBuf,
-        model: &WhisperModelAsset,
-        vad_path: Option<PathBuf>,
-    ) -> Self {
-        Self {
-            schema_version: JOB_SCHEMA_VERSION,
-            job_id: new_record_id(),
-            package_root,
-            state_root,
-            echo_binary,
-            execution_artifact_id: None,
-            inference_contract_id: None,
             model_name: model.name.clone(),
             model_path: model.path.clone(),
             model_multilingual: model.multilingual,
@@ -224,6 +201,7 @@ impl CalibrationJob {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn publish_and_spawn(
     store: &LocalSelectionStore,
     job: &CalibrationJob,
@@ -578,8 +556,7 @@ fn calibrate(
     let gpu_infer_ms = gpu_result.infer_ms.max(1);
     let verdict = if !parity {
         CalibrationVerdict::Failed
-    } else if super::whisper_accel_cache::gpu_beats_cpu(cpu_result.infer_ms.max(1), gpu_infer_ms)
-    {
+    } else if super::whisper_accel_cache::gpu_beats_cpu(cpu_result.infer_ms.max(1), gpu_infer_ms) {
         CalibrationVerdict::GpuEligible
     } else {
         CalibrationVerdict::CpuOnly

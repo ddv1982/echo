@@ -105,7 +105,7 @@
       ],
       "fallback": "managedCpuOnce",
       "quarantineLifetimeSeconds": 86400,
-      "requestPolicyMismatchFallsBack": true,
+      "requestPolicyMismatchFallsBack": false,
       "schema": 1
     },
     "telemetry": {
@@ -130,7 +130,7 @@
       ]
     }
   },
-  "projectionSha256": "1ce859f67abd9b92b9c7f3574cd0ac08aa5d9a7e9742920cca8c8dec67701e15",
+  "projectionSha256": "e45b8c5256e0ce5518352da0cc13ee5fb4b9d56ba9ac1c24e6fd2107cea4bb7b",
   "watchedPaths": [
     "crates/echo-core/src/engine.rs",
     "crates/echo/src/stt/backend/vulkan.rs",

@@ -1,44 +1,34 @@
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use echo_core::{
-    DecodeOptions, Engine, EngineError, EngineId, LanguageChoice, Pcm16kMono, Transcript,
-    WhisperAccelerationPolicyReason, WhisperAccelerationPreference, WhisperCachedDecision,
-    WhisperRuntimeBackend, WhisperRuntimeSource, WhisperSelectionTelemetry,
+    DecodeOptions, Engine, EngineError, EngineId, Pcm16kMono, Transcript,
+    WhisperAccelerationPreference, WhisperCachedDecision, WhisperRuntimeBackend,
+    WhisperRuntimeSource, WhisperSelectionTelemetry,
 };
 
 use super::backend::vulkan::{LocalVulkanRoute, VulkanBackend};
-use super::whisper_accel_cache::{LocalSelectionKey, LocalSelectionStore};
+use super::whisper_accel_cache::{
+    LocalSelectionKey, LocalSelectionStore, NewLocalRouteObservation, VulkanReceiptObservation,
+};
 use super::whisper_admission::AdmissionIdentityKey;
-use super::whisper_calibration::{publish_and_spawn, CalibrationJob};
 use super::whisper_identity::Sha256Digest;
 use super::whisper_portable::{
-    installed_package_root, qualified_contract_by_id,
-    resolve_qualified_contract, sha256_file, InferenceContractRecord, InstalledPortableSelection,
+    installed_package_root, qualified_contract_by_id, resolve_qualified_contract, sha256_file,
+    InferenceContractRecord, InstalledPortableSelection,
 };
 use super::{
-    CompatMatrix, QuarantineStore, RecoveringWhisperEngine, WhisperEngine, WhisperExecutionPlan,
+    QuarantineStore, RecoveringWhisperEngine, WhisperEngine, WhisperExecutionPlan,
     WhisperPlanDecision, WhisperRuntimeCandidate, WhisperTuning,
 };
 
-type CalibrationSpawner = dyn Fn(&LocalSelectionStore, &CalibrationJob) -> Result<PathBuf, String>;
-
 const FOREGROUND_GPU_DEADLINE: Duration = Duration::from_secs(30);
-
-enum AutoCache {
-    Gpu(LocalVulkanRoute),
-    Cpu,
-    Miss,
-}
 
 #[derive(Clone)]
 pub(crate) struct WhisperAccelerationPlanner {
     package: InstalledPortableSelection,
     store: LocalSelectionStore,
-    echo_binary: PathBuf,
-    spawner: Arc<CalibrationSpawner>,
 }
 
 pub(crate) struct ReceiptDrivenWhisperEngine {
@@ -56,20 +46,14 @@ impl WhisperAccelerationPlanner {
                 &state_root,
             )?,
             store: LocalSelectionStore::at(state_root),
-            echo_binary: echo_binary.to_path_buf(),
-            spawner: Arc::new(publish_and_spawn),
         })
     }
 
     fn contract(
         &self,
         plan: &WhisperExecutionPlan,
-        options: &DecodeOptions,
     ) -> Result<Option<&InferenceContractRecord>, String> {
-        if options.language == echo_core::LanguageChoice::Auto
-            || !options.hints.is_empty()
-            || plan.tuning != WhisperTuning::runtime_defaults()
-        {
+        if plan.tuning != WhisperTuning::runtime_defaults() {
             return Ok(None);
         }
         if let Some(view) = self.store.model_view(
@@ -101,33 +85,6 @@ impl WhisperAccelerationPlanner {
         )
     }
 
-    fn cached_auto(
-        &self,
-        contract: &InferenceContractRecord,
-    ) -> Result<AutoCache, String> {
-        let execution = &self.package.package.selection.execution_artifact.id;
-        let Some(observation) = self.store.latest_route(execution, &contract.id)? else {
-            return Ok(AutoCache::Miss);
-        };
-        let runtime_key = AdmissionIdentityKey::parse(observation.key.as_str().to_string())?;
-        if QuarantineStore::at(self.store.root().join("runtime-quarantine.json"))
-            .is_active(&runtime_key, unix_time())?
-        {
-            return Ok(AutoCache::Miss);
-        }
-        let snapshot = self.store.snapshot(&observation.key, unix_time())?;
-        if snapshot.active_quarantine.is_some() {
-            return Ok(AutoCache::Miss);
-        }
-        match snapshot.latest_calibration.as_ref() {
-            Some(calibration) if calibration.is_gpu_eligible() => {
-                Ok(AutoCache::Gpu(self.restore_route(observation)?))
-            }
-            Some(calibration) if calibration.is_cpu_settled() => Ok(AutoCache::Cpu),
-            _ => Ok(AutoCache::Miss),
-        }
-    }
-
     fn restore_route(
         &self,
         observation: super::whisper_accel_cache::LocalRouteObservation,
@@ -157,25 +114,15 @@ impl WhisperAccelerationPlanner {
         {
             return Ok(None);
         }
-        match self.cached_auto(contract)? {
-            AutoCache::Gpu(route) => Ok(Some(route)),
-            AutoCache::Cpu | AutoCache::Miss => Ok(None),
+        if self
+            .store
+            .snapshot(&observation.key, unix_time())?
+            .active_quarantine
+            .is_some()
+        {
+            return Ok(None);
         }
-    }
-
-    fn schedule(&self, managed_cpu: &WhisperExecutionPlan, contract: &InferenceContractRecord) {
-        let job = CalibrationJob::new(
-            self.package.root.clone(),
-            self.store.root().to_path_buf(),
-            self.echo_binary.clone(),
-            self.package.package.selection.execution_artifact.id.clone(),
-            contract.id.clone(),
-            &managed_cpu.model,
-            managed_cpu.vad.clone(),
-        );
-        if let Err(error) = (self.spawner)(&self.store, &job) {
-            eprintln!("whisper calibration spawn failed: {error}");
-        }
+        Ok(Some(self.restore_route(observation)?))
     }
 
     fn accelerated_engine(
@@ -189,6 +136,7 @@ impl WhisperAccelerationPlanner {
             Some(ready) => ready,
             None => backend.ready(&route)?,
         };
+        let selected_index = ready.selected_index;
         if test_fault("wrong-receipt") {
             ready.device_id ^= 1;
         }
@@ -202,6 +150,27 @@ impl WhisperAccelerationPlanner {
         {
             return Err("local Vulkan route is quarantined or unreadable".to_string());
         }
+        let _ = self.store.append_route(NewLocalRouteObservation {
+            execution_artifact_id: execution.clone(),
+            inference_contract_id: contract.id.clone(),
+            key: key.clone(),
+            stable_receipt: route.receipt.clone(),
+            ready_receipt: VulkanReceiptObservation {
+                stable: route.receipt.clone(),
+                selected_index,
+            },
+            fingerprint: route.fingerprint.clone(),
+            manifest_path: route.manifest_path.clone(),
+            library_path: route.library_path.clone(),
+            observed_at: unix_time(),
+        });
+        let _ = self.store.write_model_view(
+            &managed_cpu.model.path,
+            managed_cpu.vad.as_deref(),
+            execution.clone(),
+            contract.id.clone(),
+            key.clone(),
+        );
         let tuning = tuning(contract)?;
         let mut launch = self.package.runtime_launch();
         launch.vulkan_driver_files = Some(route.manifest_path);
@@ -257,25 +226,17 @@ impl ReceiptDrivenWhisperEngine {
             return self.cpu(
                 pcm,
                 options,
-                selection(
-                    self.preference,
-                    WhisperCachedDecision::Unknown,
-                    None,
-                    false,
-                    None,
-                ),
-                None,
+                selection(self.preference, WhisperCachedDecision::Unknown, None),
             );
         };
         let mut transcript = engine.transcribe(pcm, options)?;
+        let cached_decision = observed_cached_decision(&transcript);
         attach_selection(
             &mut transcript,
             selection(
                 self.preference,
-                WhisperCachedDecision::Vulkan,
+                cached_decision,
                 Some(key.as_str().to_string()),
-                false,
-                None,
             ),
         );
         Ok(transcript)
@@ -286,13 +247,9 @@ impl ReceiptDrivenWhisperEngine {
         pcm: &Pcm16kMono,
         options: &DecodeOptions,
         selection: WhisperSelectionTelemetry,
-        schedule: Option<&InferenceContractRecord>,
     ) -> Result<Transcript, EngineError> {
         let mut transcript =
             WhisperEngine::with_plan(self.managed_cpu.clone()).transcribe(pcm, options)?;
-        if let Some(contract) = schedule {
-            self.planner.schedule(&self.managed_cpu, contract);
-        }
         attach_selection(&mut transcript, selection);
         Ok(transcript)
     }
@@ -314,77 +271,21 @@ impl Engine for ReceiptDrivenWhisperEngine {
             return self.cpu(
                 pcm,
                 options,
-                selection(
-                    self.preference,
-                    WhisperCachedDecision::Cpu,
-                    None,
-                    false,
-                    None,
-                ),
-                None,
+                selection(self.preference, WhisperCachedDecision::Cpu, None),
             );
         }
         let contract = self
             .planner
-            .contract(&self.managed_cpu, options)
+            .contract(&self.managed_cpu)
             .map_err(EngineError::Infer)?;
         let Some(contract) = contract else {
             return self.cpu(
                 pcm,
                 options,
-                selection(
-                    self.preference,
-                    WhisperCachedDecision::Cpu,
-                    None,
-                    false,
-                    policy_reason(options),
-                ),
-                None,
+                selection(self.preference, WhisperCachedDecision::Cpu, None),
             );
         };
-        if self.preference == WhisperAccelerationPreference::Auto {
-            return match self.planner.cached_auto(contract) {
-                Ok(AutoCache::Gpu(route)) => self.gpu(pcm, options, contract, route),
-                Ok(AutoCache::Cpu) => self.cpu(
-                    pcm,
-                    options,
-                    selection(
-                        self.preference,
-                        WhisperCachedDecision::Cpu,
-                        None,
-                        false,
-                        None,
-                    ),
-                    None,
-                ),
-                Ok(AutoCache::Miss) => self.cpu(
-                    pcm,
-                    options,
-                    selection(
-                        self.preference,
-                        WhisperCachedDecision::Unknown,
-                        None,
-                        true,
-                        None,
-                    ),
-                    Some(contract),
-                ),
-                Err(_) => self.cpu(
-                    pcm,
-                    options,
-                    selection(
-                        self.preference,
-                        WhisperCachedDecision::Unknown,
-                        None,
-                        true,
-                        None,
-                    ),
-                    Some(contract),
-                ),
-            };
-        }
         let cached = self.planner.cached_route(contract);
-
         let backend = self.planner.backend();
         let route = match cached {
             Ok(Some(route)) => Ok(route),
@@ -399,14 +300,7 @@ impl Engine for ReceiptDrivenWhisperEngine {
             return self.cpu(
                 pcm,
                 options,
-                selection(
-                    self.preference,
-                    WhisperCachedDecision::Unknown,
-                    None,
-                    false,
-                    None,
-                ),
-                None,
+                selection(self.preference, WhisperCachedDecision::Unknown, None),
             );
         };
         self.gpu(pcm, options, contract, route)
@@ -423,7 +317,7 @@ pub(crate) fn resolved_whisper_acceleration(
             .as_deref()
             .and_then(WhisperAccelerationPreference::parse))
         .or(file)
-        .unwrap_or_else(|| CompatMatrix::load_default().factory_default())
+        .unwrap_or_else(super::whisper_acceleration_factory_default)
 }
 
 pub(crate) fn local_whisper_engine_from_process(
@@ -461,30 +355,35 @@ fn tuning(contract: &InferenceContractRecord) -> Result<WhisperTuning, String> {
     })
 }
 
-fn policy_reason(options: &DecodeOptions) -> Option<WhisperAccelerationPolicyReason> {
-    if options.language == LanguageChoice::Auto {
-        Some(WhisperAccelerationPolicyReason::AutomaticLanguage)
-    } else if !options.hints.is_empty() {
-        Some(WhisperAccelerationPolicyReason::RecognitionHints)
-    } else {
-        None
-    }
-}
-
 fn selection(
     preference: WhisperAccelerationPreference,
     cached_decision: WhisperCachedDecision,
     local_key: Option<String>,
-    calibration_pending: bool,
-    policy_reason: Option<WhisperAccelerationPolicyReason>,
 ) -> WhisperSelectionTelemetry {
     WhisperSelectionTelemetry {
         preference,
         cached_decision,
         local_key,
-        calibration_pending,
+        calibration_pending: false,
         proof_only: false,
-        policy_reason,
+    }
+}
+
+fn observed_cached_decision(transcript: &Transcript) -> WhisperCachedDecision {
+    let Some(whisper) = transcript.detail.whisper.as_ref() else {
+        return WhisperCachedDecision::Unknown;
+    };
+    if whisper
+        .recovery
+        .as_ref()
+        .is_some_and(|recovery| recovery.fallback_reason.is_some())
+    {
+        return WhisperCachedDecision::Cpu;
+    }
+    match whisper.runtime.backend {
+        WhisperRuntimeBackend::Vulkan => WhisperCachedDecision::Vulkan,
+        WhisperRuntimeBackend::Cpu => WhisperCachedDecision::Cpu,
+        _ => WhisperCachedDecision::Unknown,
     }
 }
 
@@ -508,14 +407,13 @@ fn test_fault(expected: &str) -> bool {
 mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use echo_core::{Language, RecognitionHints};
 
     use super::*;
     use crate::stt::whisper_accel_cache::{
-        new_record_id, CalibrationVerdict, DriverIcdFingerprint, NewCalibrationObservation,
-        NewLocalRouteObservation, StableVulkanReceipt, VulkanReceiptObservation,
+        new_record_id, DriverIcdFingerprint, NewLocalRouteObservation, StableVulkanReceipt,
+        VulkanReceiptObservation,
     };
     use crate::stt::whisper_identity::{
         CommitDigest, ExecutionArtifactId, ExecutionArtifactInput, InferenceContractId,
@@ -551,8 +449,6 @@ mod tests {
     fn planner_fixture(
         root: &Path,
         model: &Path,
-        spawns: Arc<AtomicUsize>,
-        cpu_marker: PathBuf,
     ) -> (WhisperAccelerationPlanner, InferenceContractId) {
         let fixture = fixture();
         let mut contract: InferenceContractInput =
@@ -602,11 +498,6 @@ mod tests {
             },
             selection,
         };
-        let spawner = Arc::new(move |_: &LocalSelectionStore, _: &CalibrationJob| {
-            assert!(cpu_marker.is_file());
-            spawns.fetch_add(1, Ordering::SeqCst);
-            Ok(PathBuf::from("job.json"))
-        });
         (
             WhisperAccelerationPlanner {
                 package: InstalledPortableSelection::for_test(
@@ -617,8 +508,6 @@ mod tests {
                     root.join("calibration/english-canary.wav"),
                 ),
                 store: LocalSelectionStore::at(root.join("state")),
-                echo_binary: root.join("echo-desktop"),
-                spawner,
             },
             contract_id,
         )
@@ -655,16 +544,15 @@ mod tests {
     }
 
     #[test]
-    fn cold_auto_runs_cpu_before_scheduling_calibration() {
+    fn cold_auto_does_not_spawn_calibration() {
         let root = scratch();
         let model = root.join("model.bin");
         fs::write(&model, b"model").unwrap();
         let cpu_marker = root.join("cpu-ran");
-        let spawns = Arc::new(AtomicUsize::new(0));
-        let (planner, _) = planner_fixture(&root, &model, Arc::clone(&spawns), cpu_marker.clone());
+        let (planner, _) = planner_fixture(&root, &model);
         let engine = ReceiptDrivenWhisperEngine {
             managed_cpu: cpu_plan(&root, &model, &cpu_marker),
-            planner,
+            planner: planner.clone(),
             preference: WhisperAccelerationPreference::Auto,
         };
         let transcript = engine
@@ -677,21 +565,21 @@ mod tests {
             )
             .unwrap();
         assert_eq!(transcript.raw, "hello");
-        assert_eq!(spawns.load(Ordering::SeqCst), 1);
+        assert!(planner.store.job_paths().unwrap().is_empty());
         let selection = transcript.detail.whisper.unwrap().selection.unwrap();
         assert_eq!(selection.preference, WhisperAccelerationPreference::Auto);
         assert_eq!(selection.cached_decision, WhisperCachedDecision::Unknown);
-        assert!(selection.calibration_pending);
+        assert!(!selection.calibration_pending);
         assert!(!selection.proof_only);
     }
 
     #[test]
-    fn auto_language_stays_on_cpu_and_names_the_policy() {
+    fn auto_language_does_not_force_cpu_by_policy() {
         let root = scratch();
         let model = root.join("model.bin");
         fs::write(&model, b"model").unwrap();
         let cpu_marker = root.join("cpu-ran");
-        let (planner, _) = planner_fixture(&root, &model, Arc::new(AtomicUsize::new(0)), cpu_marker.clone());
+        let (planner, _) = planner_fixture(&root, &model);
         let engine = ReceiptDrivenWhisperEngine {
             managed_cpu: cpu_plan(&root, &model, &cpu_marker),
             planner,
@@ -707,15 +595,12 @@ mod tests {
             )
             .unwrap();
         let selection = transcript.detail.whisper.unwrap().selection.unwrap();
-        assert_eq!(selection.cached_decision, WhisperCachedDecision::Cpu);
-        assert_eq!(
-            selection.policy_reason,
-            Some(WhisperAccelerationPolicyReason::AutomaticLanguage)
-        );
+        assert_eq!(selection.cached_decision, WhisperCachedDecision::Unknown);
+        assert!(!selection.calibration_pending);
     }
 
     #[test]
-    fn recognition_hints_stay_on_cpu_and_name_the_policy() {
+    fn recognition_hints_do_not_force_cpu_by_policy() {
         let root = scratch();
         let model = root.join("model.bin");
         fs::write(&model, b"model").unwrap();
@@ -730,8 +615,7 @@ mod tests {
             &echo_core::Dictionary::load_from(&dictionary_path).unwrap(),
         );
         assert!(!hints.is_empty());
-        let (planner, _) =
-            planner_fixture(&root, &model, Arc::new(AtomicUsize::new(0)), cpu_marker.clone());
+        let (planner, _) = planner_fixture(&root, &model);
         let engine = ReceiptDrivenWhisperEngine {
             managed_cpu: cpu_plan(&root, &model, &cpu_marker),
             planner,
@@ -747,11 +631,8 @@ mod tests {
             )
             .unwrap();
         let selection = transcript.detail.whisper.unwrap().selection.unwrap();
-        assert_eq!(selection.cached_decision, WhisperCachedDecision::Cpu);
-        assert_eq!(
-            selection.policy_reason,
-            Some(WhisperAccelerationPolicyReason::RecognitionHints)
-        );
+        assert_eq!(selection.cached_decision, WhisperCachedDecision::Unknown);
+        assert!(!selection.calibration_pending);
     }
 
     #[test]
@@ -760,8 +641,7 @@ mod tests {
         let model = root.join("model.bin");
         fs::write(&model, b"model").unwrap();
         let marker = root.join("cpu-ran");
-        let (planner, contract_id) =
-            planner_fixture(&root, &model, Arc::new(AtomicUsize::new(0)), marker.clone());
+        let (planner, contract_id) = planner_fixture(&root, &model);
         let execution_id = planner
             .package
             .package
@@ -802,7 +682,7 @@ mod tests {
                 inference_contract_id: contract_id.clone(),
                 key: key.clone(),
                 stable_receipt,
-                ready_receipt: ready_receipt.clone(),
+                ready_receipt,
                 fingerprint,
                 manifest_path: manifest,
                 library_path: library,
@@ -811,30 +691,13 @@ mod tests {
             .unwrap();
         planner
             .store
-            .append_calibration(NewCalibrationObservation {
-                key: key.clone(),
-                verdict: CalibrationVerdict::GpuEligible,
-                cpu_infer_ms: 2000,
-                gpu_infer_ms: Some(1000),
-                transcript_parity: Some(true),
-                ready_receipt: Some(ready_receipt.clone()),
-                result_receipt: Some(ready_receipt),
-                observed_at: 1,
-            })
-            .unwrap();
-        planner
-            .store
             .write_model_view(&model, None, execution_id, contract_id.clone(), key)
             .unwrap();
         let plan = cpu_plan(&root, &model, &marker);
-        let options = DecodeOptions {
-            language: echo_core::LanguageChoice::Pinned(Language::ENGLISH),
-            hints: RecognitionHints::default(),
-        };
         let mut timings = (0..100)
             .map(|_| {
                 let started = Instant::now();
-                let contract = planner.contract(&plan, &options).unwrap().unwrap();
+                let contract = planner.contract(&plan).unwrap().unwrap();
                 assert_eq!(contract.id, contract_id);
                 assert!(planner.cached_route(contract).unwrap().is_some());
                 started.elapsed()
