@@ -1479,44 +1479,8 @@ function SettingsView({
         {status.lastRun ? (
           <>
             <SettingLine label="Last run" value={`${status.lastRun.engine} · ${status.lastRun.inferMs} ms`} />
-            {status.lastRun.modelPath ? <SettingLine label="Model file" value={status.lastRun.modelPath} /> : null}
-            {status.lastRun.binary ? <SettingLine label="Binary" value={status.lastRun.binary} /> : null}
-            {status.lastRun.multilingual != null ? (
-              <SettingLine label="Multilingual" value={status.lastRun.multilingual ? 'Yes' : 'No'} />
-            ) : null}
-            {status.lastRun.vad != null ? (
-              <SettingLine label="VAD" value={status.lastRun.vad ? 'On' : 'Off'} />
-            ) : null}
             {status.lastRun.performance ? (
-              <>
-                <SettingLine label="Whisper mode" value={whisperModeLabel(status.lastRun.performance.mode)} />
-                <SettingLine
-                  label="Runtime"
-                  value={whisperRuntimeLabel(status.lastRun.performance)}
-                />
-                {status.lastRun.performance.selection ? (
-                  <SettingLine
-                    label="Acceleration"
-                    value={whisperAccelerationLabel(status.lastRun.performance)}
-                    tone={
-                      status.lastRun.performance.recovery?.fallbackReason
-                        ? 'attention'
-                        : 'ok'
-                    }
-                  />
-                ) : null}
-                <SettingLine
-                  label="Whisper timing"
-                  value={`WAV ${status.lastRun.performance.audioEncodeMs} ms · process ${status.lastRun.performance.childWallMs} ms · parse ${status.lastRun.performance.parseMs} ms`}
-                />
-                <SettingLine
-                  label="Decoding"
-                  value={whisperTuningLabel(status.lastRun.performance.tuning)}
-                />
-                {status.lastRun.performance.attemptCount > 1 ? (
-                  <SettingLine label="Whisper attempts" value={`${status.lastRun.performance.attemptCount} · VAD retry`} tone="attention" />
-                ) : null}
-              </>
+              <SettingLine label="Acceleration" value={whisperAccelerationLabel(status.lastRun.performance)} />
             ) : null}
             <SettingLine label="Version" value={status.version} />
           </>
@@ -1530,25 +1494,11 @@ function SettingsView({
 }
 
 function whisperAccelerationLabel(performance: NonNullable<LastRun['performance']>) {
-  const selection = performance.selection
-  if (!selection) return 'Unknown'
-  const preference = selection.preference === 'auto' ? 'Auto' : 'CPU'
-  const backend = backendLabel(performance.backend)
-  const device = performance.device ? ` · ${performance.device}` : ''
-  if (performance.recovery?.fallbackReason) {
-    return `${preference} · ${backend}${device} · recovered (${performance.recovery.fallbackReason})`
-  }
-  return `${preference} · ${backend}${device}`
-}
-
-function whisperModeLabel(mode: 'coldCli' | 'coldFallback') {
-  return mode === 'coldFallback' ? 'Cold CLI after VAD retry' : 'Cold CLI'
-}
-
-function runtimeSourceLabel(source: 'managed' | 'system' | 'unknown') {
-  if (source === 'managed') return 'Managed'
-  if (source === 'system') return 'System'
-  return 'Unknown source'
+  const ran = [backendLabel(performance.backend)]
+  if (performance.device) ran.push(performance.device)
+  const reason = performance.recovery?.fallbackReason
+  if (reason) ran.push(`recovered (${reason})`)
+  return ran.join(' · ')
 }
 
 function backendLabel(backend: 'cpu' | 'cuda' | 'vulkan' | 'openVino' | 'rocm' | 'unknown') {
@@ -1556,21 +1506,6 @@ function backendLabel(backend: 'cpu' | 'cuda' | 'vulkan' | 'openVino' | 'rocm' |
   if (backend === 'rocm') return 'ROCm'
   if (backend === 'unknown') return 'Unknown backend'
   return backend.toUpperCase()
-}
-
-function whisperRuntimeLabel(performance: NonNullable<LastRun['performance']>) {
-  const values = [runtimeSourceLabel(performance.runtimeSource), backendLabel(performance.backend)]
-  if (performance.device) values.push(performance.device)
-  return values.join(' · ')
-}
-
-function whisperTuningLabel(tuning: NonNullable<LastRun['performance']>['tuning']) {
-  const values: string[] = []
-  if (tuning.threads != null) values.push(`${tuning.threads} threads`)
-  if (tuning.beamSize != null) values.push(`beam ${tuning.beamSize}`)
-  if (tuning.bestOf != null) values.push(`best of ${tuning.bestOf}`)
-  if (tuning.noFallback != null) values.push(`fallback ${tuning.noFallback ? 'off' : 'on'}`)
-  return values.length ? values.join(' · ') : 'Runtime defaults'
 }
 
 function selectedModelMeta(models: WhisperModelInfo[], current: string) {
