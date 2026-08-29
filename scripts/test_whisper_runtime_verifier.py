@@ -197,6 +197,11 @@ class ContractTests(unittest.TestCase):
         with self.assertRaisesRegex(VerificationError, "no unified-diff hunk"):
             validate_patch_counts(patch)
 
+    def test_accepts_normalized_blank_patch_context(self):
+        patch = self.package / "normalized.patch"
+        patch.write_text("@@ -1,2 +1,2 @@\n line\n\n", encoding="utf-8")
+        validate_patch_counts(patch)
+
     def test_rejects_duplicate_json_keys(self):
         with self.assertRaisesRegex(VerificationError, "duplicate JSON key"):
             strict_json_loads('{"schemaVersion":1,"schemaVersion":2}')

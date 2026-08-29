@@ -244,20 +244,17 @@ def copy_v3_evidence(source_root: Path, destination_root: Path) -> dict[str, obj
 
 
 def copy_portable_runtime(
-    source_root: Path, destination_root: Path
+    source_root: Path, destination_root: Path, runtime: Path
 ) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
     source = source_root / "whisper-acceleration"
     acceleration_set = read_json(source / "acceleration-set.v3.json")
     verify_acceleration_set(acceleration_set)
     verify_v3_reusable_filesystem(source, acceleration_set)
     destination_root.mkdir(parents=True)
-    runtime_relative = Path(
-        acceleration_set["executionArtifact"]["value"]["runtimeRelativePath"]
-    ).parent
-    shutil.copytree(
-        source / runtime_relative, destination_root / runtime_relative, symlinks=True
+    shutil.copytree(runtime, destination_root / "runtime", symlinks=True)
+    portable, legacy = write_projection(
+        destination_root, acceleration_set, rebind_runtime=True
     )
-    portable, legacy = write_projection(destination_root, acceleration_set)
     verify_contained_symlinks(destination_root)
     return acceleration_set, portable, legacy
 
@@ -394,7 +391,7 @@ def verify_extracted_portable(
         "packageType": binding["packageType"],
         "productionReadiness": binding["productionReadiness"],
         "productionReady": False,
-        "releaseBindingId": binding["sourceReleaseBindingId"],
+        "releaseBindingId": binding["sourceAccelerationSetSha256"],
         "executionArtifactId": binding["executionArtifactId"],
         "inferenceContractIds": binding["allowedInferenceContractIds"],
         "performanceEvidenceIds": [
@@ -471,6 +468,7 @@ def bundle_v3_one(
     canonical: bytes,
     version: str,
     commit: str,
+    portable_runtime: Path,
 ) -> dict[str, object]:
     promotion = read_json(reusable_root / "promotion-v3.json")
     expected_binary = variant_bytes(canonical, bundle_type)
@@ -478,7 +476,7 @@ def bundle_v3_one(
         temporary_root = Path(temporary)
         resource = temporary_root / "whisper-acceleration"
         acceleration_set, portable, legacy = copy_portable_runtime(
-            reusable_root, resource
+            reusable_root, resource, portable_runtime
         )
         binding_input = v3_release_binding_input(
             acceleration_set=acceleration_set,
@@ -493,7 +491,9 @@ def bundle_v3_one(
         portable_binding = build_portable_binding(
             portable=portable,
             legacy=legacy,
-            source_release_binding_id=source_binding["id"],
+            source_acceleration_set_sha256=sha256_bytes(
+                canonical_json_bytes(acceleration_set)
+            ),
             package_type=bundle_type,
             version=version,
             echo_commit=commit,
@@ -580,6 +580,16 @@ def stage(args: argparse.Namespace) -> None:
     )
     if args.reusable_evidence is not None:
         reusable = args.reusable_evidence.resolve()
+        portable_runtime = args.portable_runtime.resolve()
+        subprocess.run(
+            [
+                str(REPO_ROOT / "scripts/verify-whisper-vulkan-runtime.sh"),
+                "--verify",
+                "--require-vulkan",
+                str(portable_runtime),
+            ],
+            check=True,
+        )
         reusable_set = read_json(
             reusable / "whisper-acceleration/acceleration-set.v3.json"
         )
@@ -597,6 +607,7 @@ def stage(args: argparse.Namespace) -> None:
                 canonical,
                 args.version,
                 args.commit,
+                portable_runtime,
             )
             for bundle_type in ("deb", "rpm")
         }
@@ -1115,6 +1126,7 @@ def main() -> int:
     parser.add_argument("--deb-promotion", type=Path)
     parser.add_argument("--rpm-promotion", type=Path)
     parser.add_argument("--reusable-evidence", type=Path)
+    parser.add_argument("--portable-runtime", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--version")
     parser.add_argument("--commit")
@@ -1135,17 +1147,21 @@ def main() -> int:
                 args.expected_commit,
                 require_production_ready=args.require_production_ready,
             )
-        elif any(
-            value is None
-            for value in (
-                args.canonical_binary,
-                args.output,
-                args.version,
-                args.commit,
+        elif (
+            any(
+                value is None
+                for value in (
+                    args.canonical_binary,
+                    args.output,
+                    args.version,
+                    args.commit,
+                )
             )
-        ) or (
-            args.reusable_evidence is None
-            and (args.deb_promotion is None or args.rpm_promotion is None)
+            or (
+                args.reusable_evidence is None
+                and (args.deb_promotion is None or args.rpm_promotion is None)
+            )
+            or (args.reusable_evidence is not None and args.portable_runtime is None)
         ):
             parser.error(
                 "staging requires every binary, promotion, output, version, and commit argument"

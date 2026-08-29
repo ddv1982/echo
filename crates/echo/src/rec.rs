@@ -526,7 +526,11 @@ fn process_is_alive(pid: u32) -> bool {
 /// True while any process holds an active recording session.
 #[must_use]
 pub fn session_active() -> bool {
-    lock_owner_is_alive(&echo_core::data_dir().join("recording.lock"))
+    session_active_at(&echo_core::data_dir().join("recording.lock"))
+}
+
+pub(crate) fn session_active_at(path: &Path) -> bool {
+    lock_owner_is_alive(path)
 }
 
 #[must_use]

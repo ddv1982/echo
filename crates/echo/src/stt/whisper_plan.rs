@@ -126,6 +126,7 @@ pub struct WhisperRuntimeLaunch {
     pub mesa_shader_cache_dir: Option<PathBuf>,
     pub vulkan_selector: Option<VulkanRuntimeSelector>,
     pub identity_sha256: Option<String>,
+    pub(crate) cancel_on_recording: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -161,6 +161,11 @@ def validate_patch_counts(path):
             elif line.startswith(" "):
                 old_count += 1
                 new_count += 1
+            elif line == "":
+                # Normalized repository patches omit the trailing space from
+                # blank context lines; git apply still treats them as context.
+                old_count += 1
+                new_count += 1
             elif line.startswith("\\ No newline"):
                 pass
             else:
@@ -886,9 +891,7 @@ def verify_runtime_loading(package, receipt, require_vulkan):
         selector_environment["ECHO_WHISPER_VULKAN_DRIVER_UUID"] = selected_vulkan[
             "driverUUID"
         ]
-        ready = run_probe(
-            package, "--ready-vulkan", environment=selector_environment
-        )
+        ready = run_probe(package, "--ready-vulkan", environment=selector_environment)
         if ready.returncode != 0:
             fail(f"Vulkan UUID selection failed: {ready.stderr.strip()}")
         ready_receipt = validate_vulkan_receipt(ready.stderr)

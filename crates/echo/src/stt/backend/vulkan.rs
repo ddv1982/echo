@@ -10,7 +10,9 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use super::super::whisper::enumerate_vulkan_runtime_receipts;
-use super::super::whisper_accel_cache::{DriverIcdFingerprint, StableVulkanReceipt};
+use super::super::whisper_accel_cache::{
+    DriverIcdFingerprint, LocalRouteObservation, StableVulkanReceipt,
+};
 use super::super::whisper_identity::{Sha256Digest, UuidDigest};
 use super::super::{probe_vulkan_runtime_receipt, VulkanRuntimeSelector, WhisperRuntimeLaunch};
 
@@ -151,6 +153,31 @@ impl VulkanBackend {
         }
         Ok(receipt)
     }
+
+    pub(crate) fn restore(
+        &self,
+        observation: &LocalRouteObservation,
+    ) -> Result<LocalVulkanRoute, String> {
+        let manifest_path = observation
+            .manifest_path
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        let library_path = observation
+            .library_path
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        Ok(LocalVulkanRoute {
+            receipt: observation.stable_receipt.clone(),
+            selected_index: 0,
+            fingerprint: observation.fingerprint.clone(),
+            manifest_path,
+            library_path,
+            selector: VulkanRuntimeSelector::parse(
+                observation.stable_receipt.device_uuid.as_str().to_string(),
+                observation.stable_receipt.driver_uuid.as_str().to_string(),
+            )?,
+        })
+    }
 }
 
 fn discover_manifests(directories: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
@@ -268,7 +295,9 @@ fn read_hex(path: &Path) -> Option<u32> {
     u32::from_str_radix(raw.trim().trim_start_matches("0x"), 16).ok()
 }
 
-fn stable_receipt(receipt: &WhisperVulkanReceipt) -> Result<StableVulkanReceipt, String> {
+pub(crate) fn stable_receipt(
+    receipt: &WhisperVulkanReceipt,
+) -> Result<StableVulkanReceipt, String> {
     Ok(StableVulkanReceipt {
         backend: receipt.backend.clone(),
         vendor_id: receipt.vendor_id,

@@ -1,9 +1,11 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use fs2::FileExt;
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -166,6 +168,15 @@ pub(crate) struct CalibrationObservation {
     observed_at: u64,
 }
 
+impl CalibrationObservation {
+    pub(crate) fn is_gpu_eligible(&self) -> bool {
+        self.verdict == CalibrationVerdict::GpuEligible
+            && self.transcript_parity == Some(true)
+            && self.ready_receipt.is_some()
+            && self.result_receipt.is_some()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct LocalQuarantineObservation {
@@ -181,6 +192,63 @@ pub(crate) struct LocalQuarantineObservation {
 pub(crate) struct LocalSelectionSnapshot {
     pub latest_calibration: Option<CalibrationObservation>,
     pub active_quarantine: Option<LocalQuarantineObservation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct LocalRouteObservation {
+    schema_version: u32,
+    observation_id: String,
+    pub execution_artifact_id: ExecutionArtifactId,
+    pub inference_contract_id: InferenceContractId,
+    pub key: LocalSelectionKey,
+    pub stable_receipt: StableVulkanReceipt,
+    pub fingerprint: DriverIcdFingerprint,
+    pub manifest_path: PathBuf,
+    pub library_path: PathBuf,
+    manifest_stamp: LocalFileStamp,
+    library_stamp: LocalFileStamp,
+    pub observed_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LocalFileStamp {
+    device: u64,
+    inode: u64,
+    size: u64,
+    modified_seconds: i64,
+    modified_nanoseconds: i64,
+    changed_seconds: i64,
+    changed_nanoseconds: i64,
+}
+
+pub(crate) struct NewLocalRouteObservation {
+    pub execution_artifact_id: ExecutionArtifactId,
+    pub inference_contract_id: InferenceContractId,
+    pub key: LocalSelectionKey,
+    pub stable_receipt: StableVulkanReceipt,
+    pub fingerprint: DriverIcdFingerprint,
+    pub manifest_path: PathBuf,
+    pub library_path: PathBuf,
+    pub observed_at: u64,
+}
+
+pub(crate) struct CalibrationLease(File);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ModelRouteView {
+    schema_version: u32,
+    model_path: PathBuf,
+    model_device: u64,
+    model_inode: u64,
+    model_size: u64,
+    model_modified_seconds: i64,
+    model_modified_nanoseconds: i64,
+    pub execution_artifact_id: ExecutionArtifactId,
+    pub inference_contract_id: InferenceContractId,
+    pub key: LocalSelectionKey,
 }
 
 pub(crate) struct NewCalibrationObservation {
@@ -246,6 +314,213 @@ impl LocalSelectionStore {
         Ok(observation)
     }
 
+    pub(crate) fn append_route(
+        &self,
+        mut new: NewLocalRouteObservation,
+    ) -> Result<LocalRouteObservation, String> {
+        validate_new_route(&new)?;
+        new.manifest_path = new
+            .manifest_path
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        new.library_path = new
+            .library_path
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        let manifest_stamp = local_file_stamp(&new.manifest_path)?;
+        let library_stamp = local_file_stamp(&new.library_path)?;
+        let observation = LocalRouteObservation {
+            schema_version: RECORD_SCHEMA_VERSION,
+            observation_id: observation_id(),
+            execution_artifact_id: new.execution_artifact_id,
+            inference_contract_id: new.inference_contract_id,
+            key: new.key,
+            stable_receipt: new.stable_receipt,
+            fingerprint: new.fingerprint,
+            manifest_path: new.manifest_path,
+            library_path: new.library_path,
+            manifest_stamp,
+            library_stamp,
+            observed_at: new.observed_at,
+        };
+        let directory = self
+            .root
+            .join("scopes")
+            .join(observation.execution_artifact_id.as_str())
+            .join(observation.inference_contract_id.as_str())
+            .join("routes");
+        self.publish_at(&directory, &observation.observation_id, &observation)?;
+        Ok(observation)
+    }
+
+    pub(crate) fn latest_route(
+        &self,
+        execution_artifact_id: &ExecutionArtifactId,
+        inference_contract_id: &InferenceContractId,
+    ) -> Result<Option<LocalRouteObservation>, String> {
+        let directory = self
+            .root
+            .join("scopes")
+            .join(execution_artifact_id.as_str())
+            .join(inference_contract_id.as_str())
+            .join("routes");
+        let mut observations = read_directory::<LocalRouteObservation>(&directory)?;
+        for observation in &observations {
+            validate_route(observation, execution_artifact_id, inference_contract_id)?;
+        }
+        observations.sort_by(|left, right| {
+            (left.observed_at, &left.observation_id)
+                .cmp(&(right.observed_at, &right.observation_id))
+        });
+        Ok(observations.pop())
+    }
+
+    pub(crate) fn publish_job<T: Serialize>(
+        &self,
+        job_id: &str,
+        value: &T,
+    ) -> Result<PathBuf, String> {
+        if !valid_hex(job_id, 32) {
+            return Err("calibration job ID is invalid".to_string());
+        }
+        let directory = self.root.join("jobs");
+        self.publish_at(&directory, job_id, value)?;
+        Ok(directory.join(format!("{job_id}.json")))
+    }
+
+    pub(crate) fn job_paths(&self) -> Result<Vec<PathBuf>, String> {
+        let directory = self.root.join("jobs");
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error.to_string()),
+        };
+        let mut paths = entries
+            .map(|entry| {
+                entry
+                    .map(|entry| entry.path())
+                    .map_err(|error| error.to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        paths.retain(|path| path.extension().and_then(|value| value.to_str()) == Some("json"));
+        paths.sort();
+        if paths.len() > MAX_RECORDS_PER_BUCKET {
+            return Err("calibration job queue is over its limit".to_string());
+        }
+        Ok(paths)
+    }
+
+    pub(crate) fn job_is_complete(&self, job_id: &str) -> bool {
+        self.root
+            .join("job-results")
+            .join(format!("{job_id}.json"))
+            .is_file()
+    }
+
+    pub(crate) fn publish_job_result<T: Serialize>(
+        &self,
+        job_id: &str,
+        value: &T,
+    ) -> Result<PathBuf, String> {
+        if !valid_hex(job_id, 32) {
+            return Err("calibration job ID is invalid".to_string());
+        }
+        let directory = self.root.join("job-results");
+        self.publish_at(&directory, job_id, value)?;
+        Ok(directory.join(format!("{job_id}.json")))
+    }
+
+    pub(crate) fn try_claim(
+        &self,
+        execution_artifact_id: &ExecutionArtifactId,
+        inference_contract_id: &InferenceContractId,
+    ) -> Result<Option<CalibrationLease>, String> {
+        let directory = self.root.join("locks");
+        fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+        let path = directory.join(format!(
+            "{}-{}.lock",
+            execution_artifact_id.as_str(),
+            inference_contract_id.as_str()
+        ));
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path)
+            .map_err(|error| error.to_string())?;
+        match file.try_lock_exclusive() {
+            Ok(()) => Ok(Some(CalibrationLease(file))),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub(crate) fn write_model_view(
+        &self,
+        model_path: &Path,
+        execution_artifact_id: ExecutionArtifactId,
+        inference_contract_id: InferenceContractId,
+        key: LocalSelectionKey,
+    ) -> Result<(), String> {
+        let (model_path, metadata) = model_metadata(model_path)?;
+        let view = ModelRouteView {
+            schema_version: RECORD_SCHEMA_VERSION,
+            model_path: model_path.clone(),
+            model_device: metadata.dev(),
+            model_inode: metadata.ino(),
+            model_size: metadata.len(),
+            model_modified_seconds: metadata.mtime(),
+            model_modified_nanoseconds: metadata.mtime_nsec(),
+            execution_artifact_id,
+            inference_contract_id,
+            key,
+        };
+        let raw = serde_json::to_vec_pretty(&view).map_err(|error| error.to_string())?;
+        echo_core::write_atomic(&self.model_view_path(&model_path), &raw)
+    }
+
+    pub(crate) fn model_view(&self, model_path: &Path) -> Result<Option<ModelRouteView>, String> {
+        let (model_path, metadata) = model_metadata(model_path)?;
+        let path = self.model_view_path(&model_path);
+        let raw = match fs::read(&path) {
+            Ok(raw) => raw,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.to_string()),
+        };
+        if raw.len() as u64 > MAX_RECORD_BYTES {
+            return Err("model route view exceeds 64 KiB".to_string());
+        }
+        let view: ModelRouteView =
+            serde_json::from_slice(&raw).map_err(|error| error.to_string())?;
+        if view.schema_version != RECORD_SCHEMA_VERSION
+            || view.model_path != model_path
+            || view.model_device != metadata.dev()
+            || view.model_inode != metadata.ino()
+            || view.model_size != metadata.len()
+            || view.model_modified_seconds != metadata.mtime()
+            || view.model_modified_nanoseconds != metadata.mtime_nsec()
+        {
+            return Ok(None);
+        }
+        let route = self.latest_route(&view.execution_artifact_id, &view.inference_contract_id)?;
+        let snapshot = self.snapshot(&view.key, unix_time())?;
+        if route.as_ref().map(|route| &route.key) != Some(&view.key)
+            || snapshot.active_quarantine.is_some()
+            || !snapshot
+                .latest_calibration
+                .as_ref()
+                .is_some_and(CalibrationObservation::is_gpu_eligible)
+        {
+            return Ok(None);
+        }
+        Ok(Some(view))
+    }
+
     pub(crate) fn snapshot(
         &self,
         key: &LocalSelectionKey,
@@ -285,12 +560,21 @@ impl LocalSelectionStore {
         value: &T,
     ) -> Result<(), String> {
         let directory = self.bucket(key, bucket);
-        fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+        let id = observation_id_from_value(value)?;
+        self.publish_at(&directory, &id, value)
+    }
+
+    fn publish_at<T: Serialize>(
+        &self,
+        directory: &Path,
+        id: &str,
+        value: &T,
+    ) -> Result<(), String> {
+        fs::create_dir_all(directory).map_err(|error| error.to_string())?;
         let raw = serde_json::to_vec_pretty(value).map_err(|error| error.to_string())?;
         if raw.len() as u64 > MAX_RECORD_BYTES {
             return Err("local selection record exceeds 64 KiB".to_string());
         }
-        let id = observation_id_from_value(value)?;
         let target = directory.join(format!("{id}.json"));
         let temporary = directory.join(format!(".{id}.{}.tmp", std::process::id()));
         let mut file = OpenOptions::new()
@@ -304,7 +588,7 @@ impl LocalSelectionStore {
             file.sync_all().map_err(|error| error.to_string())?;
             fs::hard_link(&temporary, &target).map_err(|error| error.to_string())?;
             fs::remove_file(&temporary).map_err(|error| error.to_string())?;
-            File::open(&directory)
+            File::open(directory)
                 .and_then(|directory| directory.sync_all())
                 .map_err(|error| error.to_string())
         })();
@@ -319,34 +603,26 @@ impl LocalSelectionStore {
         key: &LocalSelectionKey,
         bucket: &str,
     ) -> Result<Vec<T>, String> {
-        let directory = self.bucket(key, bucket);
-        let entries = match fs::read_dir(&directory) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(error.to_string()),
-        };
-        let mut paths = entries
-            .map(|entry| {
-                entry
-                    .map(|entry| entry.path())
-                    .map_err(|error| error.to_string())
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        paths.retain(|path| {
-            !path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with('.') && name.ends_with(".tmp"))
-        });
-        paths.sort();
-        if paths.len() > MAX_RECORDS_PER_BUCKET {
-            return Err("local selection record bucket is over its limit".to_string());
-        }
-        paths.into_iter().map(|path| read_record(&path)).collect()
+        read_directory(&self.bucket(key, bucket))
     }
 
     fn bucket(&self, key: &LocalSelectionKey, bucket: &str) -> PathBuf {
         self.root.join("keys").join(key.as_str()).join(bucket)
+    }
+
+    fn model_view_path(&self, model_path: &Path) -> PathBuf {
+        let mut digest = Sha256::new();
+        digest.update(b"echo-whisper-model-view-v1\0");
+        digest.update(model_path.as_os_str().as_encoded_bytes());
+        self.root
+            .join("views/models")
+            .join(format!("{:x}.json", digest.finalize()))
+    }
+}
+
+impl Drop for CalibrationLease {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.0);
     }
 }
 
@@ -381,6 +657,54 @@ fn validate_new_calibration(new: &NewCalibrationObservation) -> Result<(), Strin
         }
     }
     Ok(())
+}
+
+fn validate_new_route(new: &NewLocalRouteObservation) -> Result<(), String> {
+    new.stable_receipt.validate()?;
+    new.fingerprint.validate()?;
+    let expected = LocalSelectionKey::derive(
+        &new.execution_artifact_id,
+        &new.inference_contract_id,
+        &new.stable_receipt,
+        &new.fingerprint,
+    )?;
+    if new.key != expected
+        || new.observed_at == 0
+        || !new.manifest_path.is_absolute()
+        || !new.library_path.is_absolute()
+    {
+        return Err("invalid local Vulkan route".to_string());
+    }
+    Ok(())
+}
+
+fn validate_route(
+    observation: &LocalRouteObservation,
+    execution_artifact_id: &ExecutionArtifactId,
+    inference_contract_id: &InferenceContractId,
+) -> Result<(), String> {
+    if observation.schema_version != RECORD_SCHEMA_VERSION
+        || observation.execution_artifact_id != *execution_artifact_id
+        || observation.inference_contract_id != *inference_contract_id
+        || !valid_hex(&observation.observation_id, 32)
+    {
+        return Err("invalid local Vulkan route record".to_string());
+    }
+    if observation.manifest_stamp != local_file_stamp(&observation.manifest_path)?
+        || observation.library_stamp != local_file_stamp(&observation.library_path)?
+    {
+        return Err("local Vulkan route files changed".to_string());
+    }
+    validate_new_route(&NewLocalRouteObservation {
+        execution_artifact_id: observation.execution_artifact_id.clone(),
+        inference_contract_id: observation.inference_contract_id.clone(),
+        key: observation.key.clone(),
+        stable_receipt: observation.stable_receipt.clone(),
+        fingerprint: observation.fingerprint.clone(),
+        manifest_path: observation.manifest_path.clone(),
+        library_path: observation.library_path.clone(),
+        observed_at: observation.observed_at,
+    })
 }
 
 fn validate_calibration(
@@ -444,6 +768,32 @@ fn read_record<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {
     Ok(record)
 }
 
+fn read_directory<T: for<'de> Deserialize<'de>>(directory: &Path) -> Result<Vec<T>, String> {
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.to_string()),
+    };
+    let mut paths = entries
+        .map(|entry| {
+            entry
+                .map(|entry| entry.path())
+                .map_err(|error| error.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    paths.retain(|path| {
+        !path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with('.') && name.ends_with(".tmp"))
+    });
+    paths.sort();
+    if paths.len() > MAX_RECORDS_PER_BUCKET {
+        return Err("local selection record bucket is over its limit".to_string());
+    }
+    paths.into_iter().map(|path| read_record(&path)).collect()
+}
+
 fn observation_id() -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -454,6 +804,10 @@ fn observation_id() -> String {
     digest.update(std::process::id().to_le_bytes());
     digest.update(count.to_le_bytes());
     format!("{:x}", digest.finalize())[..32].to_string()
+}
+
+pub(crate) fn new_record_id() -> String {
+    observation_id()
 }
 
 fn observation_id_from_value<T: Serialize>(value: &T) -> Result<String, String> {
@@ -477,10 +831,42 @@ fn identity_error(error: IdentityError) -> String {
     error.to_string()
 }
 
+fn model_metadata(path: &Path) -> Result<(PathBuf, fs::Metadata), String> {
+    let path = path.canonicalize().map_err(|error| error.to_string())?;
+    let metadata = path.metadata().map_err(|error| error.to_string())?;
+    if !metadata.is_file() {
+        return Err("Whisper model is not a regular file".to_string());
+    }
+    Ok((path, metadata))
+}
+
+fn local_file_stamp(path: &Path) -> Result<LocalFileStamp, String> {
+    let metadata = path.metadata().map_err(|error| error.to_string())?;
+    if !metadata.is_file() {
+        return Err("local Vulkan route input is not a file".to_string());
+    }
+    Ok(LocalFileStamp {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        size: metadata.len(),
+        modified_seconds: metadata.mtime(),
+        modified_nanoseconds: metadata.mtime_nsec(),
+        changed_seconds: metadata.ctime(),
+        changed_nanoseconds: metadata.ctime_nsec(),
+    })
+}
+
+fn unix_time() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
+}
+
 #[cfg(test)]
 mod tests {
     use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
 
     use super::*;
 
@@ -549,6 +935,39 @@ mod tests {
             transcript_parity: Some(true),
             ready_receipt: Some(observed.clone()),
             result_receipt: Some(observed),
+            observed_at,
+        }
+    }
+
+    fn route(root: &Path, observed_at: u64) -> NewLocalRouteObservation {
+        for (name, contents) in [
+            ("driver.json", b"manifest".as_slice()),
+            ("driver.so", b"library".as_slice()),
+        ] {
+            let path = root.join(name);
+            if !path.exists() {
+                fs::write(path, contents).unwrap();
+            }
+        }
+        let execution_artifact_id = ExecutionArtifactId::parse("6".repeat(64)).unwrap();
+        let inference_contract_id = InferenceContractId::parse("7".repeat(64)).unwrap();
+        let receipt = receipt();
+        let fingerprint = fingerprint();
+        let key = LocalSelectionKey::derive(
+            &execution_artifact_id,
+            &inference_contract_id,
+            &receipt,
+            &fingerprint,
+        )
+        .unwrap();
+        NewLocalRouteObservation {
+            execution_artifact_id,
+            inference_contract_id,
+            key,
+            stable_receipt: receipt,
+            fingerprint,
+            manifest_path: root.join("driver.json"),
+            library_path: root.join("driver.so"),
             observed_at,
         }
     }
@@ -696,5 +1115,58 @@ mod tests {
             .unwrap()
             .count();
         assert_eq!(records, 2);
+    }
+
+    #[test]
+    fn routes_are_immutable_and_scope_lease_is_exclusive() {
+        let root = scratch("routes");
+        let store = LocalSelectionStore::at(root.clone());
+        let older = route(&root, 100);
+        let execution = older.execution_artifact_id.clone();
+        let inference = older.inference_contract_id.clone();
+        store.append_route(older).unwrap();
+        let newer = store.append_route(route(&root, 200)).unwrap();
+        assert_eq!(
+            store.latest_route(&execution, &inference).unwrap(),
+            Some(newer)
+        );
+
+        let first = store.try_claim(&execution, &inference).unwrap().unwrap();
+        assert!(store.try_claim(&execution, &inference).unwrap().is_none());
+        drop(first);
+        assert!(store.try_claim(&execution, &inference).unwrap().is_some());
+    }
+
+    #[test]
+    fn model_view_is_disposable_and_rotates_on_file_change() {
+        let root = scratch("model-view");
+        let model = root.join("model.bin");
+        fs::write(&model, b"model-a").unwrap();
+        let store = LocalSelectionStore::at(root.join("state"));
+        let route = route(&root, 100);
+        let execution = route.execution_artifact_id.clone();
+        let inference = route.inference_contract_id.clone();
+        let key = route.key.clone();
+        store.append_route(route).unwrap();
+        store
+            .append_calibration(eligible(key.clone(), 100))
+            .unwrap();
+        store
+            .write_model_view(&model, execution, inference, key.clone())
+            .unwrap();
+        assert_eq!(store.model_view(&model).unwrap().unwrap().key, key);
+        let mut timings = (0..100)
+            .map(|_| {
+                let started = std::time::Instant::now();
+                assert!(store.model_view(&model).unwrap().is_some());
+                started.elapsed()
+            })
+            .collect::<Vec<_>>();
+        timings.sort();
+        println!("cached_model_view_p95_us={}", timings[94].as_micros());
+        assert!(timings[94] <= Duration::from_millis(25));
+        std::thread::sleep(Duration::from_millis(2));
+        fs::write(&model, b"model-b").unwrap();
+        assert!(store.model_view(&model).unwrap().is_none());
     }
 }

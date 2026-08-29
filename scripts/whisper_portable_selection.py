@@ -13,13 +13,17 @@ from whisper_identity_v3 import (
     execution_artifact_id,
     inference_contract_id,
     local_environment_key,
+    build_record,
     verify_acceleration_set,
 )
 from whisper_release_common import (
     package_inventory,
     prefixed_package_inventory,
     read_json_strict,
+    runtime_identity,
+    runtime_library_bindings,
     sha256_bytes,
+    sha256_file,
     verify_contained_symlinks,
     verify_v3_execution_files,
 )
@@ -32,6 +36,9 @@ MANIFESTS = {
     "legacy-exact-index.v1.json",
     "portable-selection-binding.v1.json",
 }
+REPO_ROOT = Path(__file__).resolve().parent.parent
+CALIBRATION_FIXTURE_SOURCE = REPO_ROOT / "crates/echo/tests/fixtures/claude_code.wav"
+CALIBRATION_FIXTURE_RELATIVE = "calibration/english-canary.wav"
 
 
 def fail(message: str) -> None:
@@ -42,14 +49,52 @@ def canonical_digest(value: object) -> str:
     return sha256_bytes(canonical_json_bytes(value))
 
 
+def portable_runtime_inventory(root: Path) -> list[dict[str, object]]:
+    inventory = []
+    for entry in package_inventory(root):
+        copied = dict(entry)
+        copied["path"] = f"runtime/{entry['path']}"
+        inventory.append(copied)
+    return inventory
+
+
+def portable_execution_record(runtime: Path) -> dict[str, object]:
+    cli = runtime / "whisper-cli"
+    probe = runtime / "echo-whisper-runtime-probe"
+    receipt_path = runtime / "build-receipt.json"
+    receipt = read_json_strict(receipt_path, "runtime build receipt")
+    return build_record(
+        "executionArtifact",
+        {
+            "schemaVersion": 3,
+            "runtimeArtifactId": receipt["artifactId"],
+            "runtimeIdentitySha256": runtime_identity(cli),
+            "runtimeRelativePath": "runtime/whisper-cli",
+            "runtimeSha256": sha256_file(cli),
+            "runtimeLibraryBindings": runtime_library_bindings(cli),
+            "probeRelativePath": "runtime/echo-whisper-runtime-probe",
+            "probeSha256": sha256_file(probe),
+            "buildReceiptSha256": sha256_file(receipt_path),
+            "reusableInventorySha256": sha256_bytes(
+                canonical_json_bytes(portable_runtime_inventory(runtime))
+            ),
+        },
+    )
+
+
 def project_acceleration_set(
     acceleration_set: dict[str, object],
+    calibration_fixture_sha256: str,
 ) -> tuple[dict[str, object], dict[str, object]]:
     identities = verify_acceleration_set(acceleration_set)
     portable = {
         "schemaVersion": SCHEMA_VERSION,
         "executionArtifact": copy.deepcopy(acceleration_set["executionArtifact"]),
         "inferenceContracts": copy.deepcopy(acceleration_set["inferenceContracts"]),
+        "calibrationFixture": {
+            "relativePath": CALIBRATION_FIXTURE_RELATIVE,
+            "sha256": calibration_fixture_sha256,
+        },
     }
     environments = {
         record["key"]: record["value"]
@@ -82,6 +127,7 @@ def verify_portable_selection(value: object) -> dict[str, object]:
         "schemaVersion",
         "executionArtifact",
         "inferenceContracts",
+        "calibrationFixture",
     }:
         fail("portable selection fields differ")
     if value["schemaVersion"] != SCHEMA_VERSION:
@@ -108,6 +154,16 @@ def verify_portable_selection(value: object) -> dict[str, object]:
         contract_ids.append(record["id"])
     if contract_ids != sorted(set(contract_ids)):
         fail("portable inference contracts are not sorted and unique")
+    fixture = value["calibrationFixture"]
+    if (
+        not isinstance(fixture, dict)
+        or set(fixture) != {"relativePath", "sha256"}
+        or fixture["relativePath"] != CALIBRATION_FIXTURE_RELATIVE
+        or not isinstance(fixture["sha256"], str)
+        or len(fixture["sha256"]) != 64
+        or any(character not in "0123456789abcdef" for character in fixture["sha256"])
+    ):
+        fail("portable calibration fixture differs")
     return {
         "executionArtifactId": execution["id"],
         "inferenceContractIds": contract_ids,
@@ -128,8 +184,8 @@ def verify_legacy_exact_index(value: object, portable: dict[str, object]) -> lis
     ):
         fail("legacy exact index execution artifact differs")
     records = value["records"]
-    if not isinstance(records, list) or not records:
-        fail("legacy exact index records are empty")
+    if not isinstance(records, list):
+        fail("legacy exact index records are not an array")
     evidence_ids = []
     for record in records:
         if not isinstance(record, dict) or set(record) != {
@@ -169,7 +225,7 @@ def build_binding(
     *,
     portable: dict[str, object],
     legacy: dict[str, object],
-    source_release_binding_id: str,
+    source_acceleration_set_sha256: str,
     package_type: str,
     version: str,
     echo_commit: str,
@@ -187,7 +243,7 @@ def build_binding(
         "legacyExactIndexSha256": canonical_digest(legacy),
         "executionArtifactId": identities["executionArtifactId"],
         "allowedInferenceContractIds": identities["inferenceContractIds"],
-        "sourceReleaseBindingId": source_release_binding_id,
+        "sourceAccelerationSetSha256": source_acceleration_set_sha256,
         "productionReadiness": READINESS,
     }
     verify_binding(binding, portable, legacy)
@@ -211,7 +267,7 @@ def verify_binding(
         "portableSelectionSha256",
         "productionReadiness",
         "schemaVersion",
-        "sourceReleaseBindingId",
+        "sourceAccelerationSetSha256",
         "version",
     }:
         fail("portable selection binding fields differ")
@@ -231,7 +287,7 @@ def verify_binding(
         "echoBinarySha256",
         "portableSelectionSha256",
         "legacyExactIndexSha256",
-        "sourceReleaseBindingId",
+        "sourceAccelerationSetSha256",
     ):
         if (
             not isinstance(value[name], str)
@@ -248,9 +304,35 @@ def verify_binding(
 
 
 def write_projection(
-    root: Path, acceleration_set: dict[str, object]
+    root: Path,
+    acceleration_set: dict[str, object],
+    *,
+    rebind_runtime: bool = False,
 ) -> tuple[dict, dict]:
-    portable, legacy = project_acceleration_set(acceleration_set)
+    fixture = root / CALIBRATION_FIXTURE_RELATIVE
+    fixture.parent.mkdir(parents=True)
+    fixture.write_bytes(CALIBRATION_FIXTURE_SOURCE.read_bytes())
+    if rebind_runtime:
+        portable = {
+            "schemaVersion": SCHEMA_VERSION,
+            "executionArtifact": portable_execution_record(root / "runtime"),
+            "inferenceContracts": copy.deepcopy(acceleration_set["inferenceContracts"]),
+            "calibrationFixture": {
+                "relativePath": CALIBRATION_FIXTURE_RELATIVE,
+                "sha256": sha256_bytes(fixture.read_bytes()),
+            },
+        }
+        legacy = {
+            "schemaVersion": SCHEMA_VERSION,
+            "executionArtifactId": portable["executionArtifact"]["id"],
+            "records": [],
+        }
+        verify_portable_selection(portable)
+        verify_legacy_exact_index(legacy, portable)
+    else:
+        portable, legacy = project_acceleration_set(
+            acceleration_set, sha256_bytes(fixture.read_bytes())
+        )
     for name, value in (
         ("portable-selection.v1.json", portable),
         ("legacy-exact-index.v1.json", legacy),
@@ -282,6 +364,7 @@ def verify_portable_filesystem(root: Path) -> tuple[dict, dict, dict]:
         portable["executionArtifact"]["value"]["runtimeRelativePath"]
     ).parent
     expected = prefixed_package_inventory(root / runtime_root, str(runtime_root))
+    expected.extend(prefixed_package_inventory(root / "calibration", "calibration"))
     actual = [
         entry for entry in package_inventory(root) if entry["path"] not in MANIFESTS
     ]
@@ -294,6 +377,9 @@ def verify_portable_filesystem(root: Path) -> tuple[dict, dict, dict]:
         for entry in package_inventory(root)
     ):
         fail("portable selection package contains shader cache material")
+    fixture = root / portable["calibrationFixture"]["relativePath"]
+    if sha256_bytes(fixture.read_bytes()) != portable["calibrationFixture"]["sha256"]:
+        fail("portable calibration fixture digest differs")
     verify_contained_symlinks(root)
     return portable, legacy, binding
 
@@ -340,14 +426,14 @@ def self_test() -> None:
         ],
         "reusableInventorySha256": "3" * 64,
     }
-    portable, legacy = project_acceleration_set(acceleration_set)
+    portable, legacy = project_acceleration_set(acceleration_set, "8" * 64)
     encoded = canonical_json_bytes([portable, legacy]).decode()
     assert "/host/" not in encoded
     assert "cache-seeds" not in encoded
     binding = build_binding(
         portable=portable,
         legacy=legacy,
-        source_release_binding_id=fixture["releaseBinding"]["id"],
+        source_acceleration_set_sha256="9" * 64,
         package_type="deb",
         version="0.12.5",
         echo_commit="a" * 40,

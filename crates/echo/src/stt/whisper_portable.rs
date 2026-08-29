@@ -1,15 +1,23 @@
+use std::collections::BTreeSet;
+use std::fs::{self, File};
+use std::io::Read;
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::whisper_identity::{
     canonical_json_bytes, CommitDigest, ExecutionArtifactId, ExecutionArtifactInput,
     InferenceContractId, InferenceContractInput, LocalEnvironmentInput, LocalEnvironmentKey,
-    PackageType, PerformanceEvidenceId, ReleaseBindingId, Sha256Digest,
+    PackageType, PerformanceEvidenceId, SafeRelativePath, Sha256Digest,
 };
+use super::{runtime_library_bindings, whisper_runtime_launch, WhisperRuntimeLaunch};
 
 const PORTABLE_SCHEMA_VERSION: u32 = 1;
 const MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
 const MAX_EVIDENCE_LIFETIME_SECS: u64 = 30 * 24 * 60 * 60;
+const VERIFICATION_STAMP_SCHEMA: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -31,6 +39,14 @@ pub(crate) struct PortableSelection {
     pub schema_version: u32,
     pub execution_artifact: ExecutionArtifactRecord,
     pub inference_contracts: Vec<InferenceContractRecord>,
+    pub calibration_fixture: CalibrationFixture,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct CalibrationFixture {
+    pub relative_path: SafeRelativePath,
+    pub sha256: Sha256Digest,
 }
 
 impl PortableSelection {
@@ -62,6 +78,11 @@ impl PortableSelection {
                 .probe_relative_path
                 .as_str()
                 .starts_with("runtime/")
+            || !self
+                .calibration_fixture
+                .relative_path
+                .as_str()
+                .starts_with("calibration/")
         {
             return Err("invalid portable Whisper selection".to_string());
         }
@@ -111,7 +132,6 @@ impl LegacyExactIndex {
 
     fn validate(&self) -> Result<(), String> {
         if self.schema_version != PORTABLE_SCHEMA_VERSION
-            || self.records.is_empty()
             || !self
                 .records
                 .windows(2)
@@ -148,7 +168,7 @@ pub(crate) struct PortableSelectionBinding {
     pub legacy_exact_index_sha256: Sha256Digest,
     pub execution_artifact_id: ExecutionArtifactId,
     pub allowed_inference_contract_ids: Vec<InferenceContractId>,
-    pub source_release_binding_id: ReleaseBindingId,
+    pub source_acceleration_set_sha256: Sha256Digest,
     pub production_readiness: String,
 }
 
@@ -180,6 +200,217 @@ pub(crate) struct PortableSelectionPackage {
     pub selection: PortableSelection,
     pub legacy_exact: LegacyExactIndex,
     pub binding: PortableSelectionBinding,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct InstalledPortableSelection {
+    pub package: PortableSelectionPackage,
+    pub root: PathBuf,
+    pub runtime: PathBuf,
+    pub probe: PathBuf,
+    pub calibration_fixture: PathBuf,
+    echo_binary: PathBuf,
+    build_receipt: PathBuf,
+    binding_digest: Sha256Digest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct VerificationStamp {
+    schema_version: u32,
+    binding_digest: Sha256Digest,
+    files: Vec<VerifiedFileStamp>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct VerifiedFileStamp {
+    path: PathBuf,
+    device: u64,
+    inode: u64,
+    size: u64,
+    modified_seconds: i64,
+    modified_nanoseconds: i64,
+    changed_seconds: i64,
+    changed_nanoseconds: i64,
+    link_target: Option<PathBuf>,
+}
+
+impl InstalledPortableSelection {
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        package: PortableSelectionPackage,
+        root: PathBuf,
+        runtime: PathBuf,
+        probe: PathBuf,
+        calibration_fixture: PathBuf,
+    ) -> Self {
+        Self {
+            package,
+            echo_binary: root.join("echo-desktop"),
+            build_receipt: root.join("runtime/build-receipt.json"),
+            binding_digest: Sha256Digest::parse("f".repeat(64)).expect("test digest"),
+            root,
+            runtime,
+            probe,
+            calibration_fixture,
+        }
+    }
+
+    pub(crate) fn open(root: &Path, echo_binary: &Path) -> Result<Self, String> {
+        let installed = Self::parse(root, echo_binary)?;
+        installed.verify_files()?;
+        Ok(installed)
+    }
+
+    pub(crate) fn runtime_launch(&self) -> WhisperRuntimeLaunch {
+        WhisperRuntimeLaunch {
+            library_dir: self.runtime.parent().map(Path::to_path_buf),
+            identity_sha256: Some(
+                self.package
+                    .selection
+                    .execution_artifact
+                    .value
+                    .runtime_identity_sha256
+                    .as_str()
+                    .to_string(),
+            ),
+            ..WhisperRuntimeLaunch::default()
+        }
+    }
+
+    pub(crate) fn open_cached(
+        root: &Path,
+        echo_binary: &Path,
+        state_root: &Path,
+    ) -> Result<Self, String> {
+        let installed = Self::parse(root, echo_binary)?;
+        let stamp = installed.verification_stamp()?;
+        let path = state_root.join("package-verification.json");
+        let cached = fs::read(&path)
+            .ok()
+            .and_then(|raw| serde_json::from_slice::<VerificationStamp>(&raw).ok());
+        if cached.as_ref() != Some(&stamp) {
+            installed.verify_files()?;
+            fs::create_dir_all(state_root).map_err(|error| error.to_string())?;
+            let raw = serde_json::to_vec_pretty(&stamp).map_err(|error| error.to_string())?;
+            echo_core::write_atomic(&path, &raw)?;
+        }
+        Ok(installed)
+    }
+
+    fn parse(root: &Path, echo_binary: &Path) -> Result<Self, String> {
+        let root = root.canonicalize().map_err(|error| error.to_string())?;
+        if root.join("acceleration-set.v3.json").exists() || root.join("cache-seeds").exists() {
+            return Err("portable selection package contains proof-only host material".to_string());
+        }
+        let selection_raw =
+            fs::read(root.join("portable-selection.v1.json")).map_err(|error| error.to_string())?;
+        let legacy_raw =
+            fs::read(root.join("legacy-exact-index.v1.json")).map_err(|error| error.to_string())?;
+        let binding_raw = fs::read(root.join("portable-selection-binding.v1.json"))
+            .map_err(|error| error.to_string())?;
+        let binding_digest = Sha256Digest::parse(format!("{:x}", Sha256::digest(&binding_raw)))
+            .map_err(|error| error.to_string())?;
+        let package =
+            PortableSelectionPackage::from_bytes(&selection_raw, &legacy_raw, &binding_raw)?;
+        let echo_binary = echo_binary
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        let execution = &package.selection.execution_artifact.value;
+        let runtime = package_file(&root, execution.runtime_relative_path.as_str())?;
+        let probe = package_file(&root, execution.probe_relative_path.as_str())?;
+        let calibration_fixture = package_file(
+            &root,
+            package.selection.calibration_fixture.relative_path.as_str(),
+        )?;
+        let build_receipt = package_file(
+            &root,
+            &format!(
+                "{}/build-receipt.json",
+                runtime
+                    .parent()
+                    .and_then(|parent| parent.strip_prefix(&root).ok())
+                    .ok_or_else(|| "portable runtime path is invalid".to_string())?
+                    .to_string_lossy()
+            ),
+        )?;
+        Ok(Self {
+            package,
+            root,
+            runtime,
+            probe,
+            calibration_fixture,
+            echo_binary,
+            build_receipt,
+            binding_digest,
+        })
+    }
+
+    fn verify_files(&self) -> Result<(), String> {
+        let execution = &self.package.selection.execution_artifact.value;
+        if self.package.binding.echo_binary_sha256 != sha256_file(&self.echo_binary)? {
+            return Err("portable selection package belongs to another Echo binary".to_string());
+        }
+        if sha256_file(&self.runtime)? != execution.runtime_sha256
+            || sha256_file(&self.probe)? != execution.probe_sha256
+            || sha256_file(&self.build_receipt)? != execution.build_receipt_sha256
+            || sha256_file(&self.calibration_fixture)?
+                != self.package.selection.calibration_fixture.sha256
+            || whisper_runtime_launch(&self.runtime)
+                .identity_sha256
+                .as_deref()
+                != Some(execution.runtime_identity_sha256.as_str())
+        {
+            return Err("portable selection runtime files differ".to_string());
+        }
+        let bindings =
+            runtime_library_bindings(&self.runtime).map_err(|error| error.to_string())?;
+        if bindings.len() != execution.runtime_library_bindings.len()
+            || bindings.iter().any(|(name, digest)| {
+                execution
+                    .runtime_library_bindings
+                    .get(name)
+                    .is_none_or(|expected| expected.as_str() != digest)
+            })
+        {
+            return Err("portable runtime library bindings differ".to_string());
+        }
+        Ok(())
+    }
+
+    fn verification_stamp(&self) -> Result<VerificationStamp, String> {
+        let mut paths = BTreeSet::from([
+            self.echo_binary.clone(),
+            self.runtime.clone(),
+            self.probe.clone(),
+            self.build_receipt.clone(),
+            self.calibration_fixture.clone(),
+        ]);
+        let runtime_root = self
+            .runtime
+            .parent()
+            .ok_or_else(|| "portable runtime has no parent".to_string())?;
+        for name in self
+            .package
+            .selection
+            .execution_artifact
+            .value
+            .runtime_library_bindings
+            .keys()
+        {
+            paths.insert(runtime_root.join(name));
+        }
+        let files = paths
+            .into_iter()
+            .map(|path| verified_file_stamp(&path))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(VerificationStamp {
+            schema_version: VERIFICATION_STAMP_SCHEMA,
+            binding_digest: self.binding_digest.clone(),
+            files,
+        })
+    }
 }
 
 impl PortableSelectionPackage {
@@ -226,6 +457,54 @@ fn canonical_digest<T: Serialize>(value: &T) -> Result<Sha256Digest, String> {
     Sha256Digest::parse(format!("{:x}", digest.finalize())).map_err(|error| error.to_string())
 }
 
+fn package_file(root: &Path, relative: &str) -> Result<PathBuf, String> {
+    let path = root
+        .join(relative)
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    if !path.starts_with(root) || !path.is_file() {
+        return Err("portable selection path escapes its package".to_string());
+    }
+    Ok(path)
+}
+
+pub(crate) fn sha256_file(path: &Path) -> Result<Sha256Digest, String> {
+    let mut file = File::open(path).map_err(|error| error.to_string())?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 1024 * 1024];
+    loop {
+        let read = file.read(&mut buffer).map_err(|error| error.to_string())?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Sha256Digest::parse(format!("{:x}", digest.finalize())).map_err(|error| error.to_string())
+}
+
+fn verified_file_stamp(path: &Path) -> Result<VerifiedFileStamp, String> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    if !metadata.file_type().is_file() && !metadata.file_type().is_symlink() {
+        return Err("portable verification input is not a file or symlink".to_string());
+    }
+    let link_target = if metadata.file_type().is_symlink() {
+        Some(fs::read_link(path).map_err(|error| error.to_string())?)
+    } else {
+        None
+    };
+    Ok(VerifiedFileStamp {
+        path: path.to_path_buf(),
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        size: metadata.len(),
+        modified_seconds: metadata.mtime(),
+        modified_nanoseconds: metadata.mtime_nsec(),
+        changed_seconds: metadata.ctime(),
+        changed_nanoseconds: metadata.ctime_nsec(),
+        link_target,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -261,6 +540,13 @@ mod tests {
             schema_version: 1,
             execution_artifact: execution,
             inference_contracts: vec![contract],
+            calibration_fixture: CalibrationFixture {
+                relative_path: SafeRelativePath::parse(
+                    "calibration/english-canary.wav".to_string(),
+                )
+                .unwrap(),
+                sha256: Sha256Digest::parse("8".repeat(64)).unwrap(),
+            },
         };
         let legacy = LegacyExactIndex {
             schema_version: 1,
@@ -287,10 +573,7 @@ mod tests {
             legacy_exact_index_sha256: canonical_digest(&legacy).unwrap(),
             execution_artifact_id: selection.execution_artifact.id.clone(),
             allowed_inference_contract_ids: selection.contract_ids(),
-            source_release_binding_id: serde_json::from_value(
-                cases["releaseBinding"]["id"].clone(),
-            )
-            .unwrap(),
+            source_acceleration_set_sha256: Sha256Digest::parse("9".repeat(64)).unwrap(),
             production_readiness: "local-selection-proof-only-until-pr16.4".to_string(),
         };
         (selection, legacy, binding)
@@ -357,5 +640,18 @@ mod tests {
             &serde_json::to_vec(&binding).unwrap(),
         )
         .is_err());
+    }
+
+    #[test]
+    fn verification_stamp_changes_when_same_size_file_changes() {
+        let root = std::env::temp_dir().join(format!("echo-portable-stamp-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("runtime");
+        fs::write(&path, b"a").unwrap();
+        let before = verified_file_stamp(&path).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        fs::write(&path, b"b").unwrap();
+        assert_ne!(before, verified_file_stamp(&path).unwrap());
     }
 }

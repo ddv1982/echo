@@ -43,6 +43,35 @@ pub struct WhisperRunTelemetry {
     pub attempts: Vec<WhisperAttemptTelemetry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery: Option<WhisperRecoveryTelemetry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<WhisperSelectionTelemetry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WhisperSelectionTelemetry {
+    pub preference: WhisperAccelerationPreference,
+    pub cached_decision: WhisperCachedDecision,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_key: Option<String>,
+    pub calibration_pending: bool,
+    pub proof_only: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WhisperAccelerationPreference {
+    Auto,
+    Gpu,
+    Cpu,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WhisperCachedDecision {
+    Unknown,
+    Cpu,
+    Vulkan,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

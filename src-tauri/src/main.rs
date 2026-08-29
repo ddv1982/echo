@@ -3363,6 +3363,7 @@ mod settings_tests {
                     },
                 ],
                 recovery: None,
+                selection: None,
             }),
             ..RunDetail::default()
         };
