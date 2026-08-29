@@ -2969,9 +2969,19 @@ mod settings_tests {
         assert_eq!(got.language.value.as_deref(), Some("de"));
         assert_eq!(got.language.effective, "de");
         assert_eq!(got.language.source, SettingSource::File);
-        assert_eq!(got.whisper_acceleration.value.as_deref(), Some("auto"));
-        assert_eq!(got.whisper_acceleration.effective, "auto");
+        assert_eq!(got.whisper_acceleration.value.as_deref(), Some("gpu"));
+        assert_eq!(got.whisper_acceleration.effective, "gpu");
         assert_eq!(got.whisper_acceleration.source, SettingSource::File);
+    }
+
+    #[test]
+    fn legacy_auto_acceleration_settings_resolve_to_cpu() {
+        let path = scratch_path("legacy-auto-acceleration");
+        std::fs::write(&path, r#"{"whisper_acceleration":"auto"}"#).unwrap();
+        let loaded = Config::load_from(&path).unwrap();
+        let got = settings_from(&SettingsEnv::default(), &loaded, "en").unwrap();
+        assert_eq!(got.whisper_acceleration.value.as_deref(), Some("cpu"));
+        assert_eq!(got.whisper_acceleration.effective, "cpu");
     }
 
     #[test]

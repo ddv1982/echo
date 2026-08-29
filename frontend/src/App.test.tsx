@@ -424,16 +424,15 @@ describe('Echo desktop shell', () => {
 
     // The engine override lives in Advanced.
     fireEvent.click(await screen.findByText('Advanced'))
-    expect(screen.getByRole('group', { name: 'Whisper acceleration' })).toBeInTheDocument()
-    expect(
-      screen.getByText(/Auto runs on the GPU when this machine has a qualified one/),
-    ).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'GPU' })).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'CPU' }))
+    const acceleration = within(screen.getByRole('group', { name: 'Whisper acceleration' }))
+    expect(screen.getByText(/CPU always works/)).toBeInTheDocument()
+    expect(acceleration.queryByRole('button', { name: 'Auto' })).not.toBeInTheDocument()
+    expect(acceleration.getByRole('button', { name: 'CPU' })).toBeInTheDocument()
+    fireEvent.click(acceleration.getByRole('button', { name: 'GPU' }))
     await waitFor(async () => {
       expect((await getSettings()).whisperAcceleration).toEqual({
-        value: 'cpu',
-        effective: 'cpu',
+        value: 'gpu',
+        effective: 'gpu',
         source: 'file',
       })
     })
