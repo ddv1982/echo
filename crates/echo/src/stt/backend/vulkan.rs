@@ -1,7 +1,3 @@
-// Unused between the planner's removal and the selectable GPU path that
-// replaces it. Every item here is the Vulkan capability the plan keeps.
-#![allow(dead_code)]
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::Read;
@@ -160,6 +156,8 @@ impl VulkanBackend {
         }
     }
 
+    /// Awaits the GPU execution path, which needs a foreground deadline.
+    #[allow(dead_code)]
     pub(crate) fn bounded(
         probe: PathBuf,
         base_launch: WhisperRuntimeLaunch,
@@ -175,11 +173,11 @@ impl VulkanBackend {
         if cfg!(debug_assertions) && std::env::var("ECHO_WHISPER_TEST_FAULT").as_deref() == Ok("no-devices") {
             return Ok(Vec::new());
         }
-        let libraries = loader_libraries()?;
+        let mut libraries = None;
         let mut routes = Vec::new();
         for manifest_path in discover_manifests(&self.icd_directories, self.require_trusted_icds)? {
             let Ok(library_path) =
-                resolve_icd_library(&manifest_path, &libraries, self.require_trusted_icds)
+                resolve_icd_library(&manifest_path, &mut libraries, self.require_trusted_icds)
             else {
                 continue;
             };
@@ -254,6 +252,8 @@ impl VulkanBackend {
         Ok(routes)
     }
 
+    /// Awaits the GPU execution path, which re-probes a device before use.
+    #[allow(dead_code)]
     pub(crate) fn ready(&self, route: &LocalVulkanRoute) -> Result<WhisperVulkanReceipt, String> {
         let mut launch = self.base_launch.clone();
         launch.vulkan_driver_files = Some(route.manifest_path.clone());
@@ -310,9 +310,11 @@ fn discover_manifests(
     Ok(manifests.into_iter().collect())
 }
 
+/// `loader_libraries` is resolved lazily because only a manifest naming a bare
+/// library file needs the loader cache, and building it shells out to ldconfig.
 fn resolve_icd_library(
     manifest_path: &Path,
-    loader_libraries: &BTreeMap<String, PathBuf>,
+    loader_libraries: &mut Option<BTreeMap<String, PathBuf>>,
     require_trusted: bool,
 ) -> Result<PathBuf, String> {
     let raw = fs::read(manifest_path).map_err(|error| error.to_string())?;
@@ -329,7 +331,11 @@ fn resolve_icd_library(
             .ok_or_else(|| "Vulkan ICD manifest has no parent".to_string())?
             .join(declared)
     } else {
-        loader_libraries
+        let cache = match loader_libraries {
+            Some(cache) => cache,
+            slot => slot.insert(loader_libraries_from_ldconfig()?),
+        };
+        cache
             .get(&manifest.icd.library_path)
             .cloned()
             .ok_or_else(|| "Vulkan ICD library is not in the loader cache".to_string())?
@@ -341,7 +347,7 @@ fn resolve_icd_library(
     Ok(path)
 }
 
-fn loader_libraries() -> Result<BTreeMap<String, PathBuf>, String> {
+fn loader_libraries_from_ldconfig() -> Result<BTreeMap<String, PathBuf>, String> {
     let ldconfig = ["/sbin/ldconfig", "/usr/sbin/ldconfig"]
         .into_iter()
         .map(Path::new)

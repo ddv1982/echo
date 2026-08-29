@@ -897,7 +897,7 @@ def self_test() -> None:
         assert runtime_identity(cli) == original
         assert runtime_library_bindings(cli) != original_bindings
         fixture_path = (
-            REPO_ROOT / "crates/echo/tests/fixtures/whisper-v3-identities.json"
+            REPO_ROOT / "scripts/fixtures/whisper-v3-identities.json"
         )
         cases = read_json(fixture_path)["cases"]
         reusable = root / "reusable"

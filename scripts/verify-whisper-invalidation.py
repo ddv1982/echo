@@ -17,7 +17,7 @@ from whisper_identity_v3 import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-FIXTURE_PATH = REPO_ROOT / "crates/echo/tests/fixtures/whisper-v3-identities.json"
+FIXTURE_PATH = REPO_ROOT / "scripts/fixtures/whisper-v3-identities.json"
 ID_FIELDS = (
     "executionArtifactId",
     "inferenceContractId",

@@ -18,7 +18,7 @@ impl AcceleratorKey {
         &self.0
     }
 
-    // Reinstated as the constructor for a pinned device key in the GPU path.
+        /// Awaits the GPU execution path, which keys quarantine by device.
     #[allow(dead_code)]
     pub(crate) fn parse(value: String) -> Result<Self, String> {
         if value.len() == 64

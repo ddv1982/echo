@@ -493,6 +493,8 @@ fn kill_and_reap(pid: rustix::process::Pid, receiver: &mpsc::Receiver<std::io::R
     let _ = receiver.recv_timeout(Duration::from_secs(CHILD_REAP_TIMEOUT_SECS));
 }
 
+/// Awaits the GPU execution path, which validates the device it selected.
+#[allow(dead_code)]
 pub(crate) fn probe_vulkan_runtime_receipt(
     binary: &Path,
     launch: &WhisperRuntimeLaunch,
@@ -809,8 +811,14 @@ mod tests {
 
     #[test]
     fn missing_model_is_engine_missing() {
-        let dir = std::env::temp_dir().join("echo-empty-whisper-models");
-        let _ = fs::create_dir_all(&dir);
+        // Process-scoped and pre-cleaned: a stray .bin left by anything else
+        // would turn Missing into a different error.
+        let dir = std::env::temp_dir().join(format!(
+            "echo-empty-whisper-models-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
         let engine = WhisperEngine::configured(ModelCache::at(&dir), "base.en");
         let pcm = Pcm16kMono::from_samples(vec![0; 16]);
         assert_eq!(

@@ -387,7 +387,7 @@ def verify_portable_filesystem(root: Path) -> tuple[dict, dict, dict]:
 def self_test() -> None:
     fixture = read_json_strict(
         Path(__file__).resolve().parent.parent
-        / "crates/echo/tests/fixtures/whisper-v3-identities.json",
+        / "scripts/fixtures/whisper-v3-identities.json",
         "Whisper v3 identity fixture",
     )["cases"]
     acceleration_set = {
