@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.12.5
+
+- Unset Whisper acceleration is Auto. Auto uses a receipt-verified local Vulkan device when one enumerates, otherwise managed CPU. CPU remains an explicit opt-out.
+- Automatic language and recognition hints run on the same backend as the rest of the decode.
+- Local GPU selection pins the device by UUID, requires an exact Vulkan receipt, quarantines a failed identity for 24 hours, and recovers once on CPU.
+
 ## v0.12.4
 
 - Linux packages can accelerate both Whisper Small and Large v3 Turbo when the executable, model, runtime, Vulkan device, driver, decoding policy, and cache seed match their independently measured admission. Other identities stay on managed CPU.
