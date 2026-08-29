@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "phase": "PR 16.2",
-  "releaseCommit": "90b1b3b8871f7df9a99e9a36ea58b2e4ca734bb1",
+  "releaseCommit": "8e39deebc65146ce9926c5149fdf9f4bb5e08b7c",
   "executionArtifactId": "563043b3dfe2ec62ccea5e632149b076a9893e45e095dac47ae9a5bf0ba2ba26",
   "accelerationSetSha256": "67e15aafa9fbf6d106b1f88498ef90cbff684d8160ab77efc40d01fc7afa9a5f",
   "inferenceContractIds": {
@@ -41,23 +41,27 @@
     "reboots": 0,
     "coldWallSeconds": 11.74,
     "warmWallSeconds": [11.57, 11.61],
+    "finalWallSeconds": 11.87,
     "v2VerificationSeconds": [2.66, 2.40, 2.49],
     "v3VerificationSeconds": [1.13, 1.17, 1.15],
     "v2VerificationMedianSeconds": 2.49,
     "v3VerificationMedianSeconds": 1.15,
     "verificationReductionPercent": 53.8,
     "physicalRequalificationRequired": false,
-    "reusedInferenceEvidence": true
+    "reusedInferenceEvidence": true,
+    "productionReadiness": "proof-only-until-pr16.3",
+    "productionReady": false
   },
   "releaseArtifacts": {
-    "qualifiedReleaseSha256": "85f659221b083b63e24076d2c4cbc6fd30e1e88807f2240459c63090b78ed376",
-    "binarySha256": "8ef7fb7891d2cb6c9f77a691f925eed606cd4f81ba50de18522c913270205abc",
-    "debSha256": "c4f0d1d1bdfcda7425bfd148ee42456cb8e65a9d07169d1b9cec5e96a9a27be0",
-    "debReleaseBindingId": "d076a2cfff5ee15d7ba0f2ed99b3d68707024a7113ed0275089ae1ae0cbd0459",
-    "rpmSha256": "832c33dbc5a31dc4ea70ab17a0cc6ffb787553393ae51d1385e920b52f1d54d6",
-    "rpmReleaseBindingId": "ec35f955437b3780bd43ff5850ac0ff30ef50c23f5c1236d3b10d0e49857ca99"
+    "qualifiedReleaseSha256": "3c36a5a7aef2ab7468e3c7b88ff4f98dc52d5144589e9ffc68cabaff8271fb2b",
+    "binarySha256": "7dca2d7d8677f11ac397ac8c719c4cccf92077dbdb1276f37e8adec0d1485589",
+    "debSha256": "f7688121cab46173d7e8f282a510748eccf7ad2c47265557d87996aa8e5de31a",
+    "debReleaseBindingId": "3c8d0568425dd0e1c1d9ea2ad7a5e4b0b8e57a595c6eca0173cfa20ece56cc51",
+    "rpmSha256": "451f3f25bdb0d60d2b27a8b71d427830aca8dd6337c3da1b482e2ae172088f6e",
+    "rpmReleaseBindingId": "7ba89b1113318ba60c66c75a47f6444f07c2d8613080f6d40930bc24edd62cc9"
   },
   "sourceArtifacts": {
+    "evidenceArchiveSha256": "1a871d87501a03fc875d8c19498ec0dbab2c20e53847e389bd1c5146c9b73ade",
     "accelerationSetFileSha256": "a321b0e8af4f44ec02489fcb1d92daceda92716f1a0e5773add3a6a778920826",
     "promotionFileSha256": "41b756b80d51dbce3d4a40f9b2512351cc077c7e67d09acf6cc9f46f5a830830"
   }

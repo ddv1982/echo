@@ -5,7 +5,8 @@ import argparse
 import gzip
 import hashlib
 import io
-import subprocess
+import json
+import statistics
 import tarfile
 import tempfile
 from pathlib import Path
@@ -117,47 +118,80 @@ def verify_cycle(root: Path) -> dict[str, object]:
     return cycle
 
 
-def replay_model(root: Path, model: str) -> None:
+def safe_artifact(root: Path, reference: object, label: str) -> None:
+    if not isinstance(reference, dict):
+        raise ValueError(f"{label} reference is malformed")
+    relative = Path(reference.get("path", ""))
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError(f"{label} path is unsafe")
+    path = root / relative
+    if (
+        not path.is_file()
+        or path.stat().st_size != reference.get("bytes")
+        or sha256_file(path) != reference.get("sha256")
+    ):
+        raise ValueError(f"{label} artifact differs")
+
+
+def verify_model(root: Path, model: str, summary: dict[str, object]) -> None:
     decision = strict_json_file(root / model / "decision.json")
-    candidates = decision["candidates"]
-    resource = decision["phase2"]["resourceEvidence"]
-    with tempfile.TemporaryDirectory(prefix=f"pr16-2-{model}-replay-") as temporary:
-        output = Path(temporary)
-        subprocess.run(
-            [
-                "python3",
-                str(REPO_ROOT / "scripts/analyze-stt-host-matrix.py"),
-                "--runs",
-                str(root / model / "bundle/runs.jsonl"),
-                "--corpus-manifest",
-                str(root / "corpus/fixtures.json"),
-                "--cpu-candidate",
-                candidates["cpu"],
-                "--accelerated-candidate",
-                candidates["accelerated"],
-                "--expected-backend",
-                "vulkan",
-                "--output-dir",
-                str(output),
-                "--minimum-available-memory-bytes",
-                str(resource["minimumAvailableMemoryBytes"]),
-                "--maximum-sustained-swap-growth-bytes",
-                str(resource["maximumSustainedSwapGrowthBytes"]),
-                "--require-resource-evidence",
-            ],
-            cwd=REPO_ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        replayed = strict_json_file(output / "decision.json")
     recorded = strict_json_file(root / model / "analysis/decision.json")
-    if replayed != recorded:
-        raise ValueError(f"{model} analyzer replay differs")
+    if decision["phase2"] != recorded:
+        raise ValueError(f"{model} cell and analyzer decisions differ")
+    manifest = strict_json_file(root / model / "bundle/run-manifest.json")
+    artifacts = {entry["rowId"]: entry for entry in manifest["artifactIndex"]}
+    if len(artifacts) != len(manifest["artifactIndex"]):
+        raise ValueError(f"{model} artifact index contains duplicate rows")
+    for row_id, artifact in artifacts.items():
+        for field in ("command", "environment", "result", "stderr", "stdout", "timing"):
+            safe_artifact(
+                root / model / "bundle", artifact[field], f"{model} {row_id} {field}"
+            )
+        if artifact.get("processObservation") is not None:
+            safe_artifact(
+                root / model / "bundle",
+                artifact["processObservation"],
+                f"{model} {row_id} process observation",
+            )
+    rows = [
+        json.loads(line)
+        for line in (root / model / "bundle/runs.jsonl").read_text().splitlines()
+    ]
+    if len(rows) != 560 or len({row["rowId"] for row in rows}) != 560:
+        raise ValueError(f"{model} evidence does not contain 560 unique runs")
+    for row in rows:
+        if row["observationArtifact"] != artifacts.get(row["rowId"]):
+            raise ValueError(f"{model} row differs from its artifact index")
+        if (
+            row["echoBinary"] != manifest["binary"]
+            or row["echoCommit"] != manifest["echo"]["commit"]
+        ):
+            raise ValueError(f"{model} row differs from its measured Echo identity")
+    candidates = decision["candidates"]
+    cpu_times = [
+        row["outerMs"] for row in rows if row["candidate"] == candidates["cpu"]
+    ]
+    accelerated_times = [
+        row["outerMs"] for row in rows if row["candidate"] == candidates["accelerated"]
+    ]
+    key = "largeTurbo" if model == "large" else "small"
+    expected = summary["physicalQualification"][key]
+    if (
+        round(statistics.median(cpu_times), 3) != expected["cpuMedianMs"]
+        or round(statistics.median(accelerated_times), 3)
+        != expected["acceleratedMedianMs"]
+        or recorded["newHallucinations"] != expected["newHallucinations"]
+        or not all(
+            language["qualityGate"] for language in recorded["languages"].values()
+        )
+    ):
+        raise ValueError(f"{model} retained measurements differ from the summary")
 
 
 def verify_archive() -> None:
     summary = strict_json_file(SUMMARY)
+    if sha256_file(ARCHIVE) != summary["sourceArtifacts"]["evidenceArchiveSha256"]:
+        raise ValueError("retained PR16.2 evidence archive digest differs")
     with tempfile.TemporaryDirectory(prefix="pr16-2-evidence-") as temporary:
         root = Path(temporary)
         with tarfile.open(ARCHIVE, "r:gz") as archive:
@@ -191,9 +225,7 @@ def verify_archive() -> None:
                 raise ValueError(f"archived {relative} digest differs")
 
         for model in ("small", "large"):
-            if sum(1 for _ in (root / model / "bundle/runs.jsonl").open()) != 560:
-                raise ValueError(f"{model} evidence does not contain 560 runs")
-            replay_model(root, model)
+            verify_model(root, model, summary)
 
         for model in ("small", "large"):
             prior = verify_cycle(root / f"cache/{model}-prior")
