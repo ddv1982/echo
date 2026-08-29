@@ -47,6 +47,11 @@ def variant_bytes(canonical: bytes, bundle_type: str) -> bytes:
     return bundle_variant(canonical, bundle_type)
 
 
+def verify_embedded_commit(binary: bytes, commit: str) -> None:
+    if commit.encode() not in binary:
+        raise ValueError("Echo binary does not contain its bound build commit")
+
+
 def preserve_old_bundle(label: str) -> None:
     bundle = REPO_ROOT / "target/release/bundle"
     if bundle.exists():
@@ -213,6 +218,7 @@ def v3_release_binding_input(
     binary: bytes,
 ) -> dict[str, object]:
     verify_v3_promotion_metadata(promotion, acceleration_set)
+    verify_embedded_commit(binary, commit)
     return {
         "schemaVersion": 3,
         "packageType": package_type,
@@ -257,6 +263,7 @@ def verify_extracted_v3(
     identities = verify_acceleration_set(acceleration_set)
     verify_v3_reusable_filesystem(resource, acceleration_set)
     binding_id = verify_release_binding_record(binding, acceleration_set)
+    verify_embedded_commit(binary.read_bytes(), binding["value"]["echoCommit"])
     if binding["value"]["echoBinarySha256"] != sha256_file(binary):
         raise ValueError("v3 release binding does not match the packaged executable")
     if source_resource is not None:
@@ -427,6 +434,8 @@ def stage(args: argparse.Namespace) -> None:
     if canonical_path != CANONICAL_BINARY.resolve():
         raise ValueError(f"canonical binary must be {CANONICAL_BINARY}")
     canonical = canonical_path.read_bytes()
+    if args.reusable_evidence is not None:
+        verify_embedded_commit(canonical, args.commit)
     head = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         cwd=REPO_ROOT,
@@ -773,13 +782,27 @@ def self_test() -> None:
         )
         staged_resource = root / "staged-resource"
         copied_set = copy_v3_evidence(reusable, staged_resource)
-        deb_binary = variant_bytes(canonical, "deb")
+        measured_commit = "a" * 40
+        deb_binary = variant_bytes(canonical, "deb") + measured_commit.encode()
+        try:
+            v3_release_binding_input(
+                acceleration_set=copied_set,
+                promotion=promotion,
+                package_type="deb",
+                version="0.12.5",
+                commit=measured_commit,
+                binary=variant_bytes(canonical, "deb"),
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("release binding accepted an uncommitted Echo binary")
         deb_input = v3_release_binding_input(
             acceleration_set=copied_set,
             promotion=promotion,
             package_type="deb",
             version="0.12.5",
-            commit="a" * 40,
+            commit=measured_commit,
             binary=deb_binary,
         )
         deb_record = write_v3_release_binding(staged_resource, copied_set, deb_input)
