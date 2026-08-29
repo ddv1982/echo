@@ -1,4 +1,4 @@
-mod backend;
+pub mod backend;
 mod cache;
 mod fake;
 mod parakeet;
@@ -24,6 +24,37 @@ pub fn whisper_acceleration_factory_default() -> echo_core::WhisperAccelerationP
     echo_core::WhisperAccelerationPreference::Cpu
 }
 
+/// Every Vulkan device the installed GPU runtime can see, for the device
+/// picker. Returns an empty list when no runtime is installed or no device
+/// enumerates, because neither is an error the user needs to read.
+#[must_use]
+pub fn list_gpu_devices() -> Vec<backend::vulkan::GpuDevice> {
+    let Some(runtime) = installed_vulkan_runtime() else {
+        return Vec::new();
+    };
+    let probe = runtime.join("echo-whisper-runtime-probe");
+    if !probe.is_file() {
+        return Vec::new();
+    }
+    let backend = backend::vulkan::VulkanBackend::system(
+        probe,
+        whisper_runtime_launch(&runtime.join("whisper-cli")),
+        std::time::Duration::from_secs(15),
+    );
+    backend
+        .enumerate()
+        .map(|routes| routes.iter().map(backend::vulkan::LocalVulkanRoute::device).collect())
+        .unwrap_or_default()
+}
+
+/// The managed GPU runtime payload root, when the component is installed.
+#[must_use]
+pub fn installed_vulkan_runtime() -> Option<std::path::PathBuf> {
+    crate::install::ManagedStore::new(ModelCache::from_env().dir())
+        .candidate_root(crate::install::ComponentId::WhisperVulkanRuntime)
+        .filter(|root| root.join("whisper-cli").is_file())
+}
+
 /// An explicit override wins, then the environment, then the config file,
 /// then the factory default.
 pub(crate) fn resolved_whisper_acceleration(
@@ -41,6 +72,7 @@ pub(crate) fn resolved_whisper_acceleration(
 pub use whisper_quarantine::{
     AcceleratorKey, QuarantineReason, QuarantineRecord, MAX_QUARANTINE_LIFETIME_SECS,
 };
+pub use backend::vulkan::{GpuDevice, VulkanDeviceId};
 pub use whisper_identity::{IdentityError as WhisperIdentityError, Sha256Digest, UuidDigest};
 pub use whisper_plan::{
     preferred_runtime, VulkanRuntimeSelector, WhisperExecutionPlan, WhisperModelAsset,

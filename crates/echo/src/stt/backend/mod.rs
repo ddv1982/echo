@@ -1,1 +1,1 @@
-pub(crate) mod vulkan;
+pub mod vulkan;

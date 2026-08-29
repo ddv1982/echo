@@ -3,6 +3,7 @@ import { listen } from '@tauri-apps/api/event'
 import type {
   AppStatus,
   DictionaryItem,
+  GpuDevice,
   HistoryItem,
   InputDevice,
   LanguageOptions,
@@ -426,6 +427,55 @@ export function seedPreviewMicTestError(message: string) {
   previewMicTestError = message
 }
 
+let previewGpuDevices: GpuDevice[] = defaultPreviewGpuDevices()
+
+function defaultPreviewGpuDevices(): GpuDevice[] {
+  return [
+    {
+      id: {
+        deviceUUID: '8680a6460c0000000002000000000000',
+        driverUUID: 'ee99561e45e1e718c6121d36d8345582',
+      },
+      name: 'Intel(R) Iris(R) Xe Graphics (ADL GT2)',
+      vendorId: 0x8086,
+      deviceId: 0x46a6,
+      drmDriver: 'i915',
+      software: false,
+    },
+    {
+      id: {
+        deviceUUID: '1002744c0000000000010000000000aa',
+        driverUUID: '3f7b1c9a45e1e718c6121d36d8340000',
+      },
+      name: 'AMD Radeon RX 7800 XT (RADV)',
+      vendorId: 0x1002,
+      deviceId: 0x747e,
+      drmDriver: 'amdgpu',
+      software: false,
+    },
+    {
+      id: {
+        deviceUUID: '00050100000000000000000000000000',
+        driverUUID: '00050100000000000000000000000001',
+      },
+      name: 'llvmpipe (LLVM 20.1.8)',
+      vendorId: 0x10005,
+      deviceId: 0x0,
+      drmDriver: null,
+      software: true,
+    },
+  ]
+}
+
+export function listGpuDevices(refresh = false): Promise<GpuDevice[]> {
+  if (isTauri()) return invoke('list_gpu_devices', { refresh })
+  return Promise.resolve(preview ? previewGpuDevices.map((device) => ({ ...device })) : [])
+}
+
+export function seedPreviewGpuDevices(devices: GpuDevice[]) {
+  previewGpuDevices = devices
+}
+
 export function seedPreviewStatus(status: Partial<AppStatus>) {
   previewStatus = { ...previewStatus, ...status }
 }
@@ -445,6 +495,7 @@ export function resetPreviewSettings() {
   previewDevices = defaultPreviewDevices()
   previewMicrophones = defaultPreviewMicrophones(previewDevices)
   previewReadiness = defaultPreviewReadiness()
+  previewGpuDevices = defaultPreviewGpuDevices()
 }
 
 function defaultPreviewDevices(): InputDevice[] {

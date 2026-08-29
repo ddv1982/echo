@@ -1283,6 +1283,24 @@ struct ModelInventoryDto {
     engines: Vec<EngineAvailabilityDto>,
 }
 
+/// Enumeration spawns one probe subprocess per ICD manifest, so the result is
+/// held for the process and refreshed only when the user asks.
+static GPU_DEVICES: OnceLock<Mutex<Option<Vec<echo::stt::GpuDevice>>>> = OnceLock::new();
+
+#[tauri::command]
+fn list_gpu_devices(refresh: bool) -> Vec<echo::stt::GpuDevice> {
+    let cell = GPU_DEVICES.get_or_init(|| Mutex::new(None));
+    let Ok(mut cached) = cell.lock() else {
+        return echo::stt::list_gpu_devices();
+    };
+    if refresh {
+        *cached = None;
+    }
+    cached
+        .get_or_insert_with(echo::stt::list_gpu_devices)
+        .clone()
+}
+
 #[tauri::command]
 fn list_models() -> Result<ModelInventoryDto, String> {
     let cache = echo::stt::ModelCache::from_env();
@@ -2433,6 +2451,7 @@ fn run_desktop() {
             get_settings,
             set_settings,
             list_models,
+            list_gpu_devices,
             list_languages,
             setup::get_readiness,
             setup::start_setup,

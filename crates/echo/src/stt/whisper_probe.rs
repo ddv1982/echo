@@ -174,7 +174,7 @@ fn selected_backend(selected: &str) -> Option<(WhisperRuntimeBackend, usize)> {
     None
 }
 
-fn vulkan_device(stderr: &str, selected_index: usize) -> Option<String> {
+pub(crate) fn vulkan_device(stderr: &str, selected_index: usize) -> Option<String> {
     let prefix = format!("ggml_vulkan: {selected_index} = ");
     stderr.lines().find_map(|line| {
         let value = line.trim().strip_prefix(&prefix)?;

@@ -237,6 +237,20 @@ export interface LanguageOptions {
   options: LanguageOption[]
 }
 
+export type VulkanDeviceId = {
+  deviceUUID: string
+  driverUUID: string
+}
+
+export type GpuDevice = {
+  id: VulkanDeviceId
+  name: string
+  vendorId: number
+  deviceId: number
+  drmDriver: string | null
+  software: boolean
+}
+
 export type ComponentId =
   | 'whisper-runtime'
   | 'whisper-vulkan-runtime'
