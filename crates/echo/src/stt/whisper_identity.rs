@@ -311,6 +311,7 @@ pub struct ReleaseBindingInput {
     pub echo_commit: CommitDigest,
     pub echo_binary_sha256: Sha256Digest,
     pub bundle_marker: PackageType,
+    pub production_readiness: String,
     pub acceleration_set_sha256: Sha256Digest,
     pub execution_artifact_id: ExecutionArtifactId,
     pub allowed_inference_contract_ids: Vec<InferenceContractId>,
@@ -348,7 +349,7 @@ impl InferenceContractId {
     pub fn of(input: &InferenceContractInput) -> Result<Self, IdentityError> {
         require_schema(input.schema_version, "inference contract")?;
         if input.protocol != "oneShotCli"
-            || input.claim_scope.is_empty()
+            || input.claim_scope != "product-stt-corpus-v1"
             || input.tuning.threads == 0
             || input.tuning.beam_size == 0
             || input.tuning.best_of == 0
@@ -406,6 +407,7 @@ impl ReleaseBindingId {
         require_schema(input.schema_version, "release binding")?;
         if input.version.is_empty()
             || input.package_type != input.bundle_marker
+            || input.production_readiness != "proof-only-until-pr16.3"
             || input.allowed_inference_contract_ids.is_empty()
             || input.allowed_performance_evidence_ids.is_empty()
             || !input

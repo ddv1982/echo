@@ -18,6 +18,7 @@ SHA256 = re.compile(r"[0-9a-f]{64}")
 COMMIT = re.compile(r"[0-9a-f]{40}")
 SAFE_PATH = re.compile(r"[A-Za-z0-9._+/-]+")
 LOWER_HEX_32 = re.compile(r"[0-9a-f]{32}")
+INFERENCE_CLAIM_SCOPE = "product-stt-corpus-v1"
 ADMISSION_GATE_FIELDS = frozenset(
     {
         "backendTruth",
@@ -209,7 +210,7 @@ def validate_inference_contract(value):
     if value["vadSha256"] is not None:
         require_digest(value["vadSha256"], "vadSha256")
     require_string(value["protocol"], "protocol", {"oneShotCli"})
-    require_string(value["claimScope"], "claimScope")
+    require_string(value["claimScope"], "claimScope", {INFERENCE_CLAIM_SCOPE})
     require_object(
         value["tuning"], {"beamSize", "bestOf", "noFallback", "threads"}, "tuning"
     )
@@ -331,6 +332,7 @@ def validate_release_binding(value):
             "echoCommit",
             "executionArtifactId",
             "packageType",
+            "productionReadiness",
             "reusableInventorySha256",
             "schemaVersion",
             "version",
@@ -340,6 +342,11 @@ def validate_release_binding(value):
     require_schema(value["schemaVersion"], "release binding")
     require_string(value["packageType"], "package type", {"deb", "rpm"})
     require_string(value["bundleMarker"], "bundle marker", {"deb", "rpm"})
+    require_string(
+        value["productionReadiness"],
+        "production readiness",
+        {"proof-only-until-pr16.3"},
+    )
     if value["bundleMarker"] != value["packageType"]:
         fail("bundle marker differs from package type")
     require_string(value["version"], "version")
@@ -529,14 +536,14 @@ def verify_release_binding_record(record, acceleration_set):
         fail("release binding reusable inventory differs")
     if value["executionArtifactId"] != identities["executionArtifactId"]:
         fail("release binding execution artifact differs")
-    if not set(value["allowedInferenceContractIds"]).issubset(
-        identities["inferenceContractIds"]
-    ):
-        fail("release binding inference contract is missing")
-    if not set(value["allowedPerformanceEvidenceIds"]).issubset(
-        identities["performanceEvidenceIds"]
-    ):
-        fail("release binding performance evidence is missing")
+    if value["allowedInferenceContractIds"] != identities["inferenceContractIds"]:
+        fail("release binding does not exactly cover inference contracts")
+    if value["allowedPerformanceEvidenceIds"] != identities["performanceEvidenceIds"]:
+        fail("release binding does not exactly cover performance evidence")
+    allowed_contracts = set(value["allowedInferenceContractIds"])
+    for evidence in acceleration_set["performanceEvidence"]:
+        if evidence["value"]["inferenceContractId"] not in allowed_contracts:
+            fail("release binding evidence references a disallowed contract")
     return binding_id
 
 
@@ -692,6 +699,53 @@ def self_test():
     binding_input["accelerationSetSha256"] = acceleration_set_sha256(acceleration_set)
     binding_record = build_record("releaseBinding", binding_input)
     verify_release_binding_record(binding_record, acceleration_set)
+    second_contract_input = copy.deepcopy(cases["inferenceContract"]["input"])
+    second_contract_input["modelSha256"] = "0" * 64
+    second_contract = build_record("inferenceContract", second_contract_input)
+    second_evidence_input = copy.deepcopy(cases["performanceEvidence"]["input"])
+    second_evidence_input["inferenceContractId"] = second_contract["id"]
+    second_evidence_input["observationBundleSha256"] = "5" * 64
+    second_evidence = build_record("performanceEvidence", second_evidence_input)
+    second_set = copy.deepcopy(acceleration_set)
+    second_set["inferenceContracts"].append(second_contract)
+    second_set["inferenceContracts"].sort(key=lambda record: record["id"])
+    second_set["performanceEvidence"].append(
+        {
+            "cacheSeed": {
+                "relativePath": f"cache-seeds/{second_evidence['id']}",
+                "sha256": "5" * 64,
+            },
+            "gates": {name: True for name in sorted(ADMISSION_GATE_FIELDS)},
+            "id": second_evidence["id"],
+            "value": second_evidence_input,
+            "verdict": "PASSED",
+        }
+    )
+    second_set["performanceEvidence"].sort(key=lambda record: record["id"])
+    second_ids = verify_acceleration_set(second_set)
+    second_binding = copy.deepcopy(binding_input)
+    second_binding["accelerationSetSha256"] = acceleration_set_sha256(second_set)
+    second_binding["allowedInferenceContractIds"] = second_ids["inferenceContractIds"]
+    second_binding["allowedPerformanceEvidenceIds"] = second_ids[
+        "performanceEvidenceIds"
+    ]
+    verify_release_binding_record(
+        build_record("releaseBinding", second_binding), second_set
+    )
+    for field in (
+        "allowedInferenceContractIds",
+        "allowedPerformanceEvidenceIds",
+    ):
+        incomplete = copy.deepcopy(second_binding)
+        incomplete[field] = incomplete[field][1:]
+        try:
+            verify_release_binding_record(
+                build_record("releaseBinding", incomplete), second_set
+            )
+        except IdentityError:
+            pass
+        else:
+            fail(f"release binding accepted incomplete {field}")
     changed_version = copy.deepcopy(binding_input)
     changed_version["version"] = "0.12.6"
     if release_binding_id(changed_version) == binding_record["id"]:

@@ -126,14 +126,6 @@ def cases():
             True,
         ),
         (
-            "claim-scope",
-            lambda values: values["inferenceContract"].update(
-                claimScope="product-stt-corpus-v2"
-            ),
-            {"inferenceContractId", "performanceEvidenceId", "releaseBindingId"},
-            True,
-        ),
-        (
             "behavior-projection",
             lambda values: set_digest(
                 values["inferenceContract"]["behavior"], "projectionSha256", "4"
@@ -194,6 +186,21 @@ def verify_matrix() -> dict[str, object]:
         )
     else:
         raise ValueError("unsupported request policy reused qualified evidence")
+    unsupported_scope = copy.deepcopy(baseline_values)
+    unsupported_scope["inferenceContract"]["claimScope"] = "product-stt-corpus-v2"
+    try:
+        derive(unsupported_scope)
+    except IdentityError:
+        rows.append(
+            {
+                "change": "claim-scope",
+                "changedIds": [],
+                "physicalRequalificationRequired": True,
+                "reuseRefused": True,
+            }
+        )
+    else:
+        raise ValueError("unsupported claim scope reused qualified evidence")
     return {"schemaVersion": 1, "baseline": baseline, "cases": rows}
 
 

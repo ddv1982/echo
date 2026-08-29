@@ -12,6 +12,7 @@ from pathlib import Path
 
 from whisper_identity_v3 import (
     ADMISSION_GATE_FIELDS,
+    COMMIT,
     build_record,
     canonical_json_bytes,
     verify_acceleration_set,
@@ -19,6 +20,7 @@ from whisper_identity_v3 import (
     verify_v3_promotion_metadata,
     v3_promotion_metadata,
 )
+from whisper_v3_contract import verify_reusable_evidence_for_commit
 from whisper_release_common import (
     BUNDLE_MARKER,
     BUNDLE_TOKENS,
@@ -37,6 +39,7 @@ from whisper_release_common import (
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CANONICAL_BINARY = REPO_ROOT / "target/release/echo-desktop"
+BUILD_COMMIT_PREFIX = b"\0echo-build-commit-v1\0"
 
 
 def read_json(path: Path) -> dict[str, object]:
@@ -47,9 +50,33 @@ def variant_bytes(canonical: bytes, bundle_type: str) -> bytes:
     return bundle_variant(canonical, bundle_type)
 
 
+def compiled_build_commit(binary: bytes) -> str:
+    starts = []
+    offset = 0
+    while True:
+        found = binary.find(BUILD_COMMIT_PREFIX, offset)
+        if found < 0:
+            break
+        starts.append(found)
+        offset = found + 1
+    if len(starts) != 1:
+        raise ValueError("Echo binary does not contain exactly one build commit marker")
+    value_start = starts[0] + len(BUILD_COMMIT_PREFIX)
+    value_end = value_start + 40
+    if value_end >= len(binary) or binary[value_end] != 0:
+        raise ValueError("Echo binary build commit marker is malformed")
+    try:
+        commit = binary[value_start:value_end].decode("ascii")
+    except UnicodeDecodeError as error:
+        raise ValueError("Echo binary build commit marker is not ASCII") from error
+    if COMMIT.fullmatch(commit) is None:
+        raise ValueError("Echo binary build commit marker is not a commit")
+    return commit
+
+
 def verify_embedded_commit(binary: bytes, commit: str) -> None:
-    if commit.encode() not in binary:
-        raise ValueError("Echo binary does not contain its bound build commit")
+    if compiled_build_commit(binary) != commit:
+        raise ValueError("Echo binary build commit differs from its release binding")
 
 
 def preserve_old_bundle(label: str) -> None:
@@ -226,6 +253,7 @@ def v3_release_binding_input(
         "echoCommit": commit,
         "echoBinarySha256": sha256_bytes(binary),
         "bundleMarker": package_type,
+        "productionReadiness": "proof-only-until-pr16.3",
         "accelerationSetSha256": promotion["accelerationSetSha256"],
         "executionArtifactId": promotion["executionArtifactId"],
         "allowedInferenceContractIds": promotion["inferenceContractIds"],
@@ -293,6 +321,8 @@ def verify_extracted_v3(
         "echoCommit": binding["value"]["echoCommit"],
         "version": binding["value"]["version"],
         "packageType": binding["value"]["packageType"],
+        "productionReadiness": binding["value"]["productionReadiness"],
+        "productionReady": False,
         "releaseBindingId": binding_id,
         "executionArtifactId": identities["executionArtifactId"],
         "inferenceContractIds": identities["inferenceContractIds"],
@@ -458,6 +488,14 @@ def stage(args: argparse.Namespace) -> None:
     )
     if args.reusable_evidence is not None:
         reusable = args.reusable_evidence.resolve()
+        reusable_set = read_json(
+            reusable / "whisper-acceleration/acceleration-set.v3.json"
+        )
+        verify_reusable_evidence_for_commit(
+            repo_root=REPO_ROOT,
+            commit=args.commit,
+            acceleration_set=reusable_set,
+        )
         assets = {
             bundle_type: bundle_v3_one(
                 bundle_type,
@@ -490,6 +528,8 @@ def stage(args: argparse.Namespace) -> None:
     if args.reusable_evidence is not None:
         manifest["physicalRequalificationRequired"] = False
         manifest["reusedInferenceEvidence"] = True
+        manifest["productionReadiness"] = "proof-only-until-pr16.3"
+        manifest["productionReady"] = False
     (output / "qualified-release.json").write_text(
         json.dumps(manifest, indent=2) + "\n",
         encoding="utf-8",
@@ -505,7 +545,13 @@ def verify_asset_inventory(root: Path, expected_files: set[str]) -> None:
         raise ValueError("qualified release has an unexpected directory inventory")
 
 
-def verify_manifest(root: Path, expected_version: str, expected_commit: str) -> None:
+def verify_manifest(
+    root: Path,
+    expected_version: str,
+    expected_commit: str,
+    *,
+    require_production_ready: bool = False,
+) -> None:
     manifest = read_json(root / "qualified-release.json")
     schema_version = manifest.get("schemaVersion")
     if (
@@ -517,8 +563,16 @@ def verify_manifest(root: Path, expected_version: str, expected_commit: str) -> 
     if schema_version == 3 and (
         manifest.get("physicalRequalificationRequired") is not False
         or manifest.get("reusedInferenceEvidence") is not True
+        or manifest.get("productionReadiness") != "proof-only-until-pr16.3"
+        or manifest.get("productionReady") is not False
     ):
         raise ValueError("v3 qualified release did not reuse inference evidence")
+    if (
+        require_production_ready
+        and schema_version == 3
+        and manifest.get("productionReady") is not True
+    ):
+        raise ValueError("qualified release is proof-only and not production-ready")
     assets = manifest.get("assets")
     if not isinstance(assets, dict) or set(assets) != {"deb", "rpm", "binary"}:
         raise ValueError("qualified release has the wrong asset set")
@@ -575,6 +629,8 @@ def verify_manifest(root: Path, expected_version: str, expected_commit: str) -> 
                     "performanceEvidenceIds",
                     "physicalRequalificationRequired",
                     "reusedInferenceEvidence",
+                    "productionReadiness",
+                    "productionReady",
                 )
             else:
                 details = verify_extracted(
@@ -607,6 +663,21 @@ def self_test() -> None:
     from unittest.mock import patch
 
     canonical = b"before" + BUNDLE_MARKER + b"after"
+    marker_commit = "a" * 40
+    marker = BUILD_COMMIT_PREFIX + marker_commit.encode() + b"\0"
+    assert compiled_build_commit(canonical + marker) == marker_commit
+    for invalid_marker in (
+        marker_commit.encode(),
+        marker + marker,
+        BUILD_COMMIT_PREFIX + marker_commit.encode(),
+        BUILD_COMMIT_PREFIX + b"unbound" + b"_" * 33 + b"\0",
+    ):
+        try:
+            compiled_build_commit(canonical + invalid_marker)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("malformed build commit marker was accepted")
     for bundle_type, token in BUNDLE_TOKENS.items():
         assert variant_bytes(canonical, bundle_type) == b"before" + token + b"after"
     with tempfile.TemporaryDirectory() as temporary:
@@ -783,7 +854,8 @@ def self_test() -> None:
         staged_resource = root / "staged-resource"
         copied_set = copy_v3_evidence(reusable, staged_resource)
         measured_commit = "a" * 40
-        deb_binary = variant_bytes(canonical, "deb") + measured_commit.encode()
+        marker = BUILD_COMMIT_PREFIX + measured_commit.encode() + b"\0"
+        deb_binary = variant_bytes(canonical, "deb") + marker
         try:
             v3_release_binding_input(
                 acceleration_set=copied_set,
@@ -791,7 +863,7 @@ def self_test() -> None:
                 package_type="deb",
                 version="0.12.5",
                 commit=measured_commit,
-                binary=variant_bytes(canonical, "deb"),
+                binary=variant_bytes(canonical, "deb") + measured_commit.encode(),
             )
         except ValueError:
             pass
@@ -816,6 +888,8 @@ def self_test() -> None:
         details = verify_extracted_v3(extracted, deb_binary, staged_resource)
         assert details["releaseBindingId"] == deb_record["id"]
         assert details["physicalRequalificationRequired"] is False
+        assert details["productionReadiness"] == "proof-only-until-pr16.3"
+        assert details["productionReady"] is False
 
         def expect_filesystem_rejection(label, mutate):
             candidate = root / f"v3-invalid-{label}"
@@ -870,6 +944,7 @@ def main() -> int:
     parser.add_argument("--verify-rpm-extraction", type=Path)
     parser.add_argument("--expected-version")
     parser.add_argument("--expected-commit")
+    parser.add_argument("--require-production-ready", action="store_true")
     parser.add_argument("--canonical-binary", type=Path)
     parser.add_argument("--deb-promotion", type=Path)
     parser.add_argument("--rpm-promotion", type=Path)
@@ -889,7 +964,10 @@ def main() -> int:
                     "--verify requires --expected-version and --expected-commit"
                 )
             verify_manifest(
-                args.verify.resolve(), args.expected_version, args.expected_commit
+                args.verify.resolve(),
+                args.expected_version,
+                args.expected_commit,
+                require_production_ready=args.require_production_ready,
             )
         elif any(
             value is None

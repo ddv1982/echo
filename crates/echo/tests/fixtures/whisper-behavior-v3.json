@@ -128,6 +128,7 @@
     "crates/echo/src/stt/whisper_behavior.rs",
     "crates/echo/src/stt/whisper_plan.rs",
     "crates/echo/src/stt/whisper_probe.rs",
-    "crates/echo/src/stt/whisper_recovery.rs"
+    "crates/echo/src/stt/whisper_recovery.rs",
+    "crates/echo/src/transcribe.rs"
   ]
 }

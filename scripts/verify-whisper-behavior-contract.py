@@ -2,63 +2,22 @@
 from __future__ import annotations
 
 import argparse
+import copy
+import json
 import subprocess
+import tempfile
 from pathlib import Path
 
-from whisper_identity_v3 import (
-    canonical_json_bytes,
-    sha256_bytes,
-    strict_json_file,
-    strict_json_loads,
-    verify_fixture,
+from whisper_identity_v3 import strict_json_file, strict_json_loads
+from whisper_v3_contract import (
+    BEHAVIOR_PATH,
+    IDENTITIES_PATH,
+    validate_behavior,
+    validate_current,
+    verify_measured_inference_contract,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-BEHAVIOR_PATH = Path("crates/echo/tests/fixtures/whisper-behavior-v3.json")
-IDENTITIES_PATH = Path("crates/echo/tests/fixtures/whisper-v3-identities.json")
-BEHAVIOR_FIELDS = {"projection", "projectionSha256", "schemaVersion", "watchedPaths"}
-
-
-def validate_behavior(value: object) -> dict[str, object]:
-    if not isinstance(value, dict) or set(value) != BEHAVIOR_FIELDS:
-        raise ValueError("behavior contract has unknown or missing fields")
-    if value["schemaVersion"] != 3:
-        raise ValueError("behavior contract has the wrong schema version")
-    projection = value["projection"]
-    if not isinstance(projection, dict) or set(projection) != {
-        "decode",
-        "launch",
-        "receipt",
-        "recovery",
-        "telemetry",
-    }:
-        raise ValueError("behavior projection has unknown or missing sections")
-    expected = sha256_bytes(canonical_json_bytes(projection))
-    if value["projectionSha256"] != expected:
-        raise ValueError("behavior projection digest differs from its canonical values")
-    watched = value["watchedPaths"]
-    if (
-        not isinstance(watched, list)
-        or not watched
-        or watched != sorted(set(watched))
-        or not all(isinstance(path, str) and path.endswith(".rs") for path in watched)
-    ):
-        raise ValueError("behavior watched paths are not sorted, unique Rust paths")
-    missing = [path for path in watched if not (REPO_ROOT / path).is_file()]
-    if missing:
-        raise ValueError(f"behavior watched paths do not exist: {missing}")
-    return value
-
-
-def validate_current() -> dict[str, object]:
-    behavior = validate_behavior(strict_json_file(REPO_ROOT / BEHAVIOR_PATH))
-    identities = verify_fixture(REPO_ROOT / IDENTITIES_PATH)
-    contract_digest = identities["cases"]["inferenceContract"]["input"]["behavior"][
-        "projectionSha256"
-    ]
-    if contract_digest != behavior["projectionSha256"]:
-        raise ValueError("inference contract does not bind the behavior projection")
-    return behavior
 
 
 def enforce_changed_paths(
@@ -105,7 +64,7 @@ def enforce_base(base_ref: str, behavior: dict[str, object]) -> None:
 
 
 def self_test() -> None:
-    behavior = validate_current()
+    behavior = validate_current(REPO_ROOT)
     same = dict(behavior)
     changed = dict(behavior)
     changed["projectionSha256"] = "0" * 64
@@ -118,6 +77,47 @@ def self_test() -> None:
         pass
     else:
         raise AssertionError("watched behavior change reused the old projection digest")
+    head = git_output("rev-parse", "HEAD").strip()
+    contract = strict_json_file(REPO_ROOT / IDENTITIES_PATH)["cases"][
+        "inferenceContract"
+    ]["input"]
+    with tempfile.TemporaryDirectory() as temporary:
+        contract_path = Path(temporary) / "contract.json"
+        contract_path.write_text(json.dumps(contract), encoding="utf-8")
+        verify_measured_inference_contract(
+            repo_root=REPO_ROOT,
+            measured_commit=head,
+            contract_path=contract_path,
+            model_sha256=contract["modelSha256"],
+            vad_sha256=contract["vadSha256"],
+            tuning=contract["tuning"],
+        )
+        for field, mutate in (
+            (
+                "behavior",
+                lambda value: value["behavior"].update(projectionSha256="0" * 64),
+            ),
+            (
+                "claim scope",
+                lambda value: value.update(claimScope="product-stt-corpus-v2"),
+            ),
+        ):
+            changed = copy.deepcopy(contract)
+            mutate(changed)
+            contract_path.write_text(json.dumps(changed), encoding="utf-8")
+            try:
+                verify_measured_inference_contract(
+                    repo_root=REPO_ROOT,
+                    measured_commit=head,
+                    contract_path=contract_path,
+                    model_sha256=contract["modelSha256"],
+                    vad_sha256=contract["vadSha256"],
+                    tuning=contract["tuning"],
+                )
+            except ValueError:
+                pass
+            else:
+                raise AssertionError(f"changed {field} reused measured evidence")
 
 
 def main() -> int:
@@ -127,7 +127,7 @@ def main() -> int:
     parser.add_argument("--base-ref")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
-    behavior = validate_current()
+    behavior = validate_current(REPO_ROOT)
     if args.self_test:
         self_test()
     if args.base_ref:

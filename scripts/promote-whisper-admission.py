@@ -18,9 +18,12 @@ from whisper_identity_v3 import (
     canonical_json_bytes,
     inference_contract_id,
     sha256_bytes,
-    strict_json_loads,
     verify_acceleration_set,
     v3_promotion_metadata,
+)
+from whisper_v3_contract import (
+    VerifiedInferenceContract,
+    verify_measured_inference_contract,
 )
 from whisper_release_common import (
     package_inventory,
@@ -96,14 +99,11 @@ def write_v3_promotion(
     package: Path,
     runtime_cli: Path,
     runtime_probe: Path,
-    model: Path,
-    vad: Path,
-    tuning: dict[str, object],
     receipt: dict[str, object],
     drm_driver: str,
     icd_manifest: Path,
     icd_library: Path,
-    inference_contract_path: Path,
+    inference_contract: VerifiedInferenceContract,
     cache_source: Path,
     cache_sha256: str,
     sweep_path: Path,
@@ -114,14 +114,8 @@ def write_v3_promotion(
     accepted_at: int,
     expires_at: int,
 ) -> dict[str, object]:
-    contract_input = read_json_strict(inference_contract_path, "v3 inference contract")
-    contract_id = inference_contract_id(contract_input)
-    if (
-        contract_input["modelSha256"] != sha256_file(model)
-        or contract_input["vadSha256"] != sha256_file(vad)
-        or contract_input["tuning"] != tuning
-    ):
-        raise ValueError("v3 inference contract differs from promotion inputs")
+    contract_input = inference_contract.value
+    contract_id = inference_contract.id
 
     build_receipt_path = runtime_cli.parent / "build-receipt.json"
     build_receipt = read_json_strict(build_receipt_path, "runtime build receipt")
@@ -624,37 +618,6 @@ def verify_cache_cycle_rebind(
         raise ValueError("performance and reset cache cycles use different receipts")
 
 
-def verify_measured_behavior(
-    measured_commit: str, current_commit: str, inference_contract_path: Path
-) -> None:
-    if measured_commit == current_commit:
-        return
-    ancestor = subprocess.run(
-        ["git", "merge-base", "--is-ancestor", measured_commit, current_commit],
-        cwd=REPO_ROOT,
-        check=False,
-    )
-    if ancestor.returncode != 0:
-        raise ValueError(
-            "measured Echo commit is not an ancestor of the current commit"
-        )
-    committed = subprocess.run(
-        [
-            "git",
-            "show",
-            f"{measured_commit}:crates/echo/tests/fixtures/whisper-behavior-v3.json",
-        ],
-        cwd=REPO_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
-    measured_projection = strict_json_loads(committed).get("projectionSha256")
-    contract = read_json_strict(inference_contract_path, "v3 inference contract")
-    if contract.get("behavior", {}).get("projectionSha256") != measured_projection:
-        raise ValueError("measured Echo behavior differs from the inference contract")
-
-
 def promote(args: argparse.Namespace) -> None:
     output = args.output.resolve()
     if output.exists():
@@ -718,9 +681,15 @@ def promote(args: argparse.Namespace) -> None:
     if actual_commit != expected_commit:
         if args.inference_contract_v3 is None:
             raise ValueError("v2 promotion requires the exact measured Echo commit")
-        verify_measured_behavior(
-            expected_commit, actual_commit, args.inference_contract_v3.resolve()
+        ancestor = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", expected_commit, actual_commit],
+            cwd=REPO_ROOT,
+            check=False,
         )
+        if ancestor.returncode != 0:
+            raise ValueError(
+                "measured Echo commit is not an ancestor of the current commit"
+            )
     echo_sha = sha256_file(echo_binary)
     if echo_sha != identity_block["echo"]["binary"]["sha256"]:
         raise ValueError("Echo binary changed after qualification")
@@ -784,6 +753,16 @@ def promote(args: argparse.Namespace) -> None:
         performance_cycle_path, performance_cycle
     )
     tuning = admitted_tuning(cell)
+    verified_contract = None
+    if args.inference_contract_v3 is not None:
+        verified_contract = verify_measured_inference_contract(
+            repo_root=REPO_ROOT,
+            measured_commit=expected_commit,
+            contract_path=args.inference_contract_v3.resolve(),
+            model_sha256=sha256_file(model),
+            vad_sha256=sha256_file(vad),
+            tuning=tuning,
+        )
     cycle_probe = cycle_identity.get("probe")
     expected_probe = admitted_cache_probe(tuning)
     if not isinstance(cycle_probe, dict) or cycle_probe != expected_probe:
@@ -850,6 +829,7 @@ def promote(args: argparse.Namespace) -> None:
         "expiresAt": accepted_at + args.expires_days * 24 * 60 * 60,
     }
     if args.inference_contract_v3 is not None:
+        assert verified_contract is not None
         phase2 = cell.get("phase2")
         if not isinstance(phase2, dict):
             raise ValueError("selected cell has no phase2 evidence")
@@ -858,14 +838,11 @@ def promote(args: argparse.Namespace) -> None:
             package=package,
             runtime_cli=package / "runtime/whisper-cli",
             runtime_probe=package / "runtime/echo-whisper-runtime-probe",
-            model=model,
-            vad=vad,
-            tuning=tuning,
             receipt=receipt,
             drm_driver=drm[0]["driver"],
             icd_manifest=icd_manifest,
             icd_library=icd_library,
-            inference_contract_path=args.inference_contract_v3.resolve(),
+            inference_contract=verified_contract,
             cache_source=cache_source,
             cache_sha256=cache_sha,
             sweep_path=sweep_path,
@@ -1186,8 +1163,6 @@ def self_test() -> None:
             },
             "claimScope": "product-stt-corpus-v1",
         }
-        contract_path = root / "inference-contract.v3.json"
-        contract_path.write_text(json.dumps(contract), encoding="utf-8")
         cache = root / "cache"
         cache.mkdir()
         (cache / "seed").write_bytes(b"seed")
@@ -1218,14 +1193,15 @@ def self_test() -> None:
             package=package,
             runtime_cli=cli,
             runtime_probe=probe,
-            model=model,
-            vad=vad,
-            tuning=tuning,
             receipt=receipt,
             drm_driver="i915",
             icd_manifest=icd_manifest,
             icd_library=icd_library,
-            inference_contract_path=contract_path,
+            inference_contract=VerifiedInferenceContract(
+                id=inference_contract_id(contract),
+                value=contract,
+                measured_commit="4" * 40,
+            ),
             cache_source=cache,
             cache_sha256=tree_sha256(cache),
             sweep_path=sweep,

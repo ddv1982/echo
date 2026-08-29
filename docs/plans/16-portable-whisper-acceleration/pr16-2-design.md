@@ -314,3 +314,18 @@ The design rejects these choices:
 - It does not force PR 16.2 to return managed CPU for every package.
 - It does not delete v2 before PR 16.5.
 - It does not use a source-path-only behavior guard.
+
+## Adversarial review synthesis
+
+The pre-PR interrogate review found that the first implementation kept several v3 invariants in caller convention. Four independent reviewers reproduced stale behavior reuse, incomplete release bindings, arbitrary claim-scope backfill, and weak ELF commit detection. Two reviewers also confirmed that a v3-only package is not consumed by the PR 16.2 production selector.
+
+An architect arena selected a shared contract-authority boundary as the repair:
+
+- Promotion derives the complete expected inference contract from measured model, VAD, tuning, fixed policy, fixed claim scope, and the behavior fixture at the measured commit. The caller-supplied contract must match exactly.
+- Staging verifies every reusable contract against the behavior fixture at the commit being packaged.
+- Release bindings exactly cover every contract and performance record in the packaged acceleration set.
+- The ELF contains one framed build-commit marker. Raw commit substrings are not identity evidence.
+- `transcribe.rs` is part of the watched inference-behavior surface.
+- PR 16.2 v3 packages are proof-only until PR 16.3 adds the receipt-driven selector. Their embedded binding and outer manifest record that status, and production-ready verification rejects them.
+
+Candidate B supplied the base because it bound proof-only readiness into the package and verifier. Candidate A supplied the immutable verified-contract result, exact marker grammar, and explicit composed-set claim-scope checks. The design rejected an early v3 selector and release-specific v2 rebinding because both would cross the approved PR boundary.

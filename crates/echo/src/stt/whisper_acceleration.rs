@@ -240,7 +240,7 @@ fn verify_live_receipt(
 pub(crate) fn production_whisper_decision(
     managed_cpu: WhisperExecutionPlan,
 ) -> Option<WhisperPlanDecision> {
-    let echo_commit = option_env!("ECHO_BUILD_COMMIT")?;
+    let echo_commit = crate::build_identity::qualified_commit()?;
     let echo_binary = std::env::current_exe().ok()?.canonicalize().ok()?;
     let package_root = package_root(&echo_binary)?;
     verify_package_ownership(&package_root).ok()?;

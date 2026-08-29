@@ -91,11 +91,12 @@
       "prefix": "echo-whisper-performance-evidence-v3\u0000"
     },
     "releaseBinding": {
-      "canonical": "{\"accelerationSetSha256\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"allowedInferenceContractIds\":[\"3252025103e084f928729ea94018a6643a015d1a283e45bee27200bf4a893425\"],\"allowedPerformanceEvidenceIds\":[\"3747b13d8e0ffa874463896b95498a2bf85a3eeaab5f13546d5555ca6f5de69a\"],\"bundleMarker\":\"deb\",\"echoBinarySha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"echoCommit\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"executionArtifactId\":\"bd7a9556c13c25eb65ac269bd43c00d16cec37176d1b33e034f51dee7f3e05a1\",\"packageType\":\"deb\",\"reusableInventorySha256\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"schemaVersion\":3,\"version\":\"0.12.5\"}",
-      "id": "5a215f38431d4a9866b5864b0a0c236f5c91d0b224f27bae03d60f7d7d90d035",
+      "canonical": "{\"accelerationSetSha256\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"allowedInferenceContractIds\":[\"3252025103e084f928729ea94018a6643a015d1a283e45bee27200bf4a893425\"],\"allowedPerformanceEvidenceIds\":[\"3747b13d8e0ffa874463896b95498a2bf85a3eeaab5f13546d5555ca6f5de69a\"],\"bundleMarker\":\"deb\",\"echoBinarySha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"echoCommit\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"executionArtifactId\":\"bd7a9556c13c25eb65ac269bd43c00d16cec37176d1b33e034f51dee7f3e05a1\",\"packageType\":\"deb\",\"productionReadiness\":\"proof-only-until-pr16.3\",\"reusableInventorySha256\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"schemaVersion\":3,\"version\":\"0.12.5\"}",
+      "id": "3b6b8a8ed215901a49b7fa44fccfe9c505f24128942e90b468bbc77bc6da576f",
       "input": {
         "schemaVersion": 3,
         "packageType": "deb",
+        "productionReadiness": "proof-only-until-pr16.3",
         "version": "0.12.5",
         "echoCommit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "echoBinarySha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
