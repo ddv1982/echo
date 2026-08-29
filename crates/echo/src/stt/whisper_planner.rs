@@ -1,25 +1,31 @@
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use echo_core::{
     DecodeOptions, Engine, EngineError, EngineId, Pcm16kMono, Transcript,
-    WhisperAccelerationPreference, WhisperCachedDecision, WhisperRecoveryReason,
-    WhisperRuntimeBackend, WhisperRuntimeSource, WhisperSelectionTelemetry,
+    WhisperAccelerationPreference, WhisperCachedDecision, WhisperRuntimeBackend,
+    WhisperRuntimeSource, WhisperSelectionTelemetry,
 };
 
 use super::backend::vulkan::{LocalVulkanRoute, VulkanBackend};
 use super::whisper_accel_cache::{LocalSelectionKey, LocalSelectionStore};
-use super::whisper_admission::{AdmissionIdentityKey, QuarantineReason};
+use super::whisper_admission::AdmissionIdentityKey;
 use super::whisper_calibration::{publish_and_spawn, CalibrationJob};
-use super::whisper_portable::{sha256_file, InferenceContractRecord, InstalledPortableSelection};
+use super::whisper_identity::Sha256Digest;
+use super::whisper_portable::{
+    installed_package_root, portable_execution_id, qualified_contract_by_id,
+    resolve_qualified_contract, sha256_file, InferenceContractRecord, InstalledPortableSelection,
+};
 use super::{
     QuarantineStore, RecoveringWhisperEngine, WhisperEngine, WhisperExecutionPlan,
     WhisperPlanDecision, WhisperRuntimeCandidate, WhisperTuning,
 };
 
 type CalibrationSpawner = dyn Fn(&LocalSelectionStore, &CalibrationJob) -> Result<PathBuf, String>;
+
+const FOREGROUND_GPU_DEADLINE: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 pub(crate) struct WhisperAccelerationPlanner {
@@ -40,6 +46,7 @@ struct DeferredAutoWhisperEngine {
     package_root: PathBuf,
     store: LocalSelectionStore,
     echo_binary: PathBuf,
+    execution_artifact_id: super::ExecutionArtifactId,
 }
 
 impl WhisperAccelerationPlanner {
@@ -67,43 +74,32 @@ impl WhisperAccelerationPlanner {
         {
             return Ok(None);
         }
-        if let Some(view) = self.store.model_view(&plan.model.path)? {
-            return Ok(self
-                .package
-                .package
-                .selection
-                .inference_contracts
-                .iter()
-                .find(|contract| contract.id == view.inference_contract_id));
+        if let Some(view) = self.store.model_view(
+            &plan.model.path,
+            plan.vad.as_deref(),
+            Some(&self.package.package.selection.execution_artifact.id),
+        )? {
+            return Ok(qualified_contract_by_id(
+                &self.package.package.selection.inference_contracts,
+                &view.inference_contract_id,
+            ));
         }
         let model_sha256 = sha256_file(&plan.model.path)?;
         let vad_sha256 = plan.vad.as_deref().map(sha256_file).transpose()?;
-        let matches = self
-            .package
-            .package
-            .selection
-            .inference_contracts
-            .iter()
-            .filter(|contract| {
-                contract.value.model_sha256 == model_sha256
-                    && contract.value.vad_sha256 == vad_sha256
-                    && contract.value.protocol == "oneShotCli"
-                    && contract.value.request_policy.language == "pinned"
-                    && contract.value.request_policy.prompt == "empty"
-                    && contract.value.request_policy.hints == "qualifiedOnly"
-            })
-            .collect::<Vec<_>>();
-        let [contract] = matches.as_slice() else {
-            return Ok(None);
-        };
-        Ok(Some(*contract))
+        resolve_qualified_contract(
+            &self.package.package.selection.inference_contracts,
+            &model_sha256,
+            &vad_sha256,
+            None,
+        )
     }
 
     fn backend(&self) -> VulkanBackend {
-        VulkanBackend::system(
+        VulkanBackend::bounded(
             self.package.probe.clone(),
             self.package.runtime_launch(),
             Duration::from_secs(15),
+            Instant::now() + FOREGROUND_GPU_DEADLINE,
         )
     }
 
@@ -115,6 +111,12 @@ impl WhisperAccelerationPlanner {
         let Some(observation) = self.store.latest_route(execution, &contract.id)? else {
             return Ok(None);
         };
+        let runtime_key = AdmissionIdentityKey::parse(observation.key.as_str().to_string())?;
+        if QuarantineStore::at(self.store.root().join("runtime-quarantine.json"))
+            .is_active(&runtime_key, unix_time())?
+        {
+            return Ok(None);
+        }
         let snapshot = self.store.snapshot(&observation.key, unix_time())?;
         if snapshot.active_quarantine.is_some()
             || !snapshot
@@ -124,7 +126,15 @@ impl WhisperAccelerationPlanner {
         {
             return Ok(None);
         }
-        self.backend().restore(&observation).map(Some)
+        let mut route = self.backend().restore(&observation)?;
+        if test_fault("driver-change") {
+            route.fingerprint.icd_library_sha256 =
+                Sha256Digest::parse("f".repeat(64)).map_err(|error| error.to_string())?;
+        }
+        if test_fault("device-reorder") {
+            route.selected_index = route.selected_index.saturating_add(9);
+        }
+        Ok(Some(route))
     }
 
     fn schedule(&self, managed_cpu: &WhisperExecutionPlan, contract: &InferenceContractRecord) {
@@ -147,25 +157,15 @@ impl WhisperAccelerationPlanner {
         managed_cpu: &WhisperExecutionPlan,
         contract: &InferenceContractRecord,
         route: LocalVulkanRoute,
-        require_ready_probe: bool,
+        backend: &VulkanBackend,
     ) -> Result<(RecoveringWhisperEngine, LocalSelectionKey), String> {
-        let backend = self.backend();
-        let ready = if require_ready_probe {
-            backend.ready(&route)?
-        } else {
-            echo_core::WhisperVulkanReceipt {
-                schema_version: 1,
-                backend: route.receipt.backend.clone(),
-                selected_index: 0,
-                vendor_id: route.receipt.vendor_id,
-                device_id: route.receipt.device_id,
-                api_version: route.receipt.api_version,
-                driver_version: route.receipt.driver_version,
-                device_uuid: route.receipt.device_uuid.as_str().to_string(),
-                driver_uuid: route.receipt.driver_uuid.as_str().to_string(),
-                pipeline_cache_uuid: route.receipt.pipeline_cache_uuid.as_str().to_string(),
-            }
+        let mut ready = match route.cached_ready.clone() {
+            Some(ready) => ready,
+            None => backend.ready(&route)?,
         };
+        if test_fault("wrong-receipt") {
+            ready.device_id ^= 1;
+        }
         let execution = &self.package.package.selection.execution_artifact.id;
         let key =
             LocalSelectionKey::derive(execution, &contract.id, &route.receipt, &route.fingerprint)?;
@@ -195,6 +195,9 @@ impl WhisperAccelerationPlanner {
         );
         primary.tuning = tuning;
         primary.timeout = managed_cpu.timeout;
+        if test_fault("gpu-timeout") {
+            primary.timeout = Duration::from_millis(1);
+        }
         primary.allow_vad_retry = false;
         let mut fallback = managed_cpu.clone();
         fallback.tuning = tuning;
@@ -203,7 +206,15 @@ impl WhisperAccelerationPlanner {
         let identity = AdmissionIdentityKey::parse(key.as_str().to_string())?;
         let decision = WhisperPlanDecision::qualified(identity, primary, fallback, ready)?;
         let quarantine = QuarantineStore::at(self.store.root().join("runtime-quarantine.json"));
-        Ok((RecoveringWhisperEngine::new(decision, quarantine), key))
+        Ok((
+            RecoveringWhisperEngine::new_local(
+                decision,
+                quarantine,
+                self.store.clone(),
+                key.clone(),
+            ),
+            key,
+        ))
     }
 }
 
@@ -289,17 +300,17 @@ impl Engine for ReceiptDrivenWhisperEngine {
             };
         }
 
+        let backend = self.planner.backend();
         let route = match cached {
-            Ok(Some(route)) => Ok((route, false)),
-            Ok(None) | Err(_) => self.planner.backend().enumerate().and_then(|routes| {
+            Ok(Some(route)) => Ok(route),
+            Ok(None) | Err(_) => backend.enumerate().and_then(|routes| {
                 routes
                     .into_iter()
                     .next()
-                    .map(|route| (route, true))
                     .ok_or_else(|| "no Vulkan route is available".to_string())
             }),
         };
-        let Ok((route, require_ready_probe)) = route else {
+        let Ok(route) = route else {
             return self.cpu(
                 pcm,
                 options,
@@ -307,12 +318,10 @@ impl Engine for ReceiptDrivenWhisperEngine {
                 None,
             );
         };
-        let Ok((engine, key)) = self.planner.accelerated_engine(
-            &self.managed_cpu,
-            contract,
-            route,
-            require_ready_probe,
-        ) else {
+        let Ok((engine, key)) =
+            self.planner
+                .accelerated_engine(&self.managed_cpu, contract, route, &backend)
+        else {
             return self.cpu(
                 pcm,
                 options,
@@ -321,21 +330,6 @@ impl Engine for ReceiptDrivenWhisperEngine {
             );
         };
         let mut transcript = engine.transcribe(pcm, options)?;
-        if let Some(recovery) = transcript
-            .detail
-            .whisper
-            .as_ref()
-            .and_then(|whisper| whisper.recovery.as_ref())
-        {
-            if recovery.accelerated_attempted {
-                if let Some(reason) = recovery.fallback_reason.and_then(quarantine_reason) {
-                    let _ = self
-                        .planner
-                        .store
-                        .append_quarantine(key.clone(), reason, unix_time());
-                }
-            }
-        }
         attach_selection(
             &mut transcript,
             selection(
@@ -363,7 +357,11 @@ impl Engine for DeferredAutoWhisperEngine {
     ) -> Result<Transcript, EngineError> {
         let cached = self
             .store
-            .model_view(&self.managed_cpu.model.path)
+            .model_view(
+                &self.managed_cpu.model.path,
+                self.managed_cpu.vad.as_deref(),
+                Some(&self.execution_artifact_id),
+            )
             .ok()
             .flatten();
         let mut transcript =
@@ -416,14 +414,16 @@ pub(crate) fn local_whisper_engine_from_process(
         return Some(Box::new(WhisperEngine::with_plan(managed_cpu)));
     }
     let echo_binary = std::env::current_exe().ok()?.canonicalize().ok()?;
-    let package_root = package_root(&echo_binary)?;
+    let package_root = installed_package_root(&echo_binary)?;
     let state_root = echo_core::data_dir().join("whisper-local-selection/v1");
     if preference == WhisperAccelerationPreference::Auto {
+        let execution_artifact_id = portable_execution_id(&package_root)?;
         return Some(Box::new(DeferredAutoWhisperEngine {
             managed_cpu,
             package_root,
             store: LocalSelectionStore::at(state_root),
             echo_binary,
+            execution_artifact_id,
         }));
     }
     let planner = WhisperAccelerationPlanner::open(&package_root, state_root, &echo_binary).ok()?;
@@ -432,18 +432,6 @@ pub(crate) fn local_whisper_engine_from_process(
         planner,
         preference,
     }))
-}
-
-fn package_root(echo_binary: &Path) -> Option<PathBuf> {
-    let parent = echo_binary.parent()?;
-    let prefix = parent.parent()?;
-    [
-        parent.join("whisper-acceleration"),
-        prefix.join("lib/echo/whisper-acceleration"),
-        prefix.join("lib/io.github.ddv1982.echo/whisper-acceleration"),
-    ]
-    .into_iter()
-    .find(|candidate| candidate.join("portable-selection.v1.json").is_file())
 }
 
 fn tuning(contract: &InferenceContractRecord) -> Result<WhisperTuning, String> {
@@ -482,25 +470,14 @@ fn attach_selection(transcript: &mut Transcript, selection: WhisperSelectionTele
     }
 }
 
-fn quarantine_reason(reason: WhisperRecoveryReason) -> Option<QuarantineReason> {
-    match reason {
-        WhisperRecoveryReason::RuntimeFailure => Some(QuarantineReason::RuntimeFailure),
-        WhisperRecoveryReason::Timeout => Some(QuarantineReason::Timeout),
-        WhisperRecoveryReason::MalformedOutput => Some(QuarantineReason::MalformedOutput),
-        WhisperRecoveryReason::MissingReceipt => Some(QuarantineReason::MissingReceipt),
-        WhisperRecoveryReason::ReceiptMismatch => Some(QuarantineReason::ReceiptMismatch),
-        WhisperRecoveryReason::CpuFallback => Some(QuarantineReason::CpuFallback),
-        WhisperRecoveryReason::IdentityMismatch => Some(QuarantineReason::IdentityMismatch),
-        WhisperRecoveryReason::Quarantined
-        | WhisperRecoveryReason::QuarantineUnreadable
-        | WhisperRecoveryReason::PolicyMismatch => None,
-    }
-}
-
 fn unix_time() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs())
+}
+
+fn test_fault(expected: &str) -> bool {
+    cfg!(debug_assertions) && std::env::var("ECHO_WHISPER_TEST_FAULT").as_deref() == Ok(expected)
 }
 
 #[cfg(test)]

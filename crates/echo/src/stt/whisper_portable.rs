@@ -19,6 +19,63 @@ const MAX_DOCUMENT_BYTES: usize = 1024 * 1024;
 const MAX_EVIDENCE_LIFETIME_SECS: u64 = 30 * 24 * 60 * 60;
 const VERIFICATION_STAMP_SCHEMA: u32 = 1;
 
+pub(crate) fn installed_package_root(echo_binary: &Path) -> Option<PathBuf> {
+    let parent = echo_binary.parent()?;
+    let prefix = parent.parent()?;
+    [
+        parent.join("whisper-acceleration"),
+        prefix.join("lib/echo/whisper-acceleration"),
+        prefix.join("lib/io.github.ddv1982.echo/whisper-acceleration"),
+    ]
+    .into_iter()
+    .find(|candidate| candidate.join("portable-selection.v1.json").is_file())
+}
+
+pub(crate) fn portable_execution_id(root: &Path) -> Option<ExecutionArtifactId> {
+    let raw = fs::read(root.join("portable-selection.v1.json")).ok()?;
+    PortableSelection::from_bytes(&raw)
+        .ok()
+        .map(|selection| selection.execution_artifact.id)
+}
+
+pub(crate) fn qualified_contract_by_id<'a>(
+    contracts: &'a [InferenceContractRecord],
+    expected: &InferenceContractId,
+) -> Option<&'a InferenceContractRecord> {
+    contracts
+        .iter()
+        .find(|contract| contract.id == *expected && qualified_contract(contract))
+}
+
+pub(crate) fn resolve_qualified_contract<'a>(
+    contracts: &'a [InferenceContractRecord],
+    model_sha256: &Sha256Digest,
+    vad_sha256: &Option<Sha256Digest>,
+    expected: Option<&InferenceContractId>,
+) -> Result<Option<&'a InferenceContractRecord>, String> {
+    let matches = contracts
+        .iter()
+        .filter(|contract| {
+            qualified_contract(contract)
+                && contract.value.model_sha256 == *model_sha256
+                && contract.value.vad_sha256 == *vad_sha256
+                && expected.is_none_or(|expected| expected == &contract.id)
+        })
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [] => Ok(None),
+        [contract] => Ok(Some(*contract)),
+        _ => Err("qualified inference contract is ambiguous".to_string()),
+    }
+}
+
+fn qualified_contract(contract: &InferenceContractRecord) -> bool {
+    contract.value.protocol == "oneShotCli"
+        && contract.value.request_policy.language == "pinned"
+        && contract.value.request_policy.prompt == "empty"
+        && contract.value.request_policy.hints == "qualifiedOnly"
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ExecutionArtifactRecord {
@@ -257,12 +314,6 @@ impl InstalledPortableSelection {
         }
     }
 
-    pub(crate) fn open(root: &Path, echo_binary: &Path) -> Result<Self, String> {
-        let installed = Self::parse(root, echo_binary)?;
-        installed.verify_files()?;
-        Ok(installed)
-    }
-
     pub(crate) fn runtime_launch(&self) -> WhisperRuntimeLaunch {
         WhisperRuntimeLaunch {
             library_dir: self.runtime.parent().map(Path::to_path_buf),
@@ -290,11 +341,14 @@ impl InstalledPortableSelection {
         let cached = fs::read(&path)
             .ok()
             .and_then(|raw| serde_json::from_slice::<VerificationStamp>(&raw).ok());
-        if cached.as_ref() != Some(&stamp) {
+        let trusted_cache_source = installed.cache_source_is_trusted()?;
+        if !trusted_cache_source || cached.as_ref() != Some(&stamp) {
             installed.verify_files()?;
-            fs::create_dir_all(state_root).map_err(|error| error.to_string())?;
-            let raw = serde_json::to_vec_pretty(&stamp).map_err(|error| error.to_string())?;
-            echo_core::write_atomic(&path, &raw)?;
+            if trusted_cache_source {
+                fs::create_dir_all(state_root).map_err(|error| error.to_string())?;
+                let raw = serde_json::to_vec_pretty(&stamp).map_err(|error| error.to_string())?;
+                echo_core::write_atomic(&path, &raw)?;
+            }
         }
         Ok(installed)
     }
@@ -382,6 +436,9 @@ impl InstalledPortableSelection {
     fn verification_stamp(&self) -> Result<VerificationStamp, String> {
         let mut paths = BTreeSet::from([
             self.echo_binary.clone(),
+            self.root.join("portable-selection.v1.json"),
+            self.root.join("legacy-exact-index.v1.json"),
+            self.root.join("portable-selection-binding.v1.json"),
             self.runtime.clone(),
             self.probe.clone(),
             self.build_receipt.clone(),
@@ -410,6 +467,29 @@ impl InstalledPortableSelection {
             binding_digest: self.binding_digest.clone(),
             files,
         })
+    }
+
+    fn cache_source_is_trusted(&self) -> Result<bool, String> {
+        let stamp = self.verification_stamp()?;
+        if !root_owned_read_only(&self.root)? {
+            return Ok(false);
+        }
+        for file in stamp.files {
+            if !root_owned_read_only(&file.path)? {
+                return Ok(false);
+            }
+            if file.link_target.is_some()
+                && !root_owned_read_only(
+                    &file
+                        .path
+                        .canonicalize()
+                        .map_err(|error| error.to_string())?,
+                )?
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 }
 
@@ -503,6 +583,11 @@ fn verified_file_stamp(path: &Path) -> Result<VerifiedFileStamp, String> {
         changed_nanoseconds: metadata.ctime_nsec(),
         link_target,
     })
+}
+
+fn root_owned_read_only(path: &Path) -> Result<bool, String> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    Ok(metadata.uid() == 0 && metadata.mode() & 0o022 == 0)
 }
 
 #[cfg(test)]
@@ -653,5 +738,36 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(2));
         fs::write(&path, b"b").unwrap();
         assert_ne!(before, verified_file_stamp(&path).unwrap());
+    }
+
+    #[test]
+    fn contract_resolution_requires_one_exact_qualified_scope() {
+        let (mut selection, _, _) = documents();
+        let first = selection.inference_contracts[0].clone();
+        let mut second = first.clone();
+        second.value.tuning.threads += 1;
+        second.id = InferenceContractId::of(&second.value).unwrap();
+        selection.inference_contracts.push(second);
+        selection
+            .inference_contracts
+            .sort_by(|left, right| left.id.cmp(&right.id));
+        assert!(resolve_qualified_contract(
+            &selection.inference_contracts,
+            &first.value.model_sha256,
+            &first.value.vad_sha256,
+            None,
+        )
+        .is_err());
+        assert_eq!(
+            resolve_qualified_contract(
+                &selection.inference_contracts,
+                &first.value.model_sha256,
+                &first.value.vad_sha256,
+                Some(&first.id),
+            )
+            .unwrap()
+            .map(|contract| &contract.id),
+            Some(&first.id)
+        );
     }
 }

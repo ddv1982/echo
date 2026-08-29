@@ -21,7 +21,7 @@ Unit tests alone do not satisfy this predicate. The ten live lanes and both perf
 
 The four-candidate arena selected Candidate B as the base. The implementation uses:
 
-- one deep `WhisperAccelerationPlanner::plan(Auto|Gpu|Cpu, managed_cpu)` boundary;
+- one `WhisperAccelerationPlanner` boundary for contract, route, receipt, and recovery decisions, with thin engine wrappers enforcing the PR 16.3 rollout hold;
 - a host-neutral `portable-selection.v1.json`, a sanitized legacy exact index, and an exact package binding derived from the full v3 proof archive;
 - append-only local observations keyed by execution artifact, inference contract, stable Vulkan receipt, DRM driver, and local ICD manifest/library digests;
 - an Echo-owned UUID selector, with `selectedIndex` retained only as diagnostic evidence;
@@ -32,8 +32,10 @@ The full PR 16.2 `acceleration-set.v3.json` remains audit evidence. Production R
 
 ## Ownership
 
-- `whisper_acceleration.rs`: package projection, contract matching, rollout hold, and the deep planner.
-- `whisper_accel_cache.rs`: local key derivation, strict immutable records, folds, jobs, calibration leases, and quarantine.
+- `whisper_acceleration.rs`: the legacy exact-v2 compatibility path kept through PR 16.3.
+- `whisper_portable.rs`: strict portable package parsing, binding, and verification caching.
+- `whisper_planner.rs`: contract matching, the rollout hold, and the deep planner.
+- `whisper_accel_cache.rs`: local key derivation, strict immutable records, folds, jobs, calibration leases, and quarantine; its tests live in `whisper_accel_cache_tests.rs`.
 - `backend/vulkan.rs`: local ICD discovery, stable device enumeration, UUID selection, and ready probes.
 - `whisper_probe.rs`: strict enumeration, ready-receipt, and result-receipt parsing.
 - `whisper_plan.rs`: preference and sealed managed-CPU or GPU-then-CPU plans.
@@ -65,7 +67,7 @@ Local JSON observations are create-new and immutable. Readers preserve and fail 
 4. After a CPU transcript parses successfully, the wrapper publishes a durable job and spawns the finite helper. Spawn failure cannot invalidate the transcript.
 5. The helper reopens and verifies the installed package, claims the scope, checks the recording interlock, discovers local ICDs and stable devices, and runs a fixed non-user-audio CPU/GPU canary within a wall-clock budget.
 6. Explicit `Gpu` may perform bounded foreground discovery and a ready probe. It never uses a shipped device allowlist.
-7. The runtime selects through Echo-owned device and driver UUIDs. Ready and inference receipts must match the stable identity. A mismatch, timeout, malformed output, missing receipt, or internal CPU fallback quarantines that key and runs managed CPU once.
+7. The runtime selects through Echo-owned device and driver UUIDs. A cached route reuses the ready receipt from its successful calibration; every current inference must still return a fresh result receipt matching that stable identity. A mismatch, timeout, malformed output, missing receipt, or internal CPU fallback quarantines that key and runs managed CPU once.
 8. PR 16.3 records and reports local eligibility only in hidden diagnostics. Its rollout gate does not make local Auto the production default.
 
 ## Verifiable implementation phases

@@ -226,6 +226,14 @@ impl WhisperEngine {
 
     fn force_cpu(&self) -> bool {
         matches!(&self.files, WhisperFiles::Explicit(plan) if plan.force_cpu)
+            || (cfg!(debug_assertions)
+                && matches!(
+                    &self.files,
+                    WhisperFiles::Explicit(plan)
+                        if plan.runtime.backend == WhisperRuntimeBackend::Vulkan
+                )
+                && std::env::var("ECHO_WHISPER_TEST_FAULT").as_deref()
+                    == Ok("backend-fallback"))
     }
 
     fn timeout(&self) -> Duration {

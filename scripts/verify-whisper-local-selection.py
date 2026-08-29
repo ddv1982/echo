@@ -5,11 +5,27 @@ import argparse
 import json
 import os
 import re
+import shutil
 import hashlib
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+
+def strict_json(raw: str, label: str) -> dict[str, object]:
+    def unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError(f"{label} has duplicate key {key!r}")
+            value[key] = item
+        return value
+
+    value = json.loads(raw, object_pairs_hook=unique)
+    if not isinstance(value, dict):
+        raise ValueError(f"{label} is not an object")
+    return value
 
 
 def run_transcription(
@@ -18,6 +34,7 @@ def run_transcription(
     model: str,
     mode: str,
     root: Path,
+    fault: str | None = None,
 ) -> tuple[dict[str, object], float]:
     environment = dict(os.environ)
     environment.update(
@@ -27,6 +44,10 @@ def run_transcription(
             "XDG_DATA_HOME": str(root / "data"),
         }
     )
+    if fault is not None:
+        environment["ECHO_WHISPER_TEST_FAULT"] = fault
+    else:
+        environment.pop("ECHO_WHISPER_TEST_FAULT", None)
     (root / "config").mkdir(parents=True, exist_ok=True)
     (root / "data").mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
@@ -50,7 +71,7 @@ def run_transcription(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    return json.loads(result.stdout), time.monotonic() - started
+    return strict_json(result.stdout, "transcription JSON"), time.monotonic() - started
 
 
 def selection(payload: dict[str, object]) -> dict[str, object]:
@@ -63,6 +84,12 @@ def runtime_backend(payload: dict[str, object]) -> str:
 
 def state_root(root: Path) -> Path:
     return root / "data/echo/whisper-local-selection/v1"
+
+
+def clone_calibrated_state(source_root: Path, destination_root: Path) -> None:
+    destination = state_root(destination_root)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(state_root(source_root), destination)
 
 
 def wait_for_calibration(root: Path, expected_jobs: int, timeout: float = 180) -> None:
@@ -105,11 +132,12 @@ def verify_live(args: argparse.Namespace) -> dict[str, object]:
     binary = args.echo_binary.resolve()
     fixture = args.fixture.resolve()
     package = binary.parent / "whisper-acceleration/portable-selection.v1.json"
-    portable = json.loads(package.read_text(encoding="utf-8"))
-    binding = json.loads(
+    portable = strict_json(package.read_text(encoding="utf-8"), "portable selection")
+    binding = strict_json(
         (package.parent / "portable-selection-binding.v1.json").read_text(
             encoding="utf-8"
-        )
+        ),
+        "portable selection binding",
     )
     if hashlib.sha256(binary.read_bytes()).hexdigest() != binding["echoBinarySha256"]:
         raise ValueError("portable selection package belongs to another Echo binary")
@@ -147,6 +175,65 @@ def verify_live(args: argparse.Namespace) -> dict[str, object]:
         or gpu_selection["localKey"] != warm_selection["localKey"]
     ):
         raise ValueError("warm Auto or explicit GPU differs from the calibrated route")
+    expected_failures = {
+        "wrong-receipt": "receiptMismatch",
+        "backend-fallback": "cpuFallback",
+        "gpu-timeout": "timeout",
+    }
+    failure_payloads = {}
+    for fault, expected_reason in expected_failures.items():
+        lane_root = output / fault
+        clone_calibrated_state(baseline_root, lane_root)
+        payload, _ = run_transcription(
+            binary, fixture, args.model, "gpu", lane_root, fault
+        )
+        recovery = payload["whisper"].get("recovery")
+        if (
+            runtime_backend(payload) != "cpu"
+            or recovery is None
+            or recovery.get("acceleratedAttempted") is not True
+            or recovery.get("fallbackReason") != expected_reason
+        ):
+            raise ValueError(f"{fault} did not quarantine and recover exactly once")
+        if not list((state_root(lane_root) / "keys").glob("*/quarantine/*.json")):
+            raise ValueError(f"{fault} wrote no immutable local quarantine")
+        failure_payloads[fault] = payload
+
+    corrupt_root = output / "corrupt-cache"
+    clone_calibrated_state(baseline_root, corrupt_root)
+    [view] = list((state_root(corrupt_root) / "views/models").glob("*.json"))
+    view.write_text("{corrupt\n", encoding="utf-8")
+    corrupt, _ = run_transcription(binary, fixture, args.model, "auto", corrupt_root)
+    if (
+        runtime_backend(corrupt) != "cpu"
+        or selection(corrupt)["calibrationPending"] is not True
+        or view.read_text(encoding="utf-8") != "{corrupt\n"
+    ):
+        raise ValueError("corrupt cache was not preserved with CPU recalibration")
+
+    driver_root = output / "driver-change"
+    clone_calibrated_state(baseline_root, driver_root)
+    route_files = list((state_root(driver_root) / "scopes").glob("*/*/routes/*.json"))
+    driver, _ = run_transcription(
+        binary, fixture, args.model, "gpu", driver_root, "driver-change"
+    )
+    if (
+        runtime_backend(driver) != "vulkan"
+        or selection(driver)["localKey"] == warm_selection["localKey"]
+        or any(not route.is_file() for route in route_files)
+    ):
+        raise ValueError("driver fingerprint did not rotate local selection safely")
+
+    reorder_root = output / "device-reorder"
+    clone_calibrated_state(baseline_root, reorder_root)
+    reordered, _ = run_transcription(
+        binary, fixture, args.model, "gpu", reorder_root, "device-reorder"
+    )
+    if (
+        runtime_backend(reordered) != "vulkan"
+        or selection(reordered)["localKey"] != warm_selection["localKey"]
+    ):
+        raise ValueError("device reorder did not follow the stable UUID")
 
     concurrent_root = output / "concurrent"
     command = [
@@ -187,23 +274,13 @@ def verify_live(args: argparse.Namespace) -> dict[str, object]:
         stdout, stderr = process.communicate(timeout=60)
         if process.returncode != 0:
             raise ValueError(f"concurrent Auto failed: {stderr}")
-        concurrent.append(json.loads(stdout))
+        concurrent.append(strict_json(stdout, "concurrent transcription JSON"))
     wait_for_calibration(concurrent_root, 2)
     state = state_root(concurrent_root)
     if len(list((state / "keys").glob("*/calibration/*.json"))) != 1:
         raise ValueError("concurrent owners repeated calibration")
 
     repo = Path(__file__).resolve().parent.parent
-    unit_lanes = {
-        "wrongReceipt": "stt::whisper_recovery::tests::every_accelerator_failure_quarantines_once_and_runs_one_cpu_retry",
-        "backendFallback": "stt::whisper_recovery::tests::every_accelerator_failure_quarantines_once_and_runs_one_cpu_retry",
-        "gpuTimeout": "stt::whisper_recovery::tests::every_accelerator_failure_quarantines_once_and_runs_one_cpu_retry",
-        "corruptCache": "stt::whisper_accel_cache::tests::corrupt_record_is_preserved_and_fails_closed",
-        "driverChange": "stt::whisper_accel_cache::tests::key_changes_for_identity_but_not_selected_index",
-        "deviceReorder": "stt::backend::vulkan::tests::stable_receipt_ignores_diagnostic_index",
-    }
-    for test in sorted(set(unit_lanes.values())):
-        run_test(repo, test)
     perf_output = run_test(
         repo,
         "stt::whisper_accel_cache::tests::model_view_is_disposable_and_rotates_on_file_change",
@@ -248,13 +325,18 @@ def verify_live(args: argparse.Namespace) -> dict[str, object]:
             "deviceReorder": "PASS",
             "concurrentState": "PASS",
         },
-        "unitLaneTests": unit_lanes,
+        "faultInjection": "debug-build-only installed CLI",
     }
     (output / "cpu.json").write_text(json.dumps(cpu, indent=2) + "\n")
     (output / "auto-cold.json").write_text(json.dumps(cold, indent=2) + "\n")
     (output / "auto-warm.json").write_text(json.dumps(warm, indent=2) + "\n")
     (output / "gpu-cold.json").write_text(json.dumps(gpu_cold, indent=2) + "\n")
     (output / "gpu-warm.json").write_text(json.dumps(gpu, indent=2) + "\n")
+    for fault, payload in failure_payloads.items():
+        (output / f"{fault}.json").write_text(json.dumps(payload, indent=2) + "\n")
+    (output / "corrupt-cache.json").write_text(json.dumps(corrupt, indent=2) + "\n")
+    (output / "driver-change.json").write_text(json.dumps(driver, indent=2) + "\n")
+    (output / "device-reorder.json").write_text(json.dumps(reordered, indent=2) + "\n")
     (output / "concurrent.json").write_text(json.dumps(concurrent, indent=2) + "\n")
     (output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     return report

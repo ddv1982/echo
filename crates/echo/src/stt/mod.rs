@@ -4,7 +4,6 @@ mod fake;
 mod parakeet;
 mod runtime;
 mod whisper;
-#[expect(dead_code, reason = "PR16.3 planner wiring follows the state stop gate")]
 mod whisper_accel_cache;
 mod whisper_acceleration;
 mod whisper_admission;
@@ -13,7 +12,6 @@ mod whisper_calibration;
 mod whisper_identity;
 mod whisper_plan;
 mod whisper_planner;
-#[expect(dead_code, reason = "PR16.3 planner wiring follows the package stop gate")]
 mod whisper_portable;
 mod whisper_probe;
 mod whisper_quarantine;

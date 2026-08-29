@@ -1,9 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::Read;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use echo_core::WhisperVulkanReceipt;
 use serde::Deserialize;
@@ -37,6 +38,7 @@ pub(crate) struct LocalVulkanRoute {
     pub manifest_path: PathBuf,
     pub library_path: PathBuf,
     pub selector: VulkanRuntimeSelector,
+    pub cached_ready: Option<WhisperVulkanReceipt>,
 }
 
 pub(crate) struct VulkanBackend {
@@ -45,6 +47,8 @@ pub(crate) struct VulkanBackend {
     icd_directories: Vec<PathBuf>,
     drm_root: PathBuf,
     timeout: Duration,
+    deadline: Option<Instant>,
+    require_trusted_icds: bool,
 }
 
 impl VulkanBackend {
@@ -53,33 +57,40 @@ impl VulkanBackend {
         base_launch: WhisperRuntimeLaunch,
         timeout: Duration,
     ) -> Self {
-        let mut icd_directories = Vec::new();
-        if let Some(data_home) = std::env::var_os("XDG_DATA_HOME") {
-            icd_directories.push(PathBuf::from(data_home).join("vulkan/icd.d"));
-        }
-        if let Some(data_dirs) = std::env::var_os("XDG_DATA_DIRS") {
-            icd_directories
-                .extend(std::env::split_paths(&data_dirs).map(|path| path.join("vulkan/icd.d")));
-        }
-        icd_directories.extend([
+        let icd_directories = vec![
             PathBuf::from("/etc/vulkan/icd.d"),
             PathBuf::from("/usr/local/share/vulkan/icd.d"),
             PathBuf::from("/usr/share/vulkan/icd.d"),
-        ]);
+        ];
         Self {
             probe,
             base_launch,
             icd_directories,
             drm_root: PathBuf::from("/sys/class/drm"),
             timeout,
+            deadline: None,
+            require_trusted_icds: true,
         }
+    }
+
+    pub(crate) fn bounded(
+        probe: PathBuf,
+        base_launch: WhisperRuntimeLaunch,
+        timeout: Duration,
+        deadline: Instant,
+    ) -> Self {
+        let mut backend = Self::system(probe, base_launch, timeout);
+        backend.deadline = Some(deadline);
+        backend
     }
 
     pub(crate) fn enumerate(&self) -> Result<Vec<LocalVulkanRoute>, String> {
         let libraries = loader_libraries()?;
         let mut routes = Vec::new();
-        for manifest_path in discover_manifests(&self.icd_directories)? {
-            let Ok(library_path) = resolve_icd_library(&manifest_path, &libraries) else {
+        for manifest_path in discover_manifests(&self.icd_directories, self.require_trusted_icds)? {
+            let Ok(library_path) =
+                resolve_icd_library(&manifest_path, &libraries, self.require_trusted_icds)
+            else {
                 continue;
             };
             let fingerprint = DriverIcdFingerprint {
@@ -91,11 +102,14 @@ impl VulkanBackend {
             launch.vulkan_driver_files = Some(manifest_path.clone());
             launch.vulkan_selector = None;
             launch.mesa_shader_cache_dir = None;
-            let observed =
-                match enumerate_vulkan_runtime_receipts(&self.probe, &launch, self.timeout) {
-                    Ok(observed) => observed,
-                    Err(_) => continue,
-                };
+            let observed = match enumerate_vulkan_runtime_receipts(
+                &self.probe,
+                &launch,
+                self.probe_timeout()?,
+            ) {
+                Ok(observed) => observed,
+                Err(_) => continue,
+            };
             for receipt in observed {
                 let Ok(drm_driver) = drm_driver(&self.drm_root, &receipt) else {
                     continue;
@@ -114,6 +128,7 @@ impl VulkanBackend {
                     manifest_path: manifest_path.clone(),
                     library_path: library_path.clone(),
                     selector,
+                    cached_ready: None,
                 });
             }
         }
@@ -147,7 +162,7 @@ impl VulkanBackend {
         launch.vulkan_driver_files = Some(route.manifest_path.clone());
         launch.vulkan_selector = Some(route.selector.clone());
         launch.mesa_shader_cache_dir = None;
-        let receipt = probe_vulkan_runtime_receipt(&self.probe, &launch, self.timeout)?;
+        let receipt = probe_vulkan_runtime_receipt(&self.probe, &launch, self.probe_timeout()?)?;
         if stable_receipt(&receipt)? != route.receipt || receipt.selected_index != 0 {
             return Err("Vulkan ready receipt differs from the selected stable UUID".to_string());
         }
@@ -176,11 +191,26 @@ impl VulkanBackend {
                 observation.stable_receipt.device_uuid.as_str().to_string(),
                 observation.stable_receipt.driver_uuid.as_str().to_string(),
             )?,
+            cached_ready: Some(observation.ready_receipt.runtime_receipt()),
         })
+    }
+
+    fn probe_timeout(&self) -> Result<Duration, String> {
+        let Some(deadline) = self.deadline else {
+            return Ok(self.timeout);
+        };
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("Vulkan calibration deadline expired".to_string());
+        }
+        Ok(self.timeout.min(remaining))
     }
 }
 
-fn discover_manifests(directories: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
+fn discover_manifests(
+    directories: &[PathBuf],
+    require_trusted: bool,
+) -> Result<Vec<PathBuf>, String> {
     let mut manifests = BTreeSet::new();
     for directory in directories {
         let entries = match fs::read_dir(directory) {
@@ -197,7 +227,10 @@ fn discover_manifests(directories: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
                 continue;
             };
             let metadata = path.metadata().map_err(|error| error.to_string())?;
-            if metadata.is_file() && metadata.len() <= MAX_ICD_MANIFEST_BYTES {
+            if metadata.is_file()
+                && metadata.len() <= MAX_ICD_MANIFEST_BYTES
+                && (!require_trusted || trusted_system_file(&path)?)
+            {
                 manifests.insert(path);
             }
         }
@@ -208,6 +241,7 @@ fn discover_manifests(directories: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
 fn resolve_icd_library(
     manifest_path: &Path,
     loader_libraries: &BTreeMap<String, PathBuf>,
+    require_trusted: bool,
 ) -> Result<PathBuf, String> {
     let raw = fs::read(manifest_path).map_err(|error| error.to_string())?;
     let manifest: IcdManifest = serde_json::from_slice(&raw).map_err(|error| error.to_string())?;
@@ -229,14 +263,20 @@ fn resolve_icd_library(
             .ok_or_else(|| "Vulkan ICD library is not in the loader cache".to_string())?
     };
     let path = path.canonicalize().map_err(|error| error.to_string())?;
-    if !path.is_file() {
+    if !path.is_file() || (require_trusted && !trusted_system_file(&path)?) {
         return Err("Vulkan ICD library is not a regular file".to_string());
     }
     Ok(path)
 }
 
 fn loader_libraries() -> Result<BTreeMap<String, PathBuf>, String> {
-    let output = Command::new("ldconfig")
+    let ldconfig = ["/sbin/ldconfig", "/usr/sbin/ldconfig"]
+        .into_iter()
+        .map(Path::new)
+        .find(|path| path.is_file())
+        .ok_or_else(|| "trusted ldconfig executable is unavailable".to_string())?;
+    let output = Command::new(ldconfig)
+        .env_clear()
         .arg("-p")
         .output()
         .map_err(|error| error.to_string())?;
@@ -257,6 +297,11 @@ fn loader_libraries() -> Result<BTreeMap<String, PathBuf>, String> {
         }
     }
     Ok(libraries)
+}
+
+fn trusted_system_file(path: &Path) -> Result<bool, String> {
+    let metadata = path.metadata().map_err(|error| error.to_string())?;
+    Ok(metadata.uid() == 0 && metadata.mode() & 0o022 == 0)
 }
 
 fn drm_driver(root: &Path, receipt: &WhisperVulkanReceipt) -> Result<String, String> {
@@ -394,6 +439,8 @@ mod tests {
             icd_directories: vec![icd],
             drm_root: drm,
             timeout: Duration::from_secs(2),
+            deadline: None,
+            require_trusted_icds: false,
         };
         let routes = backend.enumerate().unwrap();
         assert_eq!(routes.len(), 1);
