@@ -64,8 +64,8 @@ Implementers should invoke the **how** skill over `crates/echo/src/stt/` before 
 1. [Retire the behavior projection contract](phase-1-retire-behavior-contract.md).
 2. [Extract the quarantine primitives](phase-2-extract-quarantine.md).
 3. [Delete the exact-host admission gate](phase-3-delete-admission-gate.md).
-4. [Delete the portable package gate](phase-4-delete-portable-gate.md).
-5. [Delete the planner and route store](phase-5-delete-planner.md).
+4. [Delete the planner and route store](phase-4-delete-planner.md).
+5. [Delete the portable package gate](phase-5-delete-portable-gate.md).
 6. [Make acceleration a two-state force](phase-6-two-state-preference.md).
 7. [Deliver the Vulkan runtime as a managed component](phase-7-managed-vulkan-runtime.md).
 8. [Enumerate GPU devices over IPC](phase-8-enumerate-devices.md).

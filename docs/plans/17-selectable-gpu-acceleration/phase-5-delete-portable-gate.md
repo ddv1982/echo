@@ -1,4 +1,4 @@
-# Phase 4: Delete the portable package gate
+# Phase 5: Delete the portable package gate
 
 [Back to overview](overview.md)
 
@@ -10,9 +10,11 @@ Remove the v3 package format and the content-addressed identity algebra, includi
 
 **`crates/echo/src/stt/whisper_portable.rs`.** Delete. This removes `InstalledPortableSelection`, `PortableSelection`, `PortableSelectionBinding`, `LegacyExactIndex`, `LegacyExactRecord`, `installed_package_root`, `verify_files`, the verification stamp cache, the `CalibrationFixture` contract, and the literal `production_readiness` marker string.
 
-**`crates/echo/src/stt/whisper_identity.rs`.** Delete. This removes `ExecutionArtifactInput`, `InferenceContractInput`, `LocalEnvironmentInput`, `PerformanceEvidenceInput`, `ReleaseBindingInput`, and their five content identifiers.
+**`crates/echo/src/stt/whisper_identity.rs`.** Reduce to its digest primitives. Delete `ExecutionArtifactInput`, `InferenceContractInput`, `LocalEnvironmentInput`, `PerformanceEvidenceInput`, `ReleaseBindingInput`, their five content identifiers, and the canonical JSON algebra. Keep `Sha256Digest`, `UuidDigest`, and `IdentityError`, which `crates/echo/src/stt/backend/vulkan.rs` uses to hold receipt fields and which this plan keeps.
 
-**`crates/echo/src/stt/mod.rs` and `whisper_planner.rs`.** Drop the module declarations and the `InstalledPortableSelection` field on the planner, leaving the planner temporarily unable to construct. Phase 5 removes it.
+**`crates/echo/tests/fixtures/whisper-v3-identities.json`.** Delete. This phase removes its last Rust reader. The offline scripts that also read it keep their own copy under `scripts/`, so the research tooling works without a fixture in the test tree.
+
+**`crates/echo/src/stt/mod.rs`.** Drop the module declaration and the identity re-exports.
 
 `legacy-exact-index.v1.json` always shipped `"records": []`, so the per-host half of this format was inert by construction. The whole contribution of the offline pipeline to a shipped package was the inference contract's model digest, VAD digest, and tuning tuple, all computable without a GPU. Phase 10 pins the tuning as a constant instead.
 

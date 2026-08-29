@@ -1,4 +1,4 @@
-# Phase 5: Delete the planner and route store
+# Phase 4: Delete the planner and route store
 
 [Back to overview](overview.md)
 
@@ -14,7 +14,6 @@ Remove the receipt-driven planner and its append-only route store, completing th
 
 **`crates/echo/src/transcribe.rs`.** Reduce engine construction to the managed CPU plan. Acceleration does not exist again until phase 10.
 
-**`crates/echo/tests/fixtures/whisper-v3-identities.json`.** Delete. This phase removes its last Rust reader. The offline scripts that also read it move to their own copy under `scripts/`, so the research tooling keeps working without a fixture in the test tree.
 
 The store wrote one immutable JSON file per accelerated transcription through `append_route` and never pruned, while `read_directory` hard-errors above 256 records. That error propagated through `model_view` and `contract()` to `EngineError::Infer` with no CPU fallback, so a heavy user would have lost dictation permanently after roughly 257 accelerated runs. Phase 10 stores a single pinned device rather than a growing history, so the failure mode cannot return.
 
