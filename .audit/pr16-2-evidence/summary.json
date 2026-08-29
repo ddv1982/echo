@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "phase": "PR 16.2",
+  "releaseCommit": "90b1b3b8871f7df9a99e9a36ea58b2e4ca734bb1",
+  "executionArtifactId": "563043b3dfe2ec62ccea5e632149b076a9893e45e095dac47ae9a5bf0ba2ba26",
+  "accelerationSetSha256": "67e15aafa9fbf6d106b1f88498ef90cbff684d8160ab77efc40d01fc7afa9a5f",
+  "inferenceContractIds": {
+    "small": "6a38d3f6055c7965fb12a03313570c7a67fcf1d3845964cb6f37b8ef60bc81fc",
+    "largeTurbo": "a5d95b872655ae02100766caa46dcd7918225c94c7cf35c2e221053d955bd7d0"
+  },
+  "performanceEvidenceIds": {
+    "small": "444e4d2c043f5fcf62ed9561b432a59625829f6181d7bf1a132986544fc5eda2",
+    "largeTurbo": "02f9d19406d44d5ce35553cd59faf911418f56aa737f6556617bb14293027e7e"
+  },
+  "physicalQualification": {
+    "small": {
+      "sweepSha256": "a8a2f266918f536cc4aa63c8ecf1bee23d3f8be3b574603de7aa3a339604108f",
+      "acceleratedMedianMs": 2444.313,
+      "cpuMedianMs": 4545.206,
+      "medianSpeedupPercent": 43.471,
+      "runsPerCandidate": 280,
+      "newHallucinations": 0,
+      "allLanguageQualityGates": true,
+      "resetCycleSha256": "d192bd35289df1ab2c814c9166a92fe8e64133c60c7833ed6a4278e25f384453"
+    },
+    "largeTurbo": {
+      "sweepSha256": "8fd0143bfaaaad6647d7a369009025cfe5a9f7d4f98588f5d3c281b0cb1d12f1",
+      "acceleratedMedianMs": 6063.639,
+      "cpuMedianMs": 19270.165,
+      "medianSpeedupPercent": 68.063,
+      "runsPerCandidate": 280,
+      "newHallucinations": 0,
+      "allLanguageQualityGates": true,
+      "resetCycleSha256": "f1645220b39924deb34749a571c051986c67b1448fed10fcb6e7179c9fd06bed"
+    },
+    "priorBootId": "c757b285-df2d-4d48-8a6d-f2579b641ab3",
+    "resetBootId": "50e94b70-278f-4af8-ac5e-27fcb99b6fa0"
+  },
+  "reusableStaging": {
+    "physicalCommands": 0,
+    "reboots": 0,
+    "coldWallSeconds": 11.74,
+    "warmWallSeconds": [11.57, 11.61],
+    "v2VerificationSeconds": [2.66, 2.40, 2.49],
+    "v3VerificationSeconds": [1.13, 1.17, 1.15],
+    "v2VerificationMedianSeconds": 2.49,
+    "v3VerificationMedianSeconds": 1.15,
+    "verificationReductionPercent": 53.8,
+    "physicalRequalificationRequired": false,
+    "reusedInferenceEvidence": true
+  },
+  "releaseArtifacts": {
+    "qualifiedReleaseSha256": "85f659221b083b63e24076d2c4cbc6fd30e1e88807f2240459c63090b78ed376",
+    "binarySha256": "8ef7fb7891d2cb6c9f77a691f925eed606cd4f81ba50de18522c913270205abc",
+    "debSha256": "c4f0d1d1bdfcda7425bfd148ee42456cb8e65a9d07169d1b9cec5e96a9a27be0",
+    "debReleaseBindingId": "d076a2cfff5ee15d7ba0f2ed99b3d68707024a7113ed0275089ae1ae0cbd0459",
+    "rpmSha256": "832c33dbc5a31dc4ea70ab17a0cc6ffb787553393ae51d1385e920b52f1d54d6",
+    "rpmReleaseBindingId": "ec35f955437b3780bd43ff5850ac0ff30ef50c23f5c1236d3b10d0e49857ca99"
+  },
+  "sourceArtifacts": {
+    "accelerationSetFileSha256": "a321b0e8af4f44ec02489fcb1d92daceda92716f1a0e5773add3a6a778920826",
+    "promotionFileSha256": "41b756b80d51dbce3d4a40f9b2512351cc077c7e67d09acf6cc9f46f5a830830"
+  }
+}
