@@ -12,7 +12,7 @@ use super::backend::vulkan::{LocalVulkanRoute, VulkanBackend};
 use super::whisper_accel_cache::{
     LocalSelectionKey, LocalSelectionStore, NewLocalRouteObservation, VulkanReceiptObservation,
 };
-use super::whisper_admission::AdmissionIdentityKey;
+use super::whisper_quarantine::AcceleratorKey;
 use super::whisper_identity::Sha256Digest;
 use super::whisper_portable::{
     installed_package_root, qualified_contract_by_id, resolve_qualified_contract, sha256_file,
@@ -108,7 +108,7 @@ impl WhisperAccelerationPlanner {
         let Some(observation) = self.store.latest_route(execution, &contract.id)? else {
             return Ok(None);
         };
-        let runtime_key = AdmissionIdentityKey::parse(observation.key.as_str().to_string())?;
+        let runtime_key = AcceleratorKey::parse(observation.key.as_str().to_string())?;
         if QuarantineStore::at(self.store.root().join("runtime-quarantine.json"))
             .is_active(&runtime_key, unix_time())?
         {
@@ -195,7 +195,7 @@ impl WhisperAccelerationPlanner {
         fallback.tuning = tuning;
         fallback.force_cpu = true;
         fallback.allow_vad_retry = false;
-        let identity = AdmissionIdentityKey::parse(key.as_str().to_string())?;
+        let identity = AcceleratorKey::parse(key.as_str().to_string())?;
         let decision = WhisperPlanDecision::qualified(identity, primary, fallback, ready)?;
         let quarantine = QuarantineStore::at(self.store.root().join("runtime-quarantine.json"));
         Ok((

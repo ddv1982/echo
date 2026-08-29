@@ -5,8 +5,11 @@ use serde::de::{MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 
+use super::whisper_quarantine::{
+    AcceleratorKey, QuarantineRecord, MAX_QUARANTINE_LIFETIME_SECS,
+};
+
 pub const MAX_ADMISSION_LIFETIME_SECS: u64 = 30 * 24 * 60 * 60;
-pub const MAX_QUARANTINE_LIFETIME_SECS: u64 = 24 * 60 * 60;
 pub const MAX_ADMISSION_SET_BYTES: usize = 1024 * 1024;
 pub const MAX_ADMISSION_RECORDS: usize = 128;
 pub const MAX_PACKAGE_ENTRIES: usize = 4096;
@@ -63,11 +66,7 @@ pub struct AdmissionIdentity {
     pub launch_contract_schema: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct AdmissionIdentityKey(String);
-
-impl AdmissionIdentityKey {
+impl AcceleratorKey {
     #[must_use]
     pub fn for_identity(identity: &AdmissionIdentity) -> Self {
         let canonical =
@@ -75,23 +74,7 @@ impl AdmissionIdentityKey {
         let mut hasher = Sha256::new();
         hasher.update(b"echo-whisper-admission-identity-v1\0");
         hasher.update(canonical);
-        Self(format!("{:x}", hasher.finalize()))
-    }
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    pub(crate) fn parse(value: String) -> Result<Self, String> {
-        if value.len() == 64
-            && value
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
-            Ok(Self(value))
-        } else {
-            Err("Whisper acceleration key is not a lowercase SHA-256 digest".to_string())
-        }
+        Self::from_digest(format!("{:x}", hasher.finalize()))
     }
 }
 
@@ -205,7 +188,7 @@ pub enum AdmissionVerdict {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelAdmission {
     pub identity: AdmissionIdentity,
-    pub identity_key: AdmissionIdentityKey,
+    pub identity_key: AcceleratorKey,
     pub evidence_sha256: String,
     pub icd_manifest_path: String,
     pub icd_library_path: String,
@@ -280,7 +263,7 @@ impl AdmissionSet {
         for record in &self.records {
             if !identity_is_valid(&record.identity)
                 || !same_package_contract(package_identity, &record.identity)
-                || record.identity_key != AdmissionIdentityKey::for_identity(&record.identity)
+                || record.identity_key != AcceleratorKey::for_identity(&record.identity)
                 || !keys.insert(record.identity_key.clone())
                 || !identities.insert(record.identity.clone())
                 || !cache_paths.insert(record.cache_seed.relative_path.clone())
@@ -346,29 +329,6 @@ impl AdmissionSet {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct QuarantineRecord {
-    pub schema_version: u32,
-    pub identity_key: AdmissionIdentityKey,
-    pub reason: QuarantineReason,
-    pub failure_count: u32,
-    pub created_at: u64,
-    pub expires_at: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum QuarantineReason {
-    RuntimeFailure,
-    Timeout,
-    MalformedOutput,
-    MissingReceipt,
-    ReceiptMismatch,
-    CpuFallback,
-    IdentityMismatch,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdmissionState {
     Unknown,
@@ -396,7 +356,7 @@ pub(crate) fn admission_state(
         }
     }
     if record.identity != *identity
-        || record.identity_key != AdmissionIdentityKey::for_identity(identity)
+        || record.identity_key != AcceleratorKey::for_identity(identity)
         || !is_sha256(&record.evidence_sha256)
         || !is_sha256(&record.cache_seed.sha256)
         || !safe_relative(&record.cache_seed.relative_path)
@@ -417,7 +377,7 @@ pub(crate) fn admission_state(
 
 fn quarantine_applies(record: &QuarantineRecord, identity: &AdmissionIdentity, now: u64) -> bool {
     record.schema_version == QUARANTINE_SCHEMA_VERSION
-        && record.identity_key == AdmissionIdentityKey::for_identity(identity)
+        && record.identity_key == AcceleratorKey::for_identity(identity)
         && record.failure_count > 0
         && interval_is_current(
             record.created_at,
@@ -503,6 +463,8 @@ fn is_lower_hex(value: &str, length: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stt::whisper_quarantine::QuarantineReason;
+
     const NOW: u64 = 2_000_000_000;
 
     fn identity(seed: char) -> AdmissionIdentity {
@@ -568,7 +530,7 @@ mod tests {
     }
 
     fn record(identity: &AdmissionIdentity) -> ModelAdmission {
-        let identity_key = AdmissionIdentityKey::for_identity(identity);
+        let identity_key = AcceleratorKey::for_identity(identity);
         ModelAdmission {
             identity: identity.clone(),
             identity_key: identity_key.clone(),
@@ -589,7 +551,7 @@ mod tests {
     fn quarantine(identity: &AdmissionIdentity) -> Vec<u8> {
         serde_json::to_vec(&QuarantineRecord {
             schema_version: 1,
-            identity_key: AdmissionIdentityKey::for_identity(identity),
+            identity_key: AcceleratorKey::for_identity(identity),
             reason: QuarantineReason::ReceiptMismatch,
             failure_count: 1,
             created_at: NOW - 60,
@@ -702,7 +664,7 @@ mod tests {
         value.device.driver_uuid = "ee99561e45e1e718c6121d36d8345582".into();
         value.device.pipeline_cache_uuid = "35e9eb9761bf7afc9291ffc449ddf849".into();
         assert_eq!(
-            AdmissionIdentityKey::for_identity(&value).as_str(),
+            AcceleratorKey::for_identity(&value).as_str(),
             "1aafa0c27dc5c344c14f2c43685ed182b4650469ffed13d6bbfbc7663fffd360"
         );
     }
@@ -712,12 +674,12 @@ mod tests {
         let mut changed = first.clone();
         changed.device.driver_version += 1;
         assert_eq!(
-            AdmissionIdentityKey::for_identity(&first),
-            AdmissionIdentityKey::for_identity(&first)
+            AcceleratorKey::for_identity(&first),
+            AcceleratorKey::for_identity(&first)
         );
         assert_ne!(
-            AdmissionIdentityKey::for_identity(&first),
-            AdmissionIdentityKey::for_identity(&changed)
+            AcceleratorKey::for_identity(&first),
+            AcceleratorKey::for_identity(&changed)
         );
     }
 

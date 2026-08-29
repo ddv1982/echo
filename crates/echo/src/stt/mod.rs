@@ -33,10 +33,12 @@ pub fn whisper_acceleration_factory_default() -> echo_core::WhisperAccelerationP
     echo_core::WhisperAccelerationPreference::Auto
 }
 pub use whisper_admission::{
-    AdmissionDeviceIdentity, AdmissionGates, AdmissionIdentity, AdmissionIdentityKey, AdmissionSet,
-    AdmissionState, AdmissionTuning, AdmissionVerdict, CacheSeedArtifact, ModelAdmission,
-    PackageEntry, PackageEntryKind, QuarantineReason, QuarantineRecord, SharedRuntimeArtifacts,
-    MAX_ADMISSION_LIFETIME_SECS, MAX_QUARANTINE_LIFETIME_SECS,
+    AdmissionDeviceIdentity, AdmissionGates, AdmissionIdentity, AdmissionSet, AdmissionState,
+    AdmissionTuning, AdmissionVerdict, CacheSeedArtifact, ModelAdmission, PackageEntry,
+    PackageEntryKind, SharedRuntimeArtifacts, MAX_ADMISSION_LIFETIME_SECS,
+};
+pub use whisper_quarantine::{
+    AcceleratorKey, QuarantineReason, QuarantineRecord, MAX_QUARANTINE_LIFETIME_SECS,
 };
 pub use whisper_identity::{
     ExecutionArtifactId, IdentityError as WhisperIdentityError, InferenceContractId,

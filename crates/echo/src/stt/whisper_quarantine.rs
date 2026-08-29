@@ -4,9 +4,59 @@ use std::path::{Path, PathBuf};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 
-use super::whisper_admission::{
-    AdmissionIdentityKey, QuarantineReason, QuarantineRecord, MAX_QUARANTINE_LIFETIME_SECS,
-};
+/// How long one failed accelerator identity stays out of service.
+pub const MAX_QUARANTINE_LIFETIME_SECS: u64 = 24 * 60 * 60;
+
+/// A validated lowercase SHA-256 naming one accelerated execution route.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct AcceleratorKey(String);
+
+impl AcceleratorKey {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub(crate) fn from_digest(digest: String) -> Self {
+        Self(digest)
+    }
+
+    pub(crate) fn parse(value: String) -> Result<Self, String> {
+        if value.len() == 64
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            Ok(Self(value))
+        } else {
+            Err("Whisper acceleration key is not a lowercase SHA-256 digest".to_string())
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct QuarantineRecord {
+    pub schema_version: u32,
+    pub identity_key: AcceleratorKey,
+    pub reason: QuarantineReason,
+    pub failure_count: u32,
+    pub created_at: u64,
+    pub expires_at: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum QuarantineReason {
+    RuntimeFailure,
+    Timeout,
+    MalformedOutput,
+    MissingReceipt,
+    ReceiptMismatch,
+    CpuFallback,
+    IdentityMismatch,
+}
 
 const DOCUMENT_SCHEMA_VERSION: u32 = 1;
 const RECORD_SCHEMA_VERSION: u32 = 1;
@@ -30,7 +80,7 @@ impl QuarantineStore {
         Self { path, lock_path }
     }
 
-    pub fn is_active(&self, key: &AdmissionIdentityKey, now: u64) -> Result<bool, String> {
+    pub fn is_active(&self, key: &AcceleratorKey, now: u64) -> Result<bool, String> {
         self.with_lock(|| {
             let document = self.read_document()?;
             Ok(document.records.iter().any(|record| {
@@ -43,7 +93,7 @@ impl QuarantineStore {
 
     pub fn record_failure(
         &self,
-        key: &AdmissionIdentityKey,
+        key: &AcceleratorKey,
         reason: QuarantineReason,
         now: u64,
     ) -> Result<(), String> {
@@ -147,7 +197,7 @@ mod tests {
 
     use super::*;
 
-    fn key(value: char) -> AdmissionIdentityKey {
+    fn key(value: char) -> AcceleratorKey {
         serde_json::from_str(&format!("\"{}\"", value.to_string().repeat(64))).unwrap()
     }
 

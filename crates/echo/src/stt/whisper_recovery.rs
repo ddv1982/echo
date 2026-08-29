@@ -8,9 +8,7 @@ use echo_core::{
 };
 
 use super::whisper_accel_cache::{LocalSelectionKey, LocalSelectionStore};
-use super::whisper_admission::{
-    AdmissionIdentityKey, QuarantineReason, MAX_QUARANTINE_LIFETIME_SECS,
-};
+use super::whisper_quarantine::{AcceleratorKey, QuarantineReason, MAX_QUARANTINE_LIFETIME_SECS};
 use super::whisper_plan::{QualifiedWhisperPlan, WhisperPlanDecision};
 use super::{QuarantineStore, WhisperEngine};
 
@@ -180,7 +178,7 @@ impl RecoveringWhisperEngine {
         self.run_fallback(plan, pcm, options, true, failure)
     }
 
-    fn process_quarantined(&self, key: &AdmissionIdentityKey, now: u64) -> Result<bool, ()> {
+    fn process_quarantined(&self, key: &AcceleratorKey, now: u64) -> Result<bool, ()> {
         self.process_quarantine
             .lock()
             .map(|mut keys| {
@@ -270,7 +268,7 @@ fn quarantine_reason(reason: WhisperRecoveryReason) -> QuarantineReason {
 
 fn attach_recovery(
     transcript: &mut Transcript,
-    identity_key: &AdmissionIdentityKey,
+    identity_key: &AcceleratorKey,
     accelerated_attempted: bool,
     fallback_reason: Option<WhisperRecoveryReason>,
 ) {
@@ -304,7 +302,7 @@ mod tests {
     use super::*;
     use crate::stt::whisper_accel_cache::{LocalSelectionKey, LocalSelectionStore};
     use crate::stt::{
-        whisper_runtime_launch, AdmissionIdentityKey, QuarantineStore, WhisperExecutionPlan,
+        whisper_runtime_launch, AcceleratorKey, QuarantineStore, WhisperExecutionPlan,
         WhisperModelAsset, WhisperPlanDecision, WhisperRuntimeCandidate, WhisperTuning,
     };
 
@@ -425,7 +423,7 @@ mod tests {
         plan
     }
 
-    fn key() -> AdmissionIdentityKey {
+    fn key() -> AcceleratorKey {
         serde_json::from_str(&format!("\"{}\"", "a".repeat(64))).unwrap()
     }
 
