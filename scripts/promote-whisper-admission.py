@@ -486,8 +486,9 @@ def populated_cache_snapshot(
     snapshot = read_json(cycle_root / raw, "populated cache snapshot")
     files = snapshot.get("files")
     root = require_path(snapshot.get("root"), "populated cache root").resolve()
+    trusted_target = (REPO_ROOT / "target").resolve()
     if (
-        root != (cycle_root / "mesa-cache").resolve()
+        not root.is_relative_to(trusted_target)
         or not isinstance(files, list)
         or not files
         or not root.is_dir()
