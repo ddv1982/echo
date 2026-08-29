@@ -15,6 +15,10 @@ use echo_core::{
 use serde::Deserialize;
 
 use super::cache::{parse_whisper_filename, ModelCache};
+use super::whisper_behavior::{
+    CHILD_REAP_TIMEOUT_SECS, CLEARED_ENVIRONMENT_KEYS, CLEARED_ENVIRONMENT_PREFIXES,
+    ONE_SHOT_TIMEOUT_SECS,
+};
 use super::whisper_probe::{
     observe_runtime, parse_vulkan_runtime_receipt, parse_vulkan_runtime_receipt_line,
 };
@@ -226,7 +230,7 @@ impl WhisperEngine {
     fn timeout(&self) -> Duration {
         match &self.files {
             WhisperFiles::Explicit(plan) => plan.timeout,
-            WhisperFiles::Discover(_) => Duration::from_secs(15 * 60),
+            WhisperFiles::Discover(_) => Duration::from_secs(ONE_SHOT_TIMEOUT_SECS),
         }
     }
 
@@ -426,7 +430,7 @@ fn run_attempt(
             if group_kill.is_err() {
                 let _ = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
             }
-            let _ = receiver.recv_timeout(Duration::from_secs(5));
+            let _ = receiver.recv_timeout(Duration::from_secs(CHILD_REAP_TIMEOUT_SECS));
             return Err(EngineError::Infer(format!(
                 "Whisper runtime timed out after {} ms",
                 timeout.as_millis()
@@ -468,13 +472,7 @@ fn command_for_runtime(binary: &Path, launch: Option<&WhisperRuntimeLaunch>) -> 
     let Some(launch) = launch else {
         return command;
     };
-    for name in [
-        "LD_LIBRARY_PATH",
-        "LD_PRELOAD",
-        "MESA_SHADER_CACHE_DIR",
-        "VK_DRIVER_FILES",
-        "VK_ICD_FILENAMES",
-    ] {
+    for name in CLEARED_ENVIRONMENT_KEYS {
         command.env_remove(name);
     }
     for (name, _) in std::env::vars_os() {
@@ -496,35 +494,7 @@ fn command_for_runtime(binary: &Path, launch: Option<&WhisperRuntimeLaunch>) -> 
 
 fn is_inference_environment_selector(name: &std::ffi::OsStr) -> bool {
     let name = name.to_string_lossy().to_ascii_uppercase();
-    [
-        "LD_",
-        "VK_",
-        "MESA_",
-        "DRI_",
-        "LIBGL_",
-        "GALLIUM_",
-        "INTEL_",
-        "AMD_",
-        "RADV_",
-        "NVIDIA_",
-        "__GL",
-        "CUDA_",
-        "ROCR_",
-        "HIP_",
-        "HSA_",
-        "ONEAPI_",
-        "SYCL_",
-        "ZES_",
-        "ZE_",
-        "OPENCL_",
-        "OCL_",
-        "RUSTICL_",
-        "GGML_",
-        "OMP_",
-        "OPENBLAS_",
-        "LIBVA_",
-    ]
-    .iter()
+    CLEARED_ENVIRONMENT_PREFIXES.iter()
     .any(|prefix| name.starts_with(prefix))
 }
 

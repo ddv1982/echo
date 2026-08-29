@@ -33,6 +33,9 @@ jobs:
       - name: Validate changelog parser
         run: python3 scripts/changelog-notes.py --self-test
 
+      - name: Validate Whisper inference behavior contract
+        run: python3 scripts/verify-whisper-behavior-contract.py --self-test
+
       - name: Validate tagged release
         if: github.ref_type == 'tag'
         env:
@@ -323,7 +326,8 @@ jobs:
           python3 scripts/stage-qualified-whisper-release.py \
             --verify release-assets/qualified \
             --expected-version "$package_version" \
-            --expected-commit "$GITHUB_SHA"
+            --expected-commit "$GITHUB_SHA" \
+            --require-production-ready
 
       - uses: actions/upload-artifact@v7
         with:

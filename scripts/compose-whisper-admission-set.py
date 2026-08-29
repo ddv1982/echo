@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import shutil
@@ -10,14 +11,123 @@ import tempfile
 import time
 from pathlib import Path
 
+from whisper_identity_v3 import (
+    ADMISSION_GATE_FIELDS,
+    build_record,
+    canonical_json_bytes,
+    sha256_bytes,
+    verify_acceleration_set,
+    verify_v3_promotion_metadata,
+    v3_promotion_metadata,
+)
 from whisper_release_common import (
     package_inventory,
     read_json_strict,
     runtime_identity,
+    runtime_library_bindings,
     sha256_file,
     tree_sha256,
     verify_admission_set,
+    verify_v3_reusable_filesystem,
+    verify_v3_reusable_subset,
 )
+
+
+def prefixed_inventory(root: Path, prefix: str) -> list[dict[str, object]]:
+    entries = []
+    for entry in package_inventory(root):
+        copied = dict(entry)
+        copied["path"] = f"{prefix}/{entry['path']}"
+        entries.append(copied)
+    return entries
+
+
+def v3_source(path: Path) -> tuple[dict[str, object], dict[str, object], Path] | None:
+    promotion_path = path / "promotion-v3.json"
+    set_path = path / "whisper-acceleration/acceleration-set.v3.json"
+    if not promotion_path.exists() and not set_path.exists():
+        return None
+    if not promotion_path.is_file() or not set_path.is_file():
+        raise ValueError("source promotion has an incomplete v3 evidence set")
+    promotion = read_json_strict(promotion_path, "v3 promotion")
+    acceleration_set = read_json_strict(set_path, "v3 acceleration set")
+    verify_v3_promotion_metadata(promotion, acceleration_set)
+    verify_v3_reusable_subset(path / "whisper-acceleration", acceleration_set)
+    return promotion, acceleration_set, path / "whisper-acceleration"
+
+
+def unique_records(records: list[dict[str, object]], key: str, label: str):
+    indexed = {}
+    for record in records:
+        identity = record[key]
+        encoded = canonical_json_bytes(record)
+        previous = indexed.get(identity)
+        if previous is not None and previous != encoded:
+            raise ValueError(f"conflicting {label} record")
+        indexed[identity] = encoded
+    return [
+        next(record for record in records if record[key] == identity)
+        for identity in sorted(indexed)
+    ]
+
+
+def compose_v3(
+    sources: list[tuple[dict[str, object], dict[str, object], Path]],
+    package: Path,
+    output: Path,
+) -> None:
+    first_promotion, first_set, _ = sources[0]
+    execution = first_set["executionArtifact"]
+    contracts = []
+    environments = []
+    evidence = []
+    for promotion, acceleration_set, source_package in sources:
+        if acceleration_set["executionArtifact"] != execution:
+            raise ValueError("source v3 promotions use different execution artifacts")
+        if promotion["executionArtifactId"] != first_promotion["executionArtifactId"]:
+            raise ValueError("source v3 execution metadata differs")
+        contracts.extend(acceleration_set["inferenceContracts"])
+        environments.extend(acceleration_set["localEnvironments"])
+        evidence.extend(acceleration_set["performanceEvidence"])
+        for record in acceleration_set["performanceEvidence"]:
+            relative = Path(record["cacheSeed"]["relativePath"])
+            source = source_package / relative
+            destination = package / relative
+            if destination.exists():
+                if tree_sha256(destination) != tree_sha256(source):
+                    raise ValueError("source v3 cache seeds conflict")
+            else:
+                shutil.copytree(source, destination)
+    contracts = unique_records(contracts, "id", "inference contract")
+    environments = unique_records(environments, "key", "local environment")
+    evidence = unique_records(evidence, "id", "performance evidence")
+    runtime_root = Path(
+        first_set["executionArtifact"]["value"]["runtimeRelativePath"]
+    ).parent
+    reusable_inventory = prefixed_inventory(package / runtime_root, str(runtime_root))
+    for record in evidence:
+        relative = record["cacheSeed"]["relativePath"]
+        reusable_inventory.extend(prefixed_inventory(package / relative, relative))
+    acceleration_set = {
+        "schemaVersion": 3,
+        "executionArtifact": execution,
+        "inferenceContracts": contracts,
+        "localEnvironments": environments,
+        "performanceEvidence": evidence,
+        "reusableInventorySha256": sha256_bytes(
+            canonical_json_bytes(reusable_inventory)
+        ),
+    }
+    verify_acceleration_set(acceleration_set)
+    (package / "acceleration-set.v3.json").write_text(
+        json.dumps(acceleration_set, indent=2, ensure_ascii=False, sort_keys=True)
+        + "\n",
+        encoding="utf-8",
+    )
+    promotion = v3_promotion_metadata(acceleration_set)
+    (output / "promotion-v3.json").write_text(
+        json.dumps(promotion, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
 
 def source(path: Path) -> tuple[dict[str, object], dict[str, object], Path]:
@@ -56,6 +166,11 @@ def compose(promotions: list[Path], output: Path) -> None:
     if not promotions:
         raise ValueError("at least one promotion is required")
     inputs = [source(path.resolve()) for path in promotions]
+    v3_inputs = [v3_source(path.resolve()) for path in promotions]
+    if any(value is not None for value in v3_inputs) and any(
+        value is None for value in v3_inputs
+    ):
+        raise ValueError("source promotions mix v2-only and v3 evidence")
     first_promotion, first_set, first_package = inputs[0]
     first_record = first_set["records"][0]
     compatibility = (
@@ -109,6 +224,8 @@ def compose(promotions: list[Path], output: Path) -> None:
         record = admission["records"][0]
         relative = Path(record["cacheSeed"]["relativePath"])
         shutil.copytree(source_package / relative, package / relative)
+    if all(value is not None for value in v3_inputs):
+        compose_v3([value for value in v3_inputs if value is not None], package, output)
     records.sort(key=lambda record: record["identityKey"])
     result = {
         "schemaVersion": 2,
@@ -144,6 +261,29 @@ def compose(promotions: list[Path], output: Path) -> None:
     )
 
 
+def compose_reusable(promotions: list[Path], output: Path) -> None:
+    output = output.resolve()
+    if output.exists():
+        raise ValueError(f"output already exists: {output}")
+    sources = [v3_source(path.resolve()) for path in promotions]
+    if not sources or any(source is None for source in sources):
+        raise ValueError("reusable composition requires only v3 promotions")
+    verified = [source for source in sources if source is not None]
+    first_set = verified[0][1]
+    first_package = verified[0][2]
+    runtime_root = Path(
+        first_set["executionArtifact"]["value"]["runtimeRelativePath"]
+    ).parent
+    package = output / "whisper-acceleration"
+    package.mkdir(parents=True)
+    shutil.copytree(first_package / runtime_root, package / runtime_root)
+    compose_v3(verified, package, output)
+    acceleration_set = read_json_strict(
+        package / "acceleration-set.v3.json", "composed reusable acceleration set"
+    )
+    verify_v3_reusable_filesystem(package, acceleration_set)
+
+
 def fixture(
     root: Path,
     key_seed: str,
@@ -159,6 +299,9 @@ def fixture(
     (runtime / "whisper-cli").write_bytes(runtime_bytes)
     (runtime / "libwhisper.so").write_bytes(b"lib")
     (runtime / "echo-whisper-runtime-probe").write_bytes(b"probe")
+    (runtime / "build-receipt.json").write_text(
+        json.dumps({"artifactId": "4" * 64}), encoding="utf-8"
+    )
     (cache / "seed").write_text(key_seed, encoding="utf-8")
     identity = {
         "schemaVersion": 1,
@@ -267,11 +410,108 @@ def fixture(
     return root
 
 
+def add_v3_fixture(root: Path, model_seed: str) -> None:
+    fixture_path = (
+        Path(__file__).resolve().parent.parent
+        / "crates/echo/tests/fixtures/whisper-v3-identities.json"
+    )
+    cases = read_json_strict(fixture_path, "v3 identity fixture")["cases"]
+    package = root / "whisper-acceleration"
+    runtime = package / "runtime"
+    runtime_cli = runtime / "whisper-cli"
+    runtime_probe = runtime / "echo-whisper-runtime-probe"
+    build_receipt = runtime / "build-receipt.json"
+    execution = build_record(
+        "executionArtifact",
+        {
+            "schemaVersion": 3,
+            "runtimeArtifactId": "4" * 64,
+            "runtimeIdentitySha256": runtime_identity(runtime_cli),
+            "runtimeRelativePath": "runtime/whisper-cli",
+            "runtimeSha256": sha256_file(runtime_cli),
+            "runtimeLibraryBindings": runtime_library_bindings(runtime_cli),
+            "probeRelativePath": "runtime/echo-whisper-runtime-probe",
+            "probeSha256": sha256_file(runtime_probe),
+            "buildReceiptSha256": sha256_file(build_receipt),
+            "reusableInventorySha256": sha256_bytes(
+                canonical_json_bytes(prefixed_inventory(runtime, "runtime"))
+            ),
+        },
+    )
+    contract_input = copy.deepcopy(cases["inferenceContract"]["input"])
+    contract_input["modelSha256"] = model_seed * 64
+    contract = build_record("inferenceContract", contract_input)
+    environment = {
+        "key": cases["localEnvironment"]["id"],
+        "launch": {
+            "icdManifestPath": "/usr/share/vulkan/icd.d/intel_icd.json",
+            "icdLibraryPath": "/usr/lib/libvulkan_intel.so",
+        },
+        "value": cases["localEnvironment"]["input"],
+    }
+    evidence_input = copy.deepcopy(cases["performanceEvidence"]["input"])
+    evidence_input["executionArtifactId"] = execution["id"]
+    evidence_input["inferenceContractId"] = contract["id"]
+    evidence_input["observationBundleSha256"] = model_seed * 64
+    evidence = build_record("performanceEvidence", evidence_input)
+    cache_relative = f"cache-seeds/{evidence['id']}"
+    cache = package / cache_relative
+    cache.mkdir()
+    (cache / "seed").write_text(model_seed, encoding="utf-8")
+    gates = {name: True for name in ADMISSION_GATE_FIELDS}
+    reusable_inventory = [
+        *prefixed_inventory(package / "runtime", "runtime"),
+        *prefixed_inventory(cache, cache_relative),
+    ]
+    acceleration_set = {
+        "schemaVersion": 3,
+        "executionArtifact": execution,
+        "inferenceContracts": [contract],
+        "localEnvironments": [environment],
+        "performanceEvidence": [
+            {
+                "cacheSeed": {
+                    "relativePath": cache_relative,
+                    "sha256": tree_sha256(cache),
+                },
+                "gates": gates,
+                "id": evidence["id"],
+                "value": evidence_input,
+                "verdict": "PASSED",
+            }
+        ],
+        "reusableInventorySha256": sha256_bytes(
+            canonical_json_bytes(reusable_inventory)
+        ),
+    }
+    verify_acceleration_set(acceleration_set)
+    (package / "acceleration-set.v3.json").write_text(
+        json.dumps(acceleration_set, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    promotion = v3_promotion_metadata(acceleration_set)
+    (root / "promotion-v3.json").write_text(
+        json.dumps(promotion, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    admission_path = package / "admission-set.json"
+    admission = read_json_strict(admission_path, "fixture admission set")
+    admission["inventory"] = package_inventory(package)
+    admission_path.write_text(json.dumps(admission, indent=2) + "\n", encoding="utf-8")
+    v2_promotion_path = root / "promotion.json"
+    v2_promotion = read_json_strict(v2_promotion_path, "fixture promotion")
+    v2_promotion["admissionSetSha256"] = sha256_file(admission_path)
+    v2_promotion_path.write_text(
+        json.dumps(v2_promotion, indent=2) + "\n", encoding="utf-8"
+    )
+
+
 def self_test() -> None:
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         small = fixture(root / "small", "small", "c")
         large = fixture(root / "large", "large", "9")
+        add_v3_fixture(small, "c")
+        add_v3_fixture(large, "9")
         output = root / "out"
         compose([large, small], output)
         result = verify_admission_set(output / "whisper-acceleration")
@@ -279,6 +519,13 @@ def self_test() -> None:
         assert [r["identityKey"] for r in result["records"]] == sorted(
             r["identityKey"] for r in result["records"]
         )
+        v3 = read_json_strict(
+            output / "whisper-acceleration/acceleration-set.v3.json",
+            "composed v3 set",
+        )
+        v3_ids = verify_acceleration_set(v3)
+        assert len(v3_ids["inferenceContractIds"]) == 2
+        assert len(v3_ids["performanceEvidenceIds"]) == 2
         second = root / "second"
         compose([small, large], second)
         assert (output / "whisper-acceleration/admission-set.json").read_bytes() == (
@@ -287,6 +534,19 @@ def self_test() -> None:
         assert (output / "promotion.json").read_bytes() == (
             second / "promotion.json"
         ).read_bytes()
+        assert (output / "promotion-v3.json").read_bytes() == (
+            second / "promotion-v3.json"
+        ).read_bytes()
+        reusable = root / "reusable"
+        compose_reusable([small, large], reusable)
+        reusable_set = read_json_strict(
+            reusable / "whisper-acceleration/acceleration-set.v3.json",
+            "reusable-only acceleration set",
+        )
+        reusable_ids = verify_acceleration_set(reusable_set)
+        assert len(reusable_ids["inferenceContractIds"]) == 2
+        assert not (reusable / "promotion.json").exists()
+        assert not (reusable / "whisper-acceleration/admission-set.json").exists()
         duplicate = root / "duplicate"
         shutil.copytree(small, duplicate)
         try:
@@ -453,12 +713,15 @@ def main() -> int:
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--promotion", type=Path, action="append", default=[])
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--reusable-only", action="store_true")
     args = parser.parse_args()
     try:
         if args.self_test:
             self_test()
         elif args.output is None:
             parser.error("composition requires --output")
+        elif args.reusable_only:
+            compose_reusable(args.promotion, args.output)
         else:
             compose(args.promotion, args.output)
     except (KeyError, OSError, TypeError, ValueError) as error:

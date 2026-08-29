@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 3,
+  "projection": {
+    "decode": {
+      "qualifiedRequestPolicy": {
+        "hints": "empty",
+        "language": "pinned",
+        "prompt": "empty"
+      },
+      "qualifiedVadRetry": false,
+      "runtimeDefaults": {
+        "beamSize": null,
+        "bestOf": null,
+        "noFallback": null,
+        "threads": null
+      }
+    },
+    "launch": {
+      "childReapTimeoutMs": 5000,
+      "clearedEnvironmentKeys": [
+        "LD_LIBRARY_PATH",
+        "LD_PRELOAD",
+        "MESA_SHADER_CACHE_DIR",
+        "VK_DRIVER_FILES",
+        "VK_ICD_FILENAMES"
+      ],
+      "clearedEnvironmentPrefixes": [
+        "LD_",
+        "VK_",
+        "MESA_",
+        "DRI_",
+        "LIBGL_",
+        "GALLIUM_",
+        "INTEL_",
+        "AMD_",
+        "RADV_",
+        "NVIDIA_",
+        "__GL",
+        "CUDA_",
+        "ROCR_",
+        "HIP_",
+        "HSA_",
+        "ONEAPI_",
+        "SYCL_",
+        "ZES_",
+        "ZE_",
+        "OPENCL_",
+        "OCL_",
+        "RUSTICL_",
+        "GGML_",
+        "OMP_",
+        "OPENBLAS_",
+        "LIBVA_"
+      ],
+      "forceCpuFlag": "--no-gpu",
+      "languageFlag": "-l",
+      "outputFlags": [
+        "-nt",
+        "-oj",
+        "-of",
+        "-"
+      ],
+      "promptFlag": "--prompt",
+      "protocol": "oneShotCli",
+      "receiptProbeTimeoutMs": 15000,
+      "timeoutMs": 900000,
+      "tuningFlags": {
+        "beamSize": "-bs",
+        "bestOf": "-bo",
+        "noFallback": "-nf",
+        "threads": "-t"
+      },
+      "vadFlags": [
+        "--vad",
+        "-vm"
+      ]
+    },
+    "receipt": {
+      "backend": "vulkan",
+      "match": "exact",
+      "requiredFields": [
+        "schemaVersion",
+        "backend",
+        "selectedIndex",
+        "vendorId",
+        "deviceId",
+        "apiVersion",
+        "driverVersion",
+        "deviceUUID",
+        "driverUUID",
+        "pipelineCacheUUID"
+      ],
+      "schema": 1
+    },
+    "recovery": {
+      "acceleratedValidation": [
+        "model",
+        "runtimeIdentity",
+        "vulkanBackend",
+        "receipt"
+      ],
+      "fallback": "managedCpuOnce",
+      "quarantineLifetimeSeconds": 86400,
+      "requestPolicyMismatchFallsBack": true,
+      "schema": 1
+    },
+    "telemetry": {
+      "acceleratedValidationFields": [
+        "engine.model",
+        "runtime.identitySha256",
+        "runtime.backend",
+        "runtime.vulkanReceipt"
+      ],
+      "recoveryFields": [
+        "identityKey",
+        "acceleratedAttempted",
+        "fallbackReason"
+      ],
+      "schema": 1
+    }
+  },
+  "projectionSha256": "d29a0f3c4a495747192bf132ad9c1c9fc41df39d7243ce7416b7cdd99c086ad4",
+  "watchedPaths": [
+    "crates/echo-core/src/engine.rs",
+    "crates/echo/src/stt/whisper.rs",
+    "crates/echo/src/stt/whisper_acceleration.rs",
+    "crates/echo/src/stt/whisper_admission.rs",
+    "crates/echo/src/stt/whisper_behavior.rs",
+    "crates/echo/src/stt/whisper_plan.rs",
+    "crates/echo/src/stt/whisper_probe.rs",
+    "crates/echo/src/stt/whisper_recovery.rs",
+    "crates/echo/src/transcribe.rs"
+  ]
+}

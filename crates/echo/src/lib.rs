@@ -1,3 +1,4 @@
+mod build_identity;
 pub mod audio;
 pub mod cleanup;
 pub mod hotkey;

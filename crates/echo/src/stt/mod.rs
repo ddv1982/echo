@@ -5,6 +5,8 @@ mod runtime;
 mod whisper;
 mod whisper_acceleration;
 mod whisper_admission;
+mod whisper_behavior;
+mod whisper_identity;
 mod whisper_plan;
 mod whisper_probe;
 mod whisper_quarantine;
@@ -23,6 +25,10 @@ pub use whisper_admission::{
     AdmissionState, AdmissionTuning, AdmissionVerdict, CacheSeedArtifact, ModelAdmission,
     PackageEntry, PackageEntryKind, QuarantineReason, QuarantineRecord, SharedRuntimeArtifacts,
     MAX_ADMISSION_LIFETIME_SECS, MAX_QUARANTINE_LIFETIME_SECS,
+};
+pub use whisper_identity::{
+    ExecutionArtifactId, IdentityError as WhisperIdentityError, InferenceContractId,
+    LocalEnvironmentKey, PerformanceEvidenceId, ReleaseBindingId,
 };
 pub use whisper_plan::{
     preferred_runtime, WhisperExecutionPlan, WhisperModelAsset, WhisperPlanDecision,

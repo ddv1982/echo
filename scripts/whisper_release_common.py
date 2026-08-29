@@ -7,6 +7,12 @@ import tempfile
 import time
 from pathlib import Path
 
+from whisper_identity_v3 import (
+    ADMISSION_GATE_FIELDS,
+    canonical_json_bytes,
+    verify_acceleration_set,
+)
+
 BUNDLE_MARKER = b"__TAURI_BUNDLE_TYPE_VAR_UNK"
 BUNDLE_TOKENS = {
     "deb": b"__TAURI_BUNDLE_TYPE_VAR_DEB",
@@ -47,30 +53,7 @@ DEVICE_FIELDS = {
     "driverUUID",
     "pipelineCacheUUID",
 }
-GATE_FIELDS = {
-    "completePairs",
-    "pairIntegrity",
-    "sampleSize",
-    "backendTruth",
-    "identityMatch",
-    "hardwareDevice",
-    "medianReduction",
-    "medianSpeedup",
-    "p95Improved",
-    "perLanguageQuality",
-    "noNewHallucinations",
-    "receiptConsistency",
-    "coverageComplete",
-    "cacheEvidence",
-    "resetEvidence",
-    "driverIcdIdentity",
-    "cleanChildEnvironment",
-    "exactRuntime",
-    "stabilitySuccess",
-    "memoryEvidence",
-    "memoryFloor",
-    "swapStable",
-}
+GATE_FIELDS = ADMISSION_GATE_FIELDS
 
 
 def sha256_bytes(value: bytes) -> str:
@@ -264,6 +247,97 @@ def package_inventory(root: Path) -> list[dict[str, object]]:
     if not entries or len(entries) > MAX_PACKAGE_ENTRIES:
         raise ValueError("package inventory is empty or exceeds 4096 entries")
     return entries
+
+
+def prefixed_package_inventory(root: Path, prefix: str) -> list[dict[str, object]]:
+    entries = []
+    for entry in package_inventory(root):
+        copied = dict(entry)
+        copied["path"] = f"{prefix}/{entry['path']}"
+        entries.append(copied)
+    return entries
+
+
+def v3_declared_inventory(
+    root: Path, acceleration_set: dict[str, object]
+) -> list[dict[str, object]]:
+    verify_acceleration_set(acceleration_set)
+    runtime_root = Path(
+        acceleration_set["executionArtifact"]["value"]["runtimeRelativePath"]
+    ).parent
+    expected = prefixed_package_inventory(root / runtime_root, str(runtime_root))
+    for record in acceleration_set["performanceEvidence"]:
+        relative = Path(record["cacheSeed"]["relativePath"])
+        expected.extend(prefixed_package_inventory(root / relative, str(relative)))
+
+    return expected
+
+
+def verify_v3_execution_files(root: Path, acceleration_set: dict[str, object]) -> None:
+    expected = acceleration_set["executionArtifact"]["value"]
+    runtime_relative = Path(expected["runtimeRelativePath"])
+    probe_relative = Path(expected["probeRelativePath"])
+    runtime = root / runtime_relative
+    probe = root / probe_relative
+    receipt_path = runtime.parent / "build-receipt.json"
+    if not runtime.is_file() or not probe.is_file() or not receipt_path.is_file():
+        raise ValueError("v3 execution artifact files are missing")
+    receipt = read_json_strict(receipt_path, "runtime build receipt")
+    runtime_inventory = prefixed_package_inventory(
+        runtime.parent, runtime_relative.parent.as_posix()
+    )
+    actual = {
+        "runtimeArtifactId": receipt.get("artifactId"),
+        "runtimeIdentitySha256": runtime_identity(runtime),
+        "runtimeSha256": sha256_file(runtime),
+        "runtimeLibraryBindings": runtime_library_bindings(runtime),
+        "probeSha256": sha256_file(probe),
+        "buildReceiptSha256": sha256_file(receipt_path),
+        "reusableInventorySha256": sha256_bytes(
+            canonical_json_bytes(runtime_inventory)
+        ),
+    }
+    if any(actual[field] != expected[field] for field in actual):
+        raise ValueError("v3 runtime files differ from the execution artifact")
+
+
+def verify_v3_reusable_subset(
+    root: Path, acceleration_set: dict[str, object]
+) -> list[dict[str, object]]:
+    inventory = v3_declared_inventory(root, acceleration_set)
+    verify_v3_execution_files(root, acceleration_set)
+    if sha256_bytes(canonical_json_bytes(inventory)) != acceleration_set.get(
+        "reusableInventorySha256"
+    ):
+        raise ValueError("v3 reusable filesystem digest differs")
+    for record in acceleration_set["performanceEvidence"]:
+        relative = Path(record["cacheSeed"]["relativePath"])
+        if tree_sha256(root / relative) != record["cacheSeed"]["sha256"]:
+            raise ValueError("v3 cache seed differs from its evidence record")
+    return inventory
+
+
+def v3_reusable_inventory(
+    root: Path, acceleration_set: dict[str, object]
+) -> list[dict[str, object]]:
+    expected = verify_v3_reusable_subset(root, acceleration_set)
+    manifests = {"acceleration-set.v3.json", "release-binding.v3.json"}
+    actual = [
+        entry for entry in package_inventory(root) if entry["path"] not in manifests
+    ]
+
+    def by_path(entry: dict[str, object]) -> object:
+        return entry["path"]
+
+    if sorted(actual, key=by_path) != sorted(expected, key=by_path):
+        raise ValueError("v3 reusable filesystem differs from its declared inventory")
+    return expected
+
+
+def verify_v3_reusable_filesystem(
+    root: Path, acceleration_set: dict[str, object]
+) -> None:
+    v3_reusable_inventory(root, acceleration_set)
 
 
 def verify_admission_set(root: Path) -> dict[str, object]:

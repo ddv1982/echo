@@ -5,6 +5,7 @@ use std::time::Duration;
 use echo_core::{WhisperRuntimeBackend, WhisperRuntimeSource, WhisperVulkanReceipt};
 
 use super::whisper_admission::AdmissionIdentityKey;
+use super::whisper_behavior::{ONE_SHOT_TIMEOUT_SECS, VULKAN_BACKEND, VULKAN_RECEIPT_SCHEMA};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WhisperExecutionPlan {
@@ -78,8 +79,8 @@ impl WhisperPlanDecision {
         {
             return Err("accelerated and CPU plans must share one decoding contract".to_string());
         }
-        if expected_receipt.schema_version != 1
-            || expected_receipt.backend != "vulkan"
+        if expected_receipt.schema_version != VULKAN_RECEIPT_SCHEMA
+            || expected_receipt.backend != VULKAN_BACKEND
             || expected_receipt.vendor_id == 0
             || expected_receipt.device_id == 0
         {
@@ -186,7 +187,7 @@ impl WhisperExecutionPlan {
             tuning: WhisperTuning::runtime_defaults(),
             protocol: WhisperProtocol::OneShotCli,
             force_cpu: false,
-            timeout: Duration::from_secs(15 * 60),
+            timeout: Duration::from_secs(ONE_SHOT_TIMEOUT_SECS),
             allow_vad_retry: true,
         }
     }

@@ -13,6 +13,8 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: 0
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v7
         with:
@@ -75,6 +77,16 @@ jobs:
       - run: ./scripts/verify-stt-corpus.sh
 
       - run: ./scripts/verify-whisper-acceleration.sh
+
+      - name: Guard Whisper inference behavior
+        env:
+          WHISPER_BEHAVIOR_BASE: ${{ github.base_ref && format('origin/{0}', github.base_ref) || '' }}
+        run: |
+          if [ -n "$WHISPER_BEHAVIOR_BASE" ]; then
+            python3 scripts/verify-whisper-behavior-contract.py --base-ref "$WHISPER_BEHAVIOR_BASE"
+          else
+            python3 scripts/verify-whisper-behavior-contract.py
+          fi
 
       - run: ./scripts/verify-whisper-runtime-archive.sh
 
