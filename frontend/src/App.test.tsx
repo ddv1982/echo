@@ -16,6 +16,7 @@ import {
   seedPreviewRemoveStaleError,
   seedPreviewReadiness,
   seedPreviewSettings,
+  richPreviewStatus,
   seedPreviewStatus,
   setSettings,
   setMicrophone,
@@ -528,14 +529,50 @@ describe('Echo desktop shell', () => {
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     expect(await screen.findByText('whisper-small · 1038 ms')).toBeInTheDocument()
-    expect(screen.getByText('/home/user/.cache/echo/ggml-small.bin')).toBeInTheDocument()
-    expect(screen.getByText('/usr/local/bin/whisper-cli')).toBeInTheDocument()
-    expect(screen.getByText('Yes')).toBeInTheDocument()
-    expect(screen.getByText('Cold CLI')).toBeInTheDocument()
-    expect(screen.getByText('System · VULKAN · Intel Iris Xe')).toBeInTheDocument()
-    expect(screen.getByText('WAV 3 ms · process 1032 ms · parse 1 ms')).toBeInTheDocument()
-    expect(screen.getByText('4 threads · beam 5 · best of 5 · fallback on')).toBeInTheDocument()
+    expect(screen.getByText('VULKAN · Intel Iris Xe')).toBeInTheDocument()
     expect(screen.getByText(__APP_VERSION__)).toBeInTheDocument()
+  })
+
+  it('keeps engine internals out of the readout', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await screen.findByText('whisper-small · 1038 ms')
+    for (const label of [
+      'Model file',
+      'Binary',
+      'Multilingual',
+      'VAD',
+      'Whisper mode',
+      'Runtime',
+      'Whisper timing',
+      'Decoding',
+    ]) {
+      expect(screen.queryByText(label)).not.toBeInTheDocument()
+    }
+  })
+
+  it('names the fallback reason when an accelerated run recovered', async () => {
+    const status = richPreviewStatus()
+    seedPreviewStatus({
+      lastRun: {
+        ...status.lastRun!,
+        performance: {
+          ...status.lastRun!.performance!,
+          recovery: {
+            identityKey: 'vulkan:iris-xe',
+            acceleratedAttempted: true,
+            fallbackReason: 'quarantined',
+          },
+        },
+      },
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(
+      await screen.findByText('VULKAN · Intel Iris Xe · recovered (quarantined)'),
+    ).toBeInTheDocument()
   })
 
   it('surfaces engine stderr on failure', async () => {

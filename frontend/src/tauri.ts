@@ -33,7 +33,7 @@ const PREVIEW_RECORDING_POLICY: RecordingPolicy = {
   presetsSeconds: [30, 60, 120, 300, 600],
 }
 
-function richPreviewStatus(): AppStatus {
+export function richPreviewStatus(): AppStatus {
   return {
     phase: 'Idle',
     lastTranscript: 'This is a test. This is a test.',
