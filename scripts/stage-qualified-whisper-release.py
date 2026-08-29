@@ -22,6 +22,12 @@ from whisper_identity_v3 import (
     v3_promotion_metadata,
 )
 from whisper_v3_contract import verify_reusable_evidence_for_commit
+from whisper_portable_selection import (
+    READINESS as PORTABLE_READINESS,
+    build_binding as build_portable_binding,
+    verify_portable_filesystem,
+    write_projection,
+)
 from whisper_release_common import (
     BUNDLE_MARKER,
     BUNDLE_TOKENS,
@@ -237,6 +243,22 @@ def copy_v3_evidence(source_root: Path, destination_root: Path) -> dict[str, obj
     return acceleration_set
 
 
+def copy_portable_runtime(
+    source_root: Path, destination_root: Path, runtime: Path
+) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+    source = source_root / "whisper-acceleration"
+    acceleration_set = read_json(source / "acceleration-set.v3.json")
+    verify_acceleration_set(acceleration_set)
+    verify_v3_reusable_filesystem(source, acceleration_set)
+    destination_root.mkdir(parents=True)
+    shutil.copytree(runtime, destination_root / "runtime", symlinks=True)
+    portable, legacy = write_projection(
+        destination_root, acceleration_set, rebind_runtime=True
+    )
+    verify_contained_symlinks(destination_root)
+    return acceleration_set, portable, legacy
+
+
 def v3_release_binding_input(
     *,
     acceleration_set: dict[str, object],
@@ -334,6 +356,54 @@ def verify_extracted_v3(
     }
 
 
+def verify_extracted_portable(
+    extracted: Path,
+    expected_binary: bytes,
+    source_resource: Path | None,
+) -> dict[str, object]:
+    binary = extracted / "usr/bin/echo-desktop"
+    resource = extracted / "usr/lib/io.github.ddv1982.echo/whisper-acceleration"
+    if binary.read_bytes() != expected_binary:
+        raise ValueError(
+            "packaged portable executable differs outside the Tauri bundle marker"
+        )
+    portable, legacy, binding = verify_portable_filesystem(resource)
+    verify_embedded_commit(binary.read_bytes(), binding["echoCommit"])
+    if binding["echoBinarySha256"] != sha256_file(binary):
+        raise ValueError("portable selection binding does not match the executable")
+    if source_resource is not None:
+        source_inventory = {
+            path.relative_to(source_resource).as_posix(): path.read_bytes()
+            for path in source_resource.rglob("*")
+            if path.is_file() and not path.is_symlink()
+        }
+        packaged_inventory = {
+            path.relative_to(resource).as_posix(): path.read_bytes()
+            for path in resource.rglob("*")
+            if path.is_file() and not path.is_symlink()
+        }
+        if packaged_inventory != source_inventory:
+            raise ValueError("packaged portable selection tree changed")
+    return {
+        "binarySha256": sha256_file(binary),
+        "echoCommit": binding["echoCommit"],
+        "version": binding["version"],
+        "packageType": binding["packageType"],
+        "productionReadiness": binding["productionReadiness"],
+        "productionReady": False,
+        "releaseBindingId": binding["sourceAccelerationSetSha256"],
+        "executionArtifactId": binding["executionArtifactId"],
+        "inferenceContractIds": binding["allowedInferenceContractIds"],
+        "performanceEvidenceIds": [
+            record["performanceEvidenceId"] for record in legacy["records"]
+        ],
+        "physicalRequalificationRequired": False,
+        "reusedInferenceEvidence": True,
+        "portableSelectionSha256": binding["portableSelectionSha256"],
+        "legacyExactIndexSha256": binding["legacyExactIndexSha256"],
+    }
+
+
 def bundle_one(
     bundle_type: str,
     promotion_root: Path,
@@ -398,13 +468,16 @@ def bundle_v3_one(
     canonical: bytes,
     version: str,
     commit: str,
+    portable_runtime: Path,
 ) -> dict[str, object]:
     promotion = read_json(reusable_root / "promotion-v3.json")
     expected_binary = variant_bytes(canonical, bundle_type)
     with tempfile.TemporaryDirectory(prefix=f"echo-v3-{bundle_type}-") as temporary:
         temporary_root = Path(temporary)
         resource = temporary_root / "whisper-acceleration"
-        acceleration_set = copy_v3_evidence(reusable_root, resource)
+        acceleration_set, portable, legacy = copy_portable_runtime(
+            reusable_root, resource, portable_runtime
+        )
         binding_input = v3_release_binding_input(
             acceleration_set=acceleration_set,
             promotion=promotion,
@@ -413,7 +486,24 @@ def bundle_v3_one(
             commit=commit,
             binary=expected_binary,
         )
-        write_v3_release_binding(resource, acceleration_set, binding_input)
+        source_binding = build_record("releaseBinding", binding_input)
+        verify_release_binding_record(source_binding, acceleration_set)
+        portable_binding = build_portable_binding(
+            portable=portable,
+            legacy=legacy,
+            source_acceleration_set_sha256=sha256_bytes(
+                canonical_json_bytes(acceleration_set)
+            ),
+            package_type=bundle_type,
+            version=version,
+            echo_commit=commit,
+            echo_binary_sha256=sha256_bytes(expected_binary),
+        )
+        (resource / "portable-selection-binding.v1.json").write_text(
+            json.dumps(portable_binding, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        verify_portable_filesystem(resource)
         config = {
             "bundle": {
                 "resources": {str(resource.resolve()) + "/": "whisper-acceleration/"}
@@ -450,7 +540,7 @@ def bundle_v3_one(
         ) as extracted_temporary:
             extracted = Path(extracted_temporary)
             extract_package(destination, bundle_type, extracted)
-            details = verify_extracted_v3(extracted, expected_binary, resource)
+            details = verify_extracted_portable(extracted, expected_binary, resource)
     return {
         "file": destination.name,
         "sha256": sha256_file(destination),
@@ -490,6 +580,16 @@ def stage(args: argparse.Namespace) -> None:
     )
     if args.reusable_evidence is not None:
         reusable = args.reusable_evidence.resolve()
+        portable_runtime = args.portable_runtime.resolve()
+        subprocess.run(
+            [
+                str(REPO_ROOT / "scripts/verify-whisper-vulkan-runtime.sh"),
+                "--verify",
+                "--require-vulkan",
+                str(portable_runtime),
+            ],
+            check=True,
+        )
         reusable_set = read_json(
             reusable / "whisper-acceleration/acceleration-set.v3.json"
         )
@@ -507,6 +607,7 @@ def stage(args: argparse.Namespace) -> None:
                 canonical,
                 args.version,
                 args.commit,
+                portable_runtime,
             )
             for bundle_type in ("deb", "rpm")
         }
@@ -531,7 +632,7 @@ def stage(args: argparse.Namespace) -> None:
     if args.reusable_evidence is not None:
         manifest["physicalRequalificationRequired"] = False
         manifest["reusedInferenceEvidence"] = True
-        manifest["productionReadiness"] = "proof-only-until-pr16.3"
+        manifest["productionReadiness"] = PORTABLE_READINESS
         manifest["productionReady"] = False
     (output / "qualified-release.json").write_text(
         json.dumps(manifest, indent=2) + "\n",
@@ -566,7 +667,8 @@ def verify_manifest(
     if schema_version == 3 and (
         manifest.get("physicalRequalificationRequired") is not False
         or manifest.get("reusedInferenceEvidence") is not True
-        or manifest.get("productionReadiness") != "proof-only-until-pr16.3"
+        or manifest.get("productionReadiness")
+        not in {"proof-only-until-pr16.3", PORTABLE_READINESS}
         or manifest.get("productionReady") is not False
     ):
         raise ValueError("v3 qualified release did not reuse inference evidence")
@@ -619,11 +721,13 @@ def verify_manifest(
             extracted = Path(temporary)
             extract_package(package, bundle_type, extracted)
             if schema_version == 3:
-                details = verify_extracted_v3(
-                    extracted,
-                    variant_bytes(canonical, bundle_type),
-                    None,
+                resource = extracted / "usr/lib/io.github.ddv1982.echo/whisper-acceleration"
+                verifier = (
+                    verify_extracted_portable
+                    if (resource / "portable-selection.v1.json").is_file()
+                    else verify_extracted_v3
                 )
+                details = verifier(extracted, variant_bytes(canonical, bundle_type), None)
                 fields = (
                     "binarySha256",
                     "releaseBindingId",
@@ -1022,6 +1126,7 @@ def main() -> int:
     parser.add_argument("--deb-promotion", type=Path)
     parser.add_argument("--rpm-promotion", type=Path)
     parser.add_argument("--reusable-evidence", type=Path)
+    parser.add_argument("--portable-runtime", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--version")
     parser.add_argument("--commit")
@@ -1042,17 +1147,21 @@ def main() -> int:
                 args.expected_commit,
                 require_production_ready=args.require_production_ready,
             )
-        elif any(
-            value is None
-            for value in (
-                args.canonical_binary,
-                args.output,
-                args.version,
-                args.commit,
+        elif (
+            any(
+                value is None
+                for value in (
+                    args.canonical_binary,
+                    args.output,
+                    args.version,
+                    args.commit,
+                )
             )
-        ) or (
-            args.reusable_evidence is None
-            and (args.deb_promotion is None or args.rpm_promotion is None)
+            or (
+                args.reusable_evidence is None
+                and (args.deb_promotion is None or args.rpm_promotion is None)
+            )
+            or (args.reusable_evidence is not None and args.portable_runtime is None)
         ):
             parser.error(
                 "staging requires every binary, promotion, output, version, and commit argument"

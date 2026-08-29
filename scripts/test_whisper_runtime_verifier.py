@@ -197,6 +197,11 @@ class ContractTests(unittest.TestCase):
         with self.assertRaisesRegex(VerificationError, "no unified-diff hunk"):
             validate_patch_counts(patch)
 
+    def test_accepts_normalized_blank_patch_context(self):
+        patch = self.package / "normalized.patch"
+        patch.write_text("@@ -1,2 +1,2 @@\n line\n\n", encoding="utf-8")
+        validate_patch_counts(patch)
+
     def test_rejects_duplicate_json_keys(self):
         with self.assertRaisesRegex(VerificationError, "duplicate JSON key"):
             strict_json_loads('{"schemaVersion":1,"schemaVersion":2}')
@@ -319,12 +324,23 @@ class ContractTests(unittest.TestCase):
                 "LD_LIBRARY_PATH": "/outside",
                 "LD_PRELOAD": "preload.so",
                 "VK_DRIVER_FILES": "/driver.json",
+                "MESA_SHADER_CACHE_DIR": "/shader-cache",
+                "GGML_VK_VISIBLE_DEVICES": "1",
+                "ECHO_WHISPER_VULKAN_DEVICE_UUID": "1" * 32,
+                "ECHO_WHISPER_VULKAN_DRIVER_UUID": "2" * 32,
             },
         )
         self.assertEqual(environment["LD_LIBRARY_PATH"], str(self.package))
-        self.assertEqual(environment["VK_DRIVER_FILES"], "/driver.json")
-        self.assertNotIn("LD_AUDIT", environment)
-        self.assertNotIn("LD_PRELOAD", environment)
+        for name in (
+            "ECHO_WHISPER_VULKAN_DEVICE_UUID",
+            "ECHO_WHISPER_VULKAN_DRIVER_UUID",
+            "GGML_VK_VISIBLE_DEVICES",
+            "LD_AUDIT",
+            "LD_PRELOAD",
+            "MESA_SHADER_CACHE_DIR",
+            "VK_DRIVER_FILES",
+        ):
+            self.assertNotIn(name, environment)
 
     def test_rejects_invalid_platform_abi(self):
         self.receipt["platformAbi"]["architecture"] = "aarch64"

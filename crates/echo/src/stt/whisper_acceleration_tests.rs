@@ -287,6 +287,22 @@ fn exact_package_selects_vulkan_and_seeds_its_identity_cache() {
 }
 
 #[test]
+fn production_decision_p95_is_bounded() {
+    let plan = fixture("production-decision-p95").cpu_plan;
+    let mut timings = (0..100)
+        .map(|_| {
+            let started = std::time::Instant::now();
+            for _ in 0..100 {
+                assert!(std::hint::black_box(production_whisper_decision(plan.clone())).is_none());
+            }
+            started.elapsed().as_nanos() / 100
+        })
+        .collect::<Vec<_>>();
+    timings.sort();
+    println!("production_decision_p95_ns={}", timings[94]);
+}
+
+#[test]
 fn cache_identity_path_cannot_escape_through_a_symlink() {
     let fixture = fixture("cache-symlink");
     let record = &read_set(&fixture).records[0];

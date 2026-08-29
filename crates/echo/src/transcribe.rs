@@ -7,9 +7,10 @@ use echo_core::{
 
 use crate::install::ManagedPath;
 use crate::stt::{
-    preferred_runtime, production_whisper_decision, whisper_runtime_launch, FakeEngine, ModelCache,
-    ParakeetEngine, QuarantineStore, RecoveringWhisperEngine, SpeechRuntimeInventory,
-    WhisperEngine, WhisperExecutionPlan, WhisperModelAsset, WhisperTuningOverride,
+    local_whisper_engine_from_process, preferred_runtime, production_whisper_decision,
+    whisper_runtime_launch, FakeEngine, ModelCache, ParakeetEngine, QuarantineStore,
+    RecoveringWhisperEngine, SpeechRuntimeInventory, WhisperEngine, WhisperExecutionPlan,
+    WhisperModelAsset, WhisperTuningOverride,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -564,16 +565,18 @@ pub fn prepare_with_config(
                 && overrides.whisper_vulkan_driver_files.is_none()
                 && overrides.whisper_mesa_shader_cache_dir.is_none();
             let engine: Box<dyn Engine> = if can_accelerate {
-                production_whisper_decision(plan.clone()).map_or_else(
-                    || Box::new(WhisperEngine::with_plan(plan)) as Box<dyn Engine>,
-                    |decision| {
-                        let quarantine = QuarantineStore::at(
-                            echo_core::data_dir().join("whisper-quarantine.json"),
-                        );
-                        Box::new(RecoveringWhisperEngine::new(decision, quarantine))
-                            as Box<dyn Engine>
-                    },
-                )
+                local_whisper_engine_from_process(plan.clone()).unwrap_or_else(|| {
+                    production_whisper_decision(plan.clone()).map_or_else(
+                        || Box::new(WhisperEngine::with_plan(plan)) as Box<dyn Engine>,
+                        |decision| {
+                            let quarantine = QuarantineStore::at(
+                                echo_core::data_dir().join("whisper-quarantine.json"),
+                            );
+                            Box::new(RecoveringWhisperEngine::new(decision, quarantine))
+                                as Box<dyn Engine>
+                        },
+                    )
+                })
             } else {
                 Box::new(WhisperEngine::with_plan(plan))
             };

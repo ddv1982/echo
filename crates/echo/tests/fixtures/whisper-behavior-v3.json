@@ -73,6 +73,10 @@
       "vadFlags": [
         "--vad",
         "-vm"
+      ],
+      "vulkanSelectorKeys": [
+        "ECHO_WHISPER_VULKAN_DEVICE_UUID",
+        "ECHO_WHISPER_VULKAN_DRIVER_UUID"
       ]
     },
     "receipt": {
@@ -116,17 +120,29 @@
         "acceleratedAttempted",
         "fallbackReason"
       ],
-      "schema": 1
+      "schema": 2,
+      "selectionFields": [
+        "preference",
+        "cachedDecision",
+        "localKey",
+        "calibrationPending",
+        "proofOnly"
+      ]
     }
   },
-  "projectionSha256": "d29a0f3c4a495747192bf132ad9c1c9fc41df39d7243ce7416b7cdd99c086ad4",
+  "projectionSha256": "1ce859f67abd9b92b9c7f3574cd0ac08aa5d9a7e9742920cca8c8dec67701e15",
   "watchedPaths": [
     "crates/echo-core/src/engine.rs",
+    "crates/echo/src/stt/backend/vulkan.rs",
     "crates/echo/src/stt/whisper.rs",
+    "crates/echo/src/stt/whisper_accel_cache.rs",
     "crates/echo/src/stt/whisper_acceleration.rs",
     "crates/echo/src/stt/whisper_admission.rs",
     "crates/echo/src/stt/whisper_behavior.rs",
+    "crates/echo/src/stt/whisper_calibration.rs",
     "crates/echo/src/stt/whisper_plan.rs",
+    "crates/echo/src/stt/whisper_planner.rs",
+    "crates/echo/src/stt/whisper_portable.rs",
     "crates/echo/src/stt/whisper_probe.rs",
     "crates/echo/src/stt/whisper_recovery.rs",
     "crates/echo/src/transcribe.rs"

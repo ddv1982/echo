@@ -124,7 +124,43 @@ pub struct WhisperRuntimeLaunch {
     pub library_dir: Option<PathBuf>,
     pub vulkan_driver_files: Option<PathBuf>,
     pub mesa_shader_cache_dir: Option<PathBuf>,
+    pub vulkan_selector: Option<VulkanRuntimeSelector>,
     pub identity_sha256: Option<String>,
+    pub(crate) cancel_on_recording: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VulkanRuntimeSelector {
+    device_uuid: String,
+    driver_uuid: String,
+}
+
+impl VulkanRuntimeSelector {
+    pub fn parse(device_uuid: String, driver_uuid: String) -> Result<Self, String> {
+        if !valid_uuid(&device_uuid) || !valid_uuid(&driver_uuid) {
+            return Err("Vulkan selector UUIDs must be nonzero lowercase 32-hex".to_string());
+        }
+        Ok(Self {
+            device_uuid,
+            driver_uuid,
+        })
+    }
+
+    pub(crate) fn device_uuid(&self) -> &str {
+        &self.device_uuid
+    }
+
+    pub(crate) fn driver_uuid(&self) -> &str {
+        &self.driver_uuid
+    }
+}
+
+fn valid_uuid(value: &str) -> bool {
+    value.len() == 32
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        && value.bytes().any(|byte| byte != b'0')
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -266,6 +302,13 @@ mod tests {
         assert_eq!(tuning.beam_size, Some(1));
         assert_eq!(tuning.best_of, None);
         assert_eq!(tuning.no_fallback, Some(true));
+    }
+
+    #[test]
+    fn vulkan_selector_requires_stable_uuid_pair() {
+        assert!(VulkanRuntimeSelector::parse("1".repeat(32), "2".repeat(32)).is_ok());
+        assert!(VulkanRuntimeSelector::parse("0".repeat(32), "2".repeat(32)).is_err());
+        assert!(VulkanRuntimeSelector::parse("A".repeat(32), "2".repeat(32)).is_err());
     }
 
     fn plan(source: WhisperRuntimeSource, backend: WhisperRuntimeBackend) -> WhisperExecutionPlan {

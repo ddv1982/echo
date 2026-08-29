@@ -20,7 +20,8 @@ use super::whisper_behavior::{
     ONE_SHOT_TIMEOUT_SECS,
 };
 use super::whisper_probe::{
-    observe_runtime, parse_vulkan_runtime_receipt, parse_vulkan_runtime_receipt_line,
+    observe_runtime, parse_vulkan_devices, parse_vulkan_runtime_receipt,
+    parse_vulkan_runtime_receipt_line,
 };
 use super::whisper_runtime_launch;
 use super::write_temp_wav;
@@ -225,9 +226,26 @@ impl WhisperEngine {
 
     fn force_cpu(&self) -> bool {
         matches!(&self.files, WhisperFiles::Explicit(plan) if plan.force_cpu)
+            || (cfg!(debug_assertions)
+                && matches!(
+                    &self.files,
+                    WhisperFiles::Explicit(plan)
+                        if plan.runtime.backend == WhisperRuntimeBackend::Vulkan
+                )
+                && std::env::var("ECHO_WHISPER_TEST_FAULT").as_deref() == Ok("backend-fallback"))
     }
 
     fn timeout(&self) -> Duration {
+        if cfg!(debug_assertions)
+            && matches!(
+                &self.files,
+                WhisperFiles::Explicit(plan)
+                    if plan.runtime.backend == WhisperRuntimeBackend::Vulkan
+            )
+            && std::env::var("ECHO_WHISPER_TEST_FAULT").as_deref() == Ok("gpu-timeout")
+        {
+            return Duration::from_millis(1);
+        }
         match &self.files {
             WhisperFiles::Explicit(plan) => plan.timeout,
             WhisperFiles::Discover(_) => Duration::from_secs(ONE_SHOT_TIMEOUT_SECS),
@@ -253,6 +271,8 @@ impl WhisperEngine {
         let mut effective = whisper_runtime_launch(binary);
         effective.vulkan_driver_files = configured.vulkan_driver_files.clone();
         effective.mesa_shader_cache_dir = configured.mesa_shader_cache_dir.clone();
+        effective.vulkan_selector = configured.vulkan_selector.clone();
+        effective.cancel_on_recording = configured.cancel_on_recording.clone();
         Some(effective)
     }
 }
@@ -369,6 +389,7 @@ impl Engine for WhisperEngine {
                     },
                     attempts,
                     recovery: None,
+                    selection: None,
                 }),
             },
         })
@@ -415,31 +436,43 @@ fn run_attempt(
         .spawn()
         .map_err(|error| EngineError::Infer(error.to_string()))?;
     let process_start_ms = elapsed_ms(spawn_started);
-    let pid = rustix::process::Pid::from_raw(i32::try_from(child.id()).map_err(|_| {
-        EngineError::Infer("Whisper child process ID is out of range".to_string())
-    })?)
-    .ok_or_else(|| EngineError::Infer("Whisper child process ID is zero".to_string()))?;
+    let pid =
+        rustix::process::Pid::from_raw(i32::try_from(child.id()).map_err(|_| {
+            EngineError::Infer("Whisper child process ID is out of range".to_string())
+        })?)
+        .ok_or_else(|| EngineError::Infer("Whisper child process ID is zero".to_string()))?;
     let (sender, receiver) = mpsc::sync_channel(1);
     std::thread::spawn(move || {
         let _ = sender.send(child.wait_with_output());
     });
-    let output = match receiver.recv_timeout(timeout) {
-        Ok(output) => output.map_err(|error| EngineError::Infer(error.to_string()))?,
-        Err(mpsc::RecvTimeoutError::Timeout) => {
-            let group_kill = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
-            if group_kill.is_err() {
-                let _ = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
-            }
-            let _ = receiver.recv_timeout(Duration::from_secs(CHILD_REAP_TIMEOUT_SECS));
+    let deadline = Instant::now() + timeout;
+    let recording_lock = launch.and_then(|launch| launch.cancel_on_recording.as_deref());
+    let output = loop {
+        if recording_lock.is_some_and(crate::rec::session_active_at) {
+            kill_and_reap(pid, &receiver);
+            return Err(EngineError::Infer(
+                "Whisper calibration canceled because recording started".to_string(),
+            ));
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            kill_and_reap(pid, &receiver);
             return Err(EngineError::Infer(format!(
                 "Whisper runtime timed out after {} ms",
                 timeout.as_millis()
             )));
         }
-        Err(mpsc::RecvTimeoutError::Disconnected) => {
-            return Err(EngineError::Infer(
-                "Whisper runtime wait thread stopped unexpectedly".to_string(),
-            ));
+        let wait = (deadline - now).min(Duration::from_millis(50));
+        match receiver.recv_timeout(wait) {
+            Ok(output) => {
+                break output.map_err(|error| EngineError::Infer(error.to_string()))?;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err(EngineError::Infer(
+                    "Whisper runtime wait thread stopped unexpectedly".to_string(),
+                ));
+            }
         }
     };
     let telemetry = WhisperAttemptTelemetry {
@@ -453,18 +486,50 @@ fn run_attempt(
     Ok((output, telemetry))
 }
 
+fn kill_and_reap(pid: rustix::process::Pid, receiver: &mpsc::Receiver<std::io::Result<Output>>) {
+    if rustix::process::kill_process_group(pid, rustix::process::Signal::KILL).is_err() {
+        let _ = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
+    }
+    let _ = receiver.recv_timeout(Duration::from_secs(CHILD_REAP_TIMEOUT_SECS));
+}
+
 pub(crate) fn probe_vulkan_runtime_receipt(
     binary: &Path,
     launch: &WhisperRuntimeLaunch,
     timeout: Duration,
 ) -> Result<echo_core::WhisperVulkanReceipt, String> {
-    let (output, _) = run_attempt(binary, Some(launch), Vec::new(), false, timeout)
-        .map_err(|error| error.to_string())?;
+    let (output, _) = run_attempt(
+        binary,
+        Some(launch),
+        vec!["--ready-vulkan".to_string()],
+        false,
+        timeout,
+    )
+    .map_err(|error| error.to_string())?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     if !output.status.success() {
         return Err(stderr.into_owned());
     }
     parse_vulkan_runtime_receipt_line(&stderr)
+}
+
+pub(crate) fn enumerate_vulkan_runtime_receipts(
+    binary: &Path,
+    launch: &WhisperRuntimeLaunch,
+    timeout: Duration,
+) -> Result<Vec<echo_core::WhisperVulkanReceipt>, String> {
+    let (output, _) = run_attempt(
+        binary,
+        Some(launch),
+        vec!["--list-vulkan-json".to_string()],
+        false,
+        timeout,
+    )
+    .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+    }
+    parse_vulkan_devices(&String::from_utf8_lossy(&output.stdout))
 }
 
 fn command_for_runtime(binary: &Path, launch: Option<&WhisperRuntimeLaunch>) -> Command {
@@ -473,6 +538,12 @@ fn command_for_runtime(binary: &Path, launch: Option<&WhisperRuntimeLaunch>) -> 
         return command;
     };
     for name in CLEARED_ENVIRONMENT_KEYS {
+        command.env_remove(name);
+    }
+    for name in [
+        "ECHO_WHISPER_VULKAN_DEVICE_UUID",
+        "ECHO_WHISPER_VULKAN_DRIVER_UUID",
+    ] {
         command.env_remove(name);
     }
     for (name, _) in std::env::vars_os() {
@@ -489,13 +560,18 @@ fn command_for_runtime(binary: &Path, launch: Option<&WhisperRuntimeLaunch>) -> 
     if let Some(path) = &launch.mesa_shader_cache_dir {
         command.env("MESA_SHADER_CACHE_DIR", path);
     }
+    if let Some(selector) = &launch.vulkan_selector {
+        command.env("ECHO_WHISPER_VULKAN_DEVICE_UUID", selector.device_uuid());
+        command.env("ECHO_WHISPER_VULKAN_DRIVER_UUID", selector.driver_uuid());
+    }
     command
 }
 
 fn is_inference_environment_selector(name: &std::ffi::OsStr) -> bool {
     let name = name.to_string_lossy().to_ascii_uppercase();
-    CLEARED_ENVIRONMENT_PREFIXES.iter()
-    .any(|prefix| name.starts_with(prefix))
+    CLEARED_ENVIRONMENT_PREFIXES
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
 }
 
 fn should_retry_without_vad(stderr: &str) -> bool {
@@ -700,6 +776,7 @@ fn parse_whisper_json(raw: &str) -> Result<WhisperParse, EngineError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stt::VulkanRuntimeSelector;
     use echo_core::{Dictionary, RecognitionHints};
 
     fn options(language: LanguageChoice) -> DecodeOptions {
@@ -747,7 +824,11 @@ mod tests {
             library_dir: Some(PathBuf::from("/runtime")),
             vulkan_driver_files: Some(PathBuf::from("/driver.json")),
             mesa_shader_cache_dir: Some(PathBuf::from("/shader-cache")),
+            vulkan_selector: Some(
+                VulkanRuntimeSelector::parse("1".repeat(32), "2".repeat(32)).unwrap(),
+            ),
             identity_sha256: Some("a".repeat(64)),
+            cancel_on_recording: None,
         };
         let command = command_for_runtime(Path::new("whisper-cli"), Some(&launch));
         let value = |name: &str| {
@@ -767,6 +848,14 @@ mod tests {
         assert_eq!(
             value("MESA_SHADER_CACHE_DIR").flatten(),
             Some(std::ffi::OsStr::new("/shader-cache"))
+        );
+        assert_eq!(
+            value("ECHO_WHISPER_VULKAN_DEVICE_UUID").flatten(),
+            Some(std::ffi::OsStr::new("11111111111111111111111111111111"))
+        );
+        assert_eq!(
+            value("ECHO_WHISPER_VULKAN_DRIVER_UUID").flatten(),
+            Some(std::ffi::OsStr::new("22222222222222222222222222222222"))
         );
         assert_eq!(value("LD_PRELOAD"), Some(None));
         assert_eq!(value("VK_ICD_FILENAMES"), Some(None));
@@ -799,6 +888,51 @@ mod tests {
                 name
             )));
         }
+    }
+
+    #[test]
+    fn calibration_child_is_reaped_when_recording_starts() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "echo-whisper-calibration-cancel-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let binary = root.join("whisper-cli");
+        fs::write(&binary, "#!/bin/sh\nsleep 5\n").unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+        let model = root.join("model.bin");
+        fs::write(&model, b"model").unwrap();
+        let lock = root.join("recording.lock");
+        fs::write(&lock, format!("{}\ntest-token\n", std::process::id())).unwrap();
+        let mut launch = whisper_runtime_launch(&binary);
+        launch.cancel_on_recording = Some(lock);
+        let plan = WhisperExecutionPlan::one_shot(
+            WhisperRuntimeCandidate {
+                source: WhisperRuntimeSource::Managed,
+                backend: WhisperRuntimeBackend::Cpu,
+                cli: binary,
+                server: None,
+                launch,
+            },
+            WhisperModelAsset {
+                name: "small".to_string(),
+                path: model,
+                multilingual: true,
+            },
+            None,
+        );
+        let started = Instant::now();
+        let error = WhisperEngine::with_plan(plan)
+            .transcribe(
+                &Pcm16kMono::from_samples(vec![0; 160]),
+                &options(LanguageChoice::Pinned(Language::ENGLISH)),
+            )
+            .unwrap_err();
+        assert!(error.as_str().contains("canceled because recording"));
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 
     #[test]

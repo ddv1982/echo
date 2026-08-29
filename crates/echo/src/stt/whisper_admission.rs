@@ -81,6 +81,18 @@ impl AdmissionIdentityKey {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    pub(crate) fn parse(value: String) -> Result<Self, String> {
+        if value.len() == 64
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            Ok(Self(value))
+        } else {
+            Err("Whisper acceleration key is not a lowercase SHA-256 digest".to_string())
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -7,6 +7,7 @@ use echo_core::{
     WhisperRecoveryReason, WhisperRecoveryTelemetry, WhisperRuntimeBackend,
 };
 
+use super::whisper_accel_cache::{LocalSelectionKey, LocalSelectionStore};
 use super::whisper_admission::{
     AdmissionIdentityKey, QuarantineReason, MAX_QUARANTINE_LIFETIME_SECS,
 };
@@ -18,6 +19,7 @@ pub struct RecoveringWhisperEngine {
     quarantine: QuarantineStore,
     now: fn() -> u64,
     process_quarantine: Arc<Mutex<BTreeMap<String, u64>>>,
+    local_quarantine: Option<(LocalSelectionStore, LocalSelectionKey)>,
 }
 
 static PROCESS_QUARANTINE: OnceLock<Arc<Mutex<BTreeMap<String, u64>>>> = OnceLock::new();
@@ -32,7 +34,19 @@ impl RecoveringWhisperEngine {
             process_quarantine: Arc::clone(
                 PROCESS_QUARANTINE.get_or_init(|| Arc::new(Mutex::new(BTreeMap::new()))),
             ),
+            local_quarantine: None,
         }
+    }
+
+    pub(crate) fn new_local(
+        decision: WhisperPlanDecision,
+        quarantine: QuarantineStore,
+        local_store: LocalSelectionStore,
+        local_key: LocalSelectionKey,
+    ) -> Self {
+        let mut engine = Self::new(decision, quarantine);
+        engine.local_quarantine = Some((local_store, local_key));
+        engine
     }
 
     #[must_use]
@@ -47,6 +61,7 @@ impl RecoveringWhisperEngine {
             quarantine,
             now,
             process_quarantine: Arc::new(Mutex::new(BTreeMap::new())),
+            local_quarantine: None,
         }
     }
 
@@ -161,11 +176,16 @@ impl RecoveringWhisperEngine {
                 now.saturating_add(MAX_QUARANTINE_LIFETIME_SECS),
             );
         }
-        let _ = self.quarantine.record_failure(
-            &plan.identity_key,
-            quarantine_reason(failure),
-            now,
-        );
+        let _ = self
+            .quarantine
+            .record_failure(&plan.identity_key, quarantine_reason(failure), now);
+        if let Some((store, key)) = &self.local_quarantine {
+            if let Err(error) =
+                store.append_quarantine(key.clone(), quarantine_reason(failure), now)
+            {
+                eprintln!("Whisper local quarantine write failed: {error}");
+            }
+        }
         self.run_fallback(plan, pcm, options, true, failure)
     }
 
@@ -187,8 +207,8 @@ impl RecoveringWhisperEngine {
         accelerated_attempted: bool,
         reason: WhisperRecoveryReason,
     ) -> Result<Transcript, EngineError> {
-        let mut transcript = WhisperEngine::with_plan(plan.fallback.clone())
-            .transcribe(pcm, options)?;
+        let mut transcript =
+            WhisperEngine::with_plan(plan.fallback.clone()).transcribe(pcm, options)?;
         attach_recovery(
             &mut transcript,
             &plan.identity_key,
@@ -292,6 +312,7 @@ mod tests {
     };
 
     use super::*;
+    use crate::stt::whisper_accel_cache::{LocalSelectionKey, LocalSelectionStore};
     use crate::stt::{
         whisper_runtime_launch, AdmissionIdentityKey, QuarantineStore, WhisperExecutionPlan,
         WhisperModelAsset, WhisperPlanDecision, WhisperRuntimeCandidate, WhisperTuning,
@@ -437,7 +458,15 @@ mod tests {
             "ggml_vulkan: 0 = Intel Graphics | uma: 1\nwhisper_backend_init_gpu: using Vulkan0 backend\n{}",
             receipt_line(&expected)
         );
-        let gpu = script(&root, "gpu", &gpu_marker, &json("GPU"), &gpu_log, false, true);
+        let gpu = script(
+            &root,
+            "gpu",
+            &gpu_marker,
+            &json("GPU"),
+            &gpu_log,
+            false,
+            true,
+        );
         let cpu = script(
             &root,
             "cpu",
@@ -507,12 +536,54 @@ mod tests {
             receipt_line(&receipt(0x9999))
         );
         let cases = [
-            ("crash", json("GPU"), "decoder crashed".to_string(), false, false, WhisperRecoveryReason::RuntimeFailure),
-            ("malformed", "not json".to_string(), valid_log.clone(), false, true, WhisperRecoveryReason::MalformedOutput),
-            ("missing-receipt", json("GPU"), "whisper_backend_init_gpu: using Vulkan0 backend".to_string(), false, true, WhisperRecoveryReason::MissingReceipt),
-            ("wrong-receipt", json("GPU"), wrong_log, false, true, WhisperRecoveryReason::ReceiptMismatch),
-            ("cpu-fallback", json("GPU"), "whisper_model_load: CPU total size = 1 MB".to_string(), false, true, WhisperRecoveryReason::CpuFallback),
-            ("timeout", json("GPU"), valid_log, true, true, WhisperRecoveryReason::Timeout),
+            (
+                "crash",
+                json("GPU"),
+                "decoder crashed".to_string(),
+                false,
+                false,
+                WhisperRecoveryReason::RuntimeFailure,
+            ),
+            (
+                "malformed",
+                "not json".to_string(),
+                valid_log.clone(),
+                false,
+                true,
+                WhisperRecoveryReason::MalformedOutput,
+            ),
+            (
+                "missing-receipt",
+                json("GPU"),
+                "whisper_backend_init_gpu: using Vulkan0 backend".to_string(),
+                false,
+                true,
+                WhisperRecoveryReason::MissingReceipt,
+            ),
+            (
+                "wrong-receipt",
+                json("GPU"),
+                wrong_log,
+                false,
+                true,
+                WhisperRecoveryReason::ReceiptMismatch,
+            ),
+            (
+                "cpu-fallback",
+                json("GPU"),
+                "whisper_model_load: CPU total size = 1 MB".to_string(),
+                false,
+                true,
+                WhisperRecoveryReason::CpuFallback,
+            ),
+            (
+                "timeout",
+                json("GPU"),
+                valid_log,
+                true,
+                true,
+                WhisperRecoveryReason::Timeout,
+            ),
         ];
         for (label, stdout, stderr, sleep, success, reason) in cases {
             let root = scratch(label);
@@ -551,30 +622,39 @@ mod tests {
             )
             .unwrap();
             let store = QuarantineStore::at(root.join("quarantine.json"));
-            let engine = RecoveringWhisperEngine::with_clock(decision, store, now);
+            let local_key = LocalSelectionKey::parse(identity_key.as_str().to_string()).unwrap();
+            let local_store = LocalSelectionStore::at(root.join("local-state"));
+            let mut engine = RecoveringWhisperEngine::with_clock(decision, store, now);
+            engine.local_quarantine = Some((local_store.clone(), local_key.clone()));
             let transcript = engine
                 .transcribe(&Pcm16kMono::from_samples(vec![0; 160]), &options())
                 .unwrap();
             assert_eq!(transcript.raw, "CPU", "{label}");
-            assert_eq!(fs::read_to_string(&cpu_marker).unwrap().lines().count(), 1, "{label}");
+            assert_eq!(
+                fs::read_to_string(&cpu_marker).unwrap().lines().count(),
+                1,
+                "{label}"
+            );
             let recovery = transcript.detail.whisper.unwrap().recovery.unwrap();
             assert!(recovery.accelerated_attempted, "{label}");
             assert_eq!(recovery.fallback_reason, Some(reason), "{label}");
             assert!(engine.quarantine_is_active(NOW).unwrap(), "{label}");
+            assert!(
+                local_store
+                    .snapshot(&local_key, NOW)
+                    .unwrap()
+                    .active_quarantine
+                    .is_some(),
+                "{label}"
+            );
             if label == "crash" {
                 fs::remove_file(root.join("quarantine.json")).unwrap();
                 let transcript = engine
                     .transcribe(&Pcm16kMono::from_samples(vec![0; 160]), &options())
                     .unwrap();
                 assert_eq!(transcript.raw, "CPU");
-                assert_eq!(
-                    fs::read_to_string(&gpu_marker).unwrap().lines().count(),
-                    1
-                );
-                assert_eq!(
-                    fs::read_to_string(&cpu_marker).unwrap().lines().count(),
-                    2
-                );
+                assert_eq!(fs::read_to_string(&gpu_marker).unwrap().lines().count(), 1);
+                assert_eq!(fs::read_to_string(&cpu_marker).unwrap().lines().count(), 2);
                 let recovery = transcript.detail.whisper.unwrap().recovery.unwrap();
                 assert!(!recovery.accelerated_attempted);
                 assert_eq!(
@@ -582,10 +662,7 @@ mod tests {
                     Some(WhisperRecoveryReason::Quarantined)
                 );
                 assert!(!engine
-                    .process_quarantined(
-                        &identity_key,
-                        NOW + MAX_QUARANTINE_LIFETIME_SECS,
-                    )
+                    .process_quarantined(&identity_key, NOW + MAX_QUARANTINE_LIFETIME_SECS,)
                     .unwrap());
             }
         }
@@ -648,7 +725,11 @@ mod tests {
     #[test]
     fn existing_or_unreadable_quarantine_skips_acceleration() {
         for (label, corrupt, reason) in [
-            ("already-quarantined", false, WhisperRecoveryReason::Quarantined),
+            (
+                "already-quarantined",
+                false,
+                WhisperRecoveryReason::Quarantined,
+            ),
             (
                 "unreadable-quarantine",
                 true,
