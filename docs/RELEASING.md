@@ -28,6 +28,12 @@ to become a release requirement.
 
 ## Publish
 
+Portable Whisper Auto becomes the factory default only after the compatibility
+matrix records a `pass` on Intel Mesa, AMD RADV, NVIDIA Vulkan, CPU-only, and
+dual-GPU Linux x86_64 hosts. Until that file is complete, Echo keeps CPU as
+the unset default. Users can still pick Auto or GPU in Settings. Automatic
+language and recognition hints stay on CPU.
+
 ### Stage a qualified Whisper acceleration release
 
 Use this path when the release contains an admitted Whisper accelerator. Do not let the tag workflow rebuild the qualified executable.

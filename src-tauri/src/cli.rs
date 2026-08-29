@@ -67,6 +67,8 @@ struct TranscribeArgs {
     whisper_best_of: Option<u8>,
     #[arg(long)]
     whisper_no_fallback: bool,
+    #[arg(long, value_enum)]
+    whisper_acceleration: Option<CliWhisperAcceleration>,
     #[arg(long, hide = true)]
     whisper_no_gpu: bool,
     #[arg(long, hide = true)]
@@ -111,6 +113,23 @@ impl From<CatalogEngine> for EngineChoice {
         match value {
             CatalogEngine::Whisper => Self::Whisper,
             CatalogEngine::Parakeet => Self::Parakeet,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum CliWhisperAcceleration {
+    Auto,
+    Gpu,
+    Cpu,
+}
+
+impl From<CliWhisperAcceleration> for echo_core::WhisperAccelerationPreference {
+    fn from(value: CliWhisperAcceleration) -> Self {
+        match value {
+            CliWhisperAcceleration::Auto => Self::Auto,
+            CliWhisperAcceleration::Gpu => Self::Gpu,
+            CliWhisperAcceleration::Cpu => Self::Cpu,
         }
     }
 }
@@ -242,6 +261,7 @@ fn run_transcribe(args: TranscribeArgs) -> Result<(), CliFailure> {
         || args.whisper_beam_size.is_some()
         || args.whisper_best_of.is_some()
         || args.whisper_no_fallback
+        || args.whisper_acceleration.is_some()
         || args.whisper_no_gpu
         || args.whisper_vulkan_driver_files.is_some()
         || args.whisper_mesa_shader_cache_dir.is_some();
@@ -274,6 +294,7 @@ fn run_transcribe(args: TranscribeArgs) -> Result<(), CliFailure> {
         language: args.language,
         whisper_tuning,
         whisper_force_cpu: args.whisper_no_gpu,
+        whisper_acceleration: args.whisper_acceleration.map(Into::into),
         whisper_vulkan_driver_files: args.whisper_vulkan_driver_files,
         whisper_mesa_shader_cache_dir: args.whisper_mesa_shader_cache_dir,
     };

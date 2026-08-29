@@ -64,8 +64,8 @@ fn eligible(key: LocalSelectionKey, observed_at: u64) -> NewCalibrationObservati
     NewCalibrationObservation {
         key,
         verdict: CalibrationVerdict::GpuEligible,
-        cpu_infer_ms: 200,
-        gpu_infer_ms: Some(100),
+        cpu_infer_ms: 2000,
+        gpu_infer_ms: Some(1000),
         transcript_parity: Some(true),
         ready_receipt: Some(observed.clone()),
         result_receipt: Some(observed),
@@ -405,4 +405,11 @@ fn completed_job_history_does_not_exhaust_pending_queue() {
         .publish_job(pending, &serde_json::json!({"jobId": pending}))
         .unwrap();
     assert_eq!(store.job_paths().unwrap().len(), 1);
+}
+
+#[test]
+fn gpu_eligibility_requires_percent_and_absolute_improvement() {
+    assert!(gpu_beats_cpu(2000, 1000));
+    assert!(!gpu_beats_cpu(300, 200));
+    assert!(!gpu_beats_cpu(2000, 1700));
 }

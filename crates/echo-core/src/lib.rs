@@ -17,7 +17,8 @@ pub use config::{resolve, Config, EngineChoice, MicrophoneSelection};
 pub use dictionary::{DictEntry, Dictionary, RecognitionHints, Rewrite};
 pub use engine::{
     DecodeOptions, Engine, EngineError, RunDetail, Transcript, WhisperAttemptTelemetry,
-    WhisperAccelerationPreference, WhisperCachedDecision, WhisperRecoveryReason,
+    WhisperAccelerationPolicyReason, WhisperAccelerationPreference, WhisperCachedDecision,
+    WhisperRecoveryReason,
     WhisperRecoveryTelemetry, WhisperRetryReason, WhisperRunMode, WhisperRunTelemetry,
     WhisperRuntimeBackend, WhisperRuntimeSource, WhisperRuntimeTelemetry,
     WhisperSelectionTelemetry, WhisperTuningTelemetry, WhisperVulkanReceipt,

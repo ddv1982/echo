@@ -19,6 +19,7 @@ export interface Settings {
   hud: SettingField<boolean>
   recordSeconds: SettingField<number>
   language: SettingField<string>
+  whisperAcceleration: SettingField<string>
 }
 
 export interface RecordingPolicy {
@@ -188,6 +189,19 @@ export interface LastRunPerformance {
     bestOf: number | null
     noFallback: boolean | null
   }
+  selection?: {
+    preference: 'auto' | 'gpu' | 'cpu'
+    cachedDecision: 'unknown' | 'cpu' | 'vulkan'
+    localKey?: string
+    calibrationPending: boolean
+    proofOnly: boolean
+    policyReason?: 'automaticLanguage' | 'recognitionHints' | 'compatMatrixIncomplete'
+  } | null
+  recovery?: {
+    identityKey: string
+    acceleratedAttempted: boolean
+    fallbackReason?: string | null
+  } | null
 }
 
 export interface WhisperModelInfo {

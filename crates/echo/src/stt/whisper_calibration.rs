@@ -117,6 +117,7 @@ impl CalibrationJob {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn deferred(
         package_root: PathBuf,
         state_root: PathBuf,
@@ -574,10 +575,14 @@ fn calibrate(
         }
     };
     let parity = cpu_result.raw == gpu_result.raw;
-    let verdict = if parity {
+    let gpu_infer_ms = gpu_result.infer_ms.max(1);
+    let verdict = if !parity {
+        CalibrationVerdict::Failed
+    } else if super::whisper_accel_cache::gpu_beats_cpu(cpu_result.infer_ms.max(1), gpu_infer_ms)
+    {
         CalibrationVerdict::GpuEligible
     } else {
-        CalibrationVerdict::Failed
+        CalibrationVerdict::CpuOnly
     };
     store.append_calibration(NewCalibrationObservation {
         key: key.clone(),

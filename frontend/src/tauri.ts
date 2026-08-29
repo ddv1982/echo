@@ -765,6 +765,7 @@ function defaultPreviewSettings(): Settings {
       source: 'default',
     },
     language: { value: null, effective: 'auto', source: 'default' },
+    whisperAcceleration: { value: null, effective: 'cpu', source: 'default' },
   })
 }
 
@@ -783,6 +784,7 @@ function projectPreviewSettings(settings: Settings): Settings {
     hud: previewField(settings.hud.value, true),
     recordSeconds: previewField(recordValue, PREVIEW_RECORDING_POLICY.defaultSeconds),
     language: previewField(settings.language.value, 'auto'),
+    whisperAcceleration: previewField(settings.whisperAcceleration.value, 'cpu'),
   }
 }
 

@@ -56,6 +56,8 @@ pub struct WhisperSelectionTelemetry {
     pub local_key: Option<String>,
     pub calibration_pending: bool,
     pub proof_only: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_reason: Option<WhisperAccelerationPolicyReason>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,6 +66,35 @@ pub enum WhisperAccelerationPreference {
     Auto,
     Gpu,
     Cpu,
+}
+
+impl WhisperAccelerationPreference {
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "auto" => Some(Self::Auto),
+            "gpu" => Some(Self::Gpu),
+            "cpu" => Some(Self::Cpu),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Gpu => "gpu",
+            Self::Cpu => "cpu",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WhisperAccelerationPolicyReason {
+    AutomaticLanguage,
+    RecognitionHints,
+    CompatMatrixIncomplete,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

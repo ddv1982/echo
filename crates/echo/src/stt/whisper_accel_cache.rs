@@ -191,7 +191,18 @@ impl CalibrationObservation {
             && self.transcript_parity == Some(true)
             && self.ready_receipt.is_some()
             && self.result_receipt.is_some()
+            && self
+                .gpu_infer_ms
+                .is_some_and(|gpu| gpu_beats_cpu(self.cpu_infer_ms, gpu))
     }
+}
+
+pub(crate) const AUTO_GPU_MIN_IMPROVEMENT_MS: u64 = 250;
+
+#[must_use]
+pub(crate) fn gpu_beats_cpu(cpu_infer_ms: u64, gpu_infer_ms: u64) -> bool {
+    cpu_infer_ms.saturating_sub(gpu_infer_ms) >= AUTO_GPU_MIN_IMPROVEMENT_MS
+        && gpu_infer_ms.saturating_mul(5) <= cpu_infer_ms.saturating_mul(4)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
