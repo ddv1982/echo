@@ -666,6 +666,7 @@ def validate_receipt(package, repo_root):
     for relative in [
         "patches/whisper.cpp/runtime-probe.patch",
         "patches/whisper.cpp/runtime-receipt.patch",
+        "patches/whisper.cpp/runtime-selector.patch",
     ]:
         path = repo_root / relative
         validate_patch_counts(path)
@@ -694,7 +695,14 @@ def elf_files(package, receipt):
 def runtime_environment(package, base=None):
     source = os.environ if base is None else base
     environment = {
-        key: value for key, value in source.items() if not key.startswith("LD_")
+        key: value
+        for key, value in source.items()
+        if not key.startswith(("LD_", "VK_", "MESA_", "GGML_"))
+        and key
+        not in {
+            "ECHO_WHISPER_VULKAN_DEVICE_UUID",
+            "ECHO_WHISPER_VULKAN_DRIVER_UUID",
+        }
     }
     environment["LD_LIBRARY_PATH"] = str(package)
     return environment
@@ -740,27 +748,19 @@ def verify_elf_resolution(package, receipt, require_vulkan):
             fail("Vulkan module did not resolve the host-owned libvulkan.so.1")
 
 
-def run_probe(package, cpu):
+def run_probe(package, *arguments, environment=None):
     command = [str(package / "echo-whisper-runtime-probe")]
-    if cpu:
-        command.append("--cpu")
+    command.extend(arguments)
     return subprocess.run(
         command,
-        env=runtime_environment(package),
+        env=runtime_environment(package) if environment is None else environment,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
 
 
-def validate_vulkan_receipt(stderr):
-    prefix = "echo_whisper_runtime_receipt: "
-    lines = [
-        line[len(prefix) :] for line in stderr.splitlines() if line.startswith(prefix)
-    ]
-    if len(lines) != 1:
-        fail(f"Vulkan runtime probe emitted {len(lines)} device receipts")
-    receipt = strict_json_loads(lines[0])
+def validate_vulkan_receipt_value(receipt):
     require_exact_keys(
         receipt,
         {
@@ -802,6 +802,40 @@ def validate_vulkan_receipt(stderr):
             r"(?!0{32})[0-9a-f]{32}", receipt[key]
         ):
             fail(f"Vulkan runtime probe emitted an invalid {key}")
+    return receipt
+
+
+def validate_vulkan_receipt(stderr):
+    prefix = "echo_whisper_runtime_receipt: "
+    lines = [
+        line[len(prefix) :] for line in stderr.splitlines() if line.startswith(prefix)
+    ]
+    if len(lines) != 1:
+        fail(f"Vulkan runtime probe emitted {len(lines)} device receipts")
+    return validate_vulkan_receipt_value(strict_json_loads(lines[0]))
+
+
+def enumerate_vulkan_receipts(package):
+    result = run_probe(package, "--list-vulkan-json")
+    if result.returncode != 0:
+        fail(f"Vulkan enumeration failed: {result.stderr.strip()}")
+    prefix = "echo_whisper_vulkan_device: "
+    receipts = [
+        validate_vulkan_receipt_value(strict_json_loads(line[len(prefix) :]))
+        for line in result.stdout.splitlines()
+        if line.startswith(prefix)
+    ]
+    if not receipts or [receipt["selectedIndex"] for receipt in receipts] != list(
+        range(len(receipts))
+    ):
+        fail("Vulkan enumeration is empty or has unstable indices")
+    stable = [
+        tuple(receipt[key] for key in ("deviceUUID", "driverUUID"))
+        for receipt in receipts
+    ]
+    if len(stable) != len(set(stable)):
+        fail("Vulkan enumeration has duplicate stable device identities")
+    return receipts
 
 
 def validate_cpu_probe(stderr, package, receipt, require_vulkan):
@@ -825,10 +859,10 @@ def validate_cpu_probe(stderr, package, receipt, require_vulkan):
 
 
 def verify_runtime_loading(package, receipt, require_vulkan):
-    cpu = run_probe(package, True)
+    cpu = run_probe(package, "--cpu")
     if cpu.returncode != 0:
         fail(f"CPU runtime probe failed: {cpu.stderr.strip()}")
-    selected = validate_cpu_probe(cpu.stderr, package, receipt, require_vulkan)
+    selected_cpu = validate_cpu_probe(cpu.stderr, package, receipt, require_vulkan)
     help_result = subprocess.run(
         [str(package / "whisper-cli"), "--no-gpu", "--help"],
         env=runtime_environment(package),
@@ -839,15 +873,46 @@ def verify_runtime_loading(package, receipt, require_vulkan):
     if help_result.returncode != 0 or "--no-gpu" not in help_result.stdout:
         fail("whisper-cli does not expose the managed CPU --no-gpu switch")
     if require_vulkan:
-        vulkan = run_probe(package, False)
+        vulkan = run_probe(package, "--ready-vulkan")
         if vulkan.returncode != 0:
             fail(f"Vulkan runtime probe failed: {vulkan.stderr.strip()}")
         validate_vulkan_receipt(vulkan.stderr)
-    print(f"selectedCpuVariant={selected}")
+        enumerated = enumerate_vulkan_receipts(package)
+        selected_vulkan = enumerated[0]
+        selector_environment = runtime_environment(package)
+        selector_environment["ECHO_WHISPER_VULKAN_DEVICE_UUID"] = selected_vulkan[
+            "deviceUUID"
+        ]
+        selector_environment["ECHO_WHISPER_VULKAN_DRIVER_UUID"] = selected_vulkan[
+            "driverUUID"
+        ]
+        ready = run_probe(
+            package, "--ready-vulkan", environment=selector_environment
+        )
+        if ready.returncode != 0:
+            fail(f"Vulkan UUID selection failed: {ready.stderr.strip()}")
+        ready_receipt = validate_vulkan_receipt(ready.stderr)
+        for key in (
+            "apiVersion",
+            "backend",
+            "deviceId",
+            "deviceUUID",
+            "driverUUID",
+            "driverVersion",
+            "pipelineCacheUUID",
+            "schemaVersion",
+            "vendorId",
+        ):
+            if ready_receipt[key] != selected_vulkan[key]:
+                fail("Vulkan UUID selection returned another stable device")
+        if ready_receipt["selectedIndex"] != 0:
+            fail("Vulkan UUID selection did not isolate one logical device")
+    print(f"selectedCpuVariant={selected_cpu}")
     print("cpuBackendVerified=true")
     print("noGpuSwitchAvailable=true")
     if require_vulkan:
         print("vulkanBackendVerified=true")
+        print("vulkanUuidSelectorVerified=true")
     print(f"artifactId={receipt['artifactId']}")
     print("portable=true")
 

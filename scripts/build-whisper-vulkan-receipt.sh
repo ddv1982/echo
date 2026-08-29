@@ -5,6 +5,7 @@ readonly script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly repo_root="$(cd -- "${script_dir}/.." && pwd)"
 readonly receipt_patch="${repo_root}/patches/whisper.cpp/runtime-receipt.patch"
 readonly probe_patch="${repo_root}/patches/whisper.cpp/runtime-probe.patch"
+readonly selector_patch="${repo_root}/patches/whisper.cpp/runtime-selector.patch"
 readonly runtime_verifier="${repo_root}/scripts/verify-whisper-vulkan-runtime.sh"
 readonly required_libraries=(libwhisper libggml libggml-base)
 
@@ -23,14 +24,16 @@ Usage:
 
 SOURCE_DIR must be a clean checkout at whisper.cpp v1.9.2 commit
 306c88f4d1286aec1bf96e544632897886af5501 by default, or the explicitly
-requested supported revision. OUTPUT_DIR must not exist. The shared
-runtime-receipt.patch applies unchanged to v1.9.2 and v1.9.3.
+requested supported revision. OUTPUT_DIR must not exist. The Echo runtime
+patches apply unchanged to v1.9.2 and v1.9.3.
 The resulting directory places whisper-cli and every built shared library beside
 one another; invoke it with that directory first in LD_LIBRARY_PATH.
 EOF
 }
 
 revision="v1.9.2"
+build_jobs="${ECHO_WHISPER_BUILD_JOBS:-4}"
+[[ "${build_jobs}" =~ ^[1-9][0-9]*$ ]] || die "ECHO_WHISPER_BUILD_JOBS must be a positive integer"
 if [[ "${1:-}" == "--revision" ]]; then
     [[ $# -ge 3 ]] || { usage >&2; exit 2; }
     revision="$2"
@@ -39,12 +42,24 @@ fi
 
 check_source() {
     local source_dir="$1"
+    local check_root
+    local check_dir
     [[ -d "${source_dir}/.git" || -f "${source_dir}/.git" ]] || die "source is not a Git worktree: ${source_dir}"
     [[ -f "${source_dir}/CMakeLists.txt" ]] || die "source does not look like whisper.cpp: ${source_dir}"
     [[ "$(git -C "${source_dir}" rev-parse HEAD)" == "${expected_commit}" ]] || die "source HEAD is not ${expected_commit}"
     [[ -z "$(git -C "${source_dir}" status --porcelain)" ]] || die "source worktree is not clean"
-    git -C "${source_dir}" apply --check "${receipt_patch}" || die "receipt patch does not apply to source"
-    git -C "${source_dir}" apply --check "${probe_patch}" || die "runtime probe patch does not apply to source"
+    check_root="$(mktemp -d "${TMPDIR:-/tmp}/echo-whisper-patch-check.XXXXXX")"
+    check_dir="${check_root}/source"
+    git -C "${source_dir}" worktree add --detach "${check_dir}" "${expected_commit}" >/dev/null
+    if ! git -C "${check_dir}" apply "${receipt_patch}" \
+        || ! git -C "${check_dir}" apply "${probe_patch}" \
+        || ! git -C "${check_dir}" apply "${selector_patch}"; then
+        git -C "${source_dir}" worktree remove --force "${check_dir}" >/dev/null 2>&1 || true
+        rmdir -- "${check_root}" >/dev/null 2>&1 || true
+        die "Echo runtime patches do not apply to source"
+    fi
+    git -C "${source_dir}" worktree remove --force "${check_dir}" >/dev/null
+    rmdir -- "${check_root}"
 }
 
 check_staged_runtime() {
@@ -87,6 +102,7 @@ check_staged_runtime() {
 
 [[ -f "${receipt_patch}" ]] || die "receipt patch is missing: ${receipt_patch}"
 [[ -f "${probe_patch}" ]] || die "runtime probe patch is missing: ${probe_patch}"
+[[ -f "${selector_patch}" ]] || die "runtime selector patch is missing: ${selector_patch}"
 [[ -x "${runtime_verifier}" ]] || die "runtime verifier is missing or not executable: ${runtime_verifier}"
 revision_info="$("${runtime_verifier}" --revision-info "${revision}")" \
     || die "unsupported revision: ${revision}"
@@ -129,6 +145,8 @@ git -C "${worktree_dir}" apply --check "${receipt_patch}"
 git -C "${worktree_dir}" apply "${receipt_patch}"
 git -C "${worktree_dir}" apply --check "${probe_patch}"
 git -C "${worktree_dir}" apply "${probe_patch}"
+git -C "${worktree_dir}" apply --check "${selector_patch}"
+git -C "${worktree_dir}" apply "${selector_patch}"
 
 SOURCE_DATE_EPOCH="${source_date_epoch}" cmake -S "${worktree_dir}" -B "${build_dir}" \
     -DCMAKE_BUILD_TYPE=Release \
@@ -143,7 +161,7 @@ SOURCE_DATE_EPOCH="${source_date_epoch}" cmake -S "${worktree_dir}" -B "${build_
     -DWHISPER_BUILD_TESTS=OFF \
     -DWHISPER_BUILD_EXAMPLES=ON \
     -DWHISPER_BUILD_SERVER=OFF
-SOURCE_DATE_EPOCH="${source_date_epoch}" cmake --build "${build_dir}" --config Release --target whisper-cli echo-whisper-runtime-probe --parallel
+SOURCE_DATE_EPOCH="${source_date_epoch}" cmake --build "${build_dir}" --config Release --target whisper-cli echo-whisper-runtime-probe --parallel "${build_jobs}"
 
 mv -- "${build_dir}/bin" "${stage_dir}"
 check_staged_runtime "${stage_dir}"
@@ -155,7 +173,8 @@ check_staged_runtime "${stage_dir}"
     "${source_date_epoch}" \
     "${repo_root}" \
     "${probe_patch}" \
-    "${receipt_patch}"
+    "${receipt_patch}" \
+    "${selector_patch}"
 "${runtime_verifier}" --verify --require-vulkan "${stage_dir}"
 
 mv -- "${stage_dir}" "${output_dir}"

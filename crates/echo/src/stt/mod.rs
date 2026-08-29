@@ -1,3 +1,5 @@
+#[expect(dead_code, reason = "PR16.3 planner wiring follows the native selector gate")]
+mod backend;
 mod cache;
 mod fake;
 mod parakeet;
@@ -36,8 +38,8 @@ pub use whisper_identity::{
 };
 pub use whisper_plan::{
     preferred_runtime, WhisperExecutionPlan, WhisperModelAsset, WhisperPlanDecision,
-    WhisperProtocol, WhisperRuntimeCandidate, WhisperRuntimeLaunch, WhisperTuning,
-    WhisperTuningOverride,
+    VulkanRuntimeSelector, WhisperProtocol, WhisperRuntimeCandidate, WhisperRuntimeLaunch,
+    WhisperTuning, WhisperTuningOverride,
 };
 pub use whisper_quarantine::QuarantineStore;
 pub use whisper_recovery::RecoveringWhisperEngine;

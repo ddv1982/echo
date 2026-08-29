@@ -20,7 +20,8 @@ use super::whisper_behavior::{
     ONE_SHOT_TIMEOUT_SECS,
 };
 use super::whisper_probe::{
-    observe_runtime, parse_vulkan_runtime_receipt, parse_vulkan_runtime_receipt_line,
+    observe_runtime, parse_vulkan_devices, parse_vulkan_runtime_receipt,
+    parse_vulkan_runtime_receipt_line,
 };
 use super::whisper_runtime_launch;
 use super::write_temp_wav;
@@ -458,7 +459,13 @@ pub(crate) fn probe_vulkan_runtime_receipt(
     launch: &WhisperRuntimeLaunch,
     timeout: Duration,
 ) -> Result<echo_core::WhisperVulkanReceipt, String> {
-    let (output, _) = run_attempt(binary, Some(launch), Vec::new(), false, timeout)
+    let (output, _) = run_attempt(
+        binary,
+        Some(launch),
+        vec!["--ready-vulkan".to_string()],
+        false,
+        timeout,
+    )
         .map_err(|error| error.to_string())?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     if !output.status.success() {
@@ -467,12 +474,37 @@ pub(crate) fn probe_vulkan_runtime_receipt(
     parse_vulkan_runtime_receipt_line(&stderr)
 }
 
+pub(crate) fn enumerate_vulkan_runtime_receipts(
+    binary: &Path,
+    launch: &WhisperRuntimeLaunch,
+    timeout: Duration,
+) -> Result<Vec<echo_core::WhisperVulkanReceipt>, String> {
+    let (output, _) = run_attempt(
+        binary,
+        Some(launch),
+        vec!["--list-vulkan-json".to_string()],
+        false,
+        timeout,
+    )
+    .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).into_owned());
+    }
+    parse_vulkan_devices(&String::from_utf8_lossy(&output.stdout))
+}
+
 fn command_for_runtime(binary: &Path, launch: Option<&WhisperRuntimeLaunch>) -> Command {
     let mut command = Command::new(binary);
     let Some(launch) = launch else {
         return command;
     };
     for name in CLEARED_ENVIRONMENT_KEYS {
+        command.env_remove(name);
+    }
+    for name in [
+        "ECHO_WHISPER_VULKAN_DEVICE_UUID",
+        "ECHO_WHISPER_VULKAN_DRIVER_UUID",
+    ] {
         command.env_remove(name);
     }
     for (name, _) in std::env::vars_os() {
@@ -488,6 +520,16 @@ fn command_for_runtime(binary: &Path, launch: Option<&WhisperRuntimeLaunch>) -> 
     }
     if let Some(path) = &launch.mesa_shader_cache_dir {
         command.env("MESA_SHADER_CACHE_DIR", path);
+    }
+    if let Some(selector) = &launch.vulkan_selector {
+        command.env(
+            "ECHO_WHISPER_VULKAN_DEVICE_UUID",
+            selector.device_uuid(),
+        );
+        command.env(
+            "ECHO_WHISPER_VULKAN_DRIVER_UUID",
+            selector.driver_uuid(),
+        );
     }
     command
 }
@@ -700,6 +742,7 @@ fn parse_whisper_json(raw: &str) -> Result<WhisperParse, EngineError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stt::VulkanRuntimeSelector;
     use echo_core::{Dictionary, RecognitionHints};
 
     fn options(language: LanguageChoice) -> DecodeOptions {
@@ -747,6 +790,9 @@ mod tests {
             library_dir: Some(PathBuf::from("/runtime")),
             vulkan_driver_files: Some(PathBuf::from("/driver.json")),
             mesa_shader_cache_dir: Some(PathBuf::from("/shader-cache")),
+            vulkan_selector: Some(
+                VulkanRuntimeSelector::parse("1".repeat(32), "2".repeat(32)).unwrap(),
+            ),
             identity_sha256: Some("a".repeat(64)),
         };
         let command = command_for_runtime(Path::new("whisper-cli"), Some(&launch));
@@ -767,6 +813,14 @@ mod tests {
         assert_eq!(
             value("MESA_SHADER_CACHE_DIR").flatten(),
             Some(std::ffi::OsStr::new("/shader-cache"))
+        );
+        assert_eq!(
+            value("ECHO_WHISPER_VULKAN_DEVICE_UUID").flatten(),
+            Some(std::ffi::OsStr::new("11111111111111111111111111111111"))
+        );
+        assert_eq!(
+            value("ECHO_WHISPER_VULKAN_DRIVER_UUID").flatten(),
+            Some(std::ffi::OsStr::new("22222222222222222222222222222222"))
         );
         assert_eq!(value("LD_PRELOAD"), Some(None));
         assert_eq!(value("VK_ICD_FILENAMES"), Some(None));

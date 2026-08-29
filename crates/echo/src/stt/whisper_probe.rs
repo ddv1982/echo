@@ -3,6 +3,32 @@ use std::collections::BTreeSet;
 use echo_core::{WhisperRuntimeBackend, WhisperVulkanReceipt};
 
 const VULKAN_RECEIPT_PREFIX: &str = "echo_whisper_runtime_receipt: ";
+const VULKAN_DEVICE_PREFIX: &str = "echo_whisper_vulkan_device: ";
+
+pub(crate) fn parse_vulkan_devices(stdout: &str) -> Result<Vec<WhisperVulkanReceipt>, String> {
+    let mut receipts = stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix(VULKAN_DEVICE_PREFIX))
+        .map(parse_receipt_json)
+        .collect::<Result<Vec<_>, _>>()?;
+    if receipts.is_empty() {
+        return Err("Vulkan device enumeration is empty".to_string());
+    }
+    receipts.sort_by_key(|receipt| receipt.selected_index);
+    for (index, receipt) in receipts.iter().enumerate() {
+        if receipt.selected_index != u32::try_from(index).unwrap_or(u32::MAX) {
+            return Err("Vulkan device enumeration indices are not contiguous".to_string());
+        }
+    }
+    let stable = receipts
+        .iter()
+        .map(|receipt| (&receipt.device_uuid, &receipt.driver_uuid))
+        .collect::<BTreeSet<_>>();
+    if stable.len() != receipts.len() {
+        return Err("Vulkan device enumeration repeats a stable identity".to_string());
+    }
+    Ok(receipts)
+}
 
 pub(crate) fn parse_vulkan_runtime_receipt(
     stderr: &str,
@@ -46,7 +72,11 @@ pub(crate) fn parse_vulkan_runtime_receipt_line(
             lines.len()
         ));
     }
-    let receipt: WhisperVulkanReceipt = serde_json::from_str(lines[0])
+    parse_receipt_json(lines[0])
+}
+
+fn parse_receipt_json(value: &str) -> Result<WhisperVulkanReceipt, String> {
+    let receipt: WhisperVulkanReceipt = serde_json::from_str(value)
         .map_err(|error| format!("invalid Vulkan runtime receipt: {error}"))?;
     if receipt.schema_version != 1 {
         return Err("Vulkan runtime receipt has an unsupported schemaVersion".to_string());
@@ -261,6 +291,33 @@ mod tests {
         assert!(parse_vulkan_runtime_receipt(&zero_uuid)
             .unwrap_err()
             .contains("deviceUUID"));
+    }
+
+    #[test]
+    fn enumeration_is_strict_contiguous_and_stable() {
+        let second = RECEIPT
+            .replace("\"selectedIndex\":0", "\"selectedIndex\":1")
+            .replace(
+                "8680a6460c0000000002000000000000",
+                "11111111111111111111111111111111",
+            );
+        let stdout = format!(
+            "echo_whisper_vulkan_device: {}\necho_whisper_vulkan_device: {}\n",
+            RECEIPT.strip_prefix(VULKAN_RECEIPT_PREFIX).unwrap(),
+            second.strip_prefix(VULKAN_RECEIPT_PREFIX).unwrap()
+        );
+        let receipts = parse_vulkan_devices(&stdout).unwrap();
+        assert_eq!(receipts.len(), 2);
+        assert_eq!(receipts[1].selected_index, 1);
+
+        assert!(parse_vulkan_devices(&stdout.replace("\"selectedIndex\":1", "\"selectedIndex\":2"))
+            .is_err());
+        assert!(parse_vulkan_devices(&format!(
+            "echo_whisper_vulkan_device: {}\necho_whisper_vulkan_device: {}\n",
+            RECEIPT.strip_prefix(VULKAN_RECEIPT_PREFIX).unwrap(),
+            RECEIPT.strip_prefix(VULKAN_RECEIPT_PREFIX).unwrap()
+        ))
+        .is_err());
     }
 
     #[test]
