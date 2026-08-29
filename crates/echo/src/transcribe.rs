@@ -557,19 +557,21 @@ pub fn prepare_with_config(
             if let Some(overrides) = overrides.whisper_tuning {
                 plan.tuning = overrides.apply(plan.tuning);
             }
-            plan.force_cpu = overrides.whisper_force_cpu
-                || (plan.runtime.source == echo_core::WhisperRuntimeSource::Managed
-                    && plan.runtime.backend == echo_core::WhisperRuntimeBackend::Cpu);
-            let can_accelerate = plan.runtime.source == echo_core::WhisperRuntimeSource::Managed
-                && plan.runtime.backend == echo_core::WhisperRuntimeBackend::Cpu
-                && overrides.whisper_tuning.is_none()
-                && !overrides.whisper_force_cpu
-                && overrides.whisper_vulkan_driver_files.is_none()
-                && overrides.whisper_mesa_shader_cache_dir.is_none();
             let preference = resolved_whisper_acceleration(
                 overrides.whisper_acceleration,
                 file.whisper_acceleration,
             );
+            plan.force_cpu = overrides.whisper_force_cpu
+                || preference == WhisperAccelerationPreference::Cpu
+                || (plan.runtime.source == echo_core::WhisperRuntimeSource::Managed
+                    && plan.runtime.backend == echo_core::WhisperRuntimeBackend::Cpu);
+            let can_accelerate = plan.runtime.source == echo_core::WhisperRuntimeSource::Managed
+                && plan.runtime.backend == echo_core::WhisperRuntimeBackend::Cpu
+                && preference != WhisperAccelerationPreference::Cpu
+                && overrides.whisper_tuning.is_none()
+                && !overrides.whisper_force_cpu
+                && overrides.whisper_vulkan_driver_files.is_none()
+                && overrides.whisper_mesa_shader_cache_dir.is_none();
             let engine: Box<dyn Engine> = if can_accelerate {
                 local_whisper_engine_from_process(plan.clone(), preference).unwrap_or_else(|| {
                     production_whisper_decision(plan.clone()).map_or_else(

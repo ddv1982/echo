@@ -27,6 +27,12 @@ type CalibrationSpawner = dyn Fn(&LocalSelectionStore, &CalibrationJob) -> Resul
 
 const FOREGROUND_GPU_DEADLINE: Duration = Duration::from_secs(30);
 
+enum AutoCache {
+    Gpu(LocalVulkanRoute),
+    Cpu,
+    Miss,
+}
+
 #[derive(Clone)]
 pub(crate) struct WhisperAccelerationPlanner {
     package: InstalledPortableSelection,
@@ -95,6 +101,48 @@ impl WhisperAccelerationPlanner {
         )
     }
 
+    fn cached_auto(
+        &self,
+        contract: &InferenceContractRecord,
+    ) -> Result<AutoCache, String> {
+        let execution = &self.package.package.selection.execution_artifact.id;
+        let Some(observation) = self.store.latest_route(execution, &contract.id)? else {
+            return Ok(AutoCache::Miss);
+        };
+        let runtime_key = AdmissionIdentityKey::parse(observation.key.as_str().to_string())?;
+        if QuarantineStore::at(self.store.root().join("runtime-quarantine.json"))
+            .is_active(&runtime_key, unix_time())?
+        {
+            return Ok(AutoCache::Miss);
+        }
+        let snapshot = self.store.snapshot(&observation.key, unix_time())?;
+        if snapshot.active_quarantine.is_some() {
+            return Ok(AutoCache::Miss);
+        }
+        match snapshot.latest_calibration.as_ref() {
+            Some(calibration) if calibration.is_gpu_eligible() => {
+                Ok(AutoCache::Gpu(self.restore_route(observation)?))
+            }
+            Some(calibration) if calibration.is_cpu_settled() => Ok(AutoCache::Cpu),
+            _ => Ok(AutoCache::Miss),
+        }
+    }
+
+    fn restore_route(
+        &self,
+        observation: super::whisper_accel_cache::LocalRouteObservation,
+    ) -> Result<LocalVulkanRoute, String> {
+        let mut route = self.backend().restore(&observation)?;
+        if test_fault("driver-change") {
+            route.fingerprint.icd_library_sha256 =
+                Sha256Digest::parse("f".repeat(64)).map_err(|error| error.to_string())?;
+        }
+        if test_fault("device-reorder") {
+            route.selected_index = route.selected_index.saturating_add(9);
+        }
+        Ok(route)
+    }
+
     fn cached_route(
         &self,
         contract: &InferenceContractRecord,
@@ -109,24 +157,10 @@ impl WhisperAccelerationPlanner {
         {
             return Ok(None);
         }
-        let snapshot = self.store.snapshot(&observation.key, unix_time())?;
-        if snapshot.active_quarantine.is_some()
-            || !snapshot
-                .latest_calibration
-                .as_ref()
-                .is_some_and(|calibration| calibration.is_gpu_eligible())
-        {
-            return Ok(None);
+        match self.cached_auto(contract)? {
+            AutoCache::Gpu(route) => Ok(Some(route)),
+            AutoCache::Cpu | AutoCache::Miss => Ok(None),
         }
-        let mut route = self.backend().restore(&observation)?;
-        if test_fault("driver-change") {
-            route.fingerprint.icd_library_sha256 =
-                Sha256Digest::parse("f".repeat(64)).map_err(|error| error.to_string())?;
-        }
-        if test_fault("device-reorder") {
-            route.selected_index = route.selected_index.saturating_add(9);
-        }
-        Ok(Some(route))
     }
 
     fn schedule(&self, managed_cpu: &WhisperExecutionPlan, contract: &InferenceContractRecord) {
@@ -308,11 +342,34 @@ impl Engine for ReceiptDrivenWhisperEngine {
                 None,
             );
         };
-        let cached = self.planner.cached_route(contract);
         if self.preference == WhisperAccelerationPreference::Auto {
-            return match cached {
-                Ok(Some(route)) => self.gpu(pcm, options, contract, route),
-                Ok(None) | Err(_) => self.cpu(
+            return match self.planner.cached_auto(contract) {
+                Ok(AutoCache::Gpu(route)) => self.gpu(pcm, options, contract, route),
+                Ok(AutoCache::Cpu) => self.cpu(
+                    pcm,
+                    options,
+                    selection(
+                        self.preference,
+                        WhisperCachedDecision::Cpu,
+                        None,
+                        false,
+                        None,
+                    ),
+                    None,
+                ),
+                Ok(AutoCache::Miss) => self.cpu(
+                    pcm,
+                    options,
+                    selection(
+                        self.preference,
+                        WhisperCachedDecision::Unknown,
+                        None,
+                        true,
+                        None,
+                    ),
+                    Some(contract),
+                ),
+                Err(_) => self.cpu(
                     pcm,
                     options,
                     selection(
@@ -326,6 +383,7 @@ impl Engine for ReceiptDrivenWhisperEngine {
                 ),
             };
         }
+        let cached = self.planner.cached_route(contract);
 
         let backend = self.planner.backend();
         let route = match cached {

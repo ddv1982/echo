@@ -195,6 +195,10 @@ impl CalibrationObservation {
                 .gpu_infer_ms
                 .is_some_and(|gpu| gpu_beats_cpu(self.cpu_infer_ms, gpu))
     }
+
+    pub(crate) fn is_cpu_settled(&self) -> bool {
+        self.verdict == CalibrationVerdict::CpuOnly && self.transcript_parity == Some(true)
+    }
 }
 
 pub(crate) const AUTO_GPU_MIN_IMPROVEMENT_MS: u64 = 250;
