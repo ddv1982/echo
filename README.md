@@ -8,7 +8,9 @@ The first-build plan is [docs/plans/01-echo/overview.md](docs/plans/01-echo/over
 
 [GitHub Releases](https://github.com/ddv1982/echo/releases) are the supported downloads. A Git tag without a corresponding GitHub Release marks source history only.
 
-Each supported release has a Debian package, an RPM package, an AppImage, the raw `echo-desktop` binary, both license texts, and `SHA256SUMS`. Download the files into an empty directory, then verify them before installation:
+The current release workflow publishes four application files: a Debian package, an RPM package, an AppImage, and the raw `echo-desktop` binary. It also publishes both license texts and `SHA256SUMS`. Older GitHub Releases may contain fewer files.
+
+To verify a release that contains `SHA256SUMS`, download all its assets into an empty directory and run:
 
 ```sh
 sha256sum --check --strict SHA256SUMS
