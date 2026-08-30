@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.14.0
+
+- Managed components no longer trust a persistent verification marker. Echo validates strong file identity in each process, rehashes after metadata changes, and always hashes during an explicit Verify.
+- Status polling, setup subscriptions, and settings writes are serialized. React Strict Mode no longer starts duplicate polls, and stale setup results cannot replace a newer setting.
+- Rust now owns the generated desktop IPC contract. CI rejects command, event, payload, and TypeScript drift before merge.
+- The desktop, shortcut, installer, and frontend feature boundaries are smaller and independently tested without changing command names or saved settings.
+- Echo is licensed under the MIT License. Releases contain the raw binary, Debian package, RPM, AppImage, MIT license, a CycloneDX SBOM, and `SHA256SUMS`; CI verifies the exact set and records build-provenance attestations.
+- Public documentation now leads with installation and first dictation. Retired plans and raw QA evidence moved out of the active source tree behind a reproducible archive manifest.
+
 ## v0.13.0
 
 - Whisper acceleration is now a choice between CPU and GPU, and defaults to CPU. The Auto mode is gone: it only ever accelerated when a packaged qualification matched the exact host, so on nearly every machine it silently meant CPU. Saved `auto` values load as CPU.

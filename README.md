@@ -82,5 +82,4 @@ Ubuntu build packages.
 
 ## License
 
-Echo is available under either the [MIT license](LICENSE-MIT) or the
-[Apache License 2.0](LICENSE-APACHE), at your option.
+Echo is available under the [MIT license](LICENSE-MIT).

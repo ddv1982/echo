@@ -332,7 +332,6 @@ jobs:
             release-assets/appimage/*.AppImage \
             release-assets/bin/echo-desktop \
             release-assets/bin/echo-desktop.cdx.json \
-            LICENSE-APACHE \
             LICENSE-MIT \
             release-assets/publish/
 

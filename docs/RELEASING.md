@@ -16,7 +16,7 @@ Protect `main` and require these pull-request checks before merging:
 - `release / release-assets`
 
 The AppImage is required. The `release-assets` job waits for both package build
-jobs and verifies the same eight-file publish directory on pull requests,
+jobs and verifies the same seven-file publish directory on pull requests,
 `main`, nightlies, and tags.
 
 Pin each third-party action to a full commit SHA. Dependabot checks the action
@@ -124,7 +124,7 @@ exactly one Debian package, one RPM, one AppImage, and one raw binary. The
 workflow checks package metadata and contents. It also checks the final
 AppImage desktop entry, executable, and reported version.
 
-The workflow stages those four application files, both license texts, and
+The workflow stages those four application files, the MIT license, and
 `echo-desktop.cdx.json` in one directory. The CycloneDX SBOM lists every Cargo
 package in the locked workspace graph and every npm package in
 `frontend/package-lock.json`, including frontend build dependencies. It names
@@ -141,8 +141,8 @@ by hand.
 ## Verify
 
 Confirm that the workflow is green. The GitHub Release must contain one Debian
-package, one RPM, one AppImage, `echo-desktop`, `echo-desktop.cdx.json`, both
-license texts, and `SHA256SUMS`.
+package, one RPM, one AppImage, `echo-desktop`, `echo-desktop.cdx.json`, the
+MIT license, and `SHA256SUMS`.
 
 ```sh
 gh run list --workflow release.yml --limit 5

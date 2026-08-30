@@ -2,7 +2,7 @@
   "packages": [
     {
       "id": "path+file:///src/echo#echo-desktop@1.2.3",
-      "license": "MIT OR Apache-2.0",
+      "license": "MIT",
       "name": "echo-desktop",
       "source": null,
       "version": "1.2.3"

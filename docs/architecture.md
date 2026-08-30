@@ -65,8 +65,8 @@ races setup.
 
 ## Release boundary
 
-Tagged builds publish the raw binary, Debian package, RPM, AppImage, both
-license texts, a CycloneDX SBOM, and `SHA256SUMS`. CI verifies the complete
+Tagged builds publish the raw binary, Debian package, RPM, AppImage, the MIT
+license, a CycloneDX SBOM, and `SHA256SUMS`. CI verifies the complete
 staged set before upload and creates build-provenance attestations. Third-party
 workflow actions are pinned to full commit SHAs.
 

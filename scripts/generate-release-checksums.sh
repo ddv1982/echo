@@ -23,17 +23,15 @@ collect_assets() {
     if [ "${#debs[@]}" -ne 1 ] || [ "${#rpms[@]}" -ne 1 ] ||
         [ "${#appimages[@]}" -ne 1 ] || [ ! -f "$publish/echo-desktop" ] ||
         [ -L "$publish/echo-desktop" ] || [ ! -f "$publish/echo-desktop.cdx.json" ] ||
-        [ -L "$publish/echo-desktop.cdx.json" ] || [ ! -f "$publish/LICENSE-APACHE" ] ||
-        [ -L "$publish/LICENSE-APACHE" ] || [ ! -f "$publish/LICENSE-MIT" ] ||
+        [ -L "$publish/echo-desktop.cdx.json" ] || [ ! -f "$publish/LICENSE-MIT" ] ||
         [ -L "$publish/LICENSE-MIT" ]; then
-        fail "expected two licenses, one deb, one rpm, one AppImage, echo-desktop, and its SBOM"
+        fail "expected the MIT license, one deb, one rpm, one AppImage, echo-desktop, and its SBOM"
         return 1
     fi
 
     ASSETS=(
         "$(basename "${appimages[0]}")"
         "$(basename "${debs[0]}")"
-        "LICENSE-APACHE"
         "LICENSE-MIT"
         "echo-desktop"
         "echo-desktop.cdx.json"
@@ -104,7 +102,6 @@ self_test() {
     printf 'binary\n' >"$publish/echo-desktop"
     printf '{"bomFormat":"CycloneDX"}\n' >"$publish/echo-desktop.cdx.json"
     printf 'rpm\n' >"$publish/echo-1.0.0-1.x86_64.rpm"
-    printf 'apache\n' >"$publish/LICENSE-APACHE"
     printf 'mit\n' >"$publish/LICENSE-MIT"
 
     write_manifest "$publish"
