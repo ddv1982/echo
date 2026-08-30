@@ -1,7 +1,9 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import App from './App'
+import { createPreviewDesktopApi } from './api/previewDesktopApi'
 import { useSerialPoll } from './hooks/useSerialPoll'
 import {
+  configureDesktopApi,
   getAppStatus,
   getRecordingLevel,
   getSettings,
@@ -12,20 +14,9 @@ import {
   listModels,
   removeStaleInstalls,
   repairLegacyShortcut,
-  resetPreviewSettings,
   retryShortcut,
-  seedPreviewLanguages,
-  seedPreviewLanguagesError,
-  seedPreviewMicrophones,
-  seedPreviewMicTestError,
-  seedPreviewRemoveStaleError,
-  seedPreviewReadiness,
   repairManaged,
   onSetupEvent,
-  seedPreviewGpuDevices,
-  seedPreviewSettings,
-  richPreviewStatus,
-  seedPreviewStatus,
   setSettings,
   setMicrophone,
   stopRecording,
@@ -39,6 +30,22 @@ import type {
   SetupEvent,
   ShortcutStatus,
 } from './generated/ipc'
+
+const previewDesktopApi = createPreviewDesktopApi()
+const {
+  resetPreviewSettings,
+  richPreviewStatus,
+  seedPreviewGpuDevices,
+  seedPreviewInventory,
+  seedPreviewLanguages,
+  seedPreviewLanguagesError,
+  seedPreviewMicrophones,
+  seedPreviewMicTestError,
+  seedPreviewReadiness,
+  seedPreviewRemoveStaleError,
+  seedPreviewSettings,
+  seedPreviewStatus,
+} = previewDesktopApi
 
 vi.mock('./tauri', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./tauri')>()
@@ -114,6 +121,7 @@ function activeShortcut(
 
 describe('Echo desktop shell', () => {
   beforeEach(async () => {
+    configureDesktopApi(previewDesktopApi)
     resetPreviewSettings()
     localStorage.removeItem('echo-shortcut-verified-at')
     localStorage.removeItem('echo-shortcut-verified-identity')
@@ -765,7 +773,6 @@ describe('Echo desktop shell', () => {
   it('shows the Fake engine when the availability payload includes it', async () => {
     const { listModels } = await import('./tauri')
     const inventory = await listModels()
-    const { seedPreviewInventory } = await import('./tauri')
     seedPreviewInventory({
       ...inventory,
       engines: [...inventory.engines, { id: 'fake', available: true, reason: null }],

@@ -14,7 +14,14 @@ function workspaceVersion(): string {
 }
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    {
+      name: 'echo-preview-entry',
+      apply: 'serve',
+      transformIndexHtml: (html) => html.replace('/src/main.tsx', '/src/preview.tsx'),
+    },
+  ],
   define: {
     __APP_VERSION__: JSON.stringify(workspaceVersion()),
   },
