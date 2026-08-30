@@ -30,9 +30,20 @@ fail() {
     return 1
 }
 
+# Tauri rewrites a fixed-length bundle marker into the binary as it packages,
+# so target/release/echo-desktop carries _UNK while the copy inside the deb
+# carries _DEB and the rpm's carries _RPM. Comparing raw digests can therefore
+# never pass. Normalising that one token compares everything that should be
+# identical and still catches a binary from a different build.
+canonical_digest() {
+    perl -0777 -pe \
+        's/__TAURI_BUNDLE_TYPE_VAR_(?:DEB|RPM|APP|UNK)/__TAURI_BUNDLE_TYPE_VAR_UNK/g' "$1" \
+        | sha256sum | cut -d' ' -f1
+}
+
 # An installed tree is correct when it holds the launcher, the desktop entry
-# that points at it, and the exact binary CI produced. The digest is what
-# separates "a build" from "this build".
+# that points at it, and the binary CI produced. The digest is what separates
+# "a build" from "this build".
 check_tree() {
     local label=$1 tree=$2 expected=$3 member found
     for member in "$BINARY" "usr/share/applications/$DESKTOP_ENTRY"; do
@@ -44,7 +55,7 @@ check_tree() {
             return 1
         fi
     done
-    found=$(sha256sum "$tree/$BINARY" | cut -d' ' -f1)
+    found=$(canonical_digest "$tree/$BINARY")
     if [ "$found" != "$expected" ]; then
         fail "$label ships a binary CI did not build: $found, expected $expected"
         return 1
@@ -113,7 +124,7 @@ verify_publish_dir() {
         fail "expected one deb, one rpm, and the binary; found ${#debs[@]} deb and ${#rpms[@]} rpm"
         return 1
     fi
-    expected=$(sha256sum "$publish/echo-desktop" | cut -d' ' -f1)
+    expected=$(canonical_digest "$publish/echo-desktop")
 
     work=$(scratch_dir)
 
@@ -130,6 +141,10 @@ verify_publish_dir() {
         # restores files as 0644, so what the publish job stages is not
         # executable. Copy rather than chmod in place: verifying should never
         # mutate what it was handed.
+        # Presence only, not a digest. linuxdeploy runs patchelf over the
+        # relocated binary, so unlike the deb and rpm it differs from the CI
+        # build beyond the bundle marker. Measured on the v0.13.0 artefacts:
+        # deb and rpm normalise to the canonical digest, the AppImage does not.
         install -m 0755 "${appimages[0]}" "$work/image.AppImage"
         (cd "$work" && APPIMAGE_EXTRACT_AND_RUN=1 ./image.AppImage --appimage-extract >/dev/null)
         local member
@@ -152,7 +167,7 @@ self_test() {
     mkdir -p "$tree/usr/bin" "$tree/usr/share/applications"
     printf 'the binary CI built' >"$tree/$BINARY"
     printf 'Exec=/usr/bin/echo-desktop\n' >"$tree/usr/share/applications/$DESKTOP_ENTRY"
-    expected=$(sha256sum "$tree/$BINARY" | cut -d' ' -f1)
+    expected=$(canonical_digest "$tree/$BINARY")
 
     check_tree good "$tree" "$expected" ||
         { echo "self-test: a correct tree was rejected" >&2; return 1; }
