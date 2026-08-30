@@ -8,6 +8,7 @@
 #
 # Usage:
 #   scripts/verify-release-artifacts.sh <publish-dir>
+#   scripts/verify-release-artifacts.sh --rpm-fallback <package.rpm>
 #   scripts/verify-release-artifacts.sh --self-test
 set -euo pipefail
 
@@ -50,26 +51,54 @@ check_tree() {
     fi
 }
 
+# Ubuntu's rpm2cpio has been seen exiting nonzero on an archive it had already
+# emitted in full, which is why 7z is a fallback rather than an alternative.
+# Pass force=1 to take that fallback deliberately and keep it from rotting.
 extract_rpm() {
-    local package=$1 into=$2
+    local package=$1 into=$2 force=${3:-0} converted staging payload
     package=$(readlink -f "$package")
     mkdir -p "$into"
-    if command -v rpm2cpio >/dev/null 2>&1; then
-        (cd "$into" && rpm2cpio "$package" | cpio -idmu --quiet)
-    elif command -v 7z >/dev/null 2>&1; then
-        # p7zip unwraps the rpm to a cpio, which cpio then unpacks. This is
-        # the same fallback the packaging smoke test uses.
-        local staging="$into/.7z"
-        mkdir -p "$staging"
-        7z x -y -o"$staging" "$package" >/dev/null
-        local payload
-        payload=$(find "$staging" -maxdepth 1 -type f | head -1)
-        (cd "$into" && cpio -idmu --quiet <"$payload")
-        rm -rf "$staging"
-    else
-        fail "no rpm2cpio and no 7z to read $package"
+    if [ "$force" != 1 ] &&
+        command -v rpm2cpio >/dev/null 2>&1 &&
+        command -v cpio >/dev/null 2>&1; then
+        converted=$(mktemp "$TMPROOT/rpm2cpio.XXXXXXXX")
+        if rpm2cpio "$package" >"$converted" 2>/dev/null; then
+            (cd "$into" && cpio -idmu --quiet <"$converted")
+            rm -f "$converted"
+            return 0
+        fi
+        rm -f "$converted"
+    fi
+    if ! command -v 7z >/dev/null 2>&1; then
+        fail "no working rpm2cpio and no 7z to read $package"
         return 1
     fi
+    # p7zip unwraps the rpm to a cpio, which cpio then unpacks.
+    staging=$(scratch_dir)
+    7z x -y -o"$staging" "$package" >/dev/null
+    payload=$(find "$staging" -maxdepth 1 -type f | head -1)
+    if [ -z "$payload" ]; then
+        fail "7z found no cpio archive inside $package"
+        return 1
+    fi
+    (cd "$into" && cpio -idmu --quiet <"$payload")
+}
+
+# The release runner has rpm2cpio, so the fallback would never run on the path
+# that matters. This exercises it on the real package instead.
+verify_rpm_fallback() {
+    local package=$1 work
+    if [ ! -f "$package" ]; then
+        fail "no such package: $package"
+        return 1
+    fi
+    work=$(scratch_dir)
+    extract_rpm "$package" "$work" 1
+    if [ ! -f "$work/$BINARY" ]; then
+        fail "the 7z fallback read no $BINARY out of $(basename "$package")"
+        return 1
+    fi
+    printf 'the 7z rpm fallback reads %s\n' "$(basename "$package")"
 }
 
 verify_publish_dir() {
@@ -148,6 +177,16 @@ self_test() {
         return 1
     fi
 
+    if verify_rpm_fallback "$root/absent.rpm" 2>/dev/null; then
+        echo "self-test: a missing rpm was accepted" >&2
+        return 1
+    fi
+    printf 'not an rpm' >"$root/bogus.rpm"
+    if verify_rpm_fallback "$root/bogus.rpm" >/dev/null 2>&1; then
+        echo "self-test: a file that is not an rpm was accepted" >&2
+        return 1
+    fi
+
     echo "verify-release-artifacts: self-test passed"
 }
 
@@ -156,8 +195,16 @@ main() {
         self_test
         return
     fi
+    if [ "${1:-}" = "--rpm-fallback" ]; then
+        if [ "$#" -ne 2 ]; then
+            fail "usage: verify-release-artifacts.sh --rpm-fallback <package.rpm>"
+            return 1
+        fi
+        verify_rpm_fallback "$2"
+        return
+    fi
     if [ "$#" -ne 1 ]; then
-        fail "usage: verify-release-artifacts.sh <publish-dir> | --self-test"
+        fail "usage: verify-release-artifacts.sh <publish-dir> | --rpm-fallback <package.rpm> | --self-test"
         return 1
     fi
     verify_publish_dir "$1"
