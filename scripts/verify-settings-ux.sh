@@ -29,9 +29,21 @@ if rg -Fq '@media (max-width: 760px)' frontend/src/styles/views.css \
   exit 1
 fi
 
-component_count=$(sed -n '/const sources:/,/return {/p' frontend/src/tauri.ts \
-  | rg -c "id: '(whisper-runtime|whisper-base-q5-1|whisper-small|whisper-large-v3-turbo-q5-0|silero-vad|sherpa-runtime|parakeet-tdt-06b-v3-int8)'" )
-test "$component_count" -eq 7
+generated_components=$(sed -n 's/^export type ComponentId = //p' frontend/src/generated/ipc.ts \
+  | rg -o '"[^"]+"' \
+  | tr -d '"' \
+  | sort)
+preview_components=$(sed -n '/const sources:/,/return {/p' frontend/src/tauri.ts \
+  | rg -o "id: '[^']+'" \
+  | cut -d "'" -f 2 \
+  | sort)
+if ! diff -u \
+  <(printf '%s\n' "$generated_components") \
+  <(printf '%s\n' "$preview_components"); then
+  printf '%s\n' 'preview readiness component IDs differ from the generated IPC contract' >&2
+  exit 1
+fi
+test "$(printf '%s\n' "$generated_components" | wc -l)" -eq 8
 
 plan_count=$(sed -n '/plans: \[/,/microphoneReady:/p' frontend/src/tauri.ts \
   | rg -c "id: '(recommended|parakeet|whisper-base|whisper-small|whisper-large-v3-turbo)'" )
