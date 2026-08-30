@@ -1,0 +1,6 @@
+ts	phase	decision	why	evidence	result
+2026-08-31T00:03:50+02:00	ground	treat 472.55 ms as debug mock evidence, not production IPC latency	the probe uses mock dispatch and test-only config reloads	src-tauri/src/shortcuts/gnome/tests.rs; crates/echo/src/settings.rs	accepted
+2026-08-31T00:03:50+02:00	research	use typed commands, low-rate events, managed state, and latest-value publication	Tauri and React documentation match Echo's low-rate state and cleanup needs	docs/plans/19-status-latency/overview.md#research-constraints	accepted
+2026-08-31T00:03:50+02:00	architecture	choose one StatusService actor with fixed metadata reconciliation	three designs converged; the independent judge scored the base 29 of 30	docs/plans/19-status-latency/overview.md#synthesis-decision	accepted
+2026-08-31T00:03:50+02:00	architecture	add LastRun.id and stable file reads	these preserve completed runs and prevent racing atomic replacements	docs/plans/19-status-latency/overview.md#delivery-and-ordering	accepted
+2026-08-31T00:03:50+02:00	scope	defer filesystem watching and collector fan-out until measurement proves a need	periodic reconciliation is still required for correctness	docs/plans/19-status-latency/overview.md#synthesis-decision	accepted
