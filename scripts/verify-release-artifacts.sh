@@ -126,7 +126,12 @@ verify_publish_dir() {
     # The AppImage relocates and patches its binary, so its digest is
     # legitimately its own. Presence is what can be asserted there.
     if [ "${#appimages[@]}" -gt 0 ]; then
-        (cd "$work" && APPIMAGE_EXTRACT_AND_RUN=1 "$(readlink -f "${appimages[0]}")" --appimage-extract >/dev/null)
+        # An AppImage can only be opened by running it, and artifact upload
+        # restores files as 0644, so what the publish job stages is not
+        # executable. Copy rather than chmod in place: verifying should never
+        # mutate what it was handed.
+        install -m 0755 "${appimages[0]}" "$work/image.AppImage"
+        (cd "$work" && APPIMAGE_EXTRACT_AND_RUN=1 ./image.AppImage --appimage-extract >/dev/null)
         local member
         for member in "$work/squashfs-root/$BINARY" "$work/squashfs-root/$DESKTOP_ENTRY"; do
             if [ ! -e "$member" ]; then
