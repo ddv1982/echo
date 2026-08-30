@@ -491,9 +491,7 @@ impl ManagedStore {
         self.clear_repair_marker(id)?;
         echo_core::write_atomic(&self.active_path(id), &receipt)
             .map_err(InstallError::IoMessage)?;
-        if let Err(error) =
-            self.cleanup_releases_with(id, Some(&record.release), spec, &record.files)
-        {
+        if let Err(error) = self.cleanup_releases_with(id, Some(&record.release), &record.files) {
             eprintln!("managed release cleanup: {error}");
         }
         Ok(record)
@@ -531,14 +529,11 @@ impl ManagedStore {
     pub fn remove(&self, id: ComponentId) -> Result<(), InstallError> {
         let _operation = self.operation_shared()?;
         let _lease = self.lock_exclusive(id)?;
+        // Removal must survive a digest rotation, so the active record only
+        // has to name a release this store could have written. What each
+        // release owns is settled per directory from its own receipt.
         if let Some(record) = self.read_active(id)? {
-            validate_release_name(id, &record.release)?;
-            if !receipt_files_compatible(id, &record.files, &expected_files(id)) {
-                return Err(InstallError::State(
-                    "refusing removal because the receipt differs from the compiled catalogue"
-                        .to_string(),
-                ));
-            }
+            validate_collectable_release_name(&record.release)?;
         }
         self.cleanup_releases(id, None)?;
         self.cleanup_staging(id)?;
@@ -552,14 +547,13 @@ impl ManagedStore {
     }
 
     fn cleanup_releases(&self, id: ComponentId, keep: Option<&str>) -> Result<(), InstallError> {
-        self.cleanup_releases_with(id, keep, component(id), &expected_files(id))
+        self.cleanup_releases_with(id, keep, &expected_files(id))
     }
 
     fn cleanup_releases_with(
         &self,
         id: ComponentId,
         keep: Option<&str>,
-        spec: &catalog::ComponentSpec,
         expected: &[InstalledFile],
     ) -> Result<(), InstallError> {
         let releases = self.component_dir(id).join("releases");
@@ -574,17 +568,18 @@ impl ManagedStore {
             if keep == Some(name.as_str()) {
                 continue;
             }
-            validate_release_name_for(spec, &name)?;
+            validate_collectable_release_name(&name)?;
             let release = entry.path();
             ensure_contained(&self.component_dir(id), &release)?;
             let receipt_path = release.join("receipt.json");
             let owned_files = if receipt_path.exists() {
                 let record: ActivationRecord = serde_json::from_slice(&fs::read(&receipt_path)?)
                     .map_err(|error| InstallError::State(error.to_string()))?;
-                if record.component != id
-                    || record.release != name
-                    || !receipt_files_compatible(id, &record.files, expected)
-                {
+                // A superseded release is described by the receipt written
+                // when it was installed, not by the catalogue that replaced
+                // it. Comparing it against today's file list would refuse to
+                // collect exactly the generations that need collecting.
+                if record.component != id || record.release != name {
                     return Err(InstallError::State(format!(
                         "refusing unknown managed release {name}"
                     )));
@@ -984,6 +979,33 @@ fn validate_release_name_for(
             "activation generation does not match the pinned digest".to_string(),
         ));
     };
+    validate_generation(release, operation)
+}
+
+/// A release directory this store could have written, whatever digest was
+/// pinned when it did. Superseded generations keep their old digest in the
+/// name, so binding collection to the current pin would strand them: they
+/// could never be swept and would block removal of the whole component.
+/// Confinement is what keeps deletion safe here, not the digest.
+fn validate_collectable_release_name(release: &str) -> Result<(), InstallError> {
+    let Some((digest, operation)) = release.split_once('-') else {
+        return Err(InstallError::State(
+            "managed release name has no generation".to_string(),
+        ));
+    };
+    if digest.len() != 64
+        || !digest
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(InstallError::State(
+            "managed release name is not digest-prefixed".to_string(),
+        ));
+    }
+    validate_generation(release, operation)
+}
+
+fn validate_generation(release: &str, operation: &str) -> Result<(), InstallError> {
     if operation.is_empty()
         || operation.starts_with('-')
         || operation.ends_with('-')
