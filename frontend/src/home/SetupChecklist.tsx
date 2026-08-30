@@ -1,0 +1,169 @@
+import { Check } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+
+import { SectionHeading } from '../app/chrome'
+import { messageFrom } from '../app/formatting'
+import { useAsyncSubscription } from '../hooks/useAsyncSubscription'
+import { MicrophoneChooser } from '../settings/MicrophoneChooser'
+import { SpeechSetupSection } from '../settings/SpeechSetupSection'
+import { applySetupProgress } from '../setup'
+import { presentShortcut } from '../shortcut'
+import {
+  getMicrophones,
+  getReadiness,
+  onSetupEvent,
+  setMicrophone,
+  testInputDevice,
+  testMicrophoneFallback,
+} from '../tauri'
+import type {
+  AppStatus,
+  MicrophoneSnapshot,
+  MicrophoneTestResult,
+  Readiness,
+  SetupEvent,
+} from '../generated/ipc'
+
+export function SetupChecklist({
+  status,
+  onOpenSettings,
+}: {
+  status: AppStatus
+  onOpenSettings: () => void
+}) {
+  const [readiness, setReadiness] = useState<Readiness | null>(null)
+  const [microphones, setMicrophones] = useState<MicrophoneSnapshot | null>(null)
+  const [micTest, setMicTest] = useState<MicrophoneTestResult | null>(null)
+  const [testingMic, setTestingMic] = useState(false)
+  const [setupError, setSetupError] = useState<string | null>(null)
+  const micTestVersion = useRef(0)
+  const reportSetupError = useCallback((reason: unknown) => {
+    setSetupError(messageFrom(reason))
+  }, [])
+
+  useEffect(() => {
+    let active = true
+    void getReadiness().then((next) => {
+      if (active) setReadiness(next)
+    }).catch((reason: unknown) => {
+      if (active) reportSetupError(reason)
+    })
+    void getMicrophones().then((next) => {
+      if (active) setMicrophones(next)
+    }).catch((reason: unknown) => {
+      if (active) reportSetupError(reason)
+    })
+    return () => {
+      active = false
+      micTestVersion.current += 1
+    }
+  }, [reportSetupError])
+
+  const handleSetupEvent = useCallback((event: SetupEvent) => {
+    if (event.kind === 'progress') {
+      setReadiness((current) => current && applySetupProgress(current, event))
+    }
+    if (event.kind === 'failed') setSetupError(event.error)
+  }, [])
+  const getSetupRefresh = useCallback((event: SetupEvent) => {
+    if (event.kind === 'progress') return null
+    return () => getReadiness().then((next) => () => setReadiness(next))
+  }, [])
+  useAsyncSubscription({
+    subscribe: onSetupEvent,
+    onEvent: handleSetupEvent,
+    getRefresh: getSetupRefresh,
+    onError: reportSetupError,
+  })
+
+  const identity = presentShortcut(status.shortcut).verificationIdentity
+  const verified = identity != null
+    && localStorage.getItem('echo-shortcut-verified-at') !== null
+    && localStorage.getItem('echo-shortcut-verified-identity') === identity
+  const items = [
+    { key: 'mic', done: readiness?.microphoneReady ?? status.microphoneReady, label: 'Microphone ready' },
+    { key: 'engine', done: readiness?.speechReady ?? status.engineReady, label: 'Speech engine and model installed' },
+    { key: 'dictation', done: readiness?.hasSuccessfulDictation ?? false, label: 'First dictation complete' },
+    { key: 'shortcut', done: verified, label: verified ? 'Shortcut verified' : 'Shortcut bound' },
+  ]
+  if (readiness?.firstRunComplete && verified) return null
+  return (
+    <section className="panel checklist" aria-label="Finish setup">
+      <SectionHeading title="Finish setup" subtitle="The first-run job is one successful dictation." />
+      {setupError ? <div role="alert" className="error-banner">{setupError}</div> : null}
+      {readiness && !readiness.microphoneReady && microphones ? (
+        <div className="first-run-step">
+          <strong>1 · Choose and test a microphone</strong>
+          <MicrophoneChooser
+            snapshot={microphones}
+            test={micTest}
+            testing={testingMic}
+            onRefresh={() => {
+              void Promise.all([getMicrophones(), getReadiness()])
+                .then(([nextMicrophones, nextReadiness]) => {
+                  setMicrophones(nextMicrophones)
+                  setReadiness(nextReadiness)
+                })
+                .catch(reportSetupError)
+            }}
+            onSelect={(id) => {
+              micTestVersion.current += 1
+              setMicTest(null)
+              void setMicrophone(id)
+                .then((nextMicrophones) => {
+                  setMicrophones(nextMicrophones)
+                  return getReadiness()
+                })
+                .then(setReadiness)
+                .catch(reportSetupError)
+            }}
+            onTest={(id, fallback) => {
+              const version = ++micTestVersion.current
+              setTestingMic(true)
+              const run = fallback ? testMicrophoneFallback() : testInputDevice(id)
+              void run
+                .then((result) => {
+                  if (micTestVersion.current !== version) return null
+                  setMicTest(result)
+                  return getReadiness()
+                })
+                .then((next) => {
+                  if (next && micTestVersion.current === version) setReadiness(next)
+                })
+                .catch((reason: unknown) => {
+                  if (micTestVersion.current === version) reportSetupError(reason)
+                })
+                .finally(() => {
+                  if (micTestVersion.current === version) setTestingMic(false)
+                })
+            }}
+          />
+        </div>
+      ) : null}
+      {readiness && !readiness.speechReady ? (
+        <div className="first-run-step">
+          <strong>2 · Set up local speech</strong>
+          <SpeechSetupSection
+            readiness={readiness}
+            guided
+            onRefresh={() => void getReadiness().then(setReadiness).catch(reportSetupError)}
+            onError={setSetupError}
+          />
+        </div>
+      ) : null}
+      {items.map((item) => (
+        <div className="checklist-item" data-done={item.done} key={item.key}>
+          <span className="checklist-check" aria-hidden="true">
+            {item.done ? <Check size={13} /> : null}
+          </span>
+          <span className="checklist-label">{item.label}</span>
+          {!item.done && item.key === 'shortcut' ? (
+            <button type="button" className="compact-button" onClick={onOpenSettings}>
+              Open Settings
+            </button>
+          ) : null}
+        </div>
+      ))}
+    </section>
+  )
+}
