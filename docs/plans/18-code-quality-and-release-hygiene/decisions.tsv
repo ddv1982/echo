@@ -1,0 +1,5 @@
+ts	phase	decision	why	evidence	result
+2026-08-30T14:27:54Z	program	started execution at main 5fb579b	the operator explicitly asked to implement the reviewed plan	git rev-parse HEAD	active
+2026-08-30T14:27:54Z	stack	use git branches and GitHub PR base branches instead of Graphite	gt is not installed in this environment	command -v gt	accepted; checklist uses GitHub stacked branches
+2026-08-30T14:27:54Z	integrity	do not hash every managed payload on every readiness poll	three direct hash runs over the active cache took 0.93, 0.59, and 0.59 seconds	docs/plans/18-code-quality-and-release-hygiene/overview.md	accepted
+2026-08-30T14:27:54Z	releases	keep public mutations behind their named operator gates	published tags, draft deletion, and release edits are external state	docs/plans/18-code-quality-and-release-hygiene/phases.md	active
