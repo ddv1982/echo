@@ -14,7 +14,33 @@ function workspaceVersion(): string {
 }
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    {
+      name: 'echo-preview-entry',
+      apply: 'serve',
+      transformIndexHtml: (html) => html.replace('/src/main.tsx', '/src/preview.tsx'),
+    },
+    {
+      name: 'echo-production-boundary',
+      apply: 'build',
+      generateBundle: (options, bundle) => {
+        void options
+        const previewModules = ['/src/preview.tsx', '/src/api/previewDesktopApi.ts']
+        const previewStrings = ['Jabra Elite 8 Active', 'This is a test. This is a test.', 'echo-preview']
+        for (const output of Object.values(bundle)) {
+          if (output.type !== 'chunk') continue
+          if (previewModules.some((module) =>
+            Object.keys(output.modules).some((path) => path.endsWith(module)))) {
+            throw new Error(`production chunk ${output.fileName} imports preview code`)
+          }
+          if (previewStrings.some((fixture) => output.code.includes(fixture))) {
+            throw new Error(`production chunk ${output.fileName} contains preview fixtures`)
+          }
+        }
+      },
+    },
+  ],
   define: {
     __APP_VERSION__: JSON.stringify(workspaceVersion()),
   },

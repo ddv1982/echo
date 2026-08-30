@@ -1,4 +1,6 @@
-import {
+import { createPreviewDesktopApi } from './api/previewDesktopApi'
+
+const {
   getAppStatus,
   getSettings,
   resetPreviewSettings,
@@ -6,7 +8,7 @@ import {
   setSettings,
   stopRecording,
   toggleRecording,
-} from './tauri'
+} = createPreviewDesktopApi()
 
 describe('settings preview wrappers', () => {
   beforeEach(() => resetPreviewSettings())

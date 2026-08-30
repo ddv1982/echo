@@ -17,7 +17,6 @@ rg -Fq 'libgtk-3-0' .github/workflows/release.yml
 rg -Fq "'libayatana-appindicator3.so.1()(64bit)'" .github/workflows/release.yml
 rg -Fq "'libwebkit2gtk-4.1.so.0()(64bit)'" .github/workflows/release.yml
 rg -Fq "'libgtk-3.so.0()(64bit)'" .github/workflows/release.yml
-rg -q 'Jabra Elite 8 Active' frontend/src/tauri.ts
 rg -q 'Advanced audio endpoints' frontend/src/settings/MicrophoneChooser.tsx
 rg -q 'Installed components' frontend/src/settings/SpeechSetupSection.tsx
 rg -q 'Advanced speech options' frontend/src/settings/SpeechSetupSection.tsx
@@ -29,31 +28,9 @@ if rg -Fq '@media (max-width: 760px)' frontend/src/styles/views.css \
   exit 1
 fi
 
-generated_components=$(sed -n 's/^export type ComponentId = //p' frontend/src/generated/ipc.ts \
-  | rg -o '"[^"]+"' \
-  | tr -d '"' \
-  | sort)
-preview_components=$(sed -n '/const sources:/,/return {/p' frontend/src/tauri.ts \
-  | rg -o "id: '[^']+'" \
-  | cut -d "'" -f 2 \
-  | sort)
-if ! diff -u \
-  <(printf '%s\n' "$generated_components") \
-  <(printf '%s\n' "$preview_components"); then
-  printf '%s\n' 'preview readiness component IDs differ from the generated IPC contract' >&2
-  exit 1
-fi
-test "$(printf '%s\n' "$generated_components" | wc -l)" -eq 8
-
-plan_count=$(sed -n '/plans: \[/,/microphoneReady:/p' frontend/src/tauri.ts \
-  | rg -c "id: '(recommended|parakeet|whisper-base|whisper-small|whisper-large-v3-turbo)'" )
-test "$plan_count" -eq 5
-
-advanced_count=$(sed -n '/const advancedDevices/,/return \[/p' frontend/src/tauri.ts | rg -c "\['alsa:")
-test "$advanced_count" -ge 8
-
 cargo test -p echo microphone::tests
 npm run typecheck --prefix frontend
+npm run test --prefix frontend -- --run src/api/previewDesktopApi.test.ts
 npm run test --prefix frontend -- --run setup.test.ts
 npm run test:responsive --prefix frontend
 

@@ -23,6 +23,7 @@ stale_production="$(
     src-tauri/src/main.rs \
     frontend/src/App.tsx \
     frontend/src/tauri.ts \
+    frontend/src/api/previewDesktopApi.ts \
     frontend/src/types.ts || true
 )"
 if [[ -n "$stale_production" ]]; then
