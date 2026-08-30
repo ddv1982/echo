@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/echo-core", "crates/echo", "crates/xtask", "src-tauri"]
+members = ["crates/echo-core", "crates/echo", "crates/echo-ipc", "crates/ipc-gen", "crates/xtask", "src-tauri"]
 
 [workspace.package]
 edition = "2021"

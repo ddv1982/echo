@@ -1,5 +1,5 @@
 import { presentSpeechSetup } from './setup'
-import type { ComponentStatus, Readiness, SetupPlan } from './types'
+import type { ComponentStatus, Readiness, SetupPlan } from './generated/ipc'
 
 function component(
   id: ComponentStatus['id'],
@@ -19,10 +19,10 @@ function component(
 function plan(id: SetupPlan['id'], satisfied = false): SetupPlan {
   const components: Record<SetupPlan['id'], ComponentStatus['id'][]> = {
     recommended: ['whisper-runtime', 'whisper-small'],
-    parakeet: ['sherpa-runtime', 'parakeet-tdt-06b-v3-int8'],
-    'whisper-base': ['whisper-runtime', 'whisper-base-q5-1'],
+    parakeet: ['sherpa-runtime', 'parakeet-tdt06b-v3-int8'],
+    'whisper-base': ['whisper-runtime', 'whisper-base-q51'],
     'whisper-small': ['whisper-runtime', 'whisper-small'],
-    'whisper-large-v3-turbo': ['whisper-runtime', 'whisper-large-v3-turbo-q5-0'],
+    'whisper-large-v3-turbo': ['whisper-runtime', 'whisper-large-v3-turbo-q50'],
   }
   return {
     id,

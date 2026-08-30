@@ -6,26 +6,31 @@ use echo::install::catalog::{
     component, managed_platform_supported, plan, recommended_model, HardwareProfile,
 };
 use echo::install::{
-    CommandRuntimeProbe, ComponentId, DiskSpace, InstallProgress, Installer, ManagedComponentState,
-    ManagedStore, OperationId, SetupPlanId, SystemDisk, UreqTransport,
+    CommandRuntimeProbe, ComponentId as CoreComponentId, DiskSpace,
+    InstallProgress as CoreInstallProgress, Installer,
+    ManagedComponentState as CoreManagedComponentState, ManagedStore, OperationId,
+    SetupPlanId as CoreSetupPlanId, SystemDisk, UreqTransport,
 };
 use echo::stt::ModelCache;
-use serde::Serialize;
+use echo_desktop::ipc::{
+    ActiveComponentOrigin, ComponentId, ComponentOrigin, ComponentStatus, ExternalComponent,
+    InstallProgress, ManagedComponentState, Readiness, SetupEvent, SetupPlan, SetupPlanId,
+};
 use tauri::{Emitter, State};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SetupAction {
-    Plan(SetupPlanId, bool),
-    Repair(ComponentId),
-    Remove(ComponentId),
-    Verify(ComponentId),
+    Plan(CoreSetupPlanId, bool),
+    Repair(CoreComponentId),
+    Remove(CoreComponentId),
+    Verify(CoreComponentId),
 }
 
 struct ActiveOperation {
     id: OperationId,
     action: SetupAction,
     cancel: Arc<AtomicBool>,
-    progress: Option<InstallProgress>,
+    progress: Option<CoreInstallProgress>,
 }
 
 pub struct SetupService {
@@ -44,77 +49,6 @@ impl Default for SetupService {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ExternalComponent {
-    origin: &'static str,
-    path: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ComponentStatusDto {
-    id: ComponentId,
-    label: String,
-    managed: ManagedComponentState,
-    external: Vec<ExternalComponent>,
-    active_origin: Option<&'static str>,
-    activity: Option<InstallProgress>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PlanStatusDto {
-    id: SetupPlanId,
-    label: &'static str,
-    components: Vec<ComponentId>,
-    satisfied: bool,
-    download_bytes: u64,
-    required_free_bytes: u64,
-    available_bytes: Option<u64>,
-    disk_ready: bool,
-    disk_reason: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ReadinessDto {
-    managed_supported: bool,
-    unsupported_reason: Option<String>,
-    total_memory_bytes: Option<u64>,
-    recommended_model: ComponentId,
-    components: Vec<ComponentStatusDto>,
-    plans: Vec<PlanStatusDto>,
-    microphone_ready: bool,
-    speech_ready: bool,
-    has_successful_dictation: bool,
-    first_run_complete: bool,
-    active_operation: Option<OperationId>,
-    active_cancellable: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "kebab-case",
-    rename_all_fields = "camelCase"
-)]
-enum SetupEvent {
-    Progress {
-        progress: InstallProgress,
-    },
-    Finished {
-        operation_id: OperationId,
-    },
-    Cancelled {
-        operation_id: OperationId,
-    },
-    Failed {
-        operation_id: OperationId,
-        error: String,
-    },
-}
-
 fn total_memory_bytes() -> Option<u64> {
     let raw = std::fs::read_to_string("/proc/meminfo").ok()?;
     raw.lines().find_map(|line| {
@@ -131,45 +65,45 @@ fn external_components(
     inventory: &echo::stt::ModelInventory,
     whisper_runtime: Option<&std::path::Path>,
     sherpa_runtime: Option<&std::path::Path>,
-    id: ComponentId,
+    id: CoreComponentId,
 ) -> Vec<ExternalComponent> {
     match id {
-        ComponentId::WhisperRuntime => whisper_runtime
+        CoreComponentId::WhisperRuntime => whisper_runtime
             .map(|path| {
                 vec![ExternalComponent {
-                    origin: "system",
+                    origin: ComponentOrigin::System,
                     path: path.to_string_lossy().into_owned(),
                 }]
             })
             .unwrap_or_default(),
-        ComponentId::SherpaRuntime => sherpa_runtime
+        CoreComponentId::SherpaRuntime => sherpa_runtime
             .map(|path| {
                 vec![ExternalComponent {
-                    origin: "system",
+                    origin: ComponentOrigin::System,
                     path: path.to_string_lossy().into_owned(),
                 }]
             })
             .unwrap_or_default(),
         // A system whisper-cli is never Vulkan-capable, so there is no
         // external equivalent to offer for the GPU runtime.
-        ComponentId::WhisperVulkanRuntime => Vec::new(),
-        ComponentId::WhisperBaseQ51 => external_model(inventory, "base-q5_1"),
-        ComponentId::WhisperSmall => external_model(inventory, "small"),
-        ComponentId::WhisperLargeV3TurboQ50 => external_model(inventory, "large-v3-turbo-q5_0"),
-        ComponentId::SileroVad => inventory
+        CoreComponentId::WhisperVulkanRuntime => Vec::new(),
+        CoreComponentId::WhisperBaseQ51 => external_model(inventory, "base-q5_1"),
+        CoreComponentId::WhisperSmall => external_model(inventory, "small"),
+        CoreComponentId::WhisperLargeV3TurboQ50 => external_model(inventory, "large-v3-turbo-q5_0"),
+        CoreComponentId::SileroVad => inventory
             .vad
             .iter()
             .map(|path| ExternalComponent {
-                origin: "external",
+                origin: ComponentOrigin::External,
                 path: path.to_string_lossy().into_owned(),
             })
             .collect(),
-        ComponentId::ParakeetTdt06bV3Int8 => inventory
+        CoreComponentId::ParakeetTdt06bV3Int8 => inventory
             .parakeet
             .clone()
             .map(|path| {
                 vec![ExternalComponent {
-                    origin: "external",
+                    origin: ComponentOrigin::External,
                     path: path.to_string_lossy().into_owned(),
                 }]
             })
@@ -183,14 +117,14 @@ fn external_model(inventory: &echo::stt::ModelInventory, name: &str) -> Vec<Exte
         .iter()
         .filter(|model| model.name == name)
         .map(|model| ExternalComponent {
-            origin: "external",
+            origin: ComponentOrigin::External,
             path: model.path.to_string_lossy().into_owned(),
         })
         .collect()
 }
 
-fn managed_ready(state: &ManagedComponentState) -> bool {
-    matches!(state, ManagedComponentState::Ready { .. })
+fn managed_ready(state: &CoreManagedComponentState) -> bool {
+    matches!(state, CoreManagedComponentState::Ready { .. })
 }
 
 fn plan_space(components: impl IntoIterator<Item = (u64, u64, u64)>) -> (u64, u64) {
@@ -211,13 +145,15 @@ fn plan_space(components: impl IntoIterator<Item = (u64, u64, u64)>) -> (u64, u6
 }
 
 impl SetupService {
-    fn snapshot(&self) -> ReadinessDto {
+    fn snapshot(&self) -> Readiness {
         let cache = ModelCache::from_env();
         let store = ManagedStore::new(cache.dir());
         let (active_operation, active_cancellable, activity) = {
             let active = self.active.lock().expect("setup operation lock");
             (
-                active.as_ref().map(|operation| operation.id.clone()),
+                active
+                    .as_ref()
+                    .map(|operation| operation.id.as_str().to_string()),
                 active.as_ref().is_some_and(|operation| {
                     matches!(
                         operation.action,
@@ -241,7 +177,7 @@ impl SetupService {
             let managed = if managed_platform_supported() {
                 store.status(spec.id, false)
             } else {
-                ManagedComponentState::Unsupported {
+                CoreManagedComponentState::Unsupported {
                     reason: "Echo-managed speech setup supports Linux x86_64 only".to_string(),
                 }
             };
@@ -252,33 +188,34 @@ impl SetupService {
                 spec.id,
             );
             let active_origin = if managed_ready(&managed) {
-                Some("managed")
+                Some(ActiveComponentOrigin::Managed)
             } else if !external.is_empty() {
-                Some(external[0].origin)
+                Some(external[0].origin.into())
             } else {
                 None
             };
-            components.push(ComponentStatusDto {
-                id: spec.id,
+            components.push(ComponentStatus {
+                id: spec.id.into(),
                 label: spec.label.to_string(),
-                managed,
+                managed: managed.into(),
                 external,
                 active_origin,
                 activity: activity
                     .as_ref()
                     .filter(|progress| progress.component == spec.id)
-                    .cloned(),
+                    .cloned()
+                    .map(InstallProgress::from),
             });
         }
         let hardware = HardwareProfile {
             total_memory_bytes: total_memory_bytes(),
         };
         let plan_ids = [
-            SetupPlanId::Recommended,
-            SetupPlanId::Parakeet,
-            SetupPlanId::WhisperBase,
-            SetupPlanId::WhisperSmall,
-            SetupPlanId::WhisperLargeV3Turbo,
+            CoreSetupPlanId::Recommended,
+            CoreSetupPlanId::Parakeet,
+            CoreSetupPlanId::WhisperBase,
+            CoreSetupPlanId::WhisperSmall,
+            CoreSetupPlanId::WhisperLargeV3Turbo,
         ];
         let _ = std::fs::create_dir_all(cache.dir());
         let available_bytes = SystemDisk.available_bytes(cache.dir()).ok().flatten();
@@ -287,18 +224,22 @@ impl SetupService {
             .map(|id| {
                 let ids = plan(id, hardware);
                 let satisfied = ids.iter().all(|id| {
-                    components.iter().find(|component| component.id == *id).is_some_and(
-                        |component| {
-                            managed_ready(&component.managed) || !component.external.is_empty()
-                        },
-                    )
+                    components
+                        .iter()
+                        .find(|component| component.id == (*id).into())
+                        .is_some_and(|component| {
+                            matches!(component.managed, ManagedComponentState::Ready { .. })
+                                || !component.external.is_empty()
+                        })
                 });
                 let (download_bytes, required_free_bytes) = plan_space(
                     ids.iter().filter_map(|component_id| {
                         let status = components
                             .iter()
-                            .find(|component| component.id == *component_id)?;
-                        if managed_ready(&status.managed) || !status.external.is_empty() {
+                            .find(|component| component.id == (*component_id).into())?;
+                        if matches!(status.managed, ManagedComponentState::Ready { .. })
+                            || !status.external.is_empty()
+                        {
                             return None;
                         }
                         let resumable = match status.managed {
@@ -314,15 +255,16 @@ impl SetupService {
                     }),
                 );
                 let disk_ready = available_bytes.is_none_or(|available| available >= required_free_bytes);
-                PlanStatusDto {
-                    id,
+                SetupPlan {
+                    id: id.into(),
                     label: match id {
-                        SetupPlanId::Recommended => "Recommended",
-                        SetupPlanId::Parakeet => "Parakeet",
-                        SetupPlanId::WhisperBase => "Whisper Base",
-                        SetupPlanId::WhisperSmall => "Whisper Small",
-                        SetupPlanId::WhisperLargeV3Turbo => "Whisper Large v3 Turbo Q5_0",
-                    },
+                        CoreSetupPlanId::Recommended => "Recommended",
+                        CoreSetupPlanId::Parakeet => "Parakeet",
+                        CoreSetupPlanId::WhisperBase => "Whisper Base",
+                        CoreSetupPlanId::WhisperSmall => "Whisper Small",
+                        CoreSetupPlanId::WhisperLargeV3Turbo => "Whisper Large v3 Turbo Q5_0",
+                    }
+                    .to_string(),
                     download_bytes,
                     required_free_bytes,
                     available_bytes,
@@ -333,7 +275,7 @@ impl SetupService {
                             available = available_bytes.unwrap_or(0)
                         )
                     }),
-                    components: ids,
+                    components: ids.into_iter().map(Into::into).collect(),
                     satisfied,
                 }
             })
@@ -346,14 +288,14 @@ impl SetupService {
                 .iter()
                 .any(|row| !row.text.trim().is_empty() && !row.inject.failed())
         });
-        ReadinessDto {
+        Readiness {
             managed_supported: managed_platform_supported(),
             unsupported_reason: (!managed_platform_supported()).then(|| {
                 "Managed setup is available on Linux x86_64. Use a system runtime and manual models on this platform."
                     .to_string()
             }),
             total_memory_bytes: hardware.total_memory_bytes,
-            recommended_model: recommended_model(hardware),
+            recommended_model: recommended_model(hardware).into(),
             components,
             plans,
             microphone_ready,
@@ -403,7 +345,7 @@ impl SetupService {
                 };
                 let mut last_progress_phase = None;
                 let mut last_progress_emit = Instant::now() - Duration::from_secs(1);
-                let mut emit_progress = |progress: InstallProgress| {
+                let mut emit_progress = |progress: CoreInstallProgress| {
                     let phase_changed = last_progress_phase != Some(progress.phase);
                     let complete =
                         progress.total_bytes > 0 && progress.received_bytes >= progress.total_bytes;
@@ -422,7 +364,12 @@ impl SetupService {
                             active.progress = Some(progress.clone());
                         }
                     }
-                    let _ = app.emit("setup-event", SetupEvent::Progress { progress });
+                    let _ = app.emit(
+                        "setup-event",
+                        SetupEvent::Progress {
+                            progress: progress.into(),
+                        },
+                    );
                 };
                 let result = match action {
                     SetupAction::Plan(plan_id, managed_copy) => {
@@ -480,13 +427,13 @@ impl SetupService {
                 super::health_invalidate();
                 let event = match result {
                     Ok(()) => SetupEvent::Finished {
-                        operation_id: operation_id.clone(),
+                        operation_id: operation_id.as_str().to_string(),
                     },
                     Err(echo::install::InstallError::Cancelled) => SetupEvent::Cancelled {
-                        operation_id: operation_id.clone(),
+                        operation_id: operation_id.as_str().to_string(),
                     },
                     Err(error) => SetupEvent::Failed {
-                        operation_id: operation_id.clone(),
+                        operation_id: operation_id.as_str().to_string(),
                         error: error.to_string(),
                     },
                 };
@@ -512,7 +459,7 @@ impl SetupService {
 }
 
 fn activate_plan_config(
-    plan_id: SetupPlanId,
+    plan_id: CoreSetupPlanId,
     hardware: HardwareProfile,
 ) -> Result<(), echo::install::InstallError> {
     super::update_file_config(|config| apply_plan_config(config, plan_id, hardware))
@@ -521,31 +468,31 @@ fn activate_plan_config(
 
 fn apply_plan_config(
     config: &mut echo_core::Config,
-    plan_id: SetupPlanId,
+    plan_id: CoreSetupPlanId,
     hardware: HardwareProfile,
 ) -> Result<(), String> {
     match plan_id {
-        SetupPlanId::Parakeet => {
+        CoreSetupPlanId::Parakeet => {
             config.engine = Some(echo_core::EngineChoice::Parakeet);
             config.whisper_model = None;
         }
-        SetupPlanId::Recommended
-        | SetupPlanId::WhisperBase
-        | SetupPlanId::WhisperSmall
-        | SetupPlanId::WhisperLargeV3Turbo => {
+        CoreSetupPlanId::Recommended
+        | CoreSetupPlanId::WhisperBase
+        | CoreSetupPlanId::WhisperSmall
+        | CoreSetupPlanId::WhisperLargeV3Turbo => {
             config.engine = Some(echo_core::EngineChoice::Whisper);
             let model = match plan_id {
-                SetupPlanId::Recommended => recommended_model(hardware),
-                SetupPlanId::WhisperBase => ComponentId::WhisperBaseQ51,
-                SetupPlanId::WhisperSmall => ComponentId::WhisperSmall,
-                SetupPlanId::WhisperLargeV3Turbo => ComponentId::WhisperLargeV3TurboQ50,
-                SetupPlanId::Parakeet => unreachable!(),
+                CoreSetupPlanId::Recommended => recommended_model(hardware),
+                CoreSetupPlanId::WhisperBase => CoreComponentId::WhisperBaseQ51,
+                CoreSetupPlanId::WhisperSmall => CoreComponentId::WhisperSmall,
+                CoreSetupPlanId::WhisperLargeV3Turbo => CoreComponentId::WhisperLargeV3TurboQ50,
+                CoreSetupPlanId::Parakeet => unreachable!(),
             };
             config.whisper_model = Some(
                 match model {
-                    ComponentId::WhisperBaseQ51 => "base-q5_1",
-                    ComponentId::WhisperSmall => "small",
-                    ComponentId::WhisperLargeV3TurboQ50 => "large-v3-turbo-q5_0",
+                    CoreComponentId::WhisperBaseQ51 => "base-q5_1",
+                    CoreComponentId::WhisperSmall => "small",
+                    CoreComponentId::WhisperLargeV3TurboQ50 => "large-v3-turbo-q5_0",
                     _ => return Err("invalid Whisper model plan".to_string()),
                 }
                 .to_string(),
@@ -556,7 +503,7 @@ fn apply_plan_config(
 }
 
 #[tauri::command]
-pub fn get_readiness(state: State<'_, SetupService>) -> ReadinessDto {
+pub fn get_readiness(state: State<'_, SetupService>) -> Readiness {
     state.snapshot()
 }
 
@@ -566,8 +513,10 @@ pub fn start_setup(
     managed_copy: bool,
     state: State<'_, SetupService>,
     app: tauri::AppHandle,
-) -> Result<OperationId, String> {
-    state.start(SetupAction::Plan(plan, managed_copy), app)
+) -> Result<String, String> {
+    state
+        .start(SetupAction::Plan(plan.into(), managed_copy), app)
+        .map(|operation| operation.as_str().to_string())
 }
 
 #[tauri::command]
@@ -575,8 +524,10 @@ pub fn repair_managed(
     component: ComponentId,
     state: State<'_, SetupService>,
     app: tauri::AppHandle,
-) -> Result<OperationId, String> {
-    state.start(SetupAction::Repair(component), app)
+) -> Result<String, String> {
+    state
+        .start(SetupAction::Repair(component.into()), app)
+        .map(|operation| operation.as_str().to_string())
 }
 
 #[tauri::command]
@@ -584,8 +535,10 @@ pub fn verify_managed(
     component: ComponentId,
     state: State<'_, SetupService>,
     app: tauri::AppHandle,
-) -> Result<OperationId, String> {
-    state.start(SetupAction::Verify(component), app)
+) -> Result<String, String> {
+    state
+        .start(SetupAction::Verify(component.into()), app)
+        .map(|operation| operation.as_str().to_string())
 }
 
 #[tauri::command]
@@ -593,18 +546,20 @@ pub fn remove_managed(
     component: ComponentId,
     state: State<'_, SetupService>,
     app: tauri::AppHandle,
-) -> Result<OperationId, String> {
-    state.start(SetupAction::Remove(component), app)
+) -> Result<String, String> {
+    state
+        .start(SetupAction::Remove(component.into()), app)
+        .map(|operation| operation.as_str().to_string())
 }
 
 #[tauri::command]
-pub fn cancel_setup(operation: OperationId, state: State<'_, SetupService>) -> bool {
+pub fn cancel_setup(operation: String, state: State<'_, SetupService>) -> bool {
     state
         .active
         .lock()
         .expect("setup operation lock")
         .as_ref()
-        .filter(|active| active.id == operation)
+        .filter(|active| active.id.as_str() == operation)
         .map(|active| {
             active.cancel.store(true, Ordering::Relaxed);
             true

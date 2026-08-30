@@ -1,4 +1,4 @@
-import type { ComponentStatus, Readiness, SetupEvent, SetupPlan } from './types'
+import type { ComponentStatus, Readiness, SetupEvent, SetupPlan } from './generated/ipc'
 
 export type SpeechSetupState =
   | { kind: 'ready'; title: 'Ready to dictate'; detail: string }

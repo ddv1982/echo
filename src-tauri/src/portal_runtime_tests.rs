@@ -321,7 +321,7 @@ fn portal_runtime_registers_binds_routes_and_closes() {
             assert_eq!(
                 native_shortcut_state(),
                 NativeShortcutState::Active {
-                    backend: ShortcutBackendName::Portal,
+                    backend: ShortcutBackend::Portal,
                     effective: "Ctrl+Alt+T".to_string(),
                 }
             );
@@ -386,7 +386,7 @@ fn portal_runtime_registers_binds_routes_and_closes() {
             let deadline = Instant::now() + Duration::from_secs(3);
             while native_shortcut_state()
                 != (NativeShortcutState::Active {
-                    backend: ShortcutBackendName::Portal,
+                    backend: ShortcutBackend::Portal,
                     effective: "Alt+F8".to_string(),
                 })
                 && Instant::now() < deadline
@@ -396,7 +396,7 @@ fn portal_runtime_registers_binds_routes_and_closes() {
             assert_eq!(
                 native_shortcut_state(),
                 NativeShortcutState::Active {
-                    backend: ShortcutBackendName::Portal,
+                    backend: ShortcutBackend::Portal,
                     effective: "Alt+F8".to_string(),
                 }
             );

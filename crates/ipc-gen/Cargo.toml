@@ -1,0 +1,15 @@
+[package]
+name = "echo-ipc-gen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Generate Echo's TypeScript IPC contract"
+publish = false
+
+[dependencies]
+echo-ipc = { path = "../echo-ipc" }
+
+[lints]
+workspace = true

@@ -19,7 +19,7 @@ import type {
   ShortcutStatus,
   SettingField,
   Settings,
-} from './types'
+} from './generated/ipc'
 
 declare global {
   interface Window {
@@ -84,6 +84,8 @@ export function richPreviewStatus(): AppStatus {
           bestOf: 5,
           noFallback: false,
         },
+        accelerationSkip: null,
+        recovery: null,
       },
     },
     languageWarning: null,
@@ -695,16 +697,16 @@ export function seedPreviewMicrophones(snapshot: MicrophoneSnapshot) {
 function defaultPreviewReadiness(): Readiness {
   const sources: Array<{ id: ComponentId; label: string; path: string; origin: 'system' | 'external' }> = [
     { id: 'whisper-runtime', label: 'Whisper runtime', path: '/usr/bin/whisper-cli', origin: 'system' },
-    { id: 'whisper-base-q5-1', label: 'Base multilingual Q5_1', path: '', origin: 'external' },
+    { id: 'whisper-base-q51', label: 'Base multilingual Q5_1', path: '', origin: 'external' },
     { id: 'whisper-small', label: 'Small multilingual', path: '/home/user/.cache/echo/ggml-small.bin', origin: 'external' },
-    { id: 'whisper-large-v3-turbo-q5-0', label: 'Large v3 Turbo Q5_0', path: '', origin: 'external' },
+    { id: 'whisper-large-v3-turbo-q50', label: 'Large v3 Turbo Q5_0', path: '', origin: 'external' },
     { id: 'silero-vad', label: 'Silero voice detection', path: '/home/user/.cache/echo/ggml-silero-v6.2.0.bin', origin: 'external' },
     // Absent by default, because that is what a real install looks like until
     // someone chooses GPU. A fixture that pretends it is present hides every
     // control that assumes it.
     { id: 'whisper-vulkan-runtime', label: 'Whisper GPU runtime', path: '', origin: 'system' },
     { id: 'sherpa-runtime', label: 'sherpa-onnx runtime', path: '', origin: 'system' },
-    { id: 'parakeet-tdt-06b-v3-int8', label: 'Parakeet TDT 0.6b v3', path: '', origin: 'external' },
+    { id: 'parakeet-tdt06b-v3-int8', label: 'Parakeet TDT 0.6b v3', path: '', origin: 'external' },
   ]
   return {
     managedSupported: true,
@@ -721,10 +723,10 @@ function defaultPreviewReadiness(): Readiness {
     })),
     plans: [
       { id: 'recommended', label: 'Recommended', components: ['whisper-runtime', 'whisper-small', 'silero-vad'], satisfied: true, downloadBytes: 0, requiredFreeBytes: 0, availableBytes: 10_000_000_000, diskReady: true, diskReason: null },
-      { id: 'parakeet', label: 'Parakeet', components: ['sherpa-runtime', 'parakeet-tdt-06b-v3-int8'], satisfied: false, downloadBytes: 848_526_547, requiredFreeBytes: 1_500_000_000, availableBytes: 10_000_000_000, diskReady: true, diskReason: null },
-      { id: 'whisper-base', label: 'Whisper base', components: ['whisper-runtime', 'whisper-base-q5-1'], satisfied: false, downloadBytes: 141_000_000, requiredFreeBytes: 300_000_000, availableBytes: 10_000_000_000, diskReady: true, diskReason: null },
+      { id: 'parakeet', label: 'Parakeet', components: ['sherpa-runtime', 'parakeet-tdt06b-v3-int8'], satisfied: false, downloadBytes: 848_526_547, requiredFreeBytes: 1_500_000_000, availableBytes: 10_000_000_000, diskReady: true, diskReason: null },
+      { id: 'whisper-base', label: 'Whisper base', components: ['whisper-runtime', 'whisper-base-q51'], satisfied: false, downloadBytes: 141_000_000, requiredFreeBytes: 300_000_000, availableBytes: 10_000_000_000, diskReady: true, diskReason: null },
       { id: 'whisper-small', label: 'Whisper small', components: ['whisper-runtime', 'whisper-small', 'silero-vad'], satisfied: true, downloadBytes: 0, requiredFreeBytes: 0, availableBytes: 10_000_000_000, diskReady: true, diskReason: null },
-      { id: 'whisper-large-v3-turbo', label: 'Whisper Large v3 Turbo Q5_0', components: ['whisper-runtime', 'whisper-large-v3-turbo-q5-0', 'silero-vad'], satisfied: false, downloadBytes: 574_041_195, requiredFreeBytes: 1_200_000_000, availableBytes: 10_000_000_000, diskReady: true, diskReason: null },
+      { id: 'whisper-large-v3-turbo', label: 'Whisper Large v3 Turbo Q5_0', components: ['whisper-runtime', 'whisper-large-v3-turbo-q50', 'silero-vad'], satisfied: false, downloadBytes: 574_041_195, requiredFreeBytes: 1_200_000_000, availableBytes: 10_000_000_000, diskReady: true, diskReason: null },
     ],
     microphoneReady: true,
     speechReady: true,
