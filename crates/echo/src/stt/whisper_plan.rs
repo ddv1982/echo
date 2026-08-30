@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use echo_core::{WhisperRuntimeBackend, WhisperRuntimeSource, WhisperVulkanReceipt};
 
-use super::whisper_quarantine::AcceleratorKey;
 use super::whisper_behavior::{ONE_SHOT_TIMEOUT_SECS, VULKAN_BACKEND, VULKAN_RECEIPT_SCHEMA};
+use super::whisper_quarantine::AcceleratorKey;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WhisperExecutionPlan {
@@ -21,9 +21,7 @@ pub struct WhisperExecutionPlan {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WhisperPlanDecision {
-    ManagedCpu {
-        plan: Box<WhisperExecutionPlan>,
-    },
+    ManagedCpu { plan: Box<WhisperExecutionPlan> },
     QualifiedAccelerator(Box<QualifiedWhisperPlan>),
 }
 
@@ -41,7 +39,9 @@ impl WhisperPlanDecision {
             || plan.runtime.backend != WhisperRuntimeBackend::Cpu
             || plan.protocol != WhisperProtocol::OneShotCli
         {
-            return Err("managed CPU decision requires the managed one-shot CPU runtime".to_string());
+            return Err(
+                "managed CPU decision requires the managed one-shot CPU runtime".to_string(),
+            );
         }
         Ok(Self::ManagedCpu {
             plan: Box::new(plan),
@@ -60,7 +60,9 @@ impl WhisperPlanDecision {
             || primary.runtime.launch.identity_sha256.is_none()
             || primary.allow_vad_retry
         {
-            return Err("qualified primary must be an identified one-shot Vulkan runtime".to_string());
+            return Err(
+                "qualified primary must be an identified one-shot Vulkan runtime".to_string(),
+            );
         }
         if fallback.runtime.source != WhisperRuntimeSource::Managed
             || fallback.runtime.backend != WhisperRuntimeBackend::Cpu
@@ -69,7 +71,9 @@ impl WhisperPlanDecision {
             || fallback.runtime.launch.identity_sha256.is_none()
             || fallback.allow_vad_retry
         {
-            return Err("qualified fallback must be the identified managed CPU runtime".to_string());
+            return Err(
+                "qualified fallback must be the identified managed CPU runtime".to_string(),
+            );
         }
         if primary.model != fallback.model
             || primary.vad != fallback.vad
@@ -361,8 +365,7 @@ mod tests {
 
     #[test]
     fn qualified_plan_requires_exact_accelerator_and_managed_cpu_contracts() {
-        let key: AcceleratorKey = serde_json::from_str(&format!("\"{}\"", "a".repeat(64)))
-            .unwrap();
+        let key: AcceleratorKey = serde_json::from_str(&format!("\"{}\"", "a".repeat(64))).unwrap();
         let accelerated = plan(WhisperRuntimeSource::System, WhisperRuntimeBackend::Vulkan);
         let cpu = plan(WhisperRuntimeSource::Managed, WhisperRuntimeBackend::Cpu);
         assert!(WhisperPlanDecision::qualified(
@@ -384,13 +387,9 @@ mod tests {
             (wrong_backend, cpu.clone()),
             (accelerated.clone(), accelerated.clone()),
         ] {
-            assert!(WhisperPlanDecision::qualified(
-                key.clone(),
-                primary,
-                fallback,
-                receipt()
-            )
-            .is_err());
+            assert!(
+                WhisperPlanDecision::qualified(key.clone(), primary, fallback, receipt()).is_err()
+            );
         }
     }
 }

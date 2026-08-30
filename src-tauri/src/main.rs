@@ -1577,7 +1577,9 @@ fn settings_from(
         ),
         whisper_gpu_device: setting_field(
             None,
-            file.whisper_gpu_device.as_deref().and_then(parse_gpu_device),
+            file.whisper_gpu_device
+                .as_deref()
+                .and_then(parse_gpu_device),
             String::new(),
         ),
     })
@@ -1640,7 +1642,9 @@ fn parse_gpu_device(raw: &str) -> Option<String> {
         .iter()
         .all(|uuid| {
             uuid.len() == 32
-                && uuid.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                && uuid
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
                 && !uuid.bytes().all(|b| b == b'0')
         })
         .then(|| raw.to_string())
@@ -3060,7 +3064,10 @@ mod settings_tests {
         assert_eq!(got.whisper_acceleration.effective, "gpu");
         assert_eq!(got.whisper_acceleration.source, SettingSource::File);
         let pinned = format!("{}:{}", "a".repeat(32), "b".repeat(32));
-        assert_eq!(got.whisper_gpu_device.value.as_deref(), Some(pinned.as_str()));
+        assert_eq!(
+            got.whisper_gpu_device.value.as_deref(),
+            Some(pinned.as_str())
+        );
         assert_eq!(got.whisper_gpu_device.source, SettingSource::File);
     }
 
@@ -3562,7 +3569,11 @@ mod settings_tests {
         ] {
             let mut whisper = cpu_telemetry();
             whisper.skipped_acceleration = Some(skip);
-            assert_eq!(project_acceleration_skip(&whisper), Some(expected), "{skip:?}");
+            assert_eq!(
+                project_acceleration_skip(&whisper),
+                Some(expected),
+                "{skip:?}"
+            );
         }
     }
 

@@ -9,9 +9,8 @@ use std::time::{Duration, Instant};
 use echo_core::{
     strip_nonspeech, DecodeOptions, Engine, EngineError, EngineId, Language, LanguageChoice,
     Pcm16kMono, RunDetail, Transcript, WhisperAccelerationSkip, WhisperAttemptTelemetry,
-    WhisperRetryReason, WhisperRunMode,
-    WhisperRunTelemetry, WhisperRuntimeBackend, WhisperRuntimeSource, WhisperRuntimeTelemetry,
-    WhisperTuningTelemetry,
+    WhisperRetryReason, WhisperRunMode, WhisperRunTelemetry, WhisperRuntimeBackend,
+    WhisperRuntimeSource, WhisperRuntimeTelemetry, WhisperTuningTelemetry,
 };
 use serde::Deserialize;
 
@@ -826,10 +825,8 @@ mod tests {
     fn missing_model_is_engine_missing() {
         // Process-scoped and pre-cleaned: a stray .bin left by anything else
         // would turn Missing into a different error.
-        let dir = std::env::temp_dir().join(format!(
-            "echo-empty-whisper-models-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("echo-empty-whisper-models-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let engine = WhisperEngine::configured(ModelCache::at(&dir), "base.en");

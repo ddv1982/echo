@@ -21,16 +21,12 @@ pub fn failure_notifications_enabled() -> bool {
 #[must_use]
 pub fn failure_message(reason: FailReason, detail: Option<&str>) -> String {
     match reason {
-        FailReason::NoInputDevice => {
-            "Echo couldn't record: no microphone input device. \
+        FailReason::NoInputDevice => "Echo couldn't record: no microphone input device. \
              Open Echo → Settings to pick one."
-                .to_string()
-        }
-        FailReason::CaptureFailed => {
-            "Echo couldn't record: microphone capture failed. \
+            .to_string(),
+        FailReason::CaptureFailed => "Echo couldn't record: microphone capture failed. \
              Open Echo → Settings and test the microphone."
-                .to_string()
-        }
+            .to_string(),
         FailReason::EngineMissing => {
             "Echo couldn't transcribe: no speech engine or model installed. \
              Open Echo → Settings to download one."
@@ -48,16 +44,12 @@ pub fn failure_message(reason: FailReason, detail: Option<&str>) -> String {
              Open Echo → Settings for the insertion setup."
                 .to_string()
         }
-        FailReason::NoFocus => {
-            "Echo transcribed but found no focused window to type into. \
+        FailReason::NoFocus => "Echo transcribed but found no focused window to type into. \
              Click where the text should go and dictate again."
-                .to_string()
-        }
-        FailReason::InjectUnconfirmed => {
-            "Echo transcribed but the insert was not confirmed. \
+            .to_string(),
+        FailReason::InjectUnconfirmed => "Echo transcribed but the insert was not confirmed. \
              Open Echo → Settings for the insertion setup."
-                .to_string()
-        }
+            .to_string(),
     }
 }
 
@@ -97,7 +89,10 @@ mod tests {
         ] {
             let message = failure_message(reason, None);
             assert!(message.contains("Echo"), "{reason:?}: {message}");
-            assert!(message.contains("Settings") || message.contains("dictate again"), "{reason:?}: {message}");
+            assert!(
+                message.contains("Settings") || message.contains("dictate again"),
+                "{reason:?}: {message}"
+            );
         }
         let detailed = failure_message(FailReason::EngineError, Some("ggml_init failed"));
         assert!(detailed.contains("ggml_init failed"));

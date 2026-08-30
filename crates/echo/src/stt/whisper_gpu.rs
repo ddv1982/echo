@@ -55,7 +55,8 @@ pub(crate) fn accelerated_engine(
     managed_cpu: &WhisperExecutionPlan,
     pinned: Option<&str>,
 ) -> Result<RecoveringWhisperEngine, WhisperAccelerationSkip> {
-    let runtime = super::installed_vulkan_runtime().ok_or(WhisperAccelerationSkip::RuntimeMissing)?;
+    let runtime =
+        super::installed_vulkan_runtime().ok_or(WhisperAccelerationSkip::RuntimeMissing)?;
     let cli = runtime.join("whisper-cli");
     let probe = runtime.join("echo-whisper-runtime-probe");
     if !probe.is_file() {
@@ -84,8 +85,7 @@ pub(crate) fn accelerated_engine(
     let mut launch = whisper_runtime_launch(&cli);
     launch.vulkan_driver_files = Some(route.manifest_path.clone());
     launch.vulkan_selector = Some(route.selector.clone());
-    launch.mesa_shader_cache_dir =
-        Some(super::whisper_state_dir().join("mesa").join(key.as_str()));
+    launch.mesa_shader_cache_dir = Some(super::whisper_state_dir().join("mesa").join(key.as_str()));
 
     let tuning = qualified_tuning();
     let mut primary = WhisperExecutionPlan::one_shot(

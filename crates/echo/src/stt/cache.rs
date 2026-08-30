@@ -251,7 +251,9 @@ pub(crate) fn parse_whisper_filename(
                 .map(|rest| (rest, (*quant).to_string()))
         })
         .map_or((stem, None), |(rest, quant)| (rest, Some(quant)));
-    let (stem, english_only) = stem.strip_suffix(".en").map_or((stem, false), |rest| (rest, true));
+    let (stem, english_only) = stem
+        .strip_suffix(".en")
+        .map_or((stem, false), |rest| (rest, true));
     let family = WhisperFamily::from_name(stem)?;
     Some((stem_name(file_name), family, !english_only, quantisation))
 }
@@ -269,10 +271,7 @@ mod tests {
     use super::*;
 
     fn scratch_dir(label: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "echo-cache-{label}-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("echo-cache-{label}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -295,10 +294,30 @@ mod tests {
             ("ggml-tiny.en.bin", WhisperFamily::Tiny, false, None),
             ("ggml-base.en.bin", WhisperFamily::Base, false, None),
             ("ggml-base.bin", WhisperFamily::Base, true, None),
-            ("ggml-small.en-q5_1.bin", WhisperFamily::Small, false, Some("q5_1")),
-            ("ggml-small-q5_1.bin", WhisperFamily::Small, true, Some("q5_1")),
-            ("ggml-medium-q5_0.bin", WhisperFamily::Medium, true, Some("q5_0")),
-            ("ggml-medium.en-q5_0.bin", WhisperFamily::Medium, false, Some("q5_0")),
+            (
+                "ggml-small.en-q5_1.bin",
+                WhisperFamily::Small,
+                false,
+                Some("q5_1"),
+            ),
+            (
+                "ggml-small-q5_1.bin",
+                WhisperFamily::Small,
+                true,
+                Some("q5_1"),
+            ),
+            (
+                "ggml-medium-q5_0.bin",
+                WhisperFamily::Medium,
+                true,
+                Some("q5_0"),
+            ),
+            (
+                "ggml-medium.en-q5_0.bin",
+                WhisperFamily::Medium,
+                false,
+                Some("q5_0"),
+            ),
             ("ggml-large.bin", WhisperFamily::LargeV1, true, None),
             ("ggml-large-v1.bin", WhisperFamily::LargeV1, true, None),
             ("ggml-large-v2.bin", WhisperFamily::LargeV2, true, None),
@@ -309,7 +328,12 @@ mod tests {
                 true,
                 Some("q5_0"),
             ),
-            ("ggml-base-q8_0.bin", WhisperFamily::Base, true, Some("q8_0")),
+            (
+                "ggml-base-q8_0.bin",
+                WhisperFamily::Base,
+                true,
+                Some("q8_0"),
+            ),
             (
                 "ggml-large-v3-turbo-q8_0.bin",
                 WhisperFamily::LargeV3Turbo,
@@ -365,10 +389,16 @@ mod tests {
     #[test]
     fn best_whisper_prefers_multilingual_then_family_then_precision() {
         let inventory = inventory_of("best", &["ggml-base.en.bin", "ggml-small.bin"]);
-        assert_eq!(inventory.best_whisper().map(|m| m.name.as_str()), Some("small"));
+        assert_eq!(
+            inventory.best_whisper().map(|m| m.name.as_str()),
+            Some("small")
+        );
 
         let inventory = inventory_of("best-quant", &["ggml-small-q5_1.bin", "ggml-small.bin"]);
-        assert_eq!(inventory.best_whisper().map(|m| m.name.as_str()), Some("small"));
+        assert_eq!(
+            inventory.best_whisper().map(|m| m.name.as_str()),
+            Some("small")
+        );
 
         let inventory = inventory_of("best-en", &["ggml-tiny.en.bin", "ggml-base.en.bin"]);
         assert_eq!(

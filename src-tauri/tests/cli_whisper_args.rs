@@ -260,10 +260,8 @@ printf '%s\n' 'whisper_model_load: CPU total size = 59.12 MB' >&2
 
 #[test]
 fn whisper_acceleration_cpu_forces_no_gpu() {
-    let root = std::env::temp_dir().join(format!(
-        "echo-cli-whisper-accel-cpu-{}",
-        std::process::id()
-    ));
+    let root =
+        std::env::temp_dir().join(format!("echo-cli-whisper-accel-cpu-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let bin_dir = root.join("bin");
     let config_dir = root.join("config");

@@ -8,9 +8,8 @@ use echo_core::{
 
 use crate::install::ManagedPath;
 use crate::stt::{
-    accelerated_engine, preferred_runtime, resolved_whisper_acceleration,
-    whisper_runtime_launch, FakeEngine, ModelCache, ParakeetEngine,
-    SpeechRuntimeInventory, WhisperEngine,
+    accelerated_engine, preferred_runtime, resolved_whisper_acceleration, whisper_runtime_launch,
+    FakeEngine, ModelCache, ParakeetEngine, SpeechRuntimeInventory, WhisperEngine,
     WhisperExecutionPlan, WhisperModelAsset, WhisperTuningOverride,
 };
 
