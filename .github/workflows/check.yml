@@ -65,6 +65,8 @@ jobs:
 
       - run: npm run test --prefix frontend
 
+      - run: cargo fmt --all --check
+
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Reclaim clippy artifacts
