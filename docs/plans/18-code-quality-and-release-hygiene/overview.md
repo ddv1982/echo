@@ -8,7 +8,7 @@ Start with [phases.md](phases.md) for the human control plan. Use this file duri
 
 One box is one unit of work. Every box names the evidence that checks it. A nested box is a sub-step of the box above it. Check a box only when its evidence exists, a file, a log line, a screenshot, a test run, or a SHA. The body is a how-to. The appendices explain and record.
 
-The program runs the installed `pstack/skills/poteto-mode/playbooks/autopilot-stack.md` playbook. Owners stop at merge-ready. The operator reviews the Graphite stack and lands it.
+The program runs the installed `pstack/skills/poteto-mode/playbooks/autopilot-stack.md` playbook. Owners stop at merge-ready. The operator reviews the GitHub stacked-branch chain and lands it.
 
 Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
@@ -44,7 +44,7 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
 
 ### PR mechanics, for every PR
 
-- [ ] Open the PR ready, never draft, with `gh pr create` and `draft: false`, or with Graphite `gt` for the stack.
+- [ ] Open the PR ready, never draft, with `gh pr create` and `draft: false`. Set its base to the preceding stack branch.
 - [ ] Run the repository lint and typecheck once before the PR-facing push. Push with hooks on.
 - [ ] Run `/deslop` before each commit and `/no-comments` before review.
 - [ ] Triage every Bugbot and security-reviewer comment with the active pstack bug-triage guidance.
@@ -55,15 +55,15 @@ Tests alone are not sufficient verification. A PR is verified only when its unit
 
 - [ ] At the stack-ready head SHA, run the swarm from the active `swarm` skill. Use one gates lane, the ten live lanes from the PR's live block, the perf lane from its perf block, and one audit lane that distrusts the PR body.
 - [ ] Mark a PR clean only when every lane reports `PASS`. Return findings to the owner. Run a fresh swarm for every new head SHA.
-- [ ] On a clean verdict, append the PR to the Graphite stack. Never merge, arm auto-merge, or close it.
-- [ ] After a restack, compare patch IDs. Re-run the verdict for every PR whose patch changed.
+- [ ] On a clean verdict, append the PR to the GitHub stacked-branch chain. Never merge, arm auto-merge, or close it.
+- [ ] After a restack, compare patch IDs to classify semantic changes, then run a fresh exact-head verdict for every new head SHA even when the patch ID is unchanged.
 
 ### Boot recipe, for every live lane
 
 Each live lane runs on its own VM at the PR head. Use `control-ui` for the desktop and browser preview. Use `control-cli` for build, installer, release, and documentation commands.
 
 - [ ] Run `git fetch origin <head-branch> && git checkout <head-SHA>`.
-- [ ] Install the native packages from `.github/workflows/check.yml`, then run `npm ci --prefix frontend`.
+- [ ] Install the native packages from `.github/workflows/check.yml`, then run `npm ci --prefix frontend`. Release lanes also install the additional packages from `.github/workflows/release.yml`, including `p7zip-full`, `cpio`, `patchelf`, `librsvg2-dev`, and `libgtk-3-dev`.
 - [ ] For UI lanes, start the Vite preview or `echo-desktop` and wait for the first status response. For CLI lanes, start the named command and capture its exit status.
 - [ ] Deliver input only through the selected control skill. Use `git diff`, process listings, and generated manifests as read-only diagnostics.
 - [ ] Save every screenshot to `/tmp/swarm-<pr-id>/worker-<n>/<slug>.png` and return the paths with the report.
@@ -123,7 +123,7 @@ Each live lane runs on its own VM at the PR head. Use `control-ui` for the deskt
 - [ ] Root records a clean verdict at the exact head SHA.
 - [ ] Bugbot and security-reviewer triage is complete.
 - [ ] Rebase onto current trunk after the verdict and prove the patch ID is unchanged.
-- [ ] Root appends PR 18.1 to the Graphite stack. The operator lands the stack later.
+- [ ] Root sets PR 18.1 after the plan PR in the GitHub stacked-branch chain. The operator lands the stack later.
 
 ## Generate the frontend IPC contract from Rust (PR 18.2)
 
@@ -180,7 +180,7 @@ Each live lane runs on its own VM at the PR head. Use `control-ui` for the deskt
 - [ ] Root records a clean verdict at the exact head SHA.
 - [ ] Bugbot and security-reviewer triage is complete.
 - [ ] Rebase onto current trunk after the verdict and prove the patch ID is unchanged.
-- [ ] Root appends PR 18.2 after PR 18.1 in the Graphite stack.
+- [ ] Root sets PR 18.2 to base on PR 18.1 in the GitHub stacked-branch chain.
 
 ## Serialize frontend polling and subscriptions (PR 18.3)
 
@@ -238,7 +238,7 @@ Each live lane runs on its own VM at the PR head. Use `control-ui` for the deskt
 - [ ] Root records a clean verdict at the exact head SHA.
 - [ ] Bugbot and security-reviewer triage is complete.
 - [ ] Rebase onto current trunk after the verdict and prove the patch ID is unchanged.
-- [ ] Root appends PR 18.3 after PR 18.2 in the Graphite stack.
+- [ ] Root sets PR 18.3 to base on PR 18.2 in the GitHub stacked-branch chain.
 
 ## Separate the real and preview desktop adapters (PR 18.4)
 
@@ -293,7 +293,7 @@ Each live lane runs on its own VM at the PR head. Use `control-ui` for the deskt
 - [ ] Root records a clean verdict at the exact head SHA.
 - [ ] Bugbot and security-reviewer triage is complete.
 - [ ] Rebase onto current trunk after the verdict and prove the patch ID is unchanged.
-- [ ] Root appends PR 18.4 after PR 18.3 in the Graphite stack.
+- [ ] Root sets PR 18.4 to base on PR 18.3 in the GitHub stacked-branch chain.
 
 ## Split frontend features out of App.tsx (PR 18.5)
 
@@ -348,7 +348,7 @@ Each live lane runs on its own VM at the PR head. Use `control-ui` for the deskt
 - [ ] Root records a clean verdict at the exact head SHA.
 - [ ] Bugbot and security-reviewer triage is complete.
 - [ ] Rebase onto current trunk after the verdict and prove the patch ID is unchanged.
-- [ ] Root appends PR 18.5 after PR 18.4 in the Graphite stack.
+- [ ] Root sets PR 18.5 to base on PR 18.4 in the GitHub stacked-branch chain.
 
 ## Split the managed installer by responsibility (PR 18.6)
 
@@ -404,7 +404,7 @@ Each live lane runs on its own VM at the PR head. Use `control-ui` for the deskt
 - [ ] Root records a clean verdict at the exact head SHA.
 - [ ] Bugbot and security-reviewer triage is complete.
 - [ ] Rebase onto current trunk after the verdict and prove the patch ID is unchanged.
-- [ ] Root appends PR 18.6 after PR 18.5 in the Graphite stack.
+- [ ] Root sets PR 18.6 to base on PR 18.5 in the GitHub stacked-branch chain.
 
 ## Extract the desktop shortcut subsystem (PR 18.7)
 
@@ -458,7 +458,7 @@ Each live lane runs on its own VM at the PR head. Use `control-ui` for the deskt
 - [ ] Root records a clean verdict at the exact head SHA.
 - [ ] Bugbot and security-reviewer triage is complete.
 - [ ] Rebase onto current trunk after the verdict and prove the patch ID is unchanged.
-- [ ] Root appends PR 18.7 after PR 18.6 in the Graphite stack.
+- [ ] Root sets PR 18.7 to base on PR 18.6 in the GitHub stacked-branch chain.
 
 ## Reduce main.rs to desktop composition (PR 18.8)
 
@@ -513,7 +513,7 @@ Each live lane runs on its own VM at the PR head. Use `control-ui` for the deskt
 - [ ] Root records a clean verdict at the exact head SHA.
 - [ ] Bugbot and security-reviewer triage is complete.
 - [ ] Rebase onto current trunk after the verdict and prove the patch ID is unchanged.
-- [ ] Root appends PR 18.8 after PR 18.7 in the Graphite stack.
+- [ ] Root sets PR 18.8 to base on PR 18.7 in the GitHub stacked-branch chain.
 
 ## Publish complete release assets and license terms (PR 18.9)
 
@@ -573,7 +573,7 @@ Each live lane runs on its own VM at the PR head. Use `control-ui` for the deskt
 - [ ] Root records a clean verdict at the exact head SHA.
 - [ ] Bugbot and security-reviewer triage is complete.
 - [ ] Rebase onto current trunk after the verdict and prove the patch ID is unchanged.
-- [ ] Root appends PR 18.9 after PR 18.8 in the Graphite stack.
+- [ ] Root sets PR 18.9 to base on PR 18.8 in the GitHub stacked-branch chain.
 
 ## Pin workflows and attest release outputs (PR 18.10)
 
@@ -629,7 +629,7 @@ Each live lane runs on its own VM at the PR head. Use `control-ui` for the deskt
 - [ ] Root records a clean verdict at the exact head SHA.
 - [ ] Bugbot and security-reviewer triage is complete.
 - [ ] Rebase onto current trunk after the verdict and prove the patch ID is unchanged.
-- [ ] Root appends PR 18.10 after PR 18.9 in the Graphite stack.
+- [ ] Root sets PR 18.10 to base on PR 18.9 in the GitHub stacked-branch chain.
 
 ## Archive retired qualification machinery (PR 18.11)
 
@@ -639,6 +639,7 @@ Each live lane runs on its own VM at the PR head. Use `control-ui` for the deskt
 
 - [ ] Move the three CI fixtures from `.audit/pr16-1-evidence` to `scripts/fixtures/whisper-runtime-performance` and update `scripts/verify-whisper-runtime-archive.sh`.
 - [ ] Create `docs/history/README.md` and `docs/history/evidence-2026-08-30.md`.
+- [ ] Remove the README link to plans 01–17 in the same PR that deletes those plans.
 - [ ] Delete retired qualification-only scripts after the archive exists.
 - [ ] Remove plans 01 through 17, retired QA reports, and raw `.audit` data only after the archive manifest resolves.
 
@@ -682,14 +683,14 @@ Each live lane runs on its own VM at the PR head. Use `control-ui` for the deskt
 
 - [ ] Copy lane 2, lane 3, and lane 4 screenshots into `docs/plans/18-code-quality-and-release-hygiene/media/18-11-review-archive.png`, `docs/plans/18-code-quality-and-release-hygiene/media/18-11-review-checksum.png`, and `docs/plans/18-code-quality-and-release-hygiene/media/18-11-review-extract.png`.
 - [ ] Record a 30 to 60 second video that rebuilds, checks, and extracts the archive. Save it as `docs/plans/18-code-quality-and-release-hygiene/media/18-11-review.mp4`.
-- [ ] Post the screenshots, video, archive URL, manifest, and checksum in chat. Stop at stack-ready. Wait for the operator's review before deleting tracked evidence.
+- [ ] Post the screenshots, video, archive manifest, and checksum in chat before staging deletions. Commit the qualified deletions, run the exact-head verification, and only then mark the PR stack-ready. External publication remains a merge gate.
 
 **Merge.**
 
 - [ ] Root records a clean verdict at the exact head SHA and verifies the external archive before accepting deletions.
 - [ ] Bugbot and security-reviewer triage is complete.
 - [ ] Rebase onto current trunk after the verdict and prove the patch ID is unchanged.
-- [ ] Root appends PR 18.11 after PR 18.10 in the Graphite stack.
+- [ ] Root sets PR 18.11 to base on PR 18.10 in the GitHub stacked-branch chain.
 
 ## Prepare safe historical release cleanup (PR 18.12)
 
@@ -749,7 +750,7 @@ Each live lane runs on its own VM at the PR head. Use `control-ui` for the deskt
 - [ ] Root records a clean verdict at the exact head SHA.
 - [ ] Bugbot and security-reviewer triage is complete.
 - [ ] Rebase onto current trunk after the verdict and prove the patch ID is unchanged.
-- [ ] Root appends PR 18.12 after PR 18.11 in the Graphite stack. The script stays in dry-run mode until the operator separately authorizes remote apply.
+- [ ] Root sets PR 18.12 to base on PR 18.11 in the GitHub stacked-branch chain. The script stays in dry-run mode until the operator separately authorizes remote apply.
 
 ## Rebuild the public documentation (PR 18.13)
 
@@ -808,7 +809,7 @@ Each live lane runs on its own VM at the PR head. Use `control-ui` for the deskt
 - [ ] Root records a clean verdict at the exact head SHA.
 - [ ] Bugbot and security-reviewer triage is complete.
 - [ ] Rebase onto current trunk after the verdict and prove the patch ID is unchanged.
-- [ ] Root appends PR 18.13 after PR 18.12 in the Graphite stack. The operator reviews and lands the full stack.
+- [ ] Root sets PR 18.13 to base on PR 18.12 in the GitHub stacked-branch chain. The operator reviews and lands the full stack.
 
 ## Close the program
 
@@ -817,7 +818,7 @@ Each live lane runs on its own VM at the PR head. Use `control-ui` for the deskt
 - [ ] Confirm the repository has no unexpected working-tree changes and the decision trail resolves every evidence pointer.
 - [ ] Apply the approved PR 18.12 GitHub release cleanup only after the repository stack lands and the operator gives the exact apply token.
 - [ ] Enable the GitHub full-SHA action policy and immutable `v*` tag ruleset only after PR 18.10 lands and the operator approves those repository settings.
-- [ ] Reply with the final Graphite stack links, one verdict per PR, external changes made, archived artifacts, and any parked work.
+- [ ] Reply with the final GitHub stacked-PR links, one verdict per PR, external changes made, archived artifacts, and any parked work.
 
 ## Appendix A. Prototype evidence
 
