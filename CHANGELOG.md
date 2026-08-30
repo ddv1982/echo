@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.13.0
+
+- Whisper acceleration is now a choice between CPU and GPU, and defaults to CPU. The Auto mode is gone: it only ever accelerated when a packaged qualification matched the exact host, so on nearly every machine it silently meant CPU. Saved `auto` values load as CPU.
+- Selecting GPU shows every Vulkan device on the machine and runs on the one picked, pinned by its device and driver UUID pair so it survives reordering. A single-device machine needs no choice.
+- The GPU runtime is a managed component downloaded on demand rather than bundled, so a user who stays on CPU never pays the 19 MB, and acceleration no longer depends on the package format the build came from. AppImage can now accelerate.
+- The Advanced acceleration readout names the device that ran and, when GPU was asked for and CPU ran, says why: no runtime installed, no device found, the pinned device absent, the device disabled after a failure, or a GPU run that failed and retried on CPU.
+- Tagged releases open every published deb and rpm and check it carries the binary CI built, instead of inspecting a hand-staged draft. v0.12.6 shipped with no acceleration payload because the only check that ran on a tag looked at the wrong artefact.
+
 ## v0.12.6
 
 - Unset Whisper acceleration is Auto. Auto uses a receipt-verified local Vulkan device when one enumerates, otherwise managed CPU. CPU remains an explicit opt-out.
