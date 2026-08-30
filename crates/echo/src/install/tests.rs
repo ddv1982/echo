@@ -1,8 +1,19 @@
+use super::catalog::{component, ArtifactFormat, PayloadKind};
+use super::payload::{
+    clear_verified_payload_fixtures, expected_files, expected_files_for,
+    forget_verified_payload_fixture,
+};
 use super::*;
 use filetime::{set_file_mtime, FileTime};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, VecDeque};
+use std::fs;
 use std::io::Cursor;
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::time::{Instant, UNIX_EPOCH};
 
 struct UnlimitedDisk;
 
@@ -339,10 +350,7 @@ fn direct_install_repairs_same_size_corruption_and_removes_only_managed_files() 
         .join("releases")
         .join(&active.release);
     assert!(!release.join("verified.json").exists());
-    verified_payloads()
-        .lock()
-        .unwrap()
-        .remove(&release.join("payload"));
+    forget_verified_payload_fixture(&release.join("payload"));
     assert!(matches!(
         installer
             .store
@@ -425,7 +433,7 @@ fn forged_legacy_verification_stamp_cannot_bypass_cold_verification() {
         &serde_json::to_vec_pretty(&forged).unwrap(),
     )
     .unwrap();
-    verified_payloads().lock().unwrap().remove(&payload_root);
+    forget_verified_payload_fixture(&payload_root);
 
     assert!(matches!(
         store.status_with(&spec, &expected_files_for(&spec), false),
@@ -440,7 +448,7 @@ fn managed_status_timing() {
         .map(PathBuf::from)
         .expect("ECHO_MANAGED_ROOT must name the directory that contains managed/");
     let store = ManagedStore::new(root);
-    verified_payloads().lock().unwrap().clear();
+    clear_verified_payload_fixtures();
     let mut measured = 0;
 
     for spec in catalog::COMPONENTS {

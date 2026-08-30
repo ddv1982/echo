@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::catalog::{ComponentId, ComponentSpec};
-use super::{InstallError, InstallPhase, InstallProgress, OperationId};
+use super::types::{InstallError, InstallPhase, InstallProgress, OperationId};
 
 const BUFFER_SIZE: usize = 64 * 1024;
 
