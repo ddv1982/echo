@@ -7,13 +7,13 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, SampleFormat, SizedSample, I24, U24};
 use echo_core::{MicrophoneSelection, Pcm16kMono, SAMPLE_RATE_HZ};
 
+#[cfg(any(target_os = "linux", test))]
+use crate::microphone::EndpointTier;
 use crate::microphone::{
     is_system_default_proxy, resolve_selection, selectable_inputs, selection_from_sources,
     AudioHost, InputDeviceInfo, InputSelectionStatus, MicrophoneFailure, MicrophoneId,
     MicrophoneSnapshot, RawInputDescriptor,
 };
-#[cfg(any(target_os = "linux", test))]
-use crate::microphone::EndpointTier;
 
 /// The microphone's RMS level, shared between the capture callback and
 /// whoever renders it. f32 bits in one atomic; publishing is a few
@@ -414,7 +414,9 @@ fn first_usable_or_first<T>(
     if is_usable(&first) {
         return Some(first);
     }
-    candidates.find(|candidate| is_usable(candidate)).or(Some(first))
+    candidates
+        .find(|candidate| is_usable(candidate))
+        .or(Some(first))
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -687,11 +689,7 @@ fn finish_capture_stream<T>(
     stream: T,
     state: &Arc<Mutex<CaptureStreamState>>,
 ) -> Result<(), AudioError> {
-    let result = match state
-        .lock()
-        .expect("stream state lock")
-        .begin_shutdown()
-    {
+    let result = match state.lock().expect("stream state lock").begin_shutdown() {
         Some(error) => Err(error),
         None => Ok(()),
     };

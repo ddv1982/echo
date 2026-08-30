@@ -86,7 +86,8 @@ fn main() {
 fn generate(root: &Path) -> Result<(), String> {
     for raster in RASTERS {
         let svg_path = root.join(raster.master.path());
-        let svg = fs::read(&svg_path).map_err(|err| format!("read {}: {err}", svg_path.display()))?;
+        let svg =
+            fs::read(&svg_path).map_err(|err| format!("read {}: {err}", svg_path.display()))?;
         let pixmap = render(&svg, raster.size)?;
         let dest = root.join(raster.dest);
         if let Some(parent) = dest.parent() {
@@ -101,8 +102,8 @@ fn generate(root: &Path) -> Result<(), String> {
 fn render(svg: &[u8], size: u32) -> Result<tiny_skia::Pixmap, String> {
     let tree = usvg::Tree::from_data(svg, &usvg::Options::default())
         .map_err(|err| format!("parse svg: {err}"))?;
-    let mut pixmap = tiny_skia::Pixmap::new(size, size)
-        .ok_or_else(|| format!("pixmap {size}x{size}"))?;
+    let mut pixmap =
+        tiny_skia::Pixmap::new(size, size).ok_or_else(|| format!("pixmap {size}x{size}"))?;
     let sx = size as f32 / tree.size().width();
     let sy = size as f32 / tree.size().height();
     resvg::render(
@@ -261,7 +262,9 @@ mod tests {
     }
 
     fn relative_luminance(r: u8, g: u8, b: u8) -> f64 {
-        0.2126 * channel_luminance(r) + 0.7152 * channel_luminance(g) + 0.0722 * channel_luminance(b)
+        0.2126 * channel_luminance(r)
+            + 0.7152 * channel_luminance(g)
+            + 0.0722 * channel_luminance(b)
     }
 
     #[test]
@@ -282,9 +285,7 @@ mod tests {
                         continue;
                     }
                     let a = f64::from(px[3]) / 255.0;
-                    let over = |c: u8| {
-                        (f64::from(c) * a + f64::from(bg) * (1.0 - a)).round() as u8
-                    };
+                    let over = |c: u8| (f64::from(c) * a + f64::from(bg) * (1.0 - a)).round() as u8;
                     sum += relative_luminance(over(px[0]), over(px[1]), over(px[2]));
                     count += 1;
                 }

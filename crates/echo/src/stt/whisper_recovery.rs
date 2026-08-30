@@ -7,8 +7,8 @@ use echo_core::{
     WhisperRecoveryTelemetry, WhisperRuntimeBackend,
 };
 
-use super::whisper_quarantine::{AcceleratorKey, QuarantineReason, MAX_QUARANTINE_LIFETIME_SECS};
 use super::whisper_plan::{QualifiedWhisperPlan, WhisperPlanDecision};
+use super::whisper_quarantine::{AcceleratorKey, QuarantineReason, MAX_QUARANTINE_LIFETIME_SECS};
 use super::{QuarantineStore, WhisperEngine};
 
 pub struct RecoveringWhisperEngine {
@@ -32,7 +32,6 @@ impl RecoveringWhisperEngine {
             ),
         }
     }
-
 
     #[must_use]
     #[cfg(test)]

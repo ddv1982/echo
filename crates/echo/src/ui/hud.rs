@@ -4,13 +4,13 @@ use std::sync::Arc as SyncArc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use crate::audio::LevelMeter;
 use x11rb::connection::Connection;
 use x11rb::protocol::shape::{self, SK, SO};
 use x11rb::protocol::xproto::{
     AtomEnum, ColormapAlloc, ConnectionExt, CreateGCAux, CreateWindowAux, EventMask, PropMode,
     Rectangle, VisualClass, WindowClass,
 };
-use crate::audio::LevelMeter;
 
 #[derive(Debug)]
 pub enum HudError {
@@ -354,10 +354,7 @@ struct ArgbVisual {
 /// The 32-bit TrueColor visual with an alpha channel, plus the colormap a
 /// window using it needs. Meaningful only when a compositor owns the
 /// `_NET_WM_CM_S0` selection; without one, transparent pixels render black.
-fn argb_visual<C: Connection>(
-    conn: &C,
-    screen_num: usize,
-) -> Result<Option<ArgbVisual>, HudError> {
+fn argb_visual<C: Connection>(conn: &C, screen_num: usize) -> Result<Option<ArgbVisual>, HudError> {
     let compositor = conn
         .intern_atom(false, b"_NET_WM_CM_S0")
         .map_err(|err| HudError::Display(err.to_string()))?
@@ -390,13 +387,8 @@ fn argb_visual<C: Connection>(
     let colormap = conn
         .generate_id()
         .map_err(|err| HudError::Display(err.to_string()))?;
-    conn.create_colormap(
-        ColormapAlloc::NONE,
-        colormap,
-        screen.root,
-        visual.visual_id,
-    )
-    .map_err(|err| HudError::Display(err.to_string()))?;
+    conn.create_colormap(ColormapAlloc::NONE, colormap, screen.root, visual.visual_id)
+        .map_err(|err| HudError::Display(err.to_string()))?;
     Ok(Some(ArgbVisual {
         visual_id: visual.visual_id,
         colormap,
@@ -674,9 +666,9 @@ pub fn run_hud_demo() -> Result<(), HudError> {
 
     let fixture = std::env::var_os("ECHO_AUDIO_FIXTURE").map(std::path::PathBuf::from);
     let player = fixture.and_then(|path| {
-        crate::audio::load_wav(&path)
-            .ok()
-            .map(|capture| crate::audio::play_fixture_meter(&capture.pcm, meter.clone(), cancel.clone()))
+        crate::audio::load_wav(&path).ok().map(|capture| {
+            crate::audio::play_fixture_meter(&capture.pcm, meter.clone(), cancel.clone())
+        })
     });
     if player.is_none() {
         // No fixture: a deterministic stand-in so the demo still moves.
@@ -804,7 +796,14 @@ mod tests {
     #[test]
     fn fade_to_zero_leaves_an_empty_frame() {
         let mut frame = FrameBuffer::new(WIDTH, HEIGHT).unwrap();
-        render_frame(&mut frame, HudState::Done, &[0.0; BAR_COUNT], 0.0, 0.0, true);
+        render_frame(
+            &mut frame,
+            HudState::Done,
+            &[0.0; BAR_COUNT],
+            0.0,
+            0.0,
+            true,
+        );
         assert!(frame.pixmap.data().iter().all(|byte| *byte == 0));
     }
 

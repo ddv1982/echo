@@ -15,8 +15,8 @@ mod whisper_recovery;
 pub use cache::{InstalledModel, ModelCache, ModelInventory, WhisperFamily};
 pub use fake::FakeEngine;
 pub use parakeet::ParakeetEngine;
-pub use runtime::SpeechRuntimeInventory;
 pub(crate) use runtime::whisper_runtime_launch;
+pub use runtime::SpeechRuntimeInventory;
 pub(crate) use whisper::probe_vulkan_runtime_receipt;
 pub use whisper::WhisperEngine;
 
@@ -44,7 +44,12 @@ pub fn list_gpu_devices() -> Vec<backend::vulkan::GpuDevice> {
     );
     backend
         .enumerate()
-        .map(|routes| routes.iter().map(backend::vulkan::LocalVulkanRoute::device).collect())
+        .map(|routes| {
+            routes
+                .iter()
+                .map(backend::vulkan::LocalVulkanRoute::device)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -79,9 +84,6 @@ pub(crate) fn resolved_whisper_acceleration(
         .or(file)
         .unwrap_or_else(whisper_acceleration_factory_default)
 }
-pub use whisper_quarantine::{
-    AcceleratorKey, QuarantineReason, QuarantineRecord, MAX_QUARANTINE_LIFETIME_SECS,
-};
 pub use backend::vulkan::{GpuDevice, VulkanDeviceId};
 pub use whisper_identity::{IdentityError as WhisperIdentityError, Sha256Digest, UuidDigest};
 pub use whisper_plan::{
@@ -90,6 +92,9 @@ pub use whisper_plan::{
     WhisperTuning, WhisperTuningOverride,
 };
 pub use whisper_quarantine::QuarantineStore;
+pub use whisper_quarantine::{
+    AcceleratorKey, QuarantineReason, QuarantineRecord, MAX_QUARANTINE_LIFETIME_SECS,
+};
 pub use whisper_recovery::RecoveringWhisperEngine;
 
 use std::path::PathBuf;

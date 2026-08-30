@@ -30,9 +30,7 @@ pub(crate) fn parse_vulkan_devices(stdout: &str) -> Result<Vec<WhisperVulkanRece
     Ok(receipts)
 }
 
-pub(crate) fn parse_vulkan_runtime_receipt(
-    stderr: &str,
-) -> Result<WhisperVulkanReceipt, String> {
+pub(crate) fn parse_vulkan_runtime_receipt(stderr: &str) -> Result<WhisperVulkanReceipt, String> {
     let receipt = parse_vulkan_runtime_receipt_line(stderr)?;
     let selected = stderr
         .lines()
@@ -252,24 +250,24 @@ mod tests {
 
     #[test]
     fn strict_vulkan_receipt_rejects_missing_duplicate_and_changed_evidence() {
-        let duplicate = format!(
-            "whisper_backend_init_gpu: using Vulkan0 backend\n{RECEIPT}\n{RECEIPT}\n"
-        );
+        let duplicate =
+            format!("whisper_backend_init_gpu: using Vulkan0 backend\n{RECEIPT}\n{RECEIPT}\n");
         assert!(parse_vulkan_runtime_receipt(&duplicate)
             .unwrap_err()
             .contains("exactly one"));
         assert!(parse_vulkan_runtime_receipt(RECEIPT)
             .unwrap_err()
             .contains("selected Vulkan backend"));
-        let wrong_index = format!(
-            "whisper_backend_init_gpu: using Vulkan1 backend\n{RECEIPT}\n"
-        );
+        let wrong_index = format!("whisper_backend_init_gpu: using Vulkan1 backend\n{RECEIPT}\n");
         assert!(parse_vulkan_runtime_receipt(&wrong_index)
             .unwrap_err()
             .contains("selectedIndex"));
         let duplicate_key = format!(
             "whisper_backend_init_gpu: using Vulkan0 backend\n{}\n",
-            RECEIPT.replace("{\"schemaVersion\":1", "{\"schemaVersion\":1,\"schemaVersion\":1")
+            RECEIPT.replace(
+                "{\"schemaVersion\":1",
+                "{\"schemaVersion\":1,\"schemaVersion\":1"
+            )
         );
         assert!(parse_vulkan_runtime_receipt(&duplicate_key)
             .unwrap_err()
@@ -310,8 +308,10 @@ mod tests {
         assert_eq!(receipts.len(), 2);
         assert_eq!(receipts[1].selected_index, 1);
 
-        assert!(parse_vulkan_devices(&stdout.replace("\"selectedIndex\":1", "\"selectedIndex\":2"))
-            .is_err());
+        assert!(parse_vulkan_devices(
+            &stdout.replace("\"selectedIndex\":1", "\"selectedIndex\":2")
+        )
+        .is_err());
         assert!(parse_vulkan_devices(&format!(
             "echo_whisper_vulkan_device: {}\necho_whisper_vulkan_device: {}\n",
             RECEIPT.strip_prefix(VULKAN_RECEIPT_PREFIX).unwrap(),

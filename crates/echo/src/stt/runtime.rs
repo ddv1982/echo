@@ -34,7 +34,6 @@ pub(crate) fn whisper_runtime_launch(cli: &Path) -> WhisperRuntimeLaunch {
     }
 }
 
-
 fn runtime_identity(cli: &Path, libraries: &BTreeSet<PathBuf>) -> std::io::Result<String> {
     let mut hasher = Sha256::new();
     hasher.update(b"echo-whisper-runtime-v1\0");
@@ -324,7 +323,10 @@ mod tests {
         assert_eq!(first.identity_sha256.as_deref().map(str::len), Some(64));
         std::fs::write(root.join("libwhisper.so"), b"library-v1").unwrap();
         std::fs::write(root.join("libwhisper.so.0"), b"library-v1").unwrap();
-        assert_eq!(first.identity_sha256, whisper_runtime_launch(&cli).identity_sha256);
+        assert_eq!(
+            first.identity_sha256,
+            whisper_runtime_launch(&cli).identity_sha256
+        );
         std::fs::write(&library, b"library-v2").unwrap();
         let second = whisper_runtime_launch(&cli);
         assert_ne!(first.identity_sha256, second.identity_sha256);
@@ -350,7 +352,10 @@ mod tests {
         let original_identity = whisper_runtime_launch(&cli).identity_sha256;
         std::fs::write(root.join("libwhisper.so.1"), b"ggml").unwrap();
 
-        assert_eq!(original_identity, whisper_runtime_launch(&cli).identity_sha256);
+        assert_eq!(
+            original_identity,
+            whisper_runtime_launch(&cli).identity_sha256
+        );
     }
 
     fn install_sparse_managed_model(root: &Path, id: ComponentId) -> PathBuf {

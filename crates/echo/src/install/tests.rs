@@ -100,7 +100,10 @@ fn pinned_vulkan_runtime_archive_installs() {
         fs::read_link(payload.join("libwhisper.so")).unwrap(),
         Path::new("libwhisper.so.1")
     );
-    installer.store.verify(ComponentId::WhisperVulkanRuntime).unwrap();
+    installer
+        .store
+        .verify(ComponentId::WhisperVulkanRuntime)
+        .unwrap();
 }
 
 #[cfg(unix)]

@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::super::whisper::enumerate_vulkan_runtime_receipts;
-use super::super::whisper_probe::vulkan_device;
 use super::super::whisper_identity::{Sha256Digest, UuidDigest};
+use super::super::whisper_probe::vulkan_device;
 use super::super::{probe_vulkan_runtime_receipt, VulkanRuntimeSelector, WhisperRuntimeLaunch};
 
 /// A Vulkan device receipt reduced to the fields that are stable across
@@ -170,7 +170,9 @@ impl VulkanBackend {
     }
 
     pub(crate) fn enumerate(&self) -> Result<Vec<LocalVulkanRoute>, String> {
-        if cfg!(debug_assertions) && std::env::var("ECHO_WHISPER_TEST_FAULT").as_deref() == Ok("no-devices") {
+        if cfg!(debug_assertions)
+            && std::env::var("ECHO_WHISPER_TEST_FAULT").as_deref() == Ok("no-devices")
+        {
             return Ok(Vec::new());
         }
         let mut libraries = None;
@@ -265,7 +267,6 @@ impl VulkanBackend {
         }
         Ok(receipt)
     }
-
 
     fn probe_timeout(&self) -> Result<Duration, String> {
         let Some(deadline) = self.deadline else {
