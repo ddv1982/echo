@@ -513,12 +513,25 @@ pub fn prepare_with_config(
                 PrepareError::EngineMissing(format!("Whisper model {model} is not installed"))
             })?;
             let vad = runtime.models.vad.first().cloned();
+            let preference = resolved_whisper_acceleration(
+                overrides.whisper_acceleration,
+                file.whisper_acceleration,
+            );
+            // An explicit tuning, driver, or cache override means the caller is
+            // driving the runtime themselves, so the GPU contract does not apply.
+            let wants_gpu = preference == WhisperAccelerationPreference::Gpu
+                && overrides.whisper_tuning.is_none()
+                && !overrides.whisper_force_cpu
+                && overrides.whisper_vulkan_driver_files.is_none()
+                && overrides.whisper_mesa_shader_cache_dir.is_none();
             // Selected last so the leased path pops off the end, and only when
-            // the run may actually use it. lock_selected leases every component
-            // a selected path belongs to, which is what keeps a concurrent
-            // remove or repair from deleting the GPU runtime mid-run.
-            let gpu_cli =
-                super::stt::installed_vulkan_runtime().map(|root| root.join("whisper-cli"));
+            // this run may actually use it. lock_selected fails the whole call
+            // if any named component cannot be leased, so leasing the GPU
+            // runtime for a CPU run would let removing it break dictation that
+            // never touches it. Taken from the inventory snapshot rather than a
+            // second lookup, because a path this snapshot never saw is passed
+            // through unleased instead of failing.
+            let gpu_cli = wants_gpu.then_some(()).and(runtime.vulkan_cli.clone());
             let mut selected = vec![runtime_candidate.cli.clone()];
             if let Some(server) = &runtime_candidate.server {
                 selected.push(server.clone());
@@ -572,21 +585,10 @@ pub fn prepare_with_config(
             if let Some(overrides) = overrides.whisper_tuning {
                 plan.tuning = overrides.apply(plan.tuning);
             }
-            let preference = resolved_whisper_acceleration(
-                overrides.whisper_acceleration,
-                file.whisper_acceleration,
-            );
             plan.force_cpu = overrides.whisper_force_cpu
                 || preference == WhisperAccelerationPreference::Cpu
                 || (plan.runtime.source == echo_core::WhisperRuntimeSource::Managed
                     && plan.runtime.backend == echo_core::WhisperRuntimeBackend::Cpu);
-            // An explicit tuning, driver, or cache override means the caller is
-            // driving the runtime themselves, so the GPU contract does not apply.
-            let wants_gpu = preference == WhisperAccelerationPreference::Gpu
-                && overrides.whisper_tuning.is_none()
-                && !overrides.whisper_force_cpu
-                && overrides.whisper_vulkan_driver_files.is_none()
-                && overrides.whisper_mesa_shader_cache_dir.is_none();
             let engine: Box<dyn Engine> = if wants_gpu {
                 let accelerated = leased_gpu_runtime
                     .as_deref()
@@ -597,6 +599,13 @@ pub fn prepare_with_config(
                 match accelerated {
                     Ok(engine) => Box::new(engine),
                     Err(reason) => {
+                        // A run the gate refused is a CPU run by construction,
+                        // not by luck of which binary preferred_runtime picked.
+                        // force_cpu is false for a system whisper-cli, and
+                        // distributions ship Vulkan-capable builds of it, so
+                        // without this a refusal would hand the run to a GPU
+                        // with no pin, no receipt check, and no quarantine.
+                        plan.force_cpu = true;
                         Box::new(WhisperEngine::with_plan(plan).skipped_acceleration(reason))
                     }
                 }
