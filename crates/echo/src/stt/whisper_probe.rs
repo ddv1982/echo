@@ -6,18 +6,30 @@ const VULKAN_RECEIPT_PREFIX: &str = "echo_whisper_runtime_receipt: ";
 const VULKAN_DEVICE_PREFIX: &str = "echo_whisper_vulkan_device: ";
 
 pub(crate) fn parse_vulkan_devices(stdout: &str) -> Result<Vec<WhisperVulkanReceipt>, String> {
+    // A device Echo cannot identify stably cannot be pinned or quarantined, so
+    // it is dropped rather than offered. Failing the batch instead would let
+    // one such device hide every healthy one behind "no device found", and
+    // software and virtual ICDs report the all-zero UUIDs that trip this.
+    let lines = stdout
+        .lines()
+        .filter_map(|line| line.strip_prefix(VULKAN_DEVICE_PREFIX))
+        .count();
     let mut receipts = stdout
         .lines()
         .filter_map(|line| line.strip_prefix(VULKAN_DEVICE_PREFIX))
-        .map(parse_receipt_json)
-        .collect::<Result<Vec<_>, _>>()?;
+        .filter_map(|line| parse_receipt_json(line).ok())
+        .collect::<Vec<_>>();
     if receipts.is_empty() {
         return Err("Vulkan device enumeration is empty".to_string());
     }
     receipts.sort_by_key(|receipt| receipt.selected_index);
-    for (index, receipt) in receipts.iter().enumerate() {
-        if receipt.selected_index != u32::try_from(index).unwrap_or(u32::MAX) {
-            return Err("Vulkan device enumeration indices are not contiguous".to_string());
+    // Only meaningful when every reported device survived. Once one is
+    // dropped the indices are expected to have gaps.
+    if receipts.len() == lines {
+        for (index, receipt) in receipts.iter().enumerate() {
+            if receipt.selected_index != u32::try_from(index).unwrap_or(u32::MAX) {
+                return Err("Vulkan device enumeration indices are not contiguous".to_string());
+            }
         }
     }
     let stable = receipts

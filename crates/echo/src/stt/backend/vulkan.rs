@@ -212,9 +212,21 @@ impl VulkanBackend {
                     drm_driver: drm_driver.clone().unwrap_or_default(),
                     ..fingerprint.clone()
                 };
-                let stable = stable_receipt(&receipt)?;
-                let selector =
-                    VulkanRuntimeSelector::parse(receipt.device_uuid, receipt.driver_uuid)?;
+                // A device whose receipt carries no stable identity cannot be
+                // pinned or quarantined, so it is not offered. It must not take
+                // the rest of the list with it. Dropping the earlier
+                // render-node filter, so software devices reach the picker,
+                // brought all-zero UUIDs here, and virtual and software ICDs
+                // report exactly that. Aborting would hide every healthy device
+                // behind one unidentifiable one.
+                let Ok(stable) = stable_receipt(&receipt) else {
+                    continue;
+                };
+                let Ok(selector) =
+                    VulkanRuntimeSelector::parse(receipt.device_uuid, receipt.driver_uuid)
+                else {
+                    continue;
+                };
                 routes.push(LocalVulkanRoute {
                     receipt: stable,
                     selected_index: receipt.selected_index,
@@ -533,6 +545,63 @@ mod tests {
         assert_eq!(device.vendor_id, 0x8086);
         assert_eq!(device.id.device_uuid.len(), 32);
         assert_ne!(device.id.device_uuid, device.id.driver_uuid);
+    }
+
+    #[test]
+    fn one_unidentifiable_device_does_not_hide_the_healthy_ones() {
+        // Software and virtual ICDs report all-zero UUIDs, which valid_uuid
+        // rejects. origin/main never reached that parse because a missing
+        // render node skipped the device first. Listing software devices in the
+        // picker removed that filter, so an unparseable receipt could abort the
+        // whole enumeration and report "no device" on a machine with a GPU.
+        let root = scratch();
+        let icd = root.join("icd");
+        fs::create_dir_all(&icd).unwrap();
+        fs::write(icd.join("libfake.so"), b"library").unwrap();
+        fs::write(
+            icd.join("fake.json"),
+            r#"{"ICD":{"library_path":"./libfake.so","api_version":"1.3.0"},"file_format_version":"1.0.1"}"#,
+        )
+        .unwrap();
+        let drm = root.join("drm");
+        let render = drm.join("renderD128/device");
+        fs::create_dir_all(&render).unwrap();
+        fs::write(render.join("vendor"), "0x8086\n").unwrap();
+        fs::write(render.join("device"), "0x46a6\n").unwrap();
+        let drivers = root.join("drivers/i915");
+        fs::create_dir_all(&drivers).unwrap();
+        symlink(&drivers, render.join("driver")).unwrap();
+
+        let zeroed = format!(
+            "{{\"schemaVersion\":1,\"backend\":\"vulkan\",\"selectedIndex\":1,\"vendorId\":0,\"deviceId\":0,\"apiVersion\":4211006,\"driverVersion\":1,\"deviceUUID\":\"{}\",\"driverUUID\":\"{}\",\"pipelineCacheUUID\":\"{PIPELINE_UUID}\"}}",
+            "0".repeat(32),
+            "0".repeat(32),
+        );
+        let probe = root.join("probe");
+        fs::write(
+            &probe,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = --list-vulkan-json ]; then printf '%s\\n' 'echo_whisper_vulkan_device: {}' 'echo_whisper_vulkan_device: {}'; exit 0; fi\nprintf '%s\\n' 'echo_whisper_runtime_receipt: {}' >&2\n",
+                zeroed,
+                receipt(0),
+                receipt(0),
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&probe, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let backend = VulkanBackend {
+            probe,
+            base_launch: WhisperRuntimeLaunch::default(),
+            icd_directories: vec![icd],
+            drm_root: drm,
+            timeout: Duration::from_secs(2),
+            deadline: None,
+            require_trusted_icds: false,
+        };
+        let routes = backend.enumerate().unwrap();
+        assert_eq!(routes.len(), 1, "the healthy device survived the bad one");
+        assert_eq!(routes[0].device().id.device_uuid, DEVICE_UUID);
     }
 
     #[test]
