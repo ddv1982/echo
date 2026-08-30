@@ -699,6 +699,10 @@ function defaultPreviewReadiness(): Readiness {
     { id: 'whisper-small', label: 'Small multilingual', path: '/home/user/.cache/echo/ggml-small.bin', origin: 'external' },
     { id: 'whisper-large-v3-turbo-q5-0', label: 'Large v3 Turbo Q5_0', path: '', origin: 'external' },
     { id: 'silero-vad', label: 'Silero voice detection', path: '/home/user/.cache/echo/ggml-silero-v6.2.0.bin', origin: 'external' },
+    // Absent by default, because that is what a real install looks like until
+    // someone chooses GPU. A fixture that pretends it is present hides every
+    // control that assumes it.
+    { id: 'whisper-vulkan-runtime', label: 'Whisper GPU runtime', path: '', origin: 'system' },
     { id: 'sherpa-runtime', label: 'sherpa-onnx runtime', path: '', origin: 'system' },
     { id: 'parakeet-tdt-06b-v3-int8', label: 'Parakeet TDT 0.6b v3', path: '', origin: 'external' },
   ]

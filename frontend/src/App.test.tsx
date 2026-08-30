@@ -24,7 +24,7 @@ import {
   setMicrophone,
   stopRecording,
 } from './tauri'
-import type { ShortcutStatus } from './types'
+import type { ComponentStatus, ShortcutStatus } from './types'
 
 vi.mock('./tauri', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./tauri')>()
@@ -535,7 +535,30 @@ describe('Echo desktop shell', () => {
     expect(screen.getByText(__APP_VERSION__)).toBeInTheDocument()
   })
 
+  // The preview seeds the GPU runtime absent, which is what a real install
+  // looks like until someone chooses GPU. Any test about the device picker has
+  // to say that it is testing the installed case.
+  async function seedGpuRuntime(managed: ComponentStatus['managed']) {
+    const readiness = await getReadiness()
+    seedPreviewReadiness({
+      ...readiness,
+      components: readiness.components.map((component) =>
+        component.id === 'whisper-vulkan-runtime'
+          ? { ...component, managed, activeOrigin: managed.kind === 'ready' ? 'managed' : null }
+          : component,
+      ),
+    })
+  }
+
+  const installedGpuRuntime: ComponentStatus['managed'] = {
+    kind: 'ready',
+    version: '1.9.2-vulkan',
+    bytes: 59_816_721,
+    root: '/managed',
+  }
+
   it('offers the GPU device picker only when GPU is selected', async () => {
+    await seedGpuRuntime(installedGpuRuntime)
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
@@ -565,21 +588,7 @@ describe('Echo desktop shell', () => {
     // Enumeration needs the runtime, so with none installed the picker would
     // report "no Vulkan device detected" on a machine that has one. Selecting
     // GPU has to be able to get the runtime, or the control does nothing.
-    const readiness = await getReadiness()
-    seedPreviewReadiness({
-      ...readiness,
-      components: [
-        ...readiness.components,
-        {
-          id: 'whisper-vulkan-runtime',
-          label: 'Whisper GPU runtime',
-          managed: { kind: 'absent', resumableBytes: 0 },
-          external: [],
-          activeOrigin: null,
-          activity: null,
-        },
-      ],
-    })
+    await seedGpuRuntime({ kind: 'absent', resumableBytes: 0 })
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
@@ -597,21 +606,7 @@ describe('Echo desktop shell', () => {
   })
 
   it('shows the picker rather than an install prompt once the runtime is ready', async () => {
-    const readiness = await getReadiness()
-    seedPreviewReadiness({
-      ...readiness,
-      components: [
-        ...readiness.components,
-        {
-          id: 'whisper-vulkan-runtime',
-          label: 'Whisper GPU runtime',
-          managed: { kind: 'ready', version: '1.9.2-vulkan', bytes: 59_816_721, root: '/managed' },
-          external: [],
-          activeOrigin: 'managed',
-          activity: null,
-        },
-      ],
-    })
+    await seedGpuRuntime(installedGpuRuntime)
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
@@ -625,6 +620,7 @@ describe('Echo desktop shell', () => {
   })
 
   it('pins the chosen GPU by its device and driver UUID pair', async () => {
+    await seedGpuRuntime(installedGpuRuntime)
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
@@ -656,6 +652,7 @@ describe('Echo desktop shell', () => {
         source: 'file',
       },
     })
+    await seedGpuRuntime(installedGpuRuntime)
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
