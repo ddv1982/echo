@@ -32,6 +32,7 @@ import {
   removeDictionaryEntry,
   removeStaleInstalls,
   repairLegacyShortcut,
+  repairManaged,
   retryShortcut,
   setMicrophone,
   setSettings,
@@ -49,6 +50,7 @@ import { presentShortcut } from './shortcut'
 import type {
   AccelerationSkipReason,
   AppStatus,
+  ComponentStatus,
   DictionaryItem,
   GpuDevice,
   HistoryItem,
@@ -1128,12 +1130,19 @@ function SettingsView({
   }, [onError])
 
   const wantsGpu = settings?.whisperAcceleration.effective === 'gpu'
+  // Enumeration runs a probe out of the GPU runtime, so there is nothing to
+  // ask until that component is installed, and the answer changes the moment
+  // it is. Not finding the component at all means we cannot tell, so enumerate
+  // rather than block on it.
+  const gpuRuntime =
+    readiness?.components.find((component) => component.id === 'whisper-vulkan-runtime') ?? null
+  const gpuRuntimeReady = gpuRuntime == null || gpuRuntime.managed.kind === 'ready'
   useEffect(() => {
-    if (!wantsGpu) return
-    void listGpuDevices()
+    if (!wantsGpu || !gpuRuntimeReady) return
+    void listGpuDevices(true)
       .then(setGpuDevices)
       .catch((reason: unknown) => onError(messageFrom(reason)))
-  }, [wantsGpu, onError])
+  }, [wantsGpu, gpuRuntimeReady, onError])
 
   const refreshMicrophones = useCallback(() => {
     void getMicrophones()
@@ -1417,6 +1426,13 @@ function SettingsView({
                 devices={gpuDevices}
                 pinned={settings.whisperGpuDevice.effective}
                 disabled={settingsWritePending}
+                runtime={gpuRuntime}
+                installBusy={readiness?.activeOperation != null}
+                onInstall={() => {
+                  void repairManaged('whisper-vulkan-runtime')
+                    .then(() => getReadiness().then(setReadiness))
+                    .catch((reason: unknown) => onError(messageFrom(reason)))
+                }}
                 onRefresh={() => {
                   void listGpuDevices(true).then(setGpuDevices).catch((reason: unknown) => onError(messageFrom(reason)))
                 }}
@@ -1520,17 +1536,54 @@ function GpuDeviceRow({
   devices,
   pinned,
   disabled,
+  runtime,
+  installBusy,
+  onInstall,
   onRefresh,
   onSelect,
 }: {
   devices: GpuDevice[]
   pinned: string
   disabled: boolean
+  runtime: ComponentStatus | null
+  installBusy: boolean
+  onInstall: () => void
   onRefresh: () => void
   onSelect: (value: string) => void
 }) {
   const key = (device: GpuDevice) => `${device.id.deviceUUID}:${device.id.driverUUID}`
   const missing = pinned !== '' && !devices.some((device) => key(device) === pinned)
+  // Enumeration runs a probe out of the GPU runtime, so with no runtime there
+  // are never any devices. Reporting that as "no Vulkan device" would blame the
+  // hardware for something the user has not been asked to install yet.
+  const runtimeReady = runtime == null || runtime.managed.kind === 'ready'
+  const installing = runtime?.activity != null
+
+  if (!runtimeReady) {
+    const unsupported = runtime?.managed.kind === 'unsupported'
+    return (
+      <div className="setting-row">
+        <div>
+          <strong>GPU device</strong>
+          <span>
+            {unsupported
+              ? 'The GPU runtime is not available on this platform. Transcription stays on the CPU.'
+              : installing
+                ? 'Installing the GPU runtime. Transcription stays on the CPU until it finishes.'
+                : 'GPU needs its runtime, about 19 MB, downloaded once. Transcription stays on the CPU until it is installed.'}
+          </span>
+        </div>
+        <div className="setting-actions">
+          {unsupported ? null : (
+            <button type="button" onClick={onInstall} disabled={disabled || installBusy || installing}>
+              {installing ? 'Installing' : 'Install GPU runtime'}
+            </button>
+          )}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="setting-row">
       <div>
