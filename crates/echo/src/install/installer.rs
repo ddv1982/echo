@@ -26,7 +26,17 @@ impl RuntimeProbe for CommandRuntimeProbe {
         binary: &Path,
         cancel: &AtomicBool,
     ) -> Result<(), InstallError> {
-        let mut child = std::process::Command::new(binary)
+        // Run it the way the app runs it. Every launch path sets the library
+        // directory from the binary's own folder, because a managed runtime
+        // ships its shared objects beside the executable and is not on the
+        // system library path. Probing without it tests a configuration that
+        // never occurs, and rejects any payload that does not happen to carry
+        // an $ORIGIN runpath.
+        let mut command = std::process::Command::new(binary);
+        if let Some(parent) = binary.parent() {
+            command.env("LD_LIBRARY_PATH", parent);
+        }
+        let mut child = command
             .arg("--help")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
