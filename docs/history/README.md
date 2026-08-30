@@ -15,7 +15,7 @@ scripts/build-history-archive.sh build \
   /tmp/echo-evidence-2026-08-30.tar.gz
 scripts/build-history-archive.sh verify \
   /tmp/echo-evidence-2026-08-30.tar.gz \
-  fe1b078fc95beac0897d8d8e5a0e7bdc7720c7164760e47a01ad5aa93e43a79c
+  8e15356cfeed861756253499688fa9bee3686795f25d41ed4c903d9af63053de
 ```
 
 The builder reads the named Git tree, not the working tree. Two builds from
