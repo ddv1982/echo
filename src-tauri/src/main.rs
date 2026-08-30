@@ -13,8 +13,8 @@ use ashpd::desktop::CreateSessionOptions;
 use echo::audio::AudioCapture;
 use echo::inject::{Pasteboard, SysClipboard};
 use echo_core::{
-    DictEntry, Dictionary, History, RunDetail, WhisperRunMode, WhisperRuntimeBackend,
-    WhisperRuntimeSource, WhisperTuningTelemetry,
+    DictEntry, Dictionary, History, RunDetail, WhisperAccelerationSkip, WhisperRunMode,
+    WhisperRuntimeBackend, WhisperRuntimeSource, WhisperTuningTelemetry,
 };
 use futures_util::StreamExt;
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
@@ -222,8 +222,45 @@ struct LastRunPerformance {
     parse_ms: u64,
     attempt_count: usize,
     tuning: WhisperTuningTelemetry,
-    selection: Option<echo_core::WhisperSelectionTelemetry>,
+    acceleration_skip: Option<AccelerationSkipReason>,
     recovery: Option<echo_core::WhisperRecoveryTelemetry>,
+}
+
+/// Why the last run did not use the GPU the user asked for. The first four
+/// come from the gate that never reached a device. The fifth is the run that
+/// did reach one and had to retreat, which the recovery engine records instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum AccelerationSkipReason {
+    RuntimeMissing,
+    NoDeviceEnumerated,
+    PinnedDeviceAbsent,
+    DeviceQuarantined,
+    RecoveredToCpu,
+}
+
+fn project_acceleration_skip(
+    whisper: &echo_core::WhisperRunTelemetry,
+) -> Option<AccelerationSkipReason> {
+    if let Some(skip) = whisper.skipped_acceleration {
+        return Some(match skip {
+            WhisperAccelerationSkip::RuntimeMissing => AccelerationSkipReason::RuntimeMissing,
+            WhisperAccelerationSkip::NoDeviceEnumerated => {
+                AccelerationSkipReason::NoDeviceEnumerated
+            }
+            WhisperAccelerationSkip::PinnedDeviceAbsent => {
+                AccelerationSkipReason::PinnedDeviceAbsent
+            }
+            WhisperAccelerationSkip::DeviceQuarantined => AccelerationSkipReason::DeviceQuarantined,
+        });
+    }
+    // A recovery row with a fallback reason means the accelerated attempt ran
+    // and lost. The specific reason is diagnostic, so the readout collapses it.
+    whisper
+        .recovery
+        .as_ref()
+        .filter(|recovery| recovery.fallback_reason.is_some())
+        .map(|_| AccelerationSkipReason::RecoveredToCpu)
 }
 
 fn project_last_run_performance(detail: &RunDetail) -> Option<LastRunPerformance> {
@@ -243,7 +280,7 @@ fn project_last_run_performance(detail: &RunDetail) -> Option<LastRunPerformance
         parse_ms: whisper.parse_ms,
         attempt_count: whisper.attempts.len(),
         tuning: whisper.tuning,
-        selection: whisper.selection.clone(),
+        acceleration_skip: project_acceleration_skip(whisper),
         recovery: whisper.recovery.clone(),
     })
 }
@@ -3461,7 +3498,7 @@ mod settings_tests {
                     },
                 ],
                 recovery: None,
-                selection: None,
+                skipped_acceleration: None,
             }),
             ..RunDetail::default()
         };
@@ -3471,6 +3508,88 @@ mod settings_tests {
         assert_eq!(projected.attempt_count, 2);
         assert_eq!(projected.tuning.threads, Some(4));
         assert_eq!(projected.device.as_deref(), Some("Test CPU"));
+        assert_eq!(projected.acceleration_skip, None);
+    }
+
+    fn cpu_telemetry() -> echo_core::WhisperRunTelemetry {
+        echo_core::WhisperRunTelemetry {
+            mode: WhisperRunMode::ColdCli,
+            total_ms: 100,
+            audio_encode_ms: 1,
+            parse_ms: 1,
+            runtime: echo_core::WhisperRuntimeTelemetry {
+                binary: "/usr/bin/whisper-cli".to_string(),
+                source: WhisperRuntimeSource::Managed,
+                backend: WhisperRuntimeBackend::Cpu,
+                device: None,
+                library_path: None,
+                vulkan_driver_files: None,
+                mesa_shader_cache_dir: None,
+                identity_sha256: None,
+                vulkan_receipt: None,
+            },
+            tuning: WhisperTuningTelemetry {
+                threads: None,
+                beam_size: Some(3),
+                best_of: Some(5),
+                no_fallback: Some(false),
+            },
+            attempts: Vec::new(),
+            recovery: None,
+            skipped_acceleration: None,
+        }
+    }
+
+    #[test]
+    fn every_gate_refusal_reaches_the_readout() {
+        for (skip, expected) in [
+            (
+                WhisperAccelerationSkip::RuntimeMissing,
+                AccelerationSkipReason::RuntimeMissing,
+            ),
+            (
+                WhisperAccelerationSkip::NoDeviceEnumerated,
+                AccelerationSkipReason::NoDeviceEnumerated,
+            ),
+            (
+                WhisperAccelerationSkip::PinnedDeviceAbsent,
+                AccelerationSkipReason::PinnedDeviceAbsent,
+            ),
+            (
+                WhisperAccelerationSkip::DeviceQuarantined,
+                AccelerationSkipReason::DeviceQuarantined,
+            ),
+        ] {
+            let mut whisper = cpu_telemetry();
+            whisper.skipped_acceleration = Some(skip);
+            assert_eq!(project_acceleration_skip(&whisper), Some(expected), "{skip:?}");
+        }
+    }
+
+    #[test]
+    fn a_failed_accelerated_run_reports_the_retreat_not_its_diagnosis() {
+        let mut whisper = cpu_telemetry();
+        whisper.recovery = Some(echo_core::WhisperRecoveryTelemetry {
+            identity_key: "accelerator".to_string(),
+            accelerated_attempted: true,
+            fallback_reason: Some(echo_core::WhisperRecoveryReason::Timeout),
+        });
+        assert_eq!(
+            project_acceleration_skip(&whisper),
+            Some(AccelerationSkipReason::RecoveredToCpu),
+        );
+    }
+
+    #[test]
+    fn an_accelerated_run_that_kept_the_gpu_reports_no_skip() {
+        let mut whisper = cpu_telemetry();
+        whisper.runtime.backend = WhisperRuntimeBackend::Vulkan;
+        whisper.recovery = Some(echo_core::WhisperRecoveryTelemetry {
+            identity_key: "accelerator".to_string(),
+            accelerated_attempted: true,
+            fallback_reason: None,
+        });
+        assert_eq!(project_acceleration_skip(&whisper), None);
     }
 
     #[test]

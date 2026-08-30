@@ -43,31 +43,32 @@ pub struct WhisperRunTelemetry {
     pub attempts: Vec<WhisperAttemptTelemetry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery: Option<WhisperRecoveryTelemetry>,
+    /// Set when the user asked for the GPU and the request never reached it.
+    /// Absent on a CPU-by-choice run, so its presence alone means a fallback.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub selection: Option<WhisperSelectionTelemetry>,
+    pub skipped_acceleration: Option<WhisperAccelerationSkip>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Why a run the user asked to accelerate was sent to the CPU before it ever
+/// started. A closed set: the readout renders copy per variant, never a raw
+/// internal message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct WhisperSelectionTelemetry {
-    pub preference: WhisperAccelerationPreference,
-    pub cached_decision: WhisperCachedDecision,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub local_key: Option<String>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub calibration_pending: bool,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub proof_only: bool,
+pub enum WhisperAccelerationSkip {
+    RuntimeMissing,
+    NoDeviceEnumerated,
+    PinnedDeviceAbsent,
+    DeviceQuarantined,
 }
 
-impl Default for WhisperSelectionTelemetry {
-    fn default() -> Self {
-        Self {
-            preference: WhisperAccelerationPreference::Cpu,
-            cached_decision: WhisperCachedDecision::Unknown,
-            local_key: None,
-            calibration_pending: false,
-            proof_only: false,
+impl WhisperAccelerationSkip {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RuntimeMissing => "runtimeMissing",
+            Self::NoDeviceEnumerated => "noDeviceEnumerated",
+            Self::PinnedDeviceAbsent => "pinnedDeviceAbsent",
+            Self::DeviceQuarantined => "deviceQuarantined",
         }
     }
 }
@@ -101,14 +102,6 @@ impl WhisperAccelerationPreference {
             Self::Gpu => "gpu",
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum WhisperCachedDecision {
-    Unknown,
-    Cpu,
-    Vulkan,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -47,6 +47,7 @@ import { applySetupProgress } from './setup'
 import { deriveStats, groupByDay } from './stats'
 import { presentShortcut } from './shortcut'
 import type {
+  AccelerationSkipReason,
   AppStatus,
   DictionaryItem,
   GpuDevice,
@@ -1563,11 +1564,21 @@ function GpuDeviceRow({
   )
 }
 
+// Copy per reason, so a fallback reads as a sentence rather than an internal
+// enum. Anything outside the set is reported as unavailable rather than shown.
+const ACCELERATION_SKIP_COPY: Record<AccelerationSkipReason, string> = {
+  runtimeMissing: 'GPU asked for, runtime not installed',
+  noDeviceEnumerated: 'GPU asked for, no device found',
+  pinnedDeviceAbsent: 'GPU asked for, the selected device is absent',
+  deviceQuarantined: 'GPU asked for, the device is disabled after a failure',
+  recoveredToCpu: 'GPU ran and failed, retried on CPU',
+}
+
 function whisperAccelerationLabel(performance: NonNullable<LastRun['performance']>) {
   const ran = [backendLabel(performance.backend)]
   if (performance.device) ran.push(performance.device)
-  const reason = performance.recovery?.fallbackReason
-  if (reason) ran.push(`recovered (${reason})`)
+  const skip = performance.accelerationSkip
+  if (skip) ran.push(ACCELERATION_SKIP_COPY[skip] ?? 'GPU asked for, unavailable')
   return ran.join(' · ')
 }
 

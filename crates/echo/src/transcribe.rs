@@ -8,7 +8,7 @@ use echo_core::{
 
 use crate::install::ManagedPath;
 use crate::stt::{
-    accelerated_engine, preferred_runtime, record_gpu_skip, resolved_whisper_acceleration,
+    accelerated_engine, preferred_runtime, resolved_whisper_acceleration,
     whisper_runtime_launch, FakeEngine, ModelCache, ParakeetEngine,
     SpeechRuntimeInventory, WhisperEngine,
     WhisperExecutionPlan, WhisperModelAsset, WhisperTuningOverride,
@@ -576,8 +576,7 @@ pub fn prepare_with_config(
                 match accelerated_engine(&plan, file.whisper_gpu_device.as_deref()) {
                     Ok(engine) => Box::new(engine),
                     Err(reason) => {
-                        record_gpu_skip(reason);
-                        Box::new(WhisperEngine::with_plan(plan))
+                        Box::new(WhisperEngine::with_plan(plan).skipped_acceleration(reason))
                     }
                 }
             } else {

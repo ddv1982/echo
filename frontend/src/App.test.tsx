@@ -620,27 +620,36 @@ describe('Echo desktop shell', () => {
     }
   })
 
-  it('names the fallback reason when an accelerated run recovered', async () => {
+  it.each([
+    ['runtimeMissing', 'GPU asked for, runtime not installed'],
+    ['noDeviceEnumerated', 'GPU asked for, no device found'],
+    ['pinnedDeviceAbsent', 'GPU asked for, the selected device is absent'],
+    ['deviceQuarantined', 'GPU asked for, the device is disabled after a failure'],
+    ['recoveredToCpu', 'GPU ran and failed, retried on CPU'],
+  ] as const)('says why a requested GPU did not run: %s', async (reason, copy) => {
     const status = richPreviewStatus()
     seedPreviewStatus({
       lastRun: {
         ...status.lastRun!,
         performance: {
           ...status.lastRun!.performance!,
-          recovery: {
-            identityKey: 'vulkan:iris-xe',
-            acceleratedAttempted: true,
-            fallbackReason: 'quarantined',
-          },
+          backend: 'cpu',
+          device: null,
+          accelerationSkip: reason,
         },
       },
     })
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    expect(
-      await screen.findByText('VULKAN · Intel Iris Xe · recovered (quarantined)'),
-    ).toBeInTheDocument()
+    expect(await screen.findByText(`CPU · ${copy}`)).toBeInTheDocument()
+  })
+
+  it('says nothing about a fallback when the GPU actually ran', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    expect(await screen.findByText('VULKAN · Intel Iris Xe')).toBeInTheDocument()
   })
 
   it('surfaces engine stderr on failure', async () => {
