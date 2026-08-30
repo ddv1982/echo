@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use echo_core::{WhisperRuntimeBackend, WhisperRuntimeSource};
+use echo_core::{WhisperAccelerationSkip, WhisperRuntimeBackend, WhisperRuntimeSource};
 use sha2::{Digest, Sha256};
 
 use super::backend::vulkan::{LocalVulkanRoute, VulkanBackend};
@@ -15,27 +15,6 @@ use super::whisper_runtime_launch;
 /// it gives up and transcribes on the CPU.
 const FOREGROUND_DEADLINE: Duration = Duration::from_secs(30);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
-
-/// Why a run the user asked to accelerate did not.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GpuSkipReason {
-    RuntimeMissing,
-    NoDeviceEnumerated,
-    PinnedDeviceAbsent,
-    DeviceQuarantined,
-}
-
-impl GpuSkipReason {
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::RuntimeMissing => "runtimeMissing",
-            Self::NoDeviceEnumerated => "noDeviceEnumerated",
-            Self::PinnedDeviceAbsent => "pinnedDeviceAbsent",
-            Self::DeviceQuarantined => "deviceQuarantined",
-        }
-    }
-}
 
 /// Beam 3, best-of 5, temperature fallback enabled. This is the configuration
 /// with 400 transcriptions of zero WER delta across five languages and a 57.8
@@ -75,12 +54,12 @@ fn accelerator_key(route: &LocalVulkanRoute) -> Result<AcceleratorKey, String> {
 pub(crate) fn accelerated_engine(
     managed_cpu: &WhisperExecutionPlan,
     pinned: Option<&str>,
-) -> Result<RecoveringWhisperEngine, GpuSkipReason> {
-    let runtime = super::installed_vulkan_runtime().ok_or(GpuSkipReason::RuntimeMissing)?;
+) -> Result<RecoveringWhisperEngine, WhisperAccelerationSkip> {
+    let runtime = super::installed_vulkan_runtime().ok_or(WhisperAccelerationSkip::RuntimeMissing)?;
     let cli = runtime.join("whisper-cli");
     let probe = runtime.join("echo-whisper-runtime-probe");
     if !probe.is_file() {
-        return Err(GpuSkipReason::RuntimeMissing);
+        return Err(WhisperAccelerationSkip::RuntimeMissing);
     }
     let backend = VulkanBackend::bounded(
         probe,
@@ -90,17 +69,17 @@ pub(crate) fn accelerated_engine(
     );
     let routes = backend
         .enumerate()
-        .map_err(|_| GpuSkipReason::NoDeviceEnumerated)?;
+        .map_err(|_| WhisperAccelerationSkip::NoDeviceEnumerated)?;
     let route = select_route(&routes, pinned)?;
 
-    let key = accelerator_key(route).map_err(|_| GpuSkipReason::NoDeviceEnumerated)?;
+    let key = accelerator_key(route).map_err(|_| WhisperAccelerationSkip::NoDeviceEnumerated)?;
     let quarantine = QuarantineStore::at(super::whisper_state_dir().join("gpu-quarantine.json"));
     if quarantine.is_active(&key, unix_time()).unwrap_or(true) {
-        return Err(GpuSkipReason::DeviceQuarantined);
+        return Err(WhisperAccelerationSkip::DeviceQuarantined);
     }
     let ready = backend
         .ready(route)
-        .map_err(|_| GpuSkipReason::NoDeviceEnumerated)?;
+        .map_err(|_| WhisperAccelerationSkip::NoDeviceEnumerated)?;
 
     let mut launch = whisper_runtime_launch(&cli);
     launch.vulkan_driver_files = Some(route.manifest_path.clone());
@@ -130,7 +109,7 @@ pub(crate) fn accelerated_engine(
     fallback.allow_vad_retry = false;
 
     let decision = WhisperPlanDecision::qualified(key, primary, fallback, ready)
-        .map_err(|_| GpuSkipReason::NoDeviceEnumerated)?;
+        .map_err(|_| WhisperAccelerationSkip::NoDeviceEnumerated)?;
     Ok(RecoveringWhisperEngine::new(decision, quarantine))
 }
 
@@ -139,7 +118,7 @@ pub(crate) fn accelerated_engine(
 fn select_route<'a>(
     routes: &'a [LocalVulkanRoute],
     pinned: Option<&str>,
-) -> Result<&'a LocalVulkanRoute, GpuSkipReason> {
+) -> Result<&'a LocalVulkanRoute, WhisperAccelerationSkip> {
     if let Some(pinned) = pinned.filter(|value| !value.is_empty()) {
         return routes
             .iter()
@@ -147,12 +126,12 @@ fn select_route<'a>(
                 let device = route.device();
                 format!("{}:{}", device.id.device_uuid, device.id.driver_uuid) == pinned
             })
-            .ok_or(GpuSkipReason::PinnedDeviceAbsent);
+            .ok_or(WhisperAccelerationSkip::PinnedDeviceAbsent);
     }
     routes
         .iter()
         .find(|route| !route.software)
-        .ok_or(GpuSkipReason::NoDeviceEnumerated)
+        .ok_or(WhisperAccelerationSkip::NoDeviceEnumerated)
 }
 
 fn unix_time() -> u64 {

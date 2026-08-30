@@ -49,23 +49,6 @@ pub fn list_gpu_devices() -> Vec<backend::vulkan::GpuDevice> {
 }
 
 pub(crate) use whisper_gpu::accelerated_engine;
-pub use whisper_gpu::GpuSkipReason;
-
-/// The reason the most recent request stayed on the CPU despite asking for the
-/// GPU. Read once by the status projection, so a fallback is never silent.
-static LAST_GPU_SKIP: std::sync::Mutex<Option<GpuSkipReason>> = std::sync::Mutex::new(None);
-
-pub(crate) fn record_gpu_skip(reason: GpuSkipReason) {
-    if let Ok(mut slot) = LAST_GPU_SKIP.lock() {
-        *slot = Some(reason);
-    }
-}
-
-/// Clears as it reads: a skip describes one request, not a standing state.
-#[must_use]
-pub fn take_gpu_skip() -> Option<GpuSkipReason> {
-    LAST_GPU_SKIP.lock().ok().and_then(|mut slot| slot.take())
-}
 
 /// Per-user state for the GPU path: the device quarantine and the Mesa shader
 /// caches, keyed by accelerator so a driver change starts a fresh one.

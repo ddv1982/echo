@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 
 use echo_core::{
     strip_nonspeech, DecodeOptions, Engine, EngineError, EngineId, Language, LanguageChoice,
-    Pcm16kMono, RunDetail, Transcript, WhisperAttemptTelemetry, WhisperRetryReason, WhisperRunMode,
+    Pcm16kMono, RunDetail, Transcript, WhisperAccelerationSkip, WhisperAttemptTelemetry,
+    WhisperRetryReason, WhisperRunMode,
     WhisperRunTelemetry, WhisperRuntimeBackend, WhisperRuntimeSource, WhisperRuntimeTelemetry,
     WhisperTuningTelemetry,
 };
@@ -34,6 +35,9 @@ use crate::which::path_of;
 pub struct WhisperEngine {
     model: String,
     files: WhisperFiles,
+    /// Set when this engine only exists because the GPU path declined the
+    /// request, so the run reports why it is on the CPU.
+    skipped_acceleration: Option<WhisperAccelerationSkip>,
 }
 
 enum WhisperFiles {
@@ -47,6 +51,7 @@ impl WhisperEngine {
         Self {
             model: model.into(),
             files: WhisperFiles::Discover(cache),
+            skipped_acceleration: None,
         }
     }
 
@@ -55,7 +60,15 @@ impl WhisperEngine {
         Self {
             model: plan.model.name.clone(),
             files: WhisperFiles::Explicit(Box::new(plan)),
+            skipped_acceleration: None,
         }
+    }
+
+    /// Records that the user asked for the GPU and did not get it.
+    #[must_use]
+    pub fn skipped_acceleration(mut self, reason: WhisperAccelerationSkip) -> Self {
+        self.skipped_acceleration = Some(reason);
+        self
     }
 
     #[must_use]
@@ -389,7 +402,7 @@ impl Engine for WhisperEngine {
                     },
                     attempts,
                     recovery: None,
-                    selection: None,
+                    skipped_acceleration: self.skipped_acceleration,
                 }),
             },
         })

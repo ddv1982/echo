@@ -60,3 +60,41 @@ test('Advanced controls stay inside the panel at every supported width', async (
     })
   }
 })
+
+// The Acceleration readout is the one Advanced line whose text length is set by
+// a runtime outcome rather than by copy we control at build time. The longest
+// skip reason is written into the rendered line and measured in the same task,
+// before React can re-render over it.
+test('the Acceleration readout holds its longest skip reason inside the panel', async ({ page }) => {
+  const longest = 'CPU · GPU asked for, the device is disabled after a failure'
+
+  for (const width of [761, 800, 920, 960, 1024, 1280, 1440, 1920]) {
+    await page.setViewportSize({ width, height: 900 })
+    await page.goto('/')
+    await page.getByRole('button', { name: 'Settings', exact: true }).click()
+    await page.locator('.advanced-section > summary').click()
+    await expect(page.getByText('Acceleration', { exact: true })).toBeVisible()
+
+    const geometry = await page.evaluate((text) => {
+      const panel = document.querySelector<HTMLElement>('.advanced-section')!
+      const line = [...panel.querySelectorAll<HTMLElement>('.setting-line')].find(
+        (node) => node.querySelector('strong')?.textContent === 'Acceleration',
+      )!
+      line.querySelector('span')!.textContent = text
+      const edge = panel.getBoundingClientRect().right
+      return {
+        rendered: line.querySelector('span')!.textContent,
+        panelFits: panel.scrollWidth <= panel.clientWidth,
+        lineFits:
+          line.scrollWidth <= line.clientWidth &&
+          line.getBoundingClientRect().right <= edge + 0.5,
+      }
+    }, longest)
+
+    expect(geometry, `acceleration readout at ${width}x900`).toEqual({
+      rendered: longest,
+      panelFits: true,
+      lineFits: true,
+    })
+  }
+})

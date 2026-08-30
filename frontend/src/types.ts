@@ -174,6 +174,13 @@ export interface LastRun {
   performance?: LastRunPerformance | null
 }
 
+export type AccelerationSkipReason =
+  | 'runtimeMissing'
+  | 'noDeviceEnumerated'
+  | 'pinnedDeviceAbsent'
+  | 'deviceQuarantined'
+  | 'recoveredToCpu'
+
 export interface LastRunPerformance {
   mode: 'coldCli' | 'coldFallback'
   runtimeSource: 'managed' | 'system' | 'unknown'
@@ -190,13 +197,7 @@ export interface LastRunPerformance {
     bestOf: number | null
     noFallback: boolean | null
   }
-  selection?: {
-    preference: 'cpu' | 'gpu'
-    cachedDecision: 'unknown' | 'cpu' | 'vulkan'
-    localKey?: string
-    calibrationPending?: boolean
-    proofOnly?: boolean
-  } | null
+  accelerationSkip?: AccelerationSkipReason | null
   recovery?: {
     identityKey: string
     acceleratedAttempted: boolean
