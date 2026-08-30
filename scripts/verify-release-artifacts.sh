@@ -14,6 +14,7 @@ set -euo pipefail
 
 DESKTOP_ENTRY=io.github.ddv1982.echo.desktop
 BINARY=usr/bin/echo-desktop
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
 # One root for every scratch tree, so cleanup cannot miss one. Allocating
 # inside a command substitution loses any variable the subshell sets, which
@@ -72,6 +73,27 @@ check_tree() {
     fi
 }
 
+check_appimage_tree() {
+    local label=$1 tree=$2 exec_value
+    if [ ! -f "$tree/$BINARY" ] || [ ! -x "$tree/$BINARY" ]; then
+        fail "$label is missing executable $BINARY"
+        return 1
+    fi
+    if [ ! -f "$tree/$DESKTOP_ENTRY" ]; then
+        fail "$label is missing $DESKTOP_ENTRY"
+        return 1
+    fi
+    if [ ! -f "$tree/AppRun" ] || [ ! -x "$tree/AppRun" ]; then
+        fail "$label is missing executable AppRun"
+        return 1
+    fi
+    exec_value=$(sed -n 's/^Exec=//p' "$tree/$DESKTOP_ENTRY")
+    if [ "$exec_value" != echo-desktop ]; then
+        fail "$label desktop entry has Exec=$exec_value, expected Exec=echo-desktop"
+        return 1
+    fi
+}
+
 # Ubuntu's rpm2cpio has been seen exiting nonzero on an archive it had already
 # emitted in full, which is why 7z is a fallback rather than an alternative.
 # Pass force=1 to take that fallback deliberately and keep it from rotting.
@@ -123,59 +145,45 @@ verify_rpm_fallback() {
 }
 
 verify_publish_dir() {
-    local publish=$1 work deb_expected rpm_expected
+    local publish=$1 work deb_expected rpm_expected package_version version_output
     shopt -s nullglob
     local debs=("$publish"/*.deb)
     local rpms=("$publish"/*.rpm)
     local appimages=("$publish"/*.AppImage)
 
-    if [ "${#debs[@]}" -ne 1 ] || [ "${#rpms[@]}" -ne 1 ] || [ ! -f "$publish/echo-desktop" ]; then
-        ls -l "$publish" >&2
-        fail "expected one deb, one rpm, and the binary; found ${#debs[@]} deb and ${#rpms[@]} rpm"
-        return 1
-    fi
-    deb_expected=$(variant_digest "$publish/echo-desktop" DEB)
-    rpm_expected=$(variant_digest "$publish/echo-desktop" RPM)
+    "$SCRIPT_DIR/generate-release-checksums.sh" --verify "$publish" >/dev/null || return
+    deb_expected=$(variant_digest "$publish/echo-desktop" DEB) || return
+    rpm_expected=$(variant_digest "$publish/echo-desktop" RPM) || return
 
     work=$(scratch_dir)
 
-    dpkg-deb -x "${debs[0]}" "$work/deb"
-    check_tree "$(basename "${debs[0]}")" "$work/deb" "$deb_expected"
+    dpkg-deb -x "${debs[0]}" "$work/deb" || return
+    check_tree "$(basename "${debs[0]}")" "$work/deb" "$deb_expected" || return
 
-    extract_rpm "${rpms[0]}" "$work/rpm"
-    check_tree "$(basename "${rpms[0]}")" "$work/rpm" "$rpm_expected"
+    extract_rpm "${rpms[0]}" "$work/rpm" || return
+    check_tree "$(basename "${rpms[0]}")" "$work/rpm" "$rpm_expected" || return
 
-    # Presence only, not a digest. linuxdeploy runs patchelf over the relocated
-    # binary, so unlike the deb and rpm it differs from the CI build beyond the
-    # bundle marker. Measured on the v0.13.0 artefacts: deb and rpm match their
-    # variants exactly, the AppImage matches neither.
-    if [ "${#appimages[@]}" -gt 0 ]; then
-        # An AppImage can only be opened by running it, and artifact upload
-        # restores files as 0644, so what the publish job stages is not
-        # executable. Copy rather than chmod in place: verifying should never
-        # mutate what it was handed.
-        # Presence only, not a digest. linuxdeploy runs patchelf over the
-        # relocated binary, so unlike the deb and rpm it differs from the CI
-        # build beyond the bundle marker. Measured on the v0.13.0 artefacts:
-        # deb and rpm normalise to the canonical digest, the AppImage does not.
-        install -m 0755 "${appimages[0]}" "$work/image.AppImage"
-        (cd "$work" && APPIMAGE_EXTRACT_AND_RUN=1 ./image.AppImage --appimage-extract >/dev/null)
-        local member
-        for member in "$work/squashfs-root/$BINARY" "$work/squashfs-root/$DESKTOP_ENTRY"; do
-            if [ ! -e "$member" ]; then
-                find "$work/squashfs-root" -maxdepth 3 >&2 || true
-                fail "the AppImage is missing ${member#"$work/squashfs-root/"}"
-                return 1
-            fi
-        done
+    # linuxdeploy patches the relocated executable, so compare its behavior and
+    # final desktop layout instead of comparing it byte-for-byte with the raw
+    # CI binary.
+    install -m 0755 "${appimages[0]}" "$work/image.AppImage"
+    package_version=$(python3 -c \
+        'import sys, tomllib; print(tomllib.load(open(sys.argv[1], "rb"))["workspace"]["package"]["version"])' \
+        "$SCRIPT_DIR/../Cargo.toml")
+    version_output=$(cd "$work" && APPIMAGE_EXTRACT_AND_RUN=1 ./image.AppImage --version) || return
+    if [ "$version_output" != "echo-desktop $package_version" ]; then
+        fail "$(basename "${appimages[0]}") reported $version_output, expected echo-desktop $package_version"
+        return 1
     fi
+    (cd "$work" && APPIMAGE_EXTRACT_AND_RUN=1 ./image.AppImage --appimage-extract >/dev/null) || return
+    check_appimage_tree "$(basename "${appimages[0]}")" "$work/squashfs-root" || return
 
-    printf 'every published artefact carries CI build %s\n' \
+    printf 'verified staged release assets for CI build %s\n' \
         "$(sha256sum "$publish/echo-desktop" | cut -d' ' -f1)"
 }
 
 self_test() {
-    local root tree canonical expected
+    local root tree image_tree canonical expected
     root=$(scratch_dir)
     tree="$root/tree"
     mkdir -p "$tree/usr/bin" "$tree/usr/share/applications"
@@ -214,6 +222,27 @@ self_test() {
     rm "$tree/$BINARY"
     if check_tree no-binary "$tree" "$expected" 2>/dev/null; then
         echo "self-test: a tree with no binary was accepted" >&2
+        return 1
+    fi
+
+    image_tree="$root/image-tree"
+    mkdir -p "$image_tree/usr/bin"
+    printf '#!/bin/sh\n' >"$image_tree/usr/bin/echo-desktop"
+    chmod +x "$image_tree/usr/bin/echo-desktop"
+    printf '#!/bin/sh\n' >"$image_tree/AppRun"
+    chmod +x "$image_tree/AppRun"
+    printf '[Desktop Entry]\nExec=echo-desktop\n' >"$image_tree/$DESKTOP_ENTRY"
+    check_appimage_tree good-appimage "$image_tree" ||
+        { echo "self-test: a valid AppImage tree was rejected" >&2; return 1; }
+    chmod -x "$image_tree/usr/bin/echo-desktop"
+    if check_appimage_tree non-executable "$image_tree" 2>/dev/null; then
+        echo "self-test: a non-executable AppImage binary was accepted" >&2
+        return 1
+    fi
+    chmod +x "$image_tree/usr/bin/echo-desktop"
+    printf '[Desktop Entry]\nExec=/usr/bin/echo-desktop\n' >"$image_tree/$DESKTOP_ENTRY"
+    if check_appimage_tree wrong-exec "$image_tree" 2>/dev/null; then
+        echo "self-test: an AppImage desktop entry with the wrong Exec was accepted" >&2
         return 1
     fi
 

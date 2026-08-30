@@ -6,7 +6,17 @@ The first-build plan is [docs/plans/01-echo/overview.md](docs/plans/01-echo/over
 
 ## Download
 
-Tagged builds are on [GitHub Releases](https://github.com/ddv1982/echo/releases). Nightly Linux artifacts come from the [release workflow](https://github.com/ddv1982/echo/actions/workflows/release.yml). Maintainers should follow the [release runbook](docs/RELEASING.md); pushing the tag is the only manual publishing step.
+[GitHub Releases](https://github.com/ddv1982/echo/releases) are the supported downloads. A Git tag without a corresponding GitHub Release marks source history only.
+
+The current release workflow publishes four application files: a Debian package, an RPM package, an AppImage, and the raw `echo-desktop` binary. It also publishes both license texts and `SHA256SUMS`. Older GitHub Releases may contain fewer files.
+
+To verify a release that contains `SHA256SUMS`, download all its assets into an empty directory and run:
+
+```sh
+sha256sum --check --strict SHA256SUMS
+```
+
+Nightly Linux artifacts from the [release workflow](https://github.com/ddv1982/echo/actions/workflows/release.yml) are test builds. Maintainers should follow the [release runbook](docs/RELEASING.md).
 
 ## Build
 
@@ -184,3 +194,7 @@ ECHO_LIVE_MIC=1 cargo test -p echo --test record_once -- --ignored
 cargo test -p echo --test transcribe_fixture -- --ignored
 cargo test -p echo --test compare_engines -- --ignored
 ```
+
+## License
+
+Echo is available under either the [MIT License](LICENSE-MIT) or the [Apache License 2.0](LICENSE-APACHE).
