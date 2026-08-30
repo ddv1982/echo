@@ -60,6 +60,15 @@ pub(crate) fn accelerated_engine(
     managed_cpu: &WhisperExecutionPlan,
     pinned: Option<&str>,
 ) -> Result<RecoveringWhisperEngine, WhisperAccelerationSkip> {
+    // Checked before any probing, because no device can rescue a plan whose
+    // fallback cannot qualify. Letting WhisperPlanDecision::qualified refuse it
+    // later reported NoDeviceEnumerated, which blamed the hardware for a
+    // missing component and left the user nothing to act on.
+    if managed_cpu.runtime.source != WhisperRuntimeSource::Managed
+        || managed_cpu.runtime.backend != WhisperRuntimeBackend::Cpu
+    {
+        return Err(WhisperAccelerationSkip::CpuFallbackMissing);
+    }
     let cli = runtime.join("whisper-cli");
     if !cli.is_file() {
         return Err(WhisperAccelerationSkip::RuntimeMissing);

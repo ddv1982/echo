@@ -179,6 +179,7 @@ export type AccelerationSkipReason =
   | 'noDeviceEnumerated'
   | 'pinnedDeviceAbsent'
   | 'deviceQuarantined'
+  | 'cpuFallbackMissing'
   | 'recoveredToCpu'
 
 export interface LastRunPerformance {

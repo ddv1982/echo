@@ -236,6 +236,7 @@ enum AccelerationSkipReason {
     NoDeviceEnumerated,
     PinnedDeviceAbsent,
     DeviceQuarantined,
+    CpuFallbackMissing,
     RecoveredToCpu,
 }
 
@@ -252,6 +253,9 @@ fn project_acceleration_skip(
                 AccelerationSkipReason::PinnedDeviceAbsent
             }
             WhisperAccelerationSkip::DeviceQuarantined => AccelerationSkipReason::DeviceQuarantined,
+            WhisperAccelerationSkip::CpuFallbackMissing => {
+                AccelerationSkipReason::CpuFallbackMissing
+            }
         });
     }
     // A recovery row with a fallback reason means the accelerated attempt ran
@@ -3565,6 +3569,10 @@ mod settings_tests {
             (
                 WhisperAccelerationSkip::DeviceQuarantined,
                 AccelerationSkipReason::DeviceQuarantined,
+            ),
+            (
+                WhisperAccelerationSkip::CpuFallbackMissing,
+                AccelerationSkipReason::CpuFallbackMissing,
             ),
         ] {
             let mut whisper = cpu_telemetry();

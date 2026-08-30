@@ -535,18 +535,24 @@ describe('Echo desktop shell', () => {
     expect(screen.getByText(__APP_VERSION__)).toBeInTheDocument()
   })
 
-  // The preview seeds the GPU runtime absent, which is what a real install
-  // looks like until someone chooses GPU. Any test about the device picker has
-  // to say that it is testing the installed case.
-  async function seedGpuRuntime(managed: ComponentStatus['managed']) {
+  // The preview seeds both managed runtimes absent, which is what a real
+  // install looks like until someone chooses GPU. Any test about the device
+  // picker has to say that it is testing the installed case.
+  async function seedGpuRuntime(
+    gpu: ComponentStatus['managed'],
+    cpu: ComponentStatus['managed'] = installedGpuRuntime,
+  ) {
     const readiness = await getReadiness()
+    const managedFor = (id: string) =>
+      id === 'whisper-vulkan-runtime' ? gpu : id === 'whisper-runtime' ? cpu : null
     seedPreviewReadiness({
       ...readiness,
-      components: readiness.components.map((component) =>
-        component.id === 'whisper-vulkan-runtime'
-          ? { ...component, managed, activeOrigin: managed.kind === 'ready' ? 'managed' : null }
-          : component,
-      ),
+      components: readiness.components.map((component) => {
+        const managed = managedFor(component.id)
+        return managed == null
+          ? component
+          : { ...component, managed, activeOrigin: managed.kind === 'ready' ? 'managed' : null }
+      }),
     })
   }
 
@@ -596,13 +602,32 @@ describe('Echo desktop shell', () => {
     const acceleration = within(await screen.findByRole('group', { name: 'Whisper acceleration' }))
     fireEvent.click(acceleration.getByRole('button', { name: 'GPU' }))
 
-    const install = await screen.findByRole('button', { name: 'Install GPU runtime' })
-    expect(screen.getByText(/GPU needs its runtime/)).toBeInTheDocument()
+    const install = await screen.findByRole('button', { name: 'Install Whisper GPU runtime' })
+    expect(screen.getByText(/GPU needs Whisper GPU runtime/)).toBeInTheDocument()
     expect(screen.queryByText(/No Vulkan device detected/)).not.toBeInTheDocument()
     expect(screen.queryByLabelText('GPU device')).not.toBeInTheDocument()
 
     fireEvent.click(install)
     await waitFor(() => expect(repairManaged).toHaveBeenCalledWith('whisper-vulkan-runtime'))
+  })
+
+  it('asks for the managed CPU runtime the GPU path falls back to', async () => {
+    // A system whisper-cli satisfies speech setup, so nothing else reports this
+    // as missing, and WhisperPlanDecision::qualified refuses a fallback that is
+    // not the managed CPU runtime. Without this the picker would appear, find
+    // no devices, and every run would stay on CPU with no reason given.
+    await seedGpuRuntime(installedGpuRuntime, { kind: 'absent', resumableBytes: 0 })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByText('Advanced'))
+    const acceleration = within(await screen.findByRole('group', { name: 'Whisper acceleration' }))
+    fireEvent.click(acceleration.getByRole('button', { name: 'GPU' }))
+
+    const install = await screen.findByRole('button', { name: 'Install Whisper runtime' })
+    expect(screen.queryByLabelText('GPU device')).not.toBeInTheDocument()
+    fireEvent.click(install)
+    await waitFor(() => expect(repairManaged).toHaveBeenCalledWith('whisper-runtime'))
   })
 
   it('shows the picker rather than an install prompt once the runtime is ready', async () => {
@@ -616,7 +641,9 @@ describe('Echo desktop shell', () => {
 
     const picker = await screen.findByLabelText('GPU device')
     await waitFor(() => expect(within(picker).getAllByRole('option')).toHaveLength(4))
-    expect(screen.queryByRole('button', { name: 'Install GPU runtime' })).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'Install Whisper GPU runtime' }),
+    ).not.toBeInTheDocument()
   })
 
   it('pins the chosen GPU by its device and driver UUID pair', async () => {
@@ -687,6 +714,7 @@ describe('Echo desktop shell', () => {
     ['noDeviceEnumerated', 'GPU asked for, no device found'],
     ['pinnedDeviceAbsent', 'GPU asked for, the selected device is absent'],
     ['deviceQuarantined', 'GPU asked for, the device is disabled after a failure'],
+    ['cpuFallbackMissing', 'GPU asked for, the managed CPU runtime it falls back to is missing'],
     ['recoveredToCpu', 'GPU ran and failed, retried on CPU'],
   ] as const)('says why a requested GPU did not run: %s', async (reason, copy) => {
     const status = richPreviewStatus()
