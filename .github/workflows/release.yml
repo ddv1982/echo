@@ -345,7 +345,11 @@ jobs:
       - name: Install package inspection dependencies
         run: |
           sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y cpio rpm
+          # p7zip is not optional here. rpm2cpio on Ubuntu has exited nonzero
+          # on an archive it had already written in full, which is the whole
+          # reason extract_rpm falls back to 7z. Without it the fallback would
+          # abort the publish at the last gate on exactly that failure.
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y cpio rpm p7zip-full
 
       - name: Assert every published artefact carries the CI build
         run: scripts/verify-release-artifacts.sh release-assets/publish
