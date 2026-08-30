@@ -1,8 +1,9 @@
 # Releasing Echo
 
 The release workflow builds packages for every pull request, every push to
-`main`, every `v*` tag, and the nightly schedule. A tag is allowed to publish
-only after the required Linux packages have been built and inspected.
+`main`, every `v*` tag, and the nightly schedule. GitHub Releases are the
+supported downloads. A Git tag without a corresponding GitHub Release marks
+source history only.
 
 ## Repository gate
 
@@ -11,11 +12,12 @@ Protect `main` and require these pull-request checks before merging:
 - `check / check`
 - `release / release-policy`
 - `release / linux-packages`
+- `release / appimage`
 - `release / release-assets`
 
-`release / appimage` remains best effort and must not be required. The tagged
-release does not attach an AppImage until that job has proved reliable enough
-to become a release requirement.
+The AppImage is required. The `release-assets` job waits for both package build
+jobs and verifies the same seven-file publish directory on pull requests,
+`main`, nightlies, and tags.
 
 ## Prepare the release
 
@@ -105,31 +107,40 @@ git push origin vX.Y.Z
 ```
 
 The tag workflow checks that the tag is on `main`, matches the workspace
-version, and has release notes. It then builds with the pinned Tauri CLI,
-requires exactly one Debian package and one RPM, verifies their embedded
-versions, and uploads those artifacts plus `echo-desktop`. Before publishing it
-opens every artefact and checks that the deb and the rpm each contain the
-launcher, the desktop entry, and the exact binary that run built, so a package
-missing its payload fails the release instead of shipping.
+version, and has release notes. It builds with the pinned Tauri CLI and requires
+exactly one Debian package, one RPM, one AppImage, and one raw binary. The
+workflow checks package metadata and contents. It also checks the final
+AppImage desktop entry, executable, and reported version.
+
+The workflow stages those four application files and both license texts in one
+directory. It creates `SHA256SUMS` from the sorted file names, verifies every
+digest, and rejects missing or extra files. The tag job downloads that verified
+directory and checks it again before upload. Do not upload application assets
+by hand.
 
 ## Verify
 
-Confirm that the workflow is green and the Release has a Debian package, an
-RPM, and `echo-desktop`. Include the AppImage when that job succeeds.
+Confirm that the workflow is green. The GitHub Release must contain one Debian
+package, one RPM, one AppImage, `echo-desktop`, both license texts, and
+`SHA256SUMS`.
 
 ```sh
 gh run list --workflow release.yml --limit 5
 gh release view vX.Y.Z
 ```
 
-Download the assets and confirm the visible and package versions:
+Download the assets into an empty directory. Verify the checksums and visible
+versions:
 
 ```sh
 release_dir=$(mktemp -d)
 gh release download vX.Y.Z --dir "$release_dir"
+(cd "$release_dir" && sha256sum --check --strict SHA256SUMS)
 dpkg-deb -f "$release_dir"/*.deb Version
 chmod +x "$release_dir/echo-desktop"
 "$release_dir/echo-desktop" --version
+chmod +x "$release_dir"/*.AppImage
+APPIMAGE_EXTRACT_AND_RUN=1 "$release_dir"/*.AppImage --version
 ```
 
 ## If a tag run fails
