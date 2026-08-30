@@ -86,7 +86,7 @@ export function useSerialPoll<T>({
 
     const trigger = () => run(true)
     triggerRef.current = trigger
-    void run(false)
+    timer = window.setTimeout(() => void run(false), 0)
 
     return () => {
       disposed = true
