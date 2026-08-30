@@ -88,14 +88,17 @@ pub(crate) fn accelerated_engine(
         .map_err(|_| WhisperAccelerationSkip::NoDeviceEnumerated)?;
     let route = select_route(&routes, pinned)?;
 
-    let key = accelerator_key(route).map_err(|_| WhisperAccelerationSkip::NoDeviceEnumerated)?;
+    // Past this point a device enumerated and the picker offered it, so
+    // reporting "no device found" would send the user looking for hardware
+    // that is present and listed.
+    let key = accelerator_key(route).map_err(|_| WhisperAccelerationSkip::DeviceNotReady)?;
     let quarantine = QuarantineStore::at(super::whisper_state_dir().join("gpu-quarantine.json"));
     if quarantine.is_active(&key, unix_time()).unwrap_or(true) {
         return Err(WhisperAccelerationSkip::DeviceQuarantined);
     }
     let ready = backend
         .ready(route)
-        .map_err(|_| WhisperAccelerationSkip::NoDeviceEnumerated)?;
+        .map_err(|_| WhisperAccelerationSkip::DeviceNotReady)?;
 
     let mut launch = whisper_runtime_launch(&cli);
     launch.vulkan_driver_files = Some(route.manifest_path.clone());
@@ -124,7 +127,7 @@ pub(crate) fn accelerated_engine(
     fallback.allow_vad_retry = false;
 
     let decision = WhisperPlanDecision::qualified(key, primary, fallback, ready)
-        .map_err(|_| WhisperAccelerationSkip::NoDeviceEnumerated)?;
+        .map_err(|_| WhisperAccelerationSkip::DeviceNotReady)?;
     Ok(RecoveringWhisperEngine::new(decision, quarantine))
 }
 

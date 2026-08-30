@@ -715,6 +715,7 @@ describe('Echo desktop shell', () => {
     ['pinnedDeviceAbsent', 'GPU asked for, the selected device is absent'],
     ['deviceQuarantined', 'GPU asked for, the device is disabled after a failure'],
     ['cpuFallbackMissing', 'GPU asked for, the managed CPU runtime it falls back to is missing'],
+    ['deviceNotReady', 'GPU asked for, the device did not pass its readiness check'],
     ['recoveredToCpu', 'GPU ran and failed, retried on CPU'],
   ] as const)('says why a requested GPU did not run: %s', async (reason, copy) => {
     const status = richPreviewStatus()
