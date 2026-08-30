@@ -5,6 +5,7 @@ mod extract;
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -747,15 +748,28 @@ fn verify_payload(root: &Path, files: &[InstalledFile], full: bool) -> Result<()
     verify_payload_cancellable(root, files, full, None)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct PayloadFingerprint(Vec<(String, u64, u64, Option<String>)>);
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct VerificationStamp {
-    schema_version: u32,
-    fingerprint: PayloadFingerprint,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FingerprintFileType {
+    File,
+    Symlink,
+    Other,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileFingerprint {
+    relative_path: String,
+    file_type: FingerprintFileType,
+    mode: u32,
+    size: u64,
+    device: u64,
+    inode: u64,
+    ctime: (i64, i64),
+    mtime: (i64, i64),
+    symlink_target: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PayloadFingerprint(Vec<FileFingerprint>);
 
 fn verified_payloads() -> &'static Mutex<BTreeMap<PathBuf, PayloadFingerprint>> {
     static VERIFIED: OnceLock<Mutex<BTreeMap<PathBuf, PayloadFingerprint>>> = OnceLock::new();
@@ -770,34 +784,35 @@ fn payload_fingerprint(
     for file in files {
         let path = root.join(&file.relative_path);
         let metadata = fs::symlink_metadata(&path)?;
-        let modified = metadata
-            .modified()?
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_nanos().min(u128::from(u64::MAX)) as u64)
-            .unwrap_or(0);
-        let target = if metadata.file_type().is_symlink() {
-            Some(fs::read_link(&path)?.to_string_lossy().into_owned())
+        let file_type = if metadata.file_type().is_file() {
+            FingerprintFileType::File
+        } else if metadata.file_type().is_symlink() {
+            FingerprintFileType::Symlink
+        } else {
+            FingerprintFileType::Other
+        };
+        let symlink_target = if file_type == FingerprintFileType::Symlink {
+            Some(fs::read_link(&path)?)
         } else {
             None
         };
-        values.push((file.relative_path.clone(), metadata.len(), modified, target));
+        values.push(FileFingerprint {
+            relative_path: file.relative_path.clone(),
+            file_type,
+            mode: metadata.mode(),
+            size: metadata.len(),
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            ctime: (metadata.ctime(), metadata.ctime_nsec()),
+            mtime: (metadata.mtime(), metadata.mtime_nsec()),
+            symlink_target,
+        });
     }
     Ok(PayloadFingerprint(values))
 }
 
 fn remember_verified_payload(root: &Path, files: &[InstalledFile]) -> Result<(), InstallError> {
     let fingerprint = payload_fingerprint(root, files)?;
-    let release = root.parent().ok_or_else(|| {
-        InstallError::State("managed payload has no release directory".to_string())
-    })?;
-    let stamp = VerificationStamp {
-        schema_version: 1,
-        fingerprint: fingerprint.clone(),
-    };
-    let raw = serde_json::to_vec_pretty(&stamp)
-        .map_err(|error| InstallError::State(error.to_string()))?;
-    echo_core::write_atomic(&release.join("verified.json"), &raw)
-        .map_err(InstallError::IoMessage)?;
     verified_payloads()
         .lock()
         .expect("verified payload cache")
@@ -818,21 +833,12 @@ fn verify_payload_cached(
     verify_payload(root, files, false)?;
     let fingerprint = payload_fingerprint(root, files)?;
     if !force {
-        let memory_matches = verified_payloads()
+        let cache_matches = verified_payloads()
             .lock()
             .expect("verified payload cache")
             .get(root)
             == Some(&fingerprint);
-        let stamp_matches = root
-            .parent()
-            .and_then(|release| fs::read(release.join("verified.json")).ok())
-            .and_then(|raw| serde_json::from_slice::<VerificationStamp>(&raw).ok())
-            .is_some_and(|stamp| stamp.schema_version == 1 && stamp.fingerprint == fingerprint);
-        if memory_matches || stamp_matches {
-            verified_payloads()
-                .lock()
-                .expect("verified payload cache")
-                .insert(root.to_path_buf(), fingerprint);
+        if cache_matches {
             return Ok(());
         }
     }

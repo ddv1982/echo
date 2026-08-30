@@ -1,4 +1,5 @@
 use super::*;
+use filetime::{set_file_mtime, FileTime};
 use std::collections::{BTreeMap, VecDeque};
 use std::io::Cursor;
 use std::sync::Mutex;
@@ -45,6 +46,46 @@ fn scratch(label: &str) -> PathBuf {
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap();
     root
+}
+
+fn installed_direct_fixture(label: &str) -> (ManagedStore, catalog::ComponentSpec, PathBuf) {
+    let body = b"tiny verified model".to_vec();
+    let digest: &'static str = Box::leak(format!("{:x}", Sha256::digest(&body)).into_boxed_str());
+    let spec = catalog::ComponentSpec {
+        id: ComponentId::SileroVad,
+        label: "Fixture",
+        version: "fixture",
+        url: "https://fixture.invalid/model",
+        artifact_name: "tiny.bin",
+        artifact_size: body.len() as u64,
+        artifact_sha256: digest,
+        installed_bytes: body.len() as u64,
+        format: ArtifactFormat::Direct,
+        inventory_key: None,
+    };
+    let root = scratch(label);
+    let transport = FixtureTransport(Mutex::new(VecDeque::from([body])));
+    let installer = Installer {
+        store: ManagedStore::new(&root),
+        transport: &transport,
+        disk: &UnlimitedDisk,
+        probe: &AcceptProbe,
+    };
+    let record = installer
+        .ensure_spec(
+            &spec,
+            false,
+            &OperationId::fixture("1"),
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
+    let release = installer
+        .store
+        .component_dir(spec.id)
+        .join("releases")
+        .join(record.release);
+    (installer.store, spec, release)
 }
 
 #[test]
@@ -269,8 +310,11 @@ fn direct_install_repairs_same_size_corruption_and_removes_only_managed_files() 
         .component_dir(spec.id)
         .join("releases")
         .join(&active.release);
-    assert!(release.join("verified.json").is_file());
-    verified_payloads().lock().unwrap().clear();
+    assert!(!release.join("verified.json").exists());
+    verified_payloads()
+        .lock()
+        .unwrap()
+        .remove(&release.join("payload"));
     assert!(matches!(
         installer
             .store
@@ -298,6 +342,104 @@ fn direct_install_repairs_same_size_corruption_and_removes_only_managed_files() 
     assert_ne!(first.release, second.release);
     assert!(!payload.exists());
     assert_eq!(fs::read(&external).unwrap(), b"manual sentinel");
+}
+
+#[test]
+fn cached_status_detects_same_size_mutation_with_restored_mtime() {
+    let (store, spec, release) = installed_direct_fixture("restored-mtime");
+    let payload_root = release.join("payload");
+    let payload = payload_root.join(spec.artifact_name);
+    let original_mtime = FileTime::from_last_modification_time(&fs::metadata(&payload).unwrap());
+
+    fs::write(&payload, vec![b'x'; spec.artifact_size as usize]).unwrap();
+    set_file_mtime(&payload, original_mtime).unwrap();
+    assert_eq!(
+        FileTime::from_last_modification_time(&fs::metadata(&payload).unwrap()),
+        original_mtime
+    );
+
+    assert!(matches!(
+        store.status_with(&spec, &expected_files_for(&spec), false),
+        ManagedComponentState::NeedsRepair { .. }
+    ));
+}
+
+#[test]
+fn forged_legacy_verification_stamp_cannot_bypass_cold_verification() {
+    let (store, spec, release) = installed_direct_fixture("forged-verification-stamp");
+    let payload_root = release.join("payload");
+    let payload = payload_root.join(spec.artifact_name);
+    let original_mtime = FileTime::from_last_modification_time(&fs::metadata(&payload).unwrap());
+
+    fs::write(&payload, vec![b'x'; spec.artifact_size as usize]).unwrap();
+    set_file_mtime(&payload, original_mtime).unwrap();
+    let modified = fs::metadata(&payload)
+        .unwrap()
+        .modified()
+        .unwrap()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as u64;
+    let forged = serde_json::json!({
+        "schemaVersion": 1,
+        "fingerprint": [[spec.artifact_name, spec.artifact_size, modified, null]]
+    });
+    echo_core::write_atomic(
+        &release.join("verified.json"),
+        &serde_json::to_vec_pretty(&forged).unwrap(),
+    )
+    .unwrap();
+    verified_payloads().lock().unwrap().remove(&payload_root);
+
+    assert!(matches!(
+        store.status_with(&spec, &expected_files_for(&spec), false),
+        ManagedComponentState::NeedsRepair { .. }
+    ));
+}
+
+#[test]
+#[ignore = "reads the managed component root named by ECHO_MANAGED_ROOT"]
+fn managed_status_timing() {
+    let root = std::env::var_os("ECHO_MANAGED_ROOT")
+        .map(PathBuf::from)
+        .expect("ECHO_MANAGED_ROOT must name the directory that contains managed/");
+    let store = ManagedStore::new(root);
+    verified_payloads().lock().unwrap().clear();
+    let mut measured = 0;
+
+    for spec in catalog::COMPONENTS {
+        if !store.active_path(spec.id).exists() {
+            continue;
+        }
+        let cold_started = Instant::now();
+        let cold_state = store.status(spec.id, false);
+        let cold = cold_started.elapsed();
+        if !matches!(cold_state, ManagedComponentState::Ready { .. }) {
+            println!(
+                "managed_status component={} skipped={cold_state:?}",
+                spec.id.as_str()
+            );
+            continue;
+        }
+
+        let warm_started = Instant::now();
+        let warm_state = store.status(spec.id, false);
+        let warm = warm_started.elapsed();
+        assert!(
+            matches!(warm_state, ManagedComponentState::Ready { .. }),
+            "{} warm status was {warm_state:?}",
+            spec.id.as_str()
+        );
+        println!(
+            "managed_status component={} cold_us={} warm_us={}",
+            spec.id.as_str(),
+            cold.as_micros(),
+            warm.as_micros()
+        );
+        measured += 1;
+    }
+
+    assert!(measured > 0, "ECHO_MANAGED_ROOT has no active components");
 }
 
 #[test]
