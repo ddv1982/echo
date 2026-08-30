@@ -16,6 +16,8 @@ use tauri::{Manager, WindowEvent};
 
 mod cli;
 mod commands;
+#[cfg(feature = "status-perf-probe")]
+mod perf;
 mod settings;
 mod setup;
 mod shortcuts;
@@ -43,6 +45,7 @@ fn main() {
     }
 }
 
+#[cfg(not(feature = "status-perf-probe"))]
 struct UpgradeWatch {
     path: std::path::PathBuf,
     identity: echo::upgrade::FileIdentity,
@@ -51,34 +54,38 @@ struct UpgradeWatch {
 fn run_desktop() {
     let mut context = tauri::generate_context!();
     context.config_mut().app.tray_icon = None;
-    let result = tauri::Builder::default()
-        .manage(setup::SetupService::default())
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            let Some(watch) = app.try_state::<UpgradeWatch>() else {
+    let builder = tauri::Builder::default().manage(setup::SetupService::default());
+    #[cfg(not(feature = "status-perf-probe"))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        let Some(watch) = app.try_state::<UpgradeWatch>() else {
+            show_main_window(app);
+            return;
+        };
+        let current = echo::upgrade::file_identity(&watch.path).ok();
+        match echo::upgrade::second_launch_decision(watch.identity, current) {
+            echo::upgrade::SecondLaunch::Focus => {
+                eprintln!("echo-desktop: second launch; focusing the running window");
                 show_main_window(app);
-                return;
-            };
-            let current = echo::upgrade::file_identity(&watch.path).ok();
-            match echo::upgrade::second_launch_decision(watch.identity, current) {
-                echo::upgrade::SecondLaunch::Focus => {
-                    eprintln!("echo-desktop: second launch; focusing the running window");
-                    show_main_window(app);
-                }
-                echo::upgrade::SecondLaunch::Restart => {
-                    match std::process::Command::new(&watch.path).spawn() {
-                        Ok(_) => {
-                            eprintln!("echo-desktop: binary changed on disk; restarting into the new build");
-                            app.exit(0);
-                        }
-                        Err(err) => {
-                            eprintln!("echo-desktop: restart spawn failed: {err}");
-                            show_main_window(app);
-                        }
+            }
+            echo::upgrade::SecondLaunch::Restart => {
+                match std::process::Command::new(&watch.path).spawn() {
+                    Ok(_) => {
+                        eprintln!(
+                            "echo-desktop: binary changed on disk; restarting into the new build"
+                        );
+                        app.exit(0);
+                    }
+                    Err(err) => {
+                        eprintln!("echo-desktop: restart spawn failed: {err}");
+                        show_main_window(app);
                     }
                 }
             }
-        }))
+        }
+    }));
+    let result = builder
         .setup(|app| {
+            #[cfg(not(feature = "status-perf-probe"))]
             echo::upgrade::terminate_old_echo_processes();
             let open = MenuItem::with_id(app, "open", "Open Echo", true, None::<&str>)?;
             let record =
@@ -111,6 +118,7 @@ fn run_desktop() {
             };
             app.manage(AtomicBool::new(tray_ready));
             shortcuts::reconcile();
+            #[cfg(not(feature = "status-perf-probe"))]
             if let Ok(path) = std::env::current_exe().and_then(|path| path.canonicalize()) {
                 if let Ok(identity) = echo::upgrade::file_identity(&path) {
                     app.manage(UpgradeWatch { path, identity });
@@ -155,6 +163,16 @@ fn run_desktop() {
             set_microphone,
             test_input_device,
             test_microphone_fallback,
+            #[cfg(feature = "status-perf-probe")]
+            perf::perf_noop,
+            #[cfg(feature = "status-perf-probe")]
+            perf::perf_fixed_status,
+            #[cfg(feature = "status-perf-probe")]
+            perf::perf_clear_status_stages,
+            #[cfg(feature = "status-perf-probe")]
+            perf::perf_report_complete,
+            #[cfg(feature = "status-perf-probe")]
+            perf::perf_report_failed,
         ])
         .run(context);
     shortcuts::shutdown();

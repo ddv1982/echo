@@ -131,11 +131,21 @@ pub(super) fn health_invalidate() {
 }
 
 pub(super) fn app_status() -> AppStatus {
+    #[cfg(feature = "status-perf-probe")]
+    let mut timer = crate::perf::StatusStageTimer::start();
     let status = echo::status::read();
+    #[cfg(feature = "status-perf-probe")]
+    timer.mark(crate::perf::StatusStage::StatusFile);
     let recording_limit =
         project_recording_limit(&status, echo::rec::recording_limit_from_process().limit);
+    #[cfg(feature = "status-perf-probe")]
+    timer.mark(crate::perf::StatusStage::RecordingLimit);
     let health = health_snapshot();
+    #[cfg(feature = "status-perf-probe")]
+    timer.mark(crate::perf::StatusStage::Health);
     let shortcut = crate::shortcuts::status(&health.current_exe);
+    #[cfg(feature = "status-perf-probe")]
+    timer.mark(crate::perf::StatusStage::Shortcut);
     let last_run = History::load().ok().and_then(|history| {
         history.rows().last().map(|row| LastRun {
             engine: row.engine.to_string(),
@@ -149,8 +159,16 @@ pub(super) fn app_status() -> AppStatus {
             performance: project_last_run_performance(&row.detail),
         })
     });
+    #[cfg(feature = "status-perf-probe")]
+    timer.mark(crate::perf::StatusStage::History);
     let recording_in_process = status.state == "Recording" && echo::rec::recording_in_process();
-    AppStatus {
+    let cleanup_name = echo::cleanup::mode_name();
+    let hud_enabled = echo::ui::hud::enabled();
+    let settings_path = echo_core::config_path().to_string_lossy().into_owned();
+    let language_warning = echo::stt::language_warning();
+    #[cfg(feature = "status-perf-probe")]
+    timer.mark(crate::perf::StatusStage::Presentation);
+    let app_status = AppStatus {
         recording: status.state == "Recording",
         phase: status.state,
         last_transcript: status.last,
@@ -160,20 +178,26 @@ pub(super) fn app_status() -> AppStatus {
         injection_name: health.injection_name,
         injection_ready: health.injection_ready,
         shortcut,
-        cleanup_name: echo::cleanup::mode_name(),
-        hud_enabled: echo::ui::hud::enabled(),
+        cleanup_name,
+        hud_enabled,
         recording_limit_seconds: recording_limit.map(echo_core::RecordingLimit::seconds),
         recording_policy: recording_policy_dto(),
-        settings_path: echo_core::config_path().to_string_lossy().into_owned(),
+        settings_path,
         version: env!("CARGO_PKG_VERSION").to_string(),
         last_error: status.error,
         last_run,
-        language_warning: echo::stt::language_warning(),
+        language_warning,
         recording_in_process,
         current_exe: health.current_exe,
         first_path_hit: health.first_path_hit,
         stale_installs: health.stale_installs,
+    };
+    #[cfg(feature = "status-perf-probe")]
+    {
+        timer.mark(crate::perf::StatusStage::Compose);
+        timer.finish();
     }
+    app_status
 }
 
 fn project_recording_limit(
