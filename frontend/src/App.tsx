@@ -1134,9 +1134,14 @@ function SettingsView({
   // ask until that component is installed, and the answer changes the moment
   // it is. Not finding the component at all means we cannot tell, so enumerate
   // rather than block on it.
-  const gpuRuntime =
-    readiness?.components.find((component) => component.id === 'whisper-vulkan-runtime') ?? null
-  const gpuRuntimeReady = gpuRuntime == null || gpuRuntime.managed.kind === 'ready'
+  // GPU needs two managed components: the accelerator, and the managed CPU
+  // runtime a failed GPU run retreats to. A system whisper-cli cannot serve as
+  // that fallback, so without the managed one there is no route to the GPU at
+  // all, and speech setup looks complete because the system binary satisfies it.
+  const gpuPrerequisite = (['whisper-runtime', 'whisper-vulkan-runtime'] as const)
+    .map((id) => readiness?.components.find((component) => component.id === id) ?? null)
+    .find((component) => component != null && component.managed.kind !== 'ready') ?? null
+  const gpuRuntimeReady = gpuPrerequisite == null
   useEffect(() => {
     if (!wantsGpu || !gpuRuntimeReady) return
     void listGpuDevices(true)
@@ -1426,10 +1431,11 @@ function SettingsView({
                 devices={gpuDevices}
                 pinned={settings.whisperGpuDevice.effective}
                 disabled={settingsWritePending}
-                runtime={gpuRuntime}
+                prerequisite={gpuPrerequisite}
                 installBusy={readiness?.activeOperation != null}
                 onInstall={() => {
-                  void repairManaged('whisper-vulkan-runtime')
+                  if (gpuPrerequisite == null) return
+                  void repairManaged(gpuPrerequisite.id)
                     .then(() => getReadiness().then(setReadiness))
                     .catch((reason: unknown) => onError(messageFrom(reason)))
                 }}
@@ -1536,7 +1542,7 @@ function GpuDeviceRow({
   devices,
   pinned,
   disabled,
-  runtime,
+  prerequisite,
   installBusy,
   onInstall,
   onRefresh,
@@ -1545,7 +1551,7 @@ function GpuDeviceRow({
   devices: GpuDevice[]
   pinned: string
   disabled: boolean
-  runtime: ComponentStatus | null
+  prerequisite: ComponentStatus | null
   installBusy: boolean
   onInstall: () => void
   onRefresh: () => void
@@ -1553,30 +1559,28 @@ function GpuDeviceRow({
 }) {
   const key = (device: GpuDevice) => `${device.id.deviceUUID}:${device.id.driverUUID}`
   const missing = pinned !== '' && !devices.some((device) => key(device) === pinned)
-  // Enumeration runs a probe out of the GPU runtime, so with no runtime there
-  // are never any devices. Reporting that as "no Vulkan device" would blame the
-  // hardware for something the user has not been asked to install yet.
-  const runtimeReady = runtime == null || runtime.managed.kind === 'ready'
-  const installing = runtime?.activity != null
-
-  if (!runtimeReady) {
-    const unsupported = runtime?.managed.kind === 'unsupported'
+  // Enumeration runs a probe out of the GPU runtime, so with a component
+  // missing there are never any devices. Reporting that as "no Vulkan device"
+  // would blame the hardware for something nobody has been asked to install.
+  if (prerequisite != null) {
+    const installing = prerequisite.activity != null
+    const unsupported = prerequisite.managed.kind === 'unsupported'
     return (
       <div className="setting-row">
         <div>
           <strong>GPU device</strong>
           <span>
             {unsupported
-              ? 'The GPU runtime is not available on this platform. Transcription stays on the CPU.'
+              ? `${prerequisite.label} is not available on this platform. Transcription stays on the CPU.`
               : installing
-                ? 'Installing the GPU runtime. Transcription stays on the CPU until it finishes.'
-                : 'GPU needs its runtime, about 19 MB, downloaded once. Transcription stays on the CPU until it is installed.'}
+                ? `Installing ${prerequisite.label}. Transcription stays on the CPU until it finishes.`
+                : `GPU needs ${prerequisite.label}, downloaded once. Transcription stays on the CPU until it is installed.`}
           </span>
         </div>
         <div className="setting-actions">
           {unsupported ? null : (
             <button type="button" onClick={onInstall} disabled={disabled || installBusy || installing}>
-              {installing ? 'Installing' : 'Install GPU runtime'}
+              {installing ? 'Installing' : `Install ${prerequisite.label}`}
             </button>
           )}
         </div>
@@ -1624,6 +1628,7 @@ const ACCELERATION_SKIP_COPY: Record<AccelerationSkipReason, string> = {
   noDeviceEnumerated: 'GPU asked for, no device found',
   pinnedDeviceAbsent: 'GPU asked for, the selected device is absent',
   deviceQuarantined: 'GPU asked for, the device is disabled after a failure',
+  cpuFallbackMissing: 'GPU asked for, the managed CPU runtime it falls back to is missing',
   recoveredToCpu: 'GPU ran and failed, retried on CPU',
 }
 

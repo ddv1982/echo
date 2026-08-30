@@ -59,6 +59,10 @@ pub enum WhisperAccelerationSkip {
     NoDeviceEnumerated,
     PinnedDeviceAbsent,
     DeviceQuarantined,
+    /// The accelerated plan needs the managed CPU runtime as the path a failed
+    /// GPU run retreats to. A system whisper-cli cannot serve that role, so
+    /// with only one installed there is no route to the GPU at all.
+    CpuFallbackMissing,
 }
 
 impl WhisperAccelerationSkip {
@@ -69,6 +73,7 @@ impl WhisperAccelerationSkip {
             Self::NoDeviceEnumerated => "noDeviceEnumerated",
             Self::PinnedDeviceAbsent => "pinnedDeviceAbsent",
             Self::DeviceQuarantined => "deviceQuarantined",
+            Self::CpuFallbackMissing => "cpuFallbackMissing",
         }
     }
 }
