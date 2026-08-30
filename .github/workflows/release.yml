@@ -290,10 +290,14 @@ jobs:
       - name: Generate release checksums
         run: scripts/generate-release-checksums.sh release-assets/publish
 
-      - name: Install RPM fallback smoke dependencies
+      - name: Install RPM and AppImage verification dependencies
         run: |
           sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y p7zip-full cpio rpm
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            cpio \
+            libegl1 \
+            p7zip-full \
+            rpm
 
       - name: Smoke-test RPM fallback extraction
         run: |
@@ -345,3 +349,4 @@ jobs:
           files: release-assets/publish/*
           prerelease: ${{ contains(github.ref_name, '-') }}
           fail_on_unmatched_files: true
+          overwrite_files: false
