@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use sha2::{Digest, Sha256};
 
 use super::catalog::{ArtifactFormat, PayloadKind};
-use super::InstallError;
+use super::types::InstallError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtractFile {
