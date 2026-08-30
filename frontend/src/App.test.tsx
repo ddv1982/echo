@@ -15,6 +15,7 @@ import {
   seedPreviewMicTestError,
   seedPreviewRemoveStaleError,
   seedPreviewReadiness,
+  seedPreviewGpuDevices,
   seedPreviewSettings,
   richPreviewStatus,
   seedPreviewStatus,
@@ -424,7 +425,7 @@ describe('Echo desktop shell', () => {
 
     // The engine override lives in Advanced.
     fireEvent.click(await screen.findByText('Advanced'))
-    const acceleration = within(screen.getByRole('group', { name: 'Whisper acceleration' }))
+    const acceleration = within(await screen.findByRole('group', { name: 'Whisper acceleration' }))
     expect(screen.getByText(/CPU always works/)).toBeInTheDocument()
     expect(acceleration.queryByRole('button', { name: 'Auto' })).not.toBeInTheDocument()
     expect(acceleration.getByRole('button', { name: 'CPU' })).toBeInTheDocument()
@@ -530,6 +531,74 @@ describe('Echo desktop shell', () => {
     expect(await screen.findByText('whisper-small · 1038 ms')).toBeInTheDocument()
     expect(screen.getByText('VULKAN · Intel Iris Xe')).toBeInTheDocument()
     expect(screen.getByText(__APP_VERSION__)).toBeInTheDocument()
+  })
+
+  it('offers the GPU device picker only when GPU is selected', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByText('Advanced'))
+    expect(screen.queryByLabelText('GPU device')).not.toBeInTheDocument()
+
+    const acceleration = within(await screen.findByRole('group', { name: 'Whisper acceleration' }))
+    fireEvent.click(acceleration.getByRole('button', { name: 'GPU' }))
+
+    const picker = await screen.findByLabelText('GPU device')
+    await waitFor(() =>
+      expect(
+        within(picker).getByRole('option', { name: 'Intel(R) Iris(R) Xe Graphics (ADL GT2)' }),
+      ).toBeInTheDocument(),
+    )
+    expect(within(picker).getByRole('option', { name: 'Automatic' })).toBeInTheDocument()
+    expect(
+      within(picker).getByRole('option', { name: 'AMD Radeon RX 7800 XT (RADV)' }),
+    ).toBeInTheDocument()
+    // A software rasterizer is offered but marked, never chosen for you.
+    expect(
+      within(picker).getByRole('option', { name: 'llvmpipe (LLVM 20.1.8) · software' }),
+    ).toBeInTheDocument()
+  })
+
+  it('pins the chosen GPU by its device and driver UUID pair', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByText('Advanced'))
+    const acceleration = within(await screen.findByRole('group', { name: 'Whisper acceleration' }))
+    fireEvent.click(acceleration.getByRole('button', { name: 'GPU' }))
+
+    const picker = await screen.findByLabelText('GPU device')
+    await waitFor(() => expect(within(picker).getAllByRole('option')).toHaveLength(4))
+    fireEvent.change(picker, {
+      target: { value: '1002744c0000000000010000000000aa:3f7b1c9a45e1e718c6121d36d8340000' },
+    })
+    await waitFor(async () => {
+      expect((await getSettings()).whisperGpuDevice.value).toBe(
+        '1002744c0000000000010000000000aa:3f7b1c9a45e1e718c6121d36d8340000',
+      )
+    })
+  })
+
+  it('reports a pinned GPU that no longer enumerates without reassigning it', async () => {
+    const defaults = await getSettings()
+    seedPreviewGpuDevices([])
+    seedPreviewSettings({
+      ...defaults,
+      whisperAcceleration: { value: 'gpu', effective: 'gpu', source: 'file' },
+      whisperGpuDevice: {
+        value: 'aa'.repeat(16) + ':' + 'bb'.repeat(16),
+        effective: 'aa'.repeat(16) + ':' + 'bb'.repeat(16),
+        source: 'file',
+      },
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByText('Advanced'))
+
+    const picker = await screen.findByLabelText('GPU device')
+    expect(within(picker).getByRole('option', { name: /not detected/ })).toBeInTheDocument()
+    expect(screen.getByText(/pinned device is not detected/)).toBeInTheDocument()
   })
 
   it('keeps engine internals out of the readout', async () => {

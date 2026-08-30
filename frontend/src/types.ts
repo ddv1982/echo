@@ -20,6 +20,7 @@ export interface Settings {
   recordSeconds: SettingField<number>
   language: SettingField<string>
   whisperAcceleration: SettingField<string>
+  whisperGpuDevice: SettingField<string>
 }
 
 export interface RecordingPolicy {

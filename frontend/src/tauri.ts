@@ -817,6 +817,7 @@ function defaultPreviewSettings(): Settings {
     },
     language: { value: null, effective: 'auto', source: 'default' },
     whisperAcceleration: { value: null, effective: 'cpu', source: 'default' },
+    whisperGpuDevice: { value: null, effective: '', source: 'default' },
   })
 }
 
@@ -836,6 +837,7 @@ function projectPreviewSettings(settings: Settings): Settings {
     recordSeconds: previewField(recordValue, PREVIEW_RECORDING_POLICY.defaultSeconds),
     language: previewField(settings.language.value, 'auto'),
     whisperAcceleration: previewField(settings.whisperAcceleration.value, 'cpu'),
+    whisperGpuDevice: previewField(settings.whisperGpuDevice.value, ''),
   }
 }
 
