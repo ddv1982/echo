@@ -5,7 +5,7 @@ mod extract;
 use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -584,6 +584,7 @@ impl ManagedStore {
                         "refusing unknown managed release {name}"
                     )));
                 }
+                validate_declared_paths(&record.files)?;
                 record.files
             } else {
                 expected.to_vec()
@@ -944,11 +945,40 @@ fn copy_cancellable(
 }
 
 fn ensure_contained(parent: &Path, child: &Path) -> Result<(), InstallError> {
-    if !child.starts_with(parent) {
+    // starts_with is a component prefix test, so `<parent>/../../elsewhere`
+    // is "contained" by it while the kernel resolves it somewhere else
+    // entirely. Everything below the parent has to be a plain relative path.
+    let escapes = match child.strip_prefix(parent) {
+        Ok(relative) => relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_))),
+        Err(_) => true,
+    };
+    if escapes {
         return Err(InstallError::State(format!(
             "managed path escapes {}",
             parent.display()
         )));
+    }
+    Ok(())
+}
+
+/// A receipt names the files its release owns, and cleanup deletes exactly
+/// that list. A damaged or edited receipt must not be able to aim that list
+/// anywhere but inside its own payload directory.
+fn validate_declared_paths(files: &[InstalledFile]) -> Result<(), InstallError> {
+    for file in files {
+        let path = Path::new(&file.relative_path);
+        if file.relative_path.is_empty()
+            || path
+                .components()
+                .any(|component| !matches!(component, Component::Normal(_)))
+        {
+            return Err(InstallError::State(format!(
+                "receipt names a file outside its payload: {}",
+                file.relative_path
+            )));
+        }
     }
     Ok(())
 }
