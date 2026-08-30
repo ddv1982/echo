@@ -521,7 +521,7 @@ Each live lane runs on its own VM at the PR head. Use `control-ui` for the deskt
 
 **Files.**
 
-- [ ] Create `LICENSE-MIT` and `LICENSE-APACHE`.
+- [ ] Create `LICENSE-MIT` and publish Echo under MIT.
 - [ ] Edit `.github/workflows/release.yml`, `scripts/verify-release-artifacts.sh`, `docs/RELEASING.md`, and the release section of `README.md`.
 - [ ] Create a deterministic `SHA256SUMS` generator with a self-test.
 
@@ -535,12 +535,12 @@ Each live lane runs on its own VM at the PR head. Use `control-ui` for the deskt
 
 **You see.**
 
-- [ ] Every supported release has two license texts, four application assets, and a verified checksum manifest.
+- [ ] Every supported release has the MIT license, four application assets, and a verified checksum manifest.
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 
 - [ ] Run `scripts/verify-release-artifacts.sh --self-test` and the checksum-generator self-test.
-- [ ] Run `cargo metadata --no-deps --format-version 1` and verify both license files exist.
+- [ ] Run `cargo metadata --no-deps --format-version 1` and verify the MIT license file exists.
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `grok-4.6-fast-xhigh` at the PR head, per the boot recipe.
 
@@ -788,7 +788,7 @@ Each live lane runs on its own VM at the PR head. Use `control-ui` for the deskt
 - [ ] Lane 6. Follow the architecture link. Save `architecture-doc.png`. Pass when current module ownership matches the final tree.
 - [ ] Lane 7. Follow the GPU runtime link. Save `gpu-runtime-doc.png`. Pass when CPU default and on-demand GPU behavior are accurate.
 - [ ] Lane 8. Follow the release link. Save `releasing-doc.png`. Pass when AppImage, checksums, attestations, and immutable tags are accurate.
-- [ ] Lane 9. Follow the license links. Save `license-links.png`. Pass when both license texts render.
+- [ ] Lane 9. Follow the license link. Save `license-links.png`. Pass when the MIT license renders.
 - [ ] Lane 10. Search rendered docs for retired qualification terms. Save `retired-terms.png`. Pass when none appear outside the historical release record.
 
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.

@@ -10,7 +10,7 @@ The work is done when these statements are true.
 - Rust owns the IPC contract, and TypeScript consumes generated or checked types.
 - Frontend polling and async subscriptions cannot overlap or write state after disposal.
 - `App.tsx`, `src-tauri/src/main.rs`, `frontend/src/tauri.ts`, and `crates/echo/src/install/mod.rs` are split by responsibility.
-- Releases publish license texts, checksums, and provenance for supported assets.
+- Releases publish the MIT license, checksums, and provenance for supported assets.
 - Historical release cleanup is scripted, dry-run first, and destructive only with an explicit reviewed manifest.
 - Retired plans, qualification artifacts, and `.audit` data are removed from the active tree after required evidence is archived.
 - `README.md` is a product README, not a build log, architecture note, and release audit in one file.
@@ -45,7 +45,7 @@ PR 18.1 fixes managed payload verification.
 
 PR 18.9 adds license and checksum release basics.
 
-- Add `LICENSE-MIT` and `LICENSE-APACHE`.
+- Add `LICENSE-MIT` and publish Echo under MIT.
 - Generate and verify `SHA256SUMS` from the staged publish directory.
 - Make the release verifier reject missing supported assets.
 - Make AppImage a required, verified release asset because supported releases already publish it.
