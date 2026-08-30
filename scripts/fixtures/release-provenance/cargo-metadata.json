@@ -1,0 +1,36 @@
+{
+  "packages": [
+    {
+      "id": "path+file:///src/echo#echo-desktop@1.2.3",
+      "license": "MIT OR Apache-2.0",
+      "name": "echo-desktop",
+      "source": null,
+      "version": "1.2.3"
+    },
+    {
+      "id": "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.219",
+      "license": "MIT OR Apache-2.0",
+      "name": "serde",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "1.0.219"
+    }
+  ],
+  "resolve": {
+    "nodes": [
+      {
+        "dependencies": [
+          "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.219"
+        ],
+        "id": "path+file:///src/echo#echo-desktop@1.2.3"
+      },
+      {
+        "dependencies": [],
+        "id": "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.219"
+      }
+    ],
+    "root": null
+  },
+  "workspace_members": [
+    "path+file:///src/echo#echo-desktop@1.2.3"
+  ]
+}
