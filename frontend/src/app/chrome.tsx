@@ -21,8 +21,6 @@ export function BrandMark() {
   )
 }
 
-// The mark reduced to its bars, for empty states, in the theme's tertiary
-// text color.
 export function BarsMotif() {
   return (
     <svg viewBox="0 0 1024 1024" className="bars-motif" aria-hidden="true">

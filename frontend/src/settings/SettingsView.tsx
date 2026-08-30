@@ -1,30 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-
 import { SectionHeading, SettingLine, ViewHeader } from '../app/chrome'
-import { capitalize, messageFrom } from '../app/formatting'
+import { capitalize } from '../app/formatting'
 import { formatSize } from '../format'
-import { useAsyncSubscription } from '../hooks/useAsyncSubscription'
-import { useSerialPoll } from '../hooks/useSerialPoll'
-import { applySetupProgress } from '../setup'
 import { ShortcutRow } from '../shortcuts/ShortcutRow'
-import {
-  getMicrophones,
-  getReadiness,
-  getSettings,
-  listGpuDevices,
-  listLanguages,
-  listModels,
-  onSetupEvent,
-  repairLegacyShortcut,
-  repairManaged,
-  retryShortcut,
-  setMicrophone,
-  setSettings,
-  testInputDevice,
-  testMicrophoneFallback,
-} from '../tauri'
 import { MicrophoneChooser } from './MicrophoneChooser'
 import { SpeechSetupSection } from './SpeechSetupSection'
+import { useSettingsController } from './useSettingsController'
 import type {
   AccelerationSkipReason,
   AppStatus,
@@ -32,15 +12,10 @@ import type {
   GpuDevice,
   LanguageOptions,
   LastRun,
-  MicrophoneSnapshot,
-  MicrophoneTestResult,
-  ModelInventory,
-  Readiness,
   RecordingPolicy,
   SettingField,
   SettingSource,
   Settings as AppSettings,
-  SetupEvent,
   WhisperModelInfo,
 } from '../generated/ipc'
 import type { ThemeMode } from '../types'
@@ -55,6 +30,8 @@ const CLEANUP_OPTIONS = [
   { value: 'off', label: 'Off' },
   { value: 'rules', label: 'Rules' },
 ] as const
+
+const THEME_OPTIONS: readonly ThemeMode[] = ['system', 'light', 'dark']
 
 const DEFAULT_RECORDING_LIMIT_OPTION = 'default'
 
@@ -105,198 +82,31 @@ export function SettingsView({
   onStatusChange: () => Promise<void>
   onError: (message: string) => void
 }) {
-  const [settings, setLocalSettings] = useState<AppSettings | null>(null)
-  const settingsRef = useRef<AppSettings | null>(null)
-  const writeChainRef = useRef(Promise.resolve())
-  const [microphones, setMicrophones] = useState<MicrophoneSnapshot | null>(null)
-  const [inventory, setInventory] = useState<ModelInventory | null>(null)
-  const [languages, setLanguages] = useState<LanguageOptions | null>(null)
-  const [readiness, setReadiness] = useState<Readiness | null>(null)
-  const [micTest, setMicTest] = useState<MicrophoneTestResult | null>(null)
-  const [testingMic, setTestingMic] = useState(false)
-  const [repairingLegacyShortcut, setRepairingLegacyShortcut] = useState(false)
-  const [settingsWritePending, setSettingsWritePending] = useState(false)
-  const [gpuDevices, setGpuDevices] = useState<GpuDevice[]>([])
-  const micTestVersion = useRef(0)
-
-  useEffect(() => {
-    let active = true
-    void getSettings()
-      .then((next) => {
-        if (active) {
-          settingsRef.current = next
-          setLocalSettings(next)
-        }
-      })
-      .catch((reason: unknown) => {
-        if (active) onError(messageFrom(reason))
-      })
-    void listModels().then((next) => {
-      if (active) setInventory(next)
-    }).catch((reason: unknown) => {
-      if (active) onError(messageFrom(reason))
-    })
-    void listLanguages().then((next) => {
-      if (active) setLanguages(next)
-    }).catch((reason: unknown) => {
-      if (active) onError(messageFrom(reason))
-    })
-    void getReadiness().then((next) => {
-      if (active) setReadiness(next)
-    }).catch((reason: unknown) => {
-      if (active) onError(messageFrom(reason))
-    })
-    return () => {
-      active = false
-      micTestVersion.current += 1
-    }
-  }, [onError])
-
-  const wantsGpu = settings?.whisperAcceleration.effective === 'gpu'
-  // Enumeration runs a probe out of the GPU runtime, so there is nothing to
-  // ask until that component is installed, and the answer changes the moment
-  // it is. Not finding the component at all means we cannot tell, so enumerate
-  // rather than block on it.
-  // GPU needs two managed components: the accelerator, and the managed CPU
-  // runtime a failed GPU run retreats to. A system whisper-cli cannot serve as
-  // that fallback, so without the managed one there is no route to the GPU at
-  // all, and speech setup looks complete because the system binary satisfies it.
-  const gpuPrerequisite = (['whisper-runtime', 'whisper-vulkan-runtime'] as const)
-    .map((id) => readiness?.components.find((component) => component.id === id) ?? null)
-    .find((component) => component != null && component.managed.kind !== 'ready') ?? null
-  // Until readiness loads, nothing is known about either component. Treating
-  // that as ready enumerated before the answer was in and rendered "No Vulkan
-  // device detected" on a machine that has one, which is the copy the install
-  // prompt exists to replace.
-  const gpuRuntimeReady = readiness != null && gpuPrerequisite == null
-  useEffect(() => {
-    if (!wantsGpu || !gpuRuntimeReady) return
-    let active = true
-    void listGpuDevices(true)
-      .then((next) => {
-        if (active) setGpuDevices(next)
-      })
-      .catch((reason: unknown) => {
-        if (active) onError(messageFrom(reason))
-      })
-    return () => {
-      active = false
-    }
-  }, [wantsGpu, gpuRuntimeReady, onError])
-
-  const reportSettingsError = useCallback((reason: unknown) => onError(messageFrom(reason)), [onError])
-  const refreshMicrophones = useSerialPoll({
-    request: getMicrophones,
-    onResult: setMicrophones,
-    onError: reportSettingsError,
-    intervalMs: 3_000,
-  })
-
-  useEffect(() => {
-    const refreshOnFocus = () => void refreshMicrophones()
-    window.addEventListener('focus', refreshOnFocus)
-    return () => {
-      window.removeEventListener('focus', refreshOnFocus)
-    }
-  }, [refreshMicrophones])
-
-  const handleSettingsSetupEvent = useCallback((event: SetupEvent) => {
-    if (event.kind === 'progress') {
-      setReadiness((current) => current && applySetupProgress(current, event))
-    }
-    if (event.kind === 'failed') onError(event.error)
-  }, [onError])
-  const getSettingsSetupRefresh = useCallback((event: SetupEvent) => {
-    if (event.kind === 'progress') return null
-    return () => Promise.all([getReadiness(), listModels(), getSettings(), listLanguages()])
-      .then(([nextReadiness, nextInventory, nextSettings, nextLanguages]) => () => {
-        setReadiness(nextReadiness)
-        setInventory(nextInventory)
-        settingsRef.current = nextSettings
-        setLocalSettings(nextSettings)
-        setLanguages(nextLanguages)
-        void onStatusChange()
-      })
-  }, [onStatusChange])
-  useAsyncSubscription({
-    subscribe: onSetupEvent,
-    onEvent: handleSettingsSetupEvent,
-    getRefresh: getSettingsSetupRefresh,
-    onError: reportSettingsError,
-  })
-
-  useEffect(() => {
-    settingsRef.current = settings
-  }, [settings])
-
-  const commit = useCallback(async (next: AppSettings) => {
-    try {
-      const written = await setSettings(next)
-      settingsRef.current = written
-      setLocalSettings(written)
-      setLanguages(null)
-      const [statusResult, languageResult] = await Promise.allSettled([
-        onStatusChange(),
-        listLanguages(),
-      ])
-      if (statusResult.status === 'rejected') onError(messageFrom(statusResult.reason))
-      if (languageResult.status === 'fulfilled') {
-        setLanguages(languageResult.value)
-      } else {
-        onError(messageFrom(languageResult.reason))
-      }
-    } catch (reason) {
-      onError(messageFrom(reason))
-    }
-  }, [onError, onStatusChange])
-
-  const updateSettings = useCallback(async (update: (current: AppSettings) => AppSettings) => {
-    setSettingsWritePending(true)
-    const queued = writeChainRef.current.then(async () => {
-      const current = settingsRef.current
-      if (!current) return
-      await commit(update(current))
-    })
-    writeChainRef.current = queued
-    try {
-      await queued
-    } finally {
-      if (writeChainRef.current === queued) setSettingsWritePending(false)
-    }
-  }, [commit])
-
-  const patch = useCallback(async <K extends keyof AppSettings>(key: K, value: AppSettings[K]['value']) => {
-    await updateSettings((current) => ({ ...current, [key]: { ...current[key], value } }))
-  }, [updateSettings])
-
-  const selectEngine = useCallback(async (engine: string) => {
-    await updateSettings((current) => {
-      if (engine !== 'parakeet') {
-        return { ...current, engine: { ...current.engine, value: engine } }
-      }
-      return {
-        ...current,
-        engine: { ...current.engine, value: engine },
-        whisperModel: { ...current.whisperModel, value: null },
-      }
-    })
-  }, [updateSettings])
-
-  const repairLegacy = async () => {
-    setRepairingLegacyShortcut(true)
-    try {
-      await repairLegacyShortcut()
-      await onStatusChange()
-    } catch (reason) {
-      onError(messageFrom(reason))
-    } finally {
-      setRepairingLegacyShortcut(false)
-    }
-  }
-
-  const parakeetRuns = languages?.mode === 'parakeet'
-  const whisperRuns =
-    languages != null && settings?.engine.effective !== 'fake' && !parakeetRuns
+  const {
+    settings,
+    microphones,
+    inventory,
+    languages,
+    readiness,
+    micTest,
+    testingMic,
+    repairingLegacyShortcut,
+    settingsWritePending,
+    gpuDevices,
+    gpuPrerequisite,
+    parakeetRuns,
+    whisperRuns,
+    patch,
+    selectEngine,
+    repairLegacy,
+    retryShortcutStatus,
+    refreshMicrophones,
+    refreshReadiness,
+    installGpuPrerequisite,
+    refreshGpuDevices,
+    selectMicrophone,
+    testMicrophone,
+  } = useSettingsController({ onStatusChange, onError })
 
   return (
     <div className="view-stack settings-view" data-settings-surface>
@@ -309,29 +119,8 @@ export function SettingsView({
             test={micTest}
             testing={testingMic}
             onRefresh={refreshMicrophones}
-            onSelect={(id) => {
-              micTestVersion.current += 1
-              setMicTest(null)
-              void setMicrophone(id)
-                .then(setMicrophones)
-                .then(() => onStatusChange())
-                .catch((reason: unknown) => onError(messageFrom(reason)))
-            }}
-            onTest={(id, fallback) => {
-              const version = ++micTestVersion.current
-              setTestingMic(true)
-              const run = fallback ? testMicrophoneFallback() : testInputDevice(id)
-              void run
-                .then((result) => {
-                  if (micTestVersion.current === version) setMicTest(result)
-                })
-                .catch((reason: unknown) => {
-                  if (micTestVersion.current === version) reportSettingsError(reason)
-                })
-                .finally(() => {
-                  if (micTestVersion.current === version) setTestingMic(false)
-                })
-            }}
+            onSelect={selectMicrophone}
+            onTest={testMicrophone}
           />
         ) : (
           <SettingLine label="Microphone" value={status.microphoneReady ? 'Default input available' : 'No default input'} tone={status.microphoneReady ? 'ok' : 'attention'} />
@@ -386,7 +175,7 @@ export function SettingsView({
         {readiness ? (
           <SpeechSetupSection
             readiness={readiness}
-            onRefresh={() => void getReadiness().then(setReadiness).catch(reportSettingsError)}
+            onRefresh={refreshReadiness}
             onError={onError}
           />
         ) : null}
@@ -411,19 +200,12 @@ export function SettingsView({
           repairing={repairingLegacyShortcut}
           onRepair={() => void repairLegacy()}
           onError={onError}
-          onRetry={async () => {
-            try {
-              await retryShortcut()
-              await onStatusChange()
-            } catch (reason) {
-              onError(messageFrom(reason))
-            }
-          }}
+          onRetry={retryShortcutStatus}
         />
         <div className="setting-row">
           <div><strong>Theme</strong><span>Applied to the Echo window only.</span></div>
           <div className="segmented-control" role="group" aria-label="Application theme">
-            {(['system', 'light', 'dark'] as ThemeMode[]).map((mode) => (
+            {THEME_OPTIONS.map((mode) => (
               <button type="button" key={mode} data-active={theme === mode} onClick={() => onThemeChange(mode)}>{capitalize(mode)}</button>
             ))}
           </div>
@@ -476,15 +258,8 @@ export function SettingsView({
                 disabled={settingsWritePending}
                 prerequisite={gpuPrerequisite}
                 installBusy={readiness?.activeOperation != null}
-                onInstall={() => {
-                  if (gpuPrerequisite == null) return
-                  void repairManaged(gpuPrerequisite.id)
-                    .then(() => getReadiness().then(setReadiness))
-                    .catch((reason: unknown) => onError(messageFrom(reason)))
-                }}
-                onRefresh={() => {
-                  void listGpuDevices(true).then(setGpuDevices).catch((reason: unknown) => onError(messageFrom(reason)))
-                }}
+                onInstall={installGpuPrerequisite}
+                onRefresh={refreshGpuDevices}
                 onSelect={(value) => void patch('whisperGpuDevice', value)}
               />
             ) : null}
@@ -602,9 +377,6 @@ function GpuDeviceRow({
 }) {
   const key = (device: GpuDevice) => `${device.id.deviceUUID}:${device.id.driverUUID}`
   const missing = pinned !== '' && !devices.some((device) => key(device) === pinned)
-  // Enumeration runs a probe out of the GPU runtime, so with a component
-  // missing there are never any devices. Reporting that as "no Vulkan device"
-  // would blame the hardware for something nobody has been asked to install.
   if (prerequisite != null) {
     const installing = prerequisite.activity != null
     const unsupported = prerequisite.managed.kind === 'unsupported'
@@ -664,8 +436,6 @@ function GpuDeviceRow({
   )
 }
 
-// Copy per reason, so a fallback reads as a sentence rather than an internal
-// enum. Anything outside the set is reported as unavailable rather than shown.
 const ACCELERATION_SKIP_COPY: Record<AccelerationSkipReason, string> = {
   runtimeMissing: 'GPU asked for, runtime not installed',
   noDeviceEnumerated: 'GPU asked for, no device found',
@@ -777,7 +547,6 @@ function LanguageRow({
     : null
   const probability = status.lastRun?.languageProbability ?? null
   const lowConfidence = probability != null && probability < 0.5
-  // A confident detection earns the fast path back: one click pins it.
   const confident = probability != null && probability >= 0.8
   return (
     <label className="setting-row">
@@ -848,7 +617,6 @@ function overrideHint(source: SettingSource, envName: string, fallback: string) 
   return source === 'env' ? envName : fallback
 }
 
-// General-surface rows name no environment variables; Advanced rows do.
 function overrideHintPlain(source: SettingSource, fallback: string) {
   return source === 'env' ? 'Set by environment' : fallback
 }

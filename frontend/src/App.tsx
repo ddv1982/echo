@@ -5,57 +5,14 @@ import {
   Home,
   Settings,
 } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
-
 import { BrandMark, StatusPill } from './app/chrome'
-import { messageFrom } from './app/formatting'
-import { useElapsedSeconds } from './app/useElapsedSeconds'
-import { useSerialPoll } from './hooks/useSerialPoll'
+import { useAppController } from './app/useAppController'
 import { DictionaryView } from './dictionary/DictionaryView'
 import { HistoryView } from './history/HistoryView'
 import { HomeView } from './home/HomeView'
 import { SettingsView } from './settings/SettingsView'
 import { presentShortcut } from './shortcut'
-import {
-  addDictionaryEntry,
-  getAppStatus,
-  getDictionary,
-  getHistory,
-  removeDictionaryEntry,
-  toggleRecording,
-} from './tauri'
-import type { AppStatus, DictionaryItem, HistoryItem } from './generated/ipc'
-import type { ThemeMode, View } from './types'
-
-const initialStatus: AppStatus = {
-  phase: 'Idle',
-  lastTranscript: null,
-  recording: false,
-  microphoneReady: false,
-  engineName: 'Checking speech engine…',
-  engineReady: false,
-  injectionName: 'Checking insertion…',
-  injectionReady: false,
-  shortcut: { kind: 'probing', desired: 'Super+Alt+Space' },
-  cleanupName: 'Rules · fillers and punctuation',
-  hudEnabled: true,
-  recordingLimitSeconds: 0,
-  recordingPolicy: {
-    minimumSeconds: 0,
-    defaultSeconds: 0,
-    maximumSeconds: 0,
-    presetsSeconds: [],
-  },
-  settingsPath: '',
-  version: '',
-  lastError: null,
-  lastRun: null,
-  languageWarning: null,
-  recordingInProcess: false,
-  currentExe: '',
-  firstPathHit: null,
-  staleInstalls: [],
-}
+import type { View } from './types'
 
 const navigation: Array<{ id: View; label: string; icon: typeof Home }> = [
   { id: 'home', label: 'Home', icon: Home },
@@ -65,109 +22,23 @@ const navigation: Array<{ id: View; label: string; icon: typeof Home }> = [
 ]
 
 function App() {
-  const [view, setView] = useState<View>('home')
-  const [status, setStatus] = useState<AppStatus>(initialStatus)
-  const [history, setHistory] = useState<HistoryItem[]>([])
-  const [dictionary, setDictionary] = useState<DictionaryItem[]>([])
-  const [theme, setTheme] = useState<ThemeMode>(() => {
-    const stored = localStorage.getItem('echo-theme')
-    return stored === 'light' || stored === 'dark' || stored === 'system' ? stored : 'system'
-  })
-  const [error, setError] = useState<string | null>(null)
-  const [recordingStartedAt, setRecordingStartedAt] = useState<number | null>(null)
-  const previousPhase = useRef('Idle')
-  const recordingSeconds = useElapsedSeconds(recordingStartedAt)
+  const {
+    view,
+    setView,
+    status,
+    history,
+    dictionary,
+    theme,
+    setTheme,
+    error,
+    setError,
+    recordingSeconds,
+    refreshStatus,
+    toggleRecording,
+    addDictionaryEntry,
+    removeDictionaryEntry,
+  } = useAppController()
   const shortcut = presentShortcut(status.shortcut)
-
-  const loadCollections = useCallback(
-    () => Promise.all([getHistory(), getDictionary()]),
-    [],
-  )
-  const applyCollections = useCallback(([nextHistory, nextDictionary]: Awaited<ReturnType<typeof loadCollections>>) => {
-    setHistory(nextHistory)
-    setDictionary(nextDictionary)
-  }, [])
-  const refreshCollections = useCallback(async () => {
-    applyCollections(await loadCollections())
-  }, [applyCollections, loadCollections])
-
-  const applyStatus = useCallback((next: AppStatus) => {
-    setStatus(next)
-    const observedAt = Date.now()
-    setRecordingStartedAt((prev) => (next.recording ? (prev ?? observedAt) : null))
-    if (previousPhase.current !== 'Idle' && next.phase === 'Idle') {
-      void refreshCollections()
-    }
-    previousPhase.current = next.phase
-  }, [refreshCollections])
-
-  const reportError = useCallback((reason: unknown) => setError(messageFrom(reason)), [])
-  const pollWhileVisible = useCallback(() => !document.hidden, [])
-  const refreshStatus = useSerialPoll({
-    request: getAppStatus,
-    onResult: applyStatus,
-    onError: reportError,
-    intervalMs: 400,
-    shouldPoll: pollWhileVisible,
-  })
-
-  useEffect(() => {
-    let active = true
-    void loadCollections().then((collections) => {
-      if (active) applyCollections(collections)
-    }).catch((reason: unknown) => {
-      if (active) reportError(reason)
-    })
-    return () => {
-      active = false
-    }
-  }, [applyCollections, loadCollections, reportError])
-
-  useEffect(() => {
-    localStorage.setItem('echo-theme', theme)
-    const media = window.matchMedia('(prefers-color-scheme: light)')
-    const apply = () => {
-      const resolved = theme === 'system' ? (media.matches ? 'light' : 'dark') : theme
-      document.documentElement.dataset.theme = resolved
-      document.documentElement.style.colorScheme = resolved
-    }
-    apply()
-    media.addEventListener('change', apply)
-    return () => media.removeEventListener('change', apply)
-  }, [theme])
-
-  useEffect(() => {
-    window.scrollTo({ top: 0, left: 0, behavior: 'auto' })
-  }, [view])
-
-  const onToggleRecording = async () => {
-    try {
-      await toggleRecording()
-      await refreshStatus()
-    } catch (reason) {
-      setError(messageFrom(reason))
-    }
-  }
-
-  const onAddDictionary = async (spoken: string, written: string) => {
-    try {
-      await addDictionaryEntry(spoken, written)
-      setDictionary(await getDictionary())
-    } catch (reason) {
-      setError(messageFrom(reason))
-      throw reason
-    }
-  }
-
-  const onRemoveDictionary = async (entry: DictionaryItem) => {
-    try {
-      const removed = await removeDictionaryEntry(entry.spoken, entry.written)
-      if (!removed) setError(`"${entry.spoken}" was already removed.`)
-      setDictionary(await getDictionary())
-    } catch (reason) {
-      setError(messageFrom(reason))
-    }
-  }
 
   return (
     <div className="app-shell">
@@ -229,7 +100,7 @@ function App() {
               status={status}
               history={history}
               recordingSeconds={recordingSeconds}
-              onToggleRecording={onToggleRecording}
+              onToggleRecording={toggleRecording}
               onOpenSettings={() => setView('settings')}
             />
           ) : null}
@@ -237,8 +108,8 @@ function App() {
           {view === 'dictionary' ? (
             <DictionaryView
               items={dictionary}
-              onAdd={onAddDictionary}
-              onRemove={onRemoveDictionary}
+              onAdd={addDictionaryEntry}
+              onRemove={removeDictionaryEntry}
             />
           ) : null}
           {view === 'settings' ? (
