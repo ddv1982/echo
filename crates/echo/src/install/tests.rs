@@ -377,13 +377,21 @@ fn cached_status_detects_same_size_mutation_with_restored_mtime() {
     let (store, spec, release) = installed_direct_fixture("restored-mtime");
     let payload_root = release.join("payload");
     let payload = payload_root.join(spec.artifact_name);
-    let original_mtime = FileTime::from_last_modification_time(&fs::metadata(&payload).unwrap());
+    let original_metadata = fs::metadata(&payload).unwrap();
+    let original_mtime = FileTime::from_last_modification_time(&original_metadata);
 
     fs::write(&payload, vec![b'x'; spec.artifact_size as usize]).unwrap();
     set_file_mtime(&payload, original_mtime).unwrap();
+    let changed_metadata = fs::metadata(&payload).unwrap();
     assert_eq!(
-        FileTime::from_last_modification_time(&fs::metadata(&payload).unwrap()),
+        FileTime::from_last_modification_time(&changed_metadata),
         original_mtime
+    );
+    assert!(
+        original_metadata.ino() != changed_metadata.ino()
+            || (original_metadata.ctime(), original_metadata.ctime_nsec())
+                != (changed_metadata.ctime(), changed_metadata.ctime_nsec()),
+        "the filesystem did not change inode identity or ctime after the write"
     );
 
     assert!(matches!(
