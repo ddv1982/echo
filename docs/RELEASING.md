@@ -175,3 +175,41 @@ commit. Do not move or repush the tag at another commit, and do not upload
 artifacts from a dirty working tree. Fix the issue on `main`, repeat the package
 gate, bump to the next patch version, and create a new tag. This keeps every
 public tag tied to one reviewed commit and one reproducible workflow run.
+
+## Clean historical release drafts
+
+Published releases, their assets, and Git tags are permanent history. Cleanup
+is limited to the obsolete `qualification-*` drafts in the reviewed manifest
+and the superseded notice on `v0.12.6`.
+
+Audit the live repository before considering an apply:
+
+```sh
+scripts/audit-release-history.sh
+```
+
+The reviewed snapshot lives in `docs/history/releases.md`. The read-only audit
+needs an authenticated `gh` session, `GH_TOKEN`, or `GITHUB_TOKEN` because
+GitHub hides draft releases from anonymous API calls.
+
+The audit prints every draft action, the release-note action, all Git tags that
+have no GitHub Release, and the count of published releases it will preserve.
+It fails if a release ID, tag, target commit, asset set, or release body differs
+from the manifest. Review the printed `sha256:` manifest digest with the pull
+request.
+
+After this stack lands, a release operator can apply that exact manifest once:
+
+```sh
+read -rsp 'Release cleanup token: ' ECHO_RELEASE_CLEANUP_TOKEN
+export ECHO_RELEASE_CLEANUP_TOKEN
+scripts/audit-release-history.sh --apply --approve-digest sha256:REVIEWED_DIGEST
+unset ECHO_RELEASE_CLEANUP_TOKEN
+scripts/audit-release-history.sh
+```
+
+Use a short-lived token that can edit releases in this repository. Apply uses
+that token for its initial read, does not accept fixture data or another
+manifest, refuses a missing token or mismatched digest, and refreshes all
+targets before the first write. A repeated apply makes no further changes. Do
+not delete tag-only versions or edit published assets.
