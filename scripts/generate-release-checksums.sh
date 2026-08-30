@@ -22,10 +22,11 @@ collect_assets() {
     local appimages=("$publish"/*.AppImage)
     if [ "${#debs[@]}" -ne 1 ] || [ "${#rpms[@]}" -ne 1 ] ||
         [ "${#appimages[@]}" -ne 1 ] || [ ! -f "$publish/echo-desktop" ] ||
-        [ -L "$publish/echo-desktop" ] || [ ! -f "$publish/LICENSE-APACHE" ] ||
+        [ -L "$publish/echo-desktop" ] || [ ! -f "$publish/echo-desktop.cdx.json" ] ||
+        [ -L "$publish/echo-desktop.cdx.json" ] || [ ! -f "$publish/LICENSE-APACHE" ] ||
         [ -L "$publish/LICENSE-APACHE" ] || [ ! -f "$publish/LICENSE-MIT" ] ||
         [ -L "$publish/LICENSE-MIT" ]; then
-        fail "expected two licenses, one deb, one rpm, one AppImage, and echo-desktop"
+        fail "expected two licenses, one deb, one rpm, one AppImage, echo-desktop, and its SBOM"
         return 1
     fi
 
@@ -35,6 +36,7 @@ collect_assets() {
         "LICENSE-APACHE"
         "LICENSE-MIT"
         "echo-desktop"
+        "echo-desktop.cdx.json"
         "$(basename "${rpms[0]}")"
     )
     mapfile -d '' -t ASSETS < <(printf '%s\0' "${ASSETS[@]}" | LC_ALL=C sort -z)
@@ -100,6 +102,7 @@ self_test() {
     printf 'appimage\n' >"$publish/echo_1.0.0_amd64.AppImage"
     printf 'deb\n' >"$publish/echo_1.0.0_amd64.deb"
     printf 'binary\n' >"$publish/echo-desktop"
+    printf '{"bomFormat":"CycloneDX"}\n' >"$publish/echo-desktop.cdx.json"
     printf 'rpm\n' >"$publish/echo-1.0.0-1.x86_64.rpm"
     printf 'apache\n' >"$publish/LICENSE-APACHE"
     printf 'mit\n' >"$publish/LICENSE-MIT"
@@ -112,6 +115,14 @@ self_test() {
         return 1
     fi
     verify_manifest "$publish" >/dev/null
+
+    rm "$publish/echo-desktop.cdx.json"
+    if verify_manifest "$publish" >/dev/null 2>&1; then
+        fail "a staged set with no SBOM passed verification"
+        return 1
+    fi
+    printf '{"bomFormat":"CycloneDX"}\n' >"$publish/echo-desktop.cdx.json"
+    write_manifest "$publish"
 
     printf 'changed\n' >>"$publish/echo-desktop"
     if verify_manifest "$publish" >/dev/null 2>&1; then

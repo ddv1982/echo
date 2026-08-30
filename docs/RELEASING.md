@@ -16,8 +16,18 @@ Protect `main` and require these pull-request checks before merging:
 - `release / release-assets`
 
 The AppImage is required. The `release-assets` job waits for both package build
-jobs and verifies the same seven-file publish directory on pull requests,
+jobs and verifies the same eight-file publish directory on pull requests,
 `main`, nightlies, and tags.
+
+Pin each third-party action to a full commit SHA. Dependabot checks the action
+pins each week and opens reviewable pull requests. The workflow pin check fails
+if a workflow uses a tag, branch, or short SHA.
+
+Create a repository ruleset for tags that match `v*`. Restrict tag updates and
+deletions, then limit bypass access to the release operators. The workflow also
+rejects a tag when retained workflow history shows that the same name pointed
+at another commit. Workflow history expires, so the check does not replace the
+repository ruleset.
 
 ## Prepare the release
 
@@ -94,6 +104,8 @@ gh release create whisper-vulkan-runtime-1.9.2 \
 
 The archive has to exist at that URL before a build pointing at it reaches
 users. Ship the catalog change in an ordinary application release afterwards.
+The desktop SBOM does not cover this archive. Its receipt, catalog size, and
+catalog SHA-256 digest are the archive's separate verification contract.
 
 ### Push the application tag
 
@@ -112,17 +124,25 @@ exactly one Debian package, one RPM, one AppImage, and one raw binary. The
 workflow checks package metadata and contents. It also checks the final
 AppImage desktop entry, executable, and reported version.
 
-The workflow stages those four application files and both license texts in one
-directory. It creates `SHA256SUMS` from the sorted file names, verifies every
-digest, and rejects missing or extra files. The tag job downloads that verified
-directory and checks it again before upload. Do not upload application assets
+The workflow stages those four application files, both license texts, and
+`echo-desktop.cdx.json` in one directory. The CycloneDX SBOM lists every Cargo
+package in the locked workspace graph and every npm package in
+`frontend/package-lock.json`, including frontend build dependencies. It names
+Cargo and npm on each component so consumers can separate the ecosystems.
+
+The workflow creates `SHA256SUMS` from the sorted file names, verifies every
+digest, and rejects missing or extra files. On GitHub-hosted non-PR runs, the
+isolated `attest-assets` job creates GitHub build-provenance attestations for
+every staged file. Only that job can request an OIDC token and write
+attestations. The tag job waits for the attestations, downloads the verified
+directory, and checks it again before upload. Do not upload application assets
 by hand.
 
 ## Verify
 
 Confirm that the workflow is green. The GitHub Release must contain one Debian
-package, one RPM, one AppImage, `echo-desktop`, both license texts, and
-`SHA256SUMS`.
+package, one RPM, one AppImage, `echo-desktop`, `echo-desktop.cdx.json`, both
+license texts, and `SHA256SUMS`.
 
 ```sh
 gh run list --workflow release.yml --limit 5
@@ -136,6 +156,11 @@ versions:
 release_dir=$(mktemp -d)
 gh release download vX.Y.Z --dir "$release_dir"
 (cd "$release_dir" && sha256sum --check --strict SHA256SUMS)
+for asset in $(awk '{print $2}' "$release_dir/SHA256SUMS"); do
+  gh attestation verify "$release_dir/$asset" \
+    --repo ddv1982/echo \
+    --signer-workflow ddv1982/echo/.github/workflows/release.yml
+done
 dpkg-deb -f "$release_dir"/*.deb Version
 chmod +x "$release_dir/echo-desktop"
 "$release_dir/echo-desktop" --version
@@ -145,7 +170,8 @@ APPIMAGE_EXTRACT_AND_RUN=1 "$release_dir"/*.AppImage --version
 
 ## If a tag run fails
 
-Do not move or reuse a published tag, and do not upload artifacts from a dirty
-working tree. Fix the issue on `main`, repeat the package gate, bump to the next
-patch version, and create a new tag. This keeps every public tag tied to one
-reviewed commit and one reproducible workflow run.
+You can rerun the same GitHub Actions run while the tag still points to the same
+commit. Do not move or repush the tag at another commit, and do not upload
+artifacts from a dirty working tree. Fix the issue on `main`, repeat the package
+gate, bump to the next patch version, and create a new tag. This keeps every
+public tag tied to one reviewed commit and one reproducible workflow run.
