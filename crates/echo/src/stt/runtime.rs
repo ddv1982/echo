@@ -139,17 +139,18 @@ impl SpeechRuntimeInventory {
                 });
             }
         }
+        // The GPU runtime is an accelerator asset, never a base runtime. Its
+        // CLI is chosen explicitly by accelerated_engine, which pairs it with
+        // the managed CPU runtime as the fallback a failed GPU run retreats to.
+        // Offering it as a base candidate is how a run reaches a GPU with no
+        // pinned device and no recovery: with the CPU runtime removed it would
+        // be the only managed candidate, win preferred_runtime, and then run
+        // with force_cpu false. It is still registered for provenance so a
+        // transcription can hold a lease on it while it runs.
         if let Some(root) = active(ComponentId::WhisperVulkanRuntime) {
             let cli = root.join("whisper-cli");
             if cli.is_file() {
-                provenance.insert(cli.clone(), ComponentId::WhisperVulkanRuntime);
-                whisper_runtimes.push(WhisperRuntimeCandidate {
-                    source: WhisperRuntimeSource::Managed,
-                    backend: WhisperRuntimeBackend::Vulkan,
-                    launch: whisper_runtime_launch(&cli),
-                    cli,
-                    server: None,
-                });
+                provenance.insert(cli, ComponentId::WhisperVulkanRuntime);
             }
         }
         if let Some(cli) = ["whisper-cli", "whisper-cpp", "whisper"]

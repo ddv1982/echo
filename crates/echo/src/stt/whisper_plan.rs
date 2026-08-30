@@ -234,11 +234,17 @@ impl WhisperExecutionPlan {
 }
 
 #[must_use]
+/// The base runtime a plan runs on when it is not being accelerated. A
+/// Vulkan-backed candidate is never eligible: it exists to be the accelerated
+/// primary, paired with the managed CPU runtime as its fallback, and standing
+/// in as the base plan is how a run reaches a GPU with no pinned device and no
+/// recovery. Preparation failing without a CPU runtime is the correct outcome.
 pub fn preferred_runtime(
     candidates: &[WhisperRuntimeCandidate],
 ) -> Option<&WhisperRuntimeCandidate> {
     candidates
         .iter()
+        .filter(|candidate| candidate.backend != WhisperRuntimeBackend::Vulkan)
         .min_by_key(|candidate| match candidate.source {
             WhisperRuntimeSource::Managed => 0,
             WhisperRuntimeSource::System => 1,
@@ -269,6 +275,31 @@ mod tests {
         let managed = candidate(WhisperRuntimeSource::Managed, "managed");
         assert_eq!(
             preferred_runtime(&[system, managed]).map(|runtime| runtime.cli.as_path()),
+            Some(std::path::Path::new("managed"))
+        );
+    }
+
+    #[test]
+    fn a_vulkan_runtime_is_never_the_base_plan() {
+        // With the managed CPU runtime removed, the GPU runtime used to be the
+        // only managed candidate and won this selection. The plan it produced
+        // had force_cpu false, so a failed acceleration attempt fell back to
+        // running the Vulkan CLI directly: no pinned device, no recovery, and a
+        // readout claiming no device was found.
+        let mut vulkan = candidate(WhisperRuntimeSource::Managed, "vulkan");
+        vulkan.backend = WhisperRuntimeBackend::Vulkan;
+        assert_eq!(preferred_runtime(std::slice::from_ref(&vulkan)), None);
+
+        let system = candidate(WhisperRuntimeSource::System, "system");
+        assert_eq!(
+            preferred_runtime(&[vulkan.clone(), system]).map(|runtime| runtime.cli.as_path()),
+            Some(std::path::Path::new("system")),
+            "a system CPU runtime is preferred over a managed Vulkan one"
+        );
+
+        let managed = candidate(WhisperRuntimeSource::Managed, "managed");
+        assert_eq!(
+            preferred_runtime(&[vulkan, managed]).map(|runtime| runtime.cli.as_path()),
             Some(std::path::Path::new("managed"))
         );
     }
