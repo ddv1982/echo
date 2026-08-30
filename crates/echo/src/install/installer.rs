@@ -178,19 +178,20 @@ impl Installer<'_> {
             if cancel.load(Ordering::Relaxed) {
                 return Err(InstallError::Cancelled);
             }
-            match id {
+            let runtime_binary = match id {
                 ComponentId::WhisperRuntime | ComponentId::WhisperVulkanRuntime => {
-                    self.probe.probe(id, &payload.join("whisper-cli"), cancel)?
+                    Some(payload.join("whisper-cli"))
                 }
-                ComponentId::SherpaRuntime => {
-                    self.probe
-                        .probe(id, &payload.join("sherpa-onnx-offline"), cancel)?
-                }
+                ComponentId::SherpaRuntime => Some(payload.join("sherpa-onnx-offline")),
                 ComponentId::WhisperBaseQ51
                 | ComponentId::WhisperSmall
                 | ComponentId::WhisperLargeV3TurboQ50
                 | ComponentId::SileroVad
-                | ComponentId::ParakeetTdt06bV3Int8 => {}
+                | ComponentId::ParakeetTdt06bV3Int8 => None,
+            };
+            if let Some(binary) = runtime_binary {
+                self.probe.probe(id, &binary, cancel)?;
+                verify_payload_cancellable(&payload, &expected, true, Some(cancel))?;
             }
             if cancel.load(Ordering::Relaxed) {
                 return Err(InstallError::Cancelled);

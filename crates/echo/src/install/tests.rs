@@ -30,6 +30,16 @@ impl RuntimeProbe for RejectProbe {
     }
 }
 
+struct MutatingProbe;
+
+impl RuntimeProbe for MutatingProbe {
+    fn probe(&self, _: ComponentId, binary: &Path, _: &AtomicBool) -> Result<(), InstallError> {
+        let size = fs::metadata(binary)?.len();
+        fs::write(binary, vec![b'x'; size as usize])?;
+        Ok(())
+    }
+}
+
 struct FixtureTransport(Mutex<VecDeque<Vec<u8>>>);
 
 impl HttpTransport for FixtureTransport {
@@ -86,6 +96,24 @@ fn installed_direct_fixture(label: &str) -> (ManagedStore, catalog::ComponentSpe
         .join("releases")
         .join(record.release);
     (installer.store, spec, release)
+}
+
+fn write_payload_fixture(root: &Path, relative_path: &str, contents: &[u8]) -> InstalledFile {
+    let path = root.join(relative_path);
+    fs::write(&path, contents).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    InstalledFile {
+        relative_path: relative_path.to_string(),
+        size: contents.len() as u64,
+        sha256: format!("{:x}", Sha256::digest(contents)),
+        mode: 0o644,
+        kind: PayloadKind::File,
+        link_target: None,
+    }
 }
 
 #[test]
@@ -480,6 +508,50 @@ fn runtime_probe_failure_never_activates_staging() {
 }
 
 #[test]
+fn runtime_probe_mutation_never_activates_payload() {
+    let body = b"fake executable".to_vec();
+    let digest: &'static str = Box::leak(format!("{:x}", Sha256::digest(&body)).into_boxed_str());
+    let spec = catalog::ComponentSpec {
+        id: ComponentId::WhisperRuntime,
+        label: "Fixture runtime",
+        version: "fixture",
+        url: "https://fixture.invalid/runtime",
+        artifact_name: "whisper-cli",
+        artifact_size: body.len() as u64,
+        artifact_sha256: digest,
+        installed_bytes: body.len() as u64,
+        format: ArtifactFormat::Direct,
+        inventory_key: None,
+    };
+    let root = scratch("mutating-runtime-probe");
+    let transport = FixtureTransport(Mutex::new(VecDeque::from([body])));
+    let installer = Installer {
+        store: ManagedStore::new(&root),
+        transport: &transport,
+        disk: &UnlimitedDisk,
+        probe: &MutatingProbe,
+    };
+
+    let error = installer
+        .ensure_spec(
+            &spec,
+            false,
+            &OperationId::fixture("1"),
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap_err();
+
+    assert!(matches!(error, InstallError::Payload(ref reason) if reason.contains("corrupt")));
+    assert!(installer.store.read_active(spec.id).unwrap().is_none());
+    assert!(!installer
+        .store
+        .component_dir(spec.id)
+        .join("releases")
+        .exists());
+}
+
+#[test]
 fn removal_is_idempotent_and_external_files_survive() {
     let root = scratch("remove");
     let external = root.join("ggml-small.bin");
@@ -639,18 +711,13 @@ fn malicious_release_records_never_escape_and_repair_uses_a_fresh_generation() {
     .unwrap();
     let stage = store.managed().join("staging/2").join(id.as_str());
     fs::create_dir_all(stage.join("payload")).unwrap();
-    let staged_payload = stage.join("payload").join(spec.artifact_name);
-    fs::File::create(&staged_payload)
-        .unwrap()
-        .set_len(spec.artifact_size)
-        .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&staged_payload, fs::Permissions::from_mode(0o644)).unwrap();
-    }
+    let files = vec![write_payload_fixture(
+        &stage.join("payload"),
+        spec.artifact_name,
+        b"fresh payload",
+    )];
     let fresh = store
-        .activate_with(spec, expected_files(id), &stage, &OperationId::fixture("2"))
+        .activate_with(spec, files, &stage, &OperationId::fixture("2"))
         .unwrap();
     assert_ne!(fresh.release, old_release);
     assert!(
@@ -753,18 +820,13 @@ fn a_superseded_digest_is_collected_and_never_blocks_removal() {
     // Installing the current digest collects the generation it supersedes.
     let stage = store.managed().join("staging/8").join(id.as_str());
     fs::create_dir_all(stage.join("payload")).unwrap();
-    let staged = stage.join("payload").join(spec.artifact_name);
-    fs::File::create(&staged)
-        .unwrap()
-        .set_len(spec.artifact_size)
-        .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&staged, fs::Permissions::from_mode(0o644)).unwrap();
-    }
+    let files = vec![write_payload_fixture(
+        &stage.join("payload"),
+        spec.artifact_name,
+        b"current payload",
+    )];
     let fresh = store
-        .activate_with(spec, expected_files(id), &stage, &OperationId::fixture("8"))
+        .activate_with(spec, files, &stage, &OperationId::fixture("8"))
         .unwrap();
     assert!(
         !stale_root.exists(),
