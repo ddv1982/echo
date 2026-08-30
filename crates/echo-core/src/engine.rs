@@ -63,6 +63,10 @@ pub enum WhisperAccelerationSkip {
     /// GPU run retreats to. A system whisper-cli cannot serve that role, so
     /// with only one installed there is no route to the GPU at all.
     CpuFallbackMissing,
+    /// The device enumerated and was offered in the picker, but no verified
+    /// plan could be built on it. Distinct from finding no device at all,
+    /// which is what this used to be reported as.
+    DeviceNotReady,
 }
 
 impl WhisperAccelerationSkip {
@@ -74,6 +78,7 @@ impl WhisperAccelerationSkip {
             Self::PinnedDeviceAbsent => "pinnedDeviceAbsent",
             Self::DeviceQuarantined => "deviceQuarantined",
             Self::CpuFallbackMissing => "cpuFallbackMissing",
+            Self::DeviceNotReady => "deviceNotReady",
         }
     }
 }

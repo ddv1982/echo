@@ -237,6 +237,7 @@ enum AccelerationSkipReason {
     PinnedDeviceAbsent,
     DeviceQuarantined,
     CpuFallbackMissing,
+    DeviceNotReady,
     RecoveredToCpu,
 }
 
@@ -256,6 +257,7 @@ fn project_acceleration_skip(
             WhisperAccelerationSkip::CpuFallbackMissing => {
                 AccelerationSkipReason::CpuFallbackMissing
             }
+            WhisperAccelerationSkip::DeviceNotReady => AccelerationSkipReason::DeviceNotReady,
         });
     }
     // A recovery row does not on its own mean the GPU ran. A quarantine that
@@ -3577,6 +3579,10 @@ mod settings_tests {
             (
                 WhisperAccelerationSkip::CpuFallbackMissing,
                 AccelerationSkipReason::CpuFallbackMissing,
+            ),
+            (
+                WhisperAccelerationSkip::DeviceNotReady,
+                AccelerationSkipReason::DeviceNotReady,
             ),
         ] {
             let mut whisper = cpu_telemetry();
