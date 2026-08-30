@@ -658,3 +658,55 @@ fn removal_still_refuses_an_active_record_pointing_outside_the_store() {
         assert!(store.remove(id).is_err(), "accepted {release}");
     }
 }
+
+#[test]
+fn a_receipt_can_never_aim_deletion_outside_its_payload() {
+    // Cleanup deletes exactly the files a release receipt names, so the
+    // receipt is an input to rm. ensure_contained alone does not settle this:
+    // starts_with is a component prefix test, and `payload/../../x` passes it.
+    let root = scratch("receipt-escape");
+    let id = ComponentId::SileroVad;
+    let store = ManagedStore::new(&root);
+    let victim = root.join("victim.txt");
+
+    for declared in [
+        "../../../../../../victim.txt",
+        "/etc/passwd",
+        "nested/../../../../../../victim.txt",
+        "",
+    ] {
+        fs::write(&victim, b"a file outside the store").unwrap();
+        let release_name = format!("{}-3", "0".repeat(64));
+        let release = store.component_dir(id).join("releases").join(&release_name);
+        fs::create_dir_all(release.join("payload")).unwrap();
+        let record = ActivationRecord {
+            schema_version: 1,
+            component: id,
+            version: "tampered".to_string(),
+            release: release_name.clone(),
+            artifact_sha256: "0".repeat(64),
+            files: vec![InstalledFile {
+                relative_path: declared.to_string(),
+                size: 1,
+                sha256: "0".repeat(64),
+                mode: 0o644,
+                kind: PayloadKind::File,
+                link_target: None,
+            }],
+        };
+        let raw = serde_json::to_vec(&record).unwrap();
+        echo_core::write_atomic(&release.join("receipt.json"), &raw).unwrap();
+        echo_core::write_atomic(&store.active_path(id), &raw).unwrap();
+
+        assert!(store.remove(id).is_err(), "removal accepted {declared:?}");
+        // The sweep leaves the active release alone, so it reports nothing
+        // here. What matters either way is that nothing outside was touched.
+        store.recover();
+        assert!(
+            victim.exists(),
+            "{declared:?} deleted a file outside the store"
+        );
+        fs::remove_dir_all(store.component_dir(id)).unwrap();
+        fs::remove_file(store.active_path(id)).unwrap();
+    }
+}
