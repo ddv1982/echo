@@ -1,5 +1,14 @@
 # Manual test plan: Phase 14 Whisper acceleration
 
+> **Superseded, kept for the sign-off record.** This plan tests the admission
+> design that [Plan 17](../plans/17-selectable-gpu-acceleration/overview.md)
+> replaced in v0.13.0. Acceleration is now a CPU or GPU choice with a device
+> picker and no qualification step, so nothing below is runnable: the scenarios
+> reference `whisper_acceleration.rs`, `whisper_plan.rs`,
+> `stage-qualified-whisper-release.py`, and `qualified-release.json`, none of
+> which still exist. Read it as the record of why acceleration did not ship
+> under the old design.
+
 **Audience:** QA, maintainers, release reviewers
 
 **Last updated:** 2026-08-25
