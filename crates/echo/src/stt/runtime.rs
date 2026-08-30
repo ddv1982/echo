@@ -103,6 +103,11 @@ pub struct ManagedSelection {
 pub struct SpeechRuntimeInventory {
     pub models: ModelInventory,
     pub whisper_runtimes: Vec<WhisperRuntimeCandidate>,
+    /// The GPU runtime's CLI, when one is installed. Exposed from the same
+    /// read that registered it in `provenance`, because a second independent
+    /// lookup can name a path this snapshot never saw, and `lock_selected`
+    /// passes an unknown path through unleased rather than failing.
+    pub vulkan_cli: Option<PathBuf>,
     pub parakeet_binary: Option<PathBuf>,
     store: ManagedStore,
     managed_roots: BTreeMap<ComponentId, PathBuf>,
@@ -147,10 +152,12 @@ impl SpeechRuntimeInventory {
         // be the only managed candidate, win preferred_runtime, and then run
         // with force_cpu false. It is still registered for provenance so a
         // transcription can hold a lease on it while it runs.
+        let mut vulkan_cli = None;
         if let Some(root) = active(ComponentId::WhisperVulkanRuntime) {
             let cli = root.join("whisper-cli");
             if cli.is_file() {
-                provenance.insert(cli, ComponentId::WhisperVulkanRuntime);
+                provenance.insert(cli.clone(), ComponentId::WhisperVulkanRuntime);
+                vulkan_cli = Some(cli);
             }
         }
         if let Some(cli) = ["whisper-cli", "whisper-cpp", "whisper"]
@@ -239,6 +246,7 @@ impl SpeechRuntimeInventory {
         Self {
             models,
             whisper_runtimes,
+            vulkan_cli,
             parakeet_binary,
             store,
             managed_roots,
