@@ -2,8 +2,6 @@
 
 Private local dictation for Linux. Press Super+Alt+Space, speak, then press it again to transcribe and insert cleaned text at the cursor. Audio never leaves the machine.
 
-The first-build plan is [docs/plans/01-echo/overview.md](docs/plans/01-echo/overview.md).
-
 ## Download
 
 [GitHub Releases](https://github.com/ddv1982/echo/releases) are the supported downloads. A Git tag without a corresponding GitHub Release marks source history only.

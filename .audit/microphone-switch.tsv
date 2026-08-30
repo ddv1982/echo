@@ -1,6 +1,0 @@
-ts	phase	decision	why	evidence	result
-2026-08-26T00:25:00Z	reproduce	drove the selected microphone through the shipping recorder with transcription replaced by the fake engine	this isolates capture from model and insertion behavior	docs/qa/runs/MICROPHONE-SWITCH-2026-08-26.md	NOT VERIFIED; capture failed
-2026-08-26T00:28:00Z	root cause	classified CPAL disconnects at one locked capture lifecycle boundary	specific PipeWire streams emit DeviceNotAvailable during intentional drop after valid callbacks	crates/echo/src/audio.rs	VERIFIED by diagnostic run and upstream source
-2026-08-26T00:33:00Z	regression	committed the shutdown-order test before the fix	the failing commit proves the test observes the reported mechanism	commit 92e9d64	failed at intended assertion
-2026-08-26T00:43:00Z	review	replaced the first ordering fix with a Capturing to Stopping state transition	four independent reviewers found that an active error could race the first pre-drop read	commit 2ea918f	four-model re-review found no correctness issue
-2026-08-26T00:47:00Z	verify	ran both exact microphones and the full nearby product checks	the fix must pass the original hardware path and preserve the wider recorder behavior	docs/qa/runs/MICROPHONE-SWITCH-2026-08-26.md	VERIFIED

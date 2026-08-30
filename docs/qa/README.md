@@ -1,15 +1,10 @@
 # Echo QA
 
-Manual product verification and ship gates. Markdown is the source of truth; [the HTML report](report/index.html) is a generated review view.
+Use this directory for current manual product verification and reproducible
+bug reports. `qa-config.json` configures a new review run. Put confirmed bugs
+under `bug-reports/`.
 
-| Artifact | Purpose |
-| --- | --- |
-| [Phase 14 test plan](phase-14-whisper-acceleration-manual-test-plan.md) | Superseded acceleration scenarios, kept for the sign-off record |
-| [QA gates](QA_GATES.md) | Gate history; Gate 14 is closed and superseded |
-| [Run reports](runs/) | Command and runtime results |
-| [Bug reports](bug-reports/) | Reproducible product defects |
-
-Acceleration no longer has a QA gate of its own. Since v0.13.0 it is a setting:
-CPU by default, GPU on the device the user picks. What replaced the evidence
-gates is the Advanced readout, which names the device that ran and says why a
-requested GPU did not.
+The frozen 2026-08-25 acceleration runs and generated HTML reports are in the
+[historical evidence archive](../history/evidence-2026-08-30.md). Echo no longer
+uses a separate acceleration admission gate. The Advanced readout reports the
+device that ran and explains a GPU-to-CPU fallback.
