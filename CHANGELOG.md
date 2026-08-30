@@ -7,6 +7,8 @@
 - The GPU runtime is a managed component downloaded on demand rather than bundled, so a user who stays on CPU never pays the 19 MB, and acceleration no longer depends on the package format the build came from. AppImage can now accelerate.
 - The Advanced acceleration readout names the device that ran and, when GPU was asked for and CPU ran, says why: no runtime installed, no device found, the pinned device absent, the device disabled after a failure, the managed CPU runtime it falls back to missing, or a GPU run that failed and retried on CPU.
 - Tagged releases open every published deb and rpm and check it carries the binary CI built, instead of inspecting a hand-staged draft. v0.12.6 shipped with no acceleration payload because the only check that ran on a tag looked at the wrong artefact.
+- The Advanced last-run readout keeps the resolved engine, last run, acceleration, version, and config path, and drops the model file, binary, multilingual, VAD, Whisper mode, runtime, timing split, decoding, and attempt rows.
+- Segmented controls in Settings no longer shrink below their labels, which pushed the Whisper acceleration CPU button outside the card above 920px.
 
 ## v0.12.6
 
@@ -14,9 +16,6 @@
 - Automatic language and recognition hints run on the same backend as the rest of the decode.
 - Local GPU selection pins the device by UUID, requires an exact Vulkan receipt, quarantines a failed identity for 24 hours, and recovers once on CPU.
 - Version tags publish Debian, RPM, and echo-desktop when no `qualification-$commit` draft exists.
-- Advanced settings drop the GPU acceleration choice, which never differed from Auto, and keep Auto and CPU. Saved `gpu` values load as Auto.
-- The Advanced last-run readout keeps the resolved engine, last run, acceleration, version, and config path, and drops the model file, binary, multilingual, VAD, Whisper mode, runtime, timing split, decoding, and attempt rows.
-- Segmented controls in Settings no longer shrink below their labels, which pushed the Whisper acceleration CPU button outside the card above 920px.
 
 ## v0.12.5
 

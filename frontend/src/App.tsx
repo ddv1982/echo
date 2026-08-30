@@ -1141,7 +1141,11 @@ function SettingsView({
   const gpuPrerequisite = (['whisper-runtime', 'whisper-vulkan-runtime'] as const)
     .map((id) => readiness?.components.find((component) => component.id === id) ?? null)
     .find((component) => component != null && component.managed.kind !== 'ready') ?? null
-  const gpuRuntimeReady = gpuPrerequisite == null
+  // Until readiness loads, nothing is known about either component. Treating
+  // that as ready enumerated before the answer was in and rendered "No Vulkan
+  // device detected" on a machine that has one, which is the copy the install
+  // prompt exists to replace.
+  const gpuRuntimeReady = readiness != null && gpuPrerequisite == null
   useEffect(() => {
     if (!wantsGpu || !gpuRuntimeReady) return
     void listGpuDevices(true)
@@ -1426,7 +1430,7 @@ function SettingsView({
                 ))}
               </div>
             </div>
-            {settings.whisperAcceleration.effective === 'gpu' ? (
+            {settings.whisperAcceleration.effective === 'gpu' && readiness != null ? (
               <GpuDeviceRow
                 devices={gpuDevices}
                 pinned={settings.whisperGpuDevice.effective}
