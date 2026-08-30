@@ -33,6 +33,39 @@ fn invoke_test_command(
 }
 
 #[test]
+#[ignore = "manual 20-sample status IPC latency probe"]
+fn status_ipc_latency_probe() {
+    *HEALTH.lock().expect("health cache lock") = Some((
+        Instant::now(),
+        Health {
+            microphone_ready: false,
+            engine_name: String::new(),
+            engine_ready: false,
+            injection_name: String::new(),
+            injection_ready: false,
+            current_exe: String::new(),
+            first_path_hit: None,
+            stale_installs: Vec::new(),
+        },
+    ));
+    let app = tauri::test::mock_builder()
+        .invoke_handler(crate::shortcut_test_handler())
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .unwrap();
+    let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+        .build()
+        .unwrap();
+    let _ = invoke_test_command(&webview, "get_app_status");
+    let mut samples = Vec::new();
+    for _ in 0..20 {
+        let started = Instant::now();
+        let _ = invoke_test_command(&webview, "get_app_status");
+        samples.push(started.elapsed().as_micros());
+    }
+    eprintln!("STATUS_IPC_US {samples:?}");
+}
+
+#[test]
 fn gnome_accelerators_and_commands_are_stable() {
     assert_eq!(FixedShortcut::DISPLAY, "Super+Alt+Space");
     assert_eq!(FixedShortcut::GNOME_ACCELERATOR, "<Super><Alt>space");
@@ -379,10 +412,7 @@ fn legacy_wayland_host_repairs_only_the_echo_owned_binding() {
     };
     *HEALTH.lock().expect("health cache lock") = Some((Instant::now(), health));
     let app = tauri::test::mock_builder()
-        .invoke_handler(tauri::generate_handler![
-            crate::get_app_status,
-            crate::repair_legacy_shortcut
-        ])
+        .invoke_handler(crate::shortcut_test_handler())
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .unwrap();
     let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())

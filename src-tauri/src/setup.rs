@@ -424,7 +424,7 @@ impl SetupService {
                     SetupAction::Remove(component) => installer.store.remove(component),
                     SetupAction::Verify(component) => installer.store.verify(component),
                 };
-                super::health_invalidate();
+                crate::status::health_invalidate();
                 let event = match result {
                     Ok(()) => SetupEvent::Finished {
                         operation_id: operation_id.as_str().to_string(),
@@ -462,7 +462,7 @@ fn activate_plan_config(
     plan_id: CoreSetupPlanId,
     hardware: HardwareProfile,
 ) -> Result<(), echo::install::InstallError> {
-    super::update_file_config(|config| apply_plan_config(config, plan_id, hardware))
+    crate::settings::update_file_config(|config| apply_plan_config(config, plan_id, hardware))
         .map_err(echo::install::InstallError::IoMessage)
 }
 

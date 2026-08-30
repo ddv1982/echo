@@ -278,7 +278,7 @@ pub(crate) fn retry() -> ShortcutStatus {
     if shortcut_retry_needed(&native_shortcut_state()) {
         reconcile_native_shortcuts_with_recovery(false, true);
     }
-    status(&crate::current_exe_string())
+    status(&crate::status::current_exe_string())
 }
 
 fn shortcut_retry_needed(state: &NativeShortcutState) -> bool {
@@ -430,19 +430,21 @@ fn dispatch_shortcut_edge(
     #[cfg(test)]
     report_test_shortcut(TestShortcutAction::Edge(id.to_string(), edge));
     match id {
-        FixedShortcut::ID if toggle.on_edge(edge) => match crate::start_recording_thread() {
-            Ok(recording_token) => {
-                if let Err(err) = echo::status::mark_shortcut_activation(
-                    "native-toggle",
-                    recording_token.as_deref(),
-                ) {
-                    eprintln!("toggle shortcut: cannot record provenance: {err}");
+        FixedShortcut::ID if toggle.on_edge(edge) => {
+            match crate::commands::start_recording_thread() {
+                Ok(recording_token) => {
+                    if let Err(err) = echo::status::mark_shortcut_activation(
+                        "native-toggle",
+                        recording_token.as_deref(),
+                    ) {
+                        eprintln!("toggle shortcut: cannot record provenance: {err}");
+                    }
+                    #[cfg(test)]
+                    report_test_shortcut(TestShortcutAction::Toggle);
                 }
-                #[cfg(test)]
-                report_test_shortcut(TestShortcutAction::Toggle);
+                Err(err) => eprintln!("toggle shortcut: cannot change recording: {err}"),
             }
-            Err(err) => eprintln!("toggle shortcut: cannot change recording: {err}"),
-        },
+        }
         _ => {}
     }
 }
