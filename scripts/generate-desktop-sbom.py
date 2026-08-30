@@ -75,10 +75,13 @@ def cargo_components(metadata):
         package_id = package.get("id")
         name = package.get("name")
         version = package.get("version")
+        source = package.get("source")
         if not all(
             isinstance(value, str) and value for value in (package_id, name, version)
         ):
             raise InputError(f"Cargo package {index} has no id, name, or version")
+        if source is not None and (not isinstance(source, str) or not source):
+            raise InputError(f"Cargo package {index} has an invalid source")
         reference = stable_ref("cargo", package_id)
         references[package_id] = reference
         if package_id in workspace:
@@ -90,10 +93,15 @@ def cargo_components(metadata):
                 property_("echo:ecosystem", "cargo"),
                 property_("echo:cargo:workspace", str(package_id in workspace).lower()),
             ],
-            "purl": f"pkg:cargo/{quote(name, safe='')}@{quote(version, safe='')}",
             "type": "library",
             "version": version,
         }
+        if source is not None:
+            component["properties"].append(property_("echo:cargo:source", source))
+        if isinstance(source, str) and source.startswith("registry+"):
+            component["purl"] = (
+                f"pkg:cargo/{quote(name, safe='')}@{quote(version, safe='')}"
+            )
         license_ = package.get("license")
         if isinstance(license_, str) and license_:
             component["properties"].append(property_("echo:cargo:license", license_))

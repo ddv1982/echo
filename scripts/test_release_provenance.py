@@ -103,6 +103,14 @@ class DesktopSbomTests(unittest.TestCase):
             self.assertTrue(
                 any(component["name"] == "serde" for component in components)
             )
+            workspace = next(
+                component for component in components if component["name"] == "echo-desktop"
+            )
+            self.assertNotIn("purl", workspace)
+            serde = next(
+                component for component in components if component["name"] == "serde"
+            )
+            self.assertEqual(serde["purl"], "pkg:cargo/serde@1.0.219")
             vite = next(
                 component for component in components if component["name"] == "vite"
             )
