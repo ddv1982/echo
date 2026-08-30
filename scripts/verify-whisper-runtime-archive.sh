@@ -28,4 +28,22 @@ test -f "$archive_path"
 cd "$repo_dir"
 ECHO_PINNED_WHISPER_ARCHIVE="$archive_path" \
   cargo test -p echo install::tests::pinned_whisper_runtime_archive_installs -- --ignored --exact
+
+# The GPU runtime is published by hand under its own tag, so its catalogue pin
+# is the one managed artefact CI never built. A hand-edited digest, a
+# re-uploaded asset, or a deleted release would otherwise only surface as a
+# failed download on a user's machine the first time they select GPU. The URL
+# is read from the catalogue rather than repeated here, so a rotation is
+# covered without touching this script.
+vulkan_url=$(grep -o 'https://[^"]*echo-whisper-vulkan-runtime.tar.gz' \
+  "$repo_dir/crates/echo/src/install/catalog.rs" | head -1)
+test -n "$vulkan_url"
+vulkan_dir=$(mktemp -d /tmp/echo-whisper-vulkan.XXXXXX)
+trap 'rm -rf "${scratch_dir:-}" "$vulkan_dir"' EXIT
+vulkan_archive="$vulkan_dir/echo-whisper-vulkan-runtime.tar.gz"
+curl --fail --location --retry 3 --output "$vulkan_archive" "$vulkan_url"
+ECHO_PINNED_VULKAN_ARCHIVE="$vulkan_archive" \
+  cargo test -p echo --lib install::tests::pinned_vulkan_runtime_archive_installs \
+  -- --ignored --exact
+
 printf '%s\n' 'verify-whisper-runtime-archive: ok'
