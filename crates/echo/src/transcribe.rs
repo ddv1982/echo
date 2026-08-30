@@ -8,8 +8,8 @@ use echo_core::{
 
 use crate::install::ManagedPath;
 use crate::stt::{
-    preferred_runtime, resolved_whisper_acceleration, whisper_runtime_launch, FakeEngine,
-    ModelCache, ParakeetEngine,
+    accelerated_engine, preferred_runtime, record_gpu_skip, resolved_whisper_acceleration,
+    whisper_runtime_launch, FakeEngine, ModelCache, ParakeetEngine,
     SpeechRuntimeInventory, WhisperEngine,
     WhisperExecutionPlan, WhisperModelAsset, WhisperTuningOverride,
 };
@@ -565,15 +565,24 @@ pub fn prepare_with_config(
                 || preference == WhisperAccelerationPreference::Cpu
                 || (plan.runtime.source == echo_core::WhisperRuntimeSource::Managed
                     && plan.runtime.backend == echo_core::WhisperRuntimeBackend::Cpu);
-            let can_accelerate = plan.runtime.source == echo_core::WhisperRuntimeSource::Managed
-                && plan.runtime.backend == echo_core::WhisperRuntimeBackend::Cpu
-                && preference != WhisperAccelerationPreference::Cpu
+            // An explicit tuning, driver, or cache override means the caller is
+            // driving the runtime themselves, so the GPU contract does not apply.
+            let wants_gpu = preference == WhisperAccelerationPreference::Gpu
                 && overrides.whisper_tuning.is_none()
                 && !overrides.whisper_force_cpu
                 && overrides.whisper_vulkan_driver_files.is_none()
                 && overrides.whisper_mesa_shader_cache_dir.is_none();
-            let _ = can_accelerate;
-            let engine: Box<dyn Engine> = Box::new(WhisperEngine::with_plan(plan));
+            let engine: Box<dyn Engine> = if wants_gpu {
+                match accelerated_engine(&plan, file.whisper_gpu_device.as_deref()) {
+                    Ok(engine) => Box::new(engine),
+                    Err(reason) => {
+                        record_gpu_skip(reason);
+                        Box::new(WhisperEngine::with_plan(plan))
+                    }
+                }
+            } else {
+                Box::new(WhisperEngine::with_plan(plan))
+            };
             (engine, locked.leases)
         }
         ResolvedEngine::ParakeetTdt06bV3 => {
