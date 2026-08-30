@@ -112,5 +112,30 @@ class DesktopSbomTests(unittest.TestCase):
             )
 
 
+class AttestationPermissionsTests(unittest.TestCase):
+    def test_attestation_job_has_only_required_permissions(self):
+        workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text()
+        job = workflow.split("\n  attest-assets:\n", maxsplit=1)[1].split(
+            "\n  github-release:\n", maxsplit=1
+        )[0]
+        permissions = job.split("\n    permissions:\n", maxsplit=1)[1].split(
+            "\n    env:\n", maxsplit=1
+        )[0]
+        actual = {
+            key.strip(): value.strip()
+            for line in permissions.splitlines()
+            for key, value in [line.split(":", maxsplit=1)]
+        }
+        self.assertEqual(
+            actual,
+            {
+                "actions": "read",
+                "attestations": "write",
+                "contents": "read",
+                "id-token": "write",
+            },
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
