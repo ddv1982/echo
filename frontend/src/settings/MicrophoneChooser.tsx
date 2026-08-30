@@ -1,4 +1,4 @@
-import type { MicrophoneSnapshot, MicrophoneTestResult } from '../types'
+import type { MicrophoneSnapshot, MicrophoneTestResult } from '../generated/ipc'
 
 interface MicrophoneChooserProps {
   snapshot: MicrophoneSnapshot

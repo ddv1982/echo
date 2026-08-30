@@ -12,14 +12,20 @@ use ashpd::desktop::global_shortcuts::{
 use ashpd::desktop::CreateSessionOptions;
 use echo::audio::AudioCapture;
 use echo::inject::{Pasteboard, SysClipboard};
+use echo_core::{Dictionary, History, RunDetail, WhisperAccelerationSkip};
+#[cfg(test)]
 use echo_core::{
-    DictEntry, Dictionary, History, RunDetail, WhisperAccelerationSkip, WhisperRunMode,
-    WhisperRuntimeBackend, WhisperRuntimeSource, WhisperTuningTelemetry,
+    WhisperRunMode, WhisperRuntimeBackend, WhisperRuntimeSource, WhisperTuningTelemetry,
+};
+use echo_desktop::ipc::{
+    AccelerationSkipReason, AppStatus, DictionaryItem, EngineAvailability, HistoryItem,
+    LanguageGroup, LanguageMode, LanguageOption, LanguageOptions, LastRun, LastRunPerformance,
+    LegacyShortcutSetup, LegacyShortcutState, ModelInventory, RecordingPolicy, SettingField,
+    SettingSource, Settings, ShortcutBackend, ShortcutStatus, WhisperModelInfo,
 };
 use futures_util::StreamExt;
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
-use serde::{Deserialize, Serialize};
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -62,113 +68,15 @@ impl FixedShortcut {
     }
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AppStatus {
-    phase: String,
-    last_transcript: Option<String>,
-    recording: bool,
-    microphone_ready: bool,
-    engine_name: String,
-    engine_ready: bool,
-    injection_name: String,
-    injection_ready: bool,
-    shortcut: ShortcutStatus,
-    cleanup_name: String,
-    hud_enabled: bool,
-    recording_limit_seconds: Option<u32>,
-    recording_policy: RecordingPolicyDto,
-    settings_path: String,
-    version: String,
-    last_error: Option<String>,
-    last_run: Option<LastRun>,
-    language_warning: Option<String>,
-    recording_in_process: bool,
-    current_exe: String,
-    first_path_hit: Option<String>,
-    stale_installs: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct RecordingPolicyDto {
-    minimum_seconds: u32,
-    default_seconds: u32,
-    maximum_seconds: u32,
-    presets_seconds: [u32; 5],
-}
-
-fn recording_policy_dto() -> RecordingPolicyDto {
-    RecordingPolicyDto {
+fn recording_policy_dto() -> RecordingPolicy {
+    RecordingPolicy {
         minimum_seconds: echo_core::RecordingLimit::MIN.seconds(),
         default_seconds: echo_core::RecordingLimit::DEFAULT.seconds(),
         maximum_seconds: echo_core::RecordingLimit::MAX.seconds(),
-        presets_seconds: echo_core::RecordingLimit::PRESETS.map(echo_core::RecordingLimit::seconds),
+        presets_seconds: echo_core::RecordingLimit::PRESETS
+            .map(echo_core::RecordingLimit::seconds)
+            .to_vec(),
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "kebab-case",
-    rename_all_fields = "camelCase"
-)]
-enum ShortcutStatus {
-    Probing {
-        desired: String,
-    },
-    Active {
-        desired: String,
-        effective: String,
-        backend: ShortcutBackendName,
-        activation: Option<String>,
-        verification_identity: String,
-    },
-    GnomeReady {
-        desired: String,
-        effective: String,
-        detail: String,
-        command: String,
-        binding: String,
-        activation: Option<String>,
-        verification_identity: String,
-    },
-    GnomeSetup {
-        desired: String,
-        setup: LegacyShortcutSetup,
-    },
-    Manual {
-        desired: String,
-        command: String,
-        detail: String,
-    },
-    Failed {
-        desired: String,
-        detail: String,
-    },
-    Unsupported {
-        desired: String,
-        detail: String,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "kebab-case")]
-enum LegacyShortcutState {
-    Missing,
-    Stale,
-    Conflicting,
-    Ready,
-    Unsupported,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LegacyShortcutSetup {
-    state: LegacyShortcutState,
-    detail: String,
-    command: String,
-    binding: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -190,55 +98,6 @@ struct GsettingsWrite {
     schema: String,
     key: &'static str,
     value: String,
-}
-
-/// What the last transcription actually ran, observed from the engine's own
-/// output and persisted on the history row. Distinct from the settings
-/// fields: one is a request, the other is an observation.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LastRun {
-    engine: String,
-    binary: Option<String>,
-    model_path: Option<String>,
-    multilingual: Option<bool>,
-    vad: Option<bool>,
-    infer_ms: u64,
-    language: Option<String>,
-    language_probability: Option<f32>,
-    performance: Option<LastRunPerformance>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LastRunPerformance {
-    mode: WhisperRunMode,
-    runtime_source: WhisperRuntimeSource,
-    backend: WhisperRuntimeBackend,
-    device: Option<String>,
-    total_ms: u64,
-    audio_encode_ms: u64,
-    child_wall_ms: u64,
-    parse_ms: u64,
-    attempt_count: usize,
-    tuning: WhisperTuningTelemetry,
-    acceleration_skip: Option<AccelerationSkipReason>,
-    recovery: Option<echo_core::WhisperRecoveryTelemetry>,
-}
-
-/// Why the last run did not use the GPU the user asked for. The first four
-/// come from the gate that never reached a device. The fifth is the run that
-/// did reach one and had to retreat, which the recovery engine records instead.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-enum AccelerationSkipReason {
-    RuntimeMissing,
-    NoDeviceEnumerated,
-    PinnedDeviceAbsent,
-    DeviceQuarantined,
-    CpuFallbackMissing,
-    DeviceNotReady,
-    RecoveredToCpu,
 }
 
 fn project_acceleration_skip(
@@ -276,9 +135,9 @@ fn project_acceleration_skip(
 fn project_last_run_performance(detail: &RunDetail) -> Option<LastRunPerformance> {
     let whisper = detail.whisper.as_ref()?;
     Some(LastRunPerformance {
-        mode: whisper.mode,
-        runtime_source: whisper.runtime.source,
-        backend: whisper.runtime.backend,
+        mode: whisper.mode.into(),
+        runtime_source: whisper.runtime.source.into(),
+        backend: whisper.runtime.backend.into(),
         device: whisper.runtime.device.clone(),
         total_ms: whisper.total_ms,
         audio_encode_ms: whisper.audio_encode_ms,
@@ -289,38 +148,10 @@ fn project_last_run_performance(detail: &RunDetail) -> Option<LastRunPerformance
             .sum(),
         parse_ms: whisper.parse_ms,
         attempt_count: whisper.attempts.len(),
-        tuning: whisper.tuning,
+        tuning: whisper.tuning.into(),
         acceleration_skip: project_acceleration_skip(whisper),
-        recovery: whisper.recovery.clone(),
+        recovery: whisper.recovery.clone().map(Into::into),
     })
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum SettingSource {
-    Env,
-    File,
-    Default,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct SettingField<T> {
-    value: Option<T>,
-    effective: T,
-    source: SettingSource,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Settings {
-    engine: SettingField<String>,
-    whisper_model: SettingField<String>,
-    cleanup: SettingField<String>,
-    hud: SettingField<bool>,
-    record_seconds: SettingField<u32>,
-    language: SettingField<String>,
-    whisper_acceleration: SettingField<String>,
-    whisper_gpu_device: SettingField<String>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -926,36 +757,6 @@ fn apply_gsettings_writes(writes: &[GsettingsWrite]) -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct HistoryItem {
-    id: String,
-    text: String,
-    raw: String,
-    engine: String,
-    started_at: u64,
-    infer_ms: u64,
-    injection: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DictionaryItem {
-    spoken: String,
-    written: String,
-    created_at: u64,
-}
-
-impl From<&DictEntry> for DictionaryItem {
-    fn from(entry: &DictEntry) -> Self {
-        Self {
-            spoken: entry.spoken.clone(),
-            written: entry.written.clone(),
-            created_at: entry.created_at,
-        }
-    }
-}
-
 #[tauri::command]
 fn get_app_status() -> AppStatus {
     let status = echo::status::read();
@@ -1049,7 +850,12 @@ fn project_shortcut_status(native: &NativeShortcutState, current_exe: &str) -> S
                         activation,
                     }
                 } else {
-                    ShortcutStatus::GnomeSetup { desired, setup }
+                    ShortcutStatus::GnomeSetup {
+                        desired,
+                        setup: setup
+                            .as_gnome_setup()
+                            .expect("ready GNOME shortcut handled above"),
+                    }
                 }
             } else {
                 if setup.command.is_empty() || setup.binding.is_empty() {
@@ -1239,96 +1045,47 @@ fn get_settings() -> Result<Settings, String> {
     read_settings()
 }
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LanguageOptionDto {
-    code: String,
-    english_name: String,
-    group: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct LanguageOptionsDto {
-    /// "multilingual" offers Auto plus all 100 languages, "english" is an
-    /// English-only Whisper model, "parakeet" is a fixed 25-language
-    /// automatic capability with no picker.
-    mode: String,
-    /// The English-only model's filename when mode is "english".
-    model: Option<String>,
-    options: Vec<LanguageOptionDto>,
-}
-
 #[tauri::command]
-fn list_languages() -> LanguageOptionsDto {
+fn list_languages() -> LanguageOptions {
     match echo::stt::language_support() {
-        echo::stt::LanguageSupport::WhisperMultilingual => LanguageOptionsDto {
-            mode: "multilingual".to_string(),
+        echo::stt::LanguageSupport::WhisperMultilingual => LanguageOptions {
+            mode: LanguageMode::Multilingual,
             model: None,
             options: echo_core::Language::all()
-                .map(|language| LanguageOptionDto {
+                .map(|language| LanguageOption {
                     code: language.code().to_string(),
                     english_name: language.english_name().to_string(),
                     group: if ["en", "de", "es", "fr"].contains(&language.code()) {
-                        "common"
+                        LanguageGroup::Common
                     } else {
-                        "all"
-                    }
-                    .to_string(),
+                        LanguageGroup::All
+                    },
                 })
                 .collect(),
         },
-        echo::stt::LanguageSupport::WhisperEnglishOnly { model } => LanguageOptionsDto {
-            mode: "english".to_string(),
+        echo::stt::LanguageSupport::WhisperEnglishOnly { model } => LanguageOptions {
+            mode: LanguageMode::English,
             model: Some(model),
-            options: vec![LanguageOptionDto {
+            options: vec![LanguageOption {
                 code: "en".to_string(),
                 english_name: "english".to_string(),
-                group: "common".to_string(),
+                group: LanguageGroup::Common,
             }],
         },
-        echo::stt::LanguageSupport::Parakeet => LanguageOptionsDto {
-            mode: "parakeet".to_string(),
+        echo::stt::LanguageSupport::Parakeet => LanguageOptions {
+            mode: LanguageMode::Parakeet,
             model: None,
             options: echo_core::PARAKEET_LANGUAGES
                 .iter()
                 .filter_map(|code| echo_core::Language::from_code(code))
-                .map(|language| LanguageOptionDto {
+                .map(|language| LanguageOption {
                     code: language.code().to_string(),
                     english_name: language.english_name().to_string(),
-                    group: "all".to_string(),
+                    group: LanguageGroup::All,
                 })
                 .collect(),
         },
     }
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WhisperModelDto {
-    name: String,
-    path: String,
-    family: String,
-    multilingual: bool,
-    quantisation: Option<String>,
-    size_bytes: u64,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct EngineAvailabilityDto {
-    id: String,
-    available: bool,
-    reason: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ModelInventoryDto {
-    whisper: Vec<WhisperModelDto>,
-    vad: Vec<String>,
-    parakeet: Option<String>,
-    engines: Vec<EngineAvailabilityDto>,
 }
 
 /// Enumeration spawns one probe subprocess per ICD manifest, so the result is
@@ -1336,10 +1093,13 @@ struct ModelInventoryDto {
 static GPU_DEVICES: OnceLock<Mutex<Option<Vec<echo::stt::GpuDevice>>>> = OnceLock::new();
 
 #[tauri::command]
-fn list_gpu_devices(refresh: bool) -> Vec<echo::stt::GpuDevice> {
+fn list_gpu_devices(refresh: bool) -> Vec<echo_desktop::ipc::GpuDevice> {
     let cell = GPU_DEVICES.get_or_init(|| Mutex::new(None));
     let Ok(mut cached) = cell.lock() else {
-        return echo::stt::list_gpu_devices();
+        return echo::stt::list_gpu_devices()
+            .into_iter()
+            .map(Into::into)
+            .collect();
     };
     if refresh {
         *cached = None;
@@ -1347,17 +1107,20 @@ fn list_gpu_devices(refresh: bool) -> Vec<echo::stt::GpuDevice> {
     cached
         .get_or_insert_with(echo::stt::list_gpu_devices)
         .clone()
+        .into_iter()
+        .map(Into::into)
+        .collect()
 }
 
 #[tauri::command]
-fn list_models() -> Result<ModelInventoryDto, String> {
+fn list_models() -> Result<ModelInventory, String> {
     let cache = echo::stt::ModelCache::from_env();
     let inventory = echo::stt::SpeechRuntimeInventory::from_cache(&cache).models;
-    Ok(ModelInventoryDto {
+    Ok(ModelInventory {
         whisper: inventory
             .whisper
             .iter()
-            .map(|model| WhisperModelDto {
+            .map(|model| WhisperModelInfo {
                 name: model.name.clone(),
                 path: model.path.to_string_lossy().into_owned(),
                 family: model.family.label().to_string(),
@@ -1376,7 +1139,7 @@ fn list_models() -> Result<ModelInventoryDto, String> {
             .map(|path| path.to_string_lossy().into_owned()),
         engines: echo::stt::engine_availability()
             .into_iter()
-            .map(|engine| EngineAvailabilityDto {
+            .map(|engine| EngineAvailability {
                 id: engine.id.to_string(),
                 available: engine.available,
                 reason: engine.reason,
@@ -1391,12 +1154,12 @@ fn set_settings(settings: Settings) -> Result<Settings, String> {
 }
 
 #[tauri::command]
-fn get_microphones() -> echo::microphone::MicrophoneSnapshot {
-    echo::audio::microphone_snapshot()
+fn get_microphones() -> echo_desktop::ipc::MicrophoneSnapshot {
+    echo::audio::microphone_snapshot().into()
 }
 
 #[tauri::command]
-fn set_microphone(id: Option<String>) -> Result<echo::microphone::MicrophoneSnapshot, String> {
+fn set_microphone(id: Option<String>) -> Result<echo_desktop::ipc::MicrophoneSnapshot, String> {
     if env::var("ECHO_MICROPHONE")
         .ok()
         .is_some_and(|value| !value.trim().is_empty())
@@ -1422,7 +1185,7 @@ fn set_microphone(id: Option<String>) -> Result<echo::microphone::MicrophoneSnap
         update_microphone_config(config, selection);
         Ok(())
     })?;
-    Ok(echo::audio::microphone_snapshot())
+    Ok(echo::audio::microphone_snapshot().into())
 }
 
 fn update_microphone_config(
@@ -1489,14 +1252,16 @@ fn microphone_test(
 }
 
 #[tauri::command]
-fn test_input_device(id: Option<String>) -> Result<echo::microphone::MicrophoneTestResult, String> {
+fn test_input_device(
+    id: Option<String>,
+) -> Result<echo_desktop::ipc::MicrophoneTestResult, String> {
     let id = id.map(echo::microphone::MicrophoneId::parse).transpose()?;
-    Ok(microphone_test(AudioCapture::open_exact(id.as_ref())))
+    Ok(microphone_test(AudioCapture::open_exact(id.as_ref())).into())
 }
 
 #[tauri::command]
-fn test_microphone_fallback() -> echo::microphone::MicrophoneTestResult {
-    microphone_test(AudioCapture::open_default())
+fn test_microphone_fallback() -> echo_desktop::ipc::MicrophoneTestResult {
+    microphone_test(AudioCapture::open_default()).into()
 }
 
 fn read_settings() -> Result<Settings, String> {
@@ -1738,27 +1503,11 @@ fn start_recording_thread() -> Result<Option<String>, String> {
     echo::rec::toggle_managed_recording()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-enum ShortcutBackendName {
-    Portal,
-    X11,
-}
-
-impl ShortcutBackendName {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Portal => "portal",
-            Self::X11 => "x11",
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum NativeShortcutState {
     Probing,
     Active {
-        backend: ShortcutBackendName,
+        backend: ShortcutBackend,
         effective: String,
     },
     PortalAbsent {
@@ -2122,7 +1871,7 @@ fn run_x11_event_loop(
         .register(toggle_key)
         .map_err(|err| format!("X11 toggle shortcut conflict: {err}"))?;
     set_native_shortcut_state(NativeShortcutState::Active {
-        backend: ShortcutBackendName::X11,
+        backend: ShortcutBackend::X11,
         effective: FixedShortcut::DISPLAY.to_string(),
     });
     active.store(true, Ordering::SeqCst);
@@ -2300,7 +2049,7 @@ async fn run_portal_shortcuts_async(
         Err(err) => return Err(close_portal_after_failure(&session, err).await),
     };
     set_native_shortcut_state(NativeShortcutState::Active {
-        backend: ShortcutBackendName::Portal,
+        backend: ShortcutBackend::Portal,
         effective,
     });
     active.store(true, Ordering::SeqCst);
@@ -2337,7 +2086,7 @@ async fn run_portal_shortcuts_async(
                 Some(event) if event.session_handle().as_str() == session_path => {
                     match effective_portal_shortcut(event.shortcuts()) {
                         Ok(effective) => set_native_shortcut_state(NativeShortcutState::Active {
-                            backend: ShortcutBackendName::Portal,
+                            backend: ShortcutBackend::Portal,
                             effective,
                         }),
                         Err(err) => break Some(format!("invalid ShortcutsChanged signal: {err}")),
@@ -3328,7 +3077,7 @@ mod settings_tests {
     #[test]
     fn portal_effective_trigger_is_distinct_from_fixed_policy() {
         let state = NativeShortcutState::Active {
-            backend: ShortcutBackendName::Portal,
+            backend: ShortcutBackend::Portal,
             effective: "Alt+F8".to_string(),
         };
         let projected = project_shortcut_status(&state, "/usr/bin/echo-desktop");
@@ -3360,7 +3109,7 @@ mod settings_tests {
     #[test]
     fn native_retry_runs_after_delay_unless_cancelled() {
         assert!(!shortcut_retry_needed(&NativeShortcutState::Active {
-            backend: ShortcutBackendName::X11,
+            backend: ShortcutBackend::X11,
             effective: FixedShortcut::DISPLAY.to_string(),
         }));
         assert!(shortcut_retry_needed(&NativeShortcutState::Failed {
@@ -3520,7 +3269,7 @@ mod settings_tests {
             ..RunDetail::default()
         };
         let projected = project_last_run_performance(&detail).unwrap();
-        assert_eq!(projected.mode, WhisperRunMode::ColdFallback);
+        assert_eq!(projected.mode, WhisperRunMode::ColdFallback.into());
         assert_eq!(projected.child_wall_ms, 1_210);
         assert_eq!(projected.attempt_count, 2);
         assert_eq!(projected.tuning.threads, Some(4));

@@ -24,7 +24,7 @@ import {
   setMicrophone,
   stopRecording,
 } from './tauri'
-import type { ComponentStatus, ShortcutStatus } from './types'
+import type { ComponentStatus, LanguageOptions, ShortcutStatus } from './generated/ipc'
 
 vi.mock('./tauri', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./tauri')>()
@@ -784,7 +784,7 @@ describe('Echo desktop shell', () => {
   })
 
   it('renders every language a multilingual model offers', async () => {
-    const hundred = Array.from({ length: 100 }, (_, i) => ({
+    const hundred: LanguageOptions['options'] = Array.from({ length: 100 }, (_, i) => ({
       code: `l${i}`,
       englishName: `language ${String(i).padStart(3, '0')}`,
       group: i < 4 ? 'common' : 'all',
@@ -856,6 +856,7 @@ describe('Echo desktop shell', () => {
         inferMs: 900,
         language: 'nl',
         languageProbability: 0.31,
+        performance: null,
       },
     })
     render(<App />)
@@ -881,6 +882,7 @@ describe('Echo desktop shell', () => {
         inferMs: 900,
         language: 'nl',
         languageProbability: 0.31,
+        performance: null,
       },
     })
     render(<App />)

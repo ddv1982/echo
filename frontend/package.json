@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "npm run typecheck && vite build",
+    "ipc:check": "cargo run -p echo-ipc-gen -- --check",
+    "ipc:generate": "cargo run -p echo-ipc-gen",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:responsive": "playwright test --config playwright.config.ts",

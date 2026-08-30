@@ -1,5 +1,5 @@
 import { presentShortcut } from './shortcut'
-import type { GnomeShortcutSetup } from './types'
+import type { GnomeShortcutSetup } from './generated/ipc'
 
 describe('shortcut presenter', () => {
   it('uses the portal effective trigger in the stable verification identity', () => {

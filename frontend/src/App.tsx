@@ -64,10 +64,9 @@ import type {
   SettingField,
   SettingSource,
   Settings as AppSettings,
-  ThemeMode,
-  View,
   WhisperModelInfo,
-} from './types'
+} from './generated/ipc'
+import type { ThemeMode, View } from './types'
 
 const initialStatus: AppStatus = {
   phase: 'Idle',

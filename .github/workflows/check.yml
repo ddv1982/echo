@@ -50,6 +50,8 @@ jobs:
 
       - run: npm ci --prefix frontend
 
+      - run: npm run ipc:check --prefix frontend
+
       - run: npx --prefix frontend playwright install --with-deps chromium
 
       - run: ./scripts/verify-settings-ux.sh

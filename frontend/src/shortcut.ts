@@ -1,4 +1,4 @@
-import type { GnomeShortcutSetup, ShortcutStatus } from './types'
+import type { GnomeShortcutSetup, ShortcutStatus } from './generated/ipc'
 
 export interface ShortcutPresentation {
   desired: string

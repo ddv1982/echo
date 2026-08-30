@@ -7,7 +7,7 @@ import {
   startSetup,
   verifyManaged,
 } from '../tauri'
-import type { Readiness } from '../types'
+import type { Readiness } from '../generated/ipc'
 
 interface SpeechSetupSectionProps {
   readiness: Readiness
