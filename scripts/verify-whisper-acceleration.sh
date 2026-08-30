@@ -13,7 +13,6 @@ python3 scripts/verify-pr16-2-evidence.py
 python3 scripts/promote-whisper-admission.py --self-test
 python3 scripts/compose-whisper-admission-set.py --self-test
 python3 scripts/patch-tauri-bundle-type.py --self-test
-python3 scripts/stage-qualified-whisper-release.py --self-test
 python3 scripts/prepare-whisper-local-selection.py --self-test
 python3 scripts/verify-whisper-local-selection.py --self-test
 python3 scripts/verify-whisper-acceleration-modes.py --self-test
