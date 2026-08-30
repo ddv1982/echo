@@ -15,6 +15,7 @@ import {
   seedPreviewMicTestError,
   seedPreviewRemoveStaleError,
   seedPreviewReadiness,
+  repairManaged,
   seedPreviewGpuDevices,
   seedPreviewSettings,
   richPreviewStatus,
@@ -36,6 +37,7 @@ vi.mock('./tauri', async (importOriginal) => {
     setMicrophone: vi.fn((id) => actual.setMicrophone(id)),
     removeStaleInstalls: vi.fn(() => actual.removeStaleInstalls()),
     repairLegacyShortcut: vi.fn(() => actual.repairLegacyShortcut()),
+    repairManaged: vi.fn((component) => actual.repairManaged(component)),
     retryShortcut: vi.fn(() => actual.retryShortcut()),
     stopRecording: vi.fn((activation) => actual.stopRecording(activation)),
   }
@@ -557,6 +559,69 @@ describe('Echo desktop shell', () => {
     expect(
       within(picker).getByRole('option', { name: 'llvmpipe (LLVM 20.1.8) · software' }),
     ).toBeInTheDocument()
+  })
+
+  it('offers to install the GPU runtime instead of blaming the hardware', async () => {
+    // Enumeration needs the runtime, so with none installed the picker would
+    // report "no Vulkan device detected" on a machine that has one. Selecting
+    // GPU has to be able to get the runtime, or the control does nothing.
+    const readiness = await getReadiness()
+    seedPreviewReadiness({
+      ...readiness,
+      components: [
+        ...readiness.components,
+        {
+          id: 'whisper-vulkan-runtime',
+          label: 'Whisper GPU runtime',
+          managed: { kind: 'absent', resumableBytes: 0 },
+          external: [],
+          activeOrigin: null,
+          activity: null,
+        },
+      ],
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByText('Advanced'))
+    const acceleration = within(await screen.findByRole('group', { name: 'Whisper acceleration' }))
+    fireEvent.click(acceleration.getByRole('button', { name: 'GPU' }))
+
+    const install = await screen.findByRole('button', { name: 'Install GPU runtime' })
+    expect(screen.getByText(/GPU needs its runtime/)).toBeInTheDocument()
+    expect(screen.queryByText(/No Vulkan device detected/)).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('GPU device')).not.toBeInTheDocument()
+
+    fireEvent.click(install)
+    await waitFor(() => expect(repairManaged).toHaveBeenCalledWith('whisper-vulkan-runtime'))
+  })
+
+  it('shows the picker rather than an install prompt once the runtime is ready', async () => {
+    const readiness = await getReadiness()
+    seedPreviewReadiness({
+      ...readiness,
+      components: [
+        ...readiness.components,
+        {
+          id: 'whisper-vulkan-runtime',
+          label: 'Whisper GPU runtime',
+          managed: { kind: 'ready', version: '1.9.2-vulkan', bytes: 59_816_721, root: '/managed' },
+          external: [],
+          activeOrigin: 'managed',
+          activity: null,
+        },
+      ],
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByText('Advanced'))
+    const acceleration = within(await screen.findByRole('group', { name: 'Whisper acceleration' }))
+    fireEvent.click(acceleration.getByRole('button', { name: 'GPU' }))
+
+    const picker = await screen.findByLabelText('GPU device')
+    await waitFor(() => expect(within(picker).getAllByRole('option')).toHaveLength(4))
+    expect(screen.queryByRole('button', { name: 'Install GPU runtime' })).not.toBeInTheDocument()
   })
 
   it('pins the chosen GPU by its device and driver UUID pair', async () => {
