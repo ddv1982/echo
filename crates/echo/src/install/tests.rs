@@ -559,3 +559,102 @@ fn recovery_discards_owned_staging_and_inactive_releases_but_keeps_partials() {
     assert!(!stage.exists());
     assert_eq!(fs::read(partial).unwrap(), b"resume");
 }
+
+#[test]
+fn a_superseded_digest_is_collected_and_never_blocks_removal() {
+    // Rotating a catalogue digest leaves the previous generation on disk under
+    // its old name. It used to be uncollectable and it poisoned remove(), so a
+    // runtime version bump permanently broke the component's Remove button and
+    // leaked its payload.
+    let root = scratch("superseded-digest");
+    let id = ComponentId::SileroVad;
+    let spec = component(id);
+    let store = ManagedStore::new(&root);
+
+    let stale_release = format!("{}-7", "0".repeat(64));
+    let stale_root = store
+        .component_dir(id)
+        .join("releases")
+        .join(&stale_release);
+    let stale_payload = stale_root.join("payload");
+    fs::create_dir_all(&stale_payload).unwrap();
+    let stale_file = InstalledFile {
+        relative_path: "retired.bin".to_string(),
+        size: 3,
+        sha256: format!("{:x}", Sha256::digest(b"old")),
+        mode: 0o644,
+        kind: PayloadKind::File,
+        link_target: None,
+    };
+    fs::write(stale_payload.join(&stale_file.relative_path), b"old").unwrap();
+    let stale_record = ActivationRecord {
+        schema_version: 1,
+        component: id,
+        version: "retired".to_string(),
+        release: stale_release.clone(),
+        artifact_sha256: "0".repeat(64),
+        // The retired payload is nothing like today's catalogue, which is the
+        // case a version bump produces.
+        files: vec![stale_file],
+    };
+    let raw = serde_json::to_vec(&stale_record).unwrap();
+    echo_core::write_atomic(&stale_root.join("receipt.json"), &raw).unwrap();
+    echo_core::write_atomic(&store.active_path(id), &raw).unwrap();
+
+    // Installing the current digest collects the generation it supersedes.
+    let stage = store.managed().join("staging/8").join(id.as_str());
+    fs::create_dir_all(stage.join("payload")).unwrap();
+    let staged = stage.join("payload").join(spec.artifact_name);
+    fs::File::create(&staged)
+        .unwrap()
+        .set_len(spec.artifact_size)
+        .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&staged, fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    let fresh = store
+        .activate_with(spec, expected_files(id), &stage, &OperationId::fixture("8"))
+        .unwrap();
+    assert!(
+        !stale_root.exists(),
+        "the superseded generation survived activation"
+    );
+
+    // And removal works rather than reporting a digest that no longer applies.
+    store.remove(id).unwrap();
+    assert!(!store
+        .component_dir(id)
+        .join("releases")
+        .join(&fresh.release)
+        .exists());
+    assert!(!store.active_path(id).exists());
+}
+
+#[test]
+fn removal_still_refuses_an_active_record_pointing_outside_the_store() {
+    let root = scratch("superseded-escape");
+    let id = ComponentId::SileroVad;
+    let store = ManagedStore::new(&root);
+    for release in [
+        format!("{}-../sentinel", "0".repeat(64)),
+        "not-a-digest-1".to_string(),
+        format!("{}-", "0".repeat(64)),
+    ] {
+        let record = ActivationRecord {
+            schema_version: 1,
+            component: id,
+            version: "x".to_string(),
+            release: release.clone(),
+            artifact_sha256: "0".repeat(64),
+            files: expected_files(id),
+        };
+        echo_core::write_atomic(
+            &store.active_path(id),
+            &serde_json::to_vec(&record).unwrap(),
+        )
+        .unwrap();
+        assert!(store.remove(id).is_err(), "accepted {release}");
+    }
+}
