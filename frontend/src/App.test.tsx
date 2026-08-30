@@ -7,6 +7,8 @@ import {
   getSettings,
   getMicrophones,
   getReadiness,
+  listGpuDevices,
+  listLanguages,
   listModels,
   removeStaleInstalls,
   repairLegacyShortcut,
@@ -47,6 +49,8 @@ vi.mock('./tauri', async (importOriginal) => {
     getSettings: vi.fn(() => actual.getSettings()),
     getMicrophones: vi.fn(() => actual.getMicrophones()),
     getReadiness: vi.fn(() => actual.getReadiness()),
+    listGpuDevices: vi.fn((refresh) => actual.listGpuDevices(refresh)),
+    listLanguages: vi.fn(() => actual.listLanguages()),
     listModels: vi.fn(() => actual.listModels()),
     setSettings: vi.fn((settings) => actual.setSettings(settings)),
     setMicrophone: vi.fn((id) => actual.setMicrophone(id)),
@@ -62,15 +66,23 @@ vi.mock('./tauri', async (importOriginal) => {
 })
 
 function deferred<T>() {
-  const state: { resolve: ((value: T | PromiseLike<T>) => void) | null } = { resolve: null }
-  const promise = new Promise<T>((resolvePromise) => {
+  const state: {
+    resolve: ((value: T | PromiseLike<T>) => void) | null
+    reject: ((reason?: unknown) => void) | null
+  } = { resolve: null, reject: null }
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
     state.resolve = resolvePromise
+    state.reject = rejectPromise
   })
   return {
     promise,
     resolve(value: T | PromiseLike<T>) {
       if (!state.resolve) throw new Error('deferred promise is not initialized')
       state.resolve(value)
+    },
+    reject(reason?: unknown) {
+      if (!state.reject) throw new Error('deferred promise is not initialized')
+      state.reject(reason)
     },
   }
 }
@@ -124,6 +136,10 @@ describe('Echo desktop shell', () => {
     vi.mocked(getMicrophones).mockImplementation(() => actual.getMicrophones())
     vi.mocked(getReadiness).mockReset()
     vi.mocked(getReadiness).mockImplementation(() => actual.getReadiness())
+    vi.mocked(listGpuDevices).mockReset()
+    vi.mocked(listGpuDevices).mockImplementation((refresh) => actual.listGpuDevices(refresh))
+    vi.mocked(listLanguages).mockReset()
+    vi.mocked(listLanguages).mockImplementation(() => actual.listLanguages())
     vi.mocked(setMicrophone).mockReset()
     vi.mocked(setMicrophone).mockImplementation((id) => actual.setMicrophone(id))
     vi.mocked(listModels).mockReset()
@@ -255,7 +271,7 @@ describe('Echo desktop shell', () => {
     await waitFor(() => expect(unlisten).toHaveBeenCalledOnce())
   })
 
-  it('serializes and coalesces terminal setup-event refreshes', async () => {
+  it('serializes terminal refreshes without delaying a failed setup event', async () => {
     const listener: { current: ((event: SetupEvent) => void) | null } = { current: null }
     vi.mocked(onSetupEvent).mockImplementation((handler) => {
       listener.current = handler
@@ -277,9 +293,10 @@ describe('Echo desktop shell', () => {
 
     act(() => {
       handle({ kind: 'finished', operationId: 'first' })
-      handle({ kind: 'finished', operationId: 'second' })
+      handle({ kind: 'failed', operationId: 'second', error: 'second setup failed' })
     })
-    expect(getReadiness).toHaveBeenCalledOnce()
+    expect(screen.getByRole('alert')).toHaveTextContent('second setup failed')
+    await waitFor(() => expect(getReadiness).toHaveBeenCalledOnce())
 
     first.resolve(readiness)
     await act(async () => first.promise)
@@ -287,6 +304,119 @@ describe('Echo desktop shell', () => {
 
     second.resolve(readiness)
     await act(async () => second.promise)
+  })
+
+  it('ignores Settings loader failures that settle after navigation', async () => {
+    const actual = await vi.importActual<typeof import('./tauri')>('./tauri')
+    const settings = deferred<Awaited<ReturnType<typeof getSettings>>>()
+    const models = deferred<Awaited<ReturnType<typeof listModels>>>()
+    const languages = deferred<Awaited<ReturnType<typeof listLanguages>>>()
+    const readiness = deferred<Awaited<ReturnType<typeof getReadiness>>>()
+    vi.mocked(getSettings).mockImplementation(() => settings.promise)
+    vi.mocked(listModels).mockImplementation(() => models.promise)
+    vi.mocked(listLanguages).mockImplementation(() => languages.promise)
+    vi.mocked(getReadiness)
+      .mockImplementationOnce(() => actual.getReadiness())
+      .mockImplementationOnce(() => readiness.promise)
+      .mockImplementation(() => actual.getReadiness())
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await waitFor(() => {
+      expect(getSettings).toHaveBeenCalledOnce()
+      expect(listModels).toHaveBeenCalledOnce()
+      expect(listLanguages).toHaveBeenCalledOnce()
+      expect(getReadiness).toHaveBeenCalledTimes(2)
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Home' }))
+    await act(async () => {
+      settings.reject(new Error('late settings failure'))
+      models.reject(new Error('late models failure'))
+      languages.reject(new Error('late languages failure'))
+      readiness.reject(new Error('late readiness failure'))
+      await Promise.allSettled([settings.promise, models.promise, languages.promise, readiness.promise])
+    })
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('ignores GPU enumeration failure after Settings unmounts', async () => {
+    const actual = await vi.importActual<typeof import('./tauri')>('./tauri')
+    const settings = await actual.getSettings()
+    const readiness = await actual.getReadiness()
+    const installed: ComponentStatus['managed'] = {
+      kind: 'ready',
+      version: 'test',
+      bytes: 100,
+      root: '/managed',
+    }
+    seedPreviewSettings({
+      ...settings,
+      whisperAcceleration: { value: 'gpu', effective: 'gpu', source: 'file' },
+    })
+    seedPreviewReadiness({
+      ...readiness,
+      components: readiness.components.map((component) =>
+        component.id === 'whisper-runtime' || component.id === 'whisper-vulkan-runtime'
+          ? { ...component, managed: installed, activeOrigin: 'managed' }
+          : component,
+      ),
+    })
+    const devices = deferred<Awaited<ReturnType<typeof listGpuDevices>>>()
+    vi.mocked(listGpuDevices).mockImplementation(() => devices.promise)
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    await waitFor(() => expect(listGpuDevices).toHaveBeenCalledOnce())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Home' }))
+    await act(async () => {
+      devices.reject(new Error('late GPU enumeration failure'))
+      await devices.promise.catch(() => undefined)
+    })
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('ignores a microphone test failure after Settings unmounts', async () => {
+    const test = deferred<Awaited<ReturnType<typeof testInputDevice>>>()
+    vi.mocked(testInputDevice).mockImplementation(() => test.promise)
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Test selected' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Home' }))
+
+    await act(async () => {
+      test.reject(new Error('late microphone test failure'))
+      await test.promise.catch(() => undefined)
+    })
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('does not refresh readiness when a guided microphone test settles after unmount', async () => {
+    const actual = await vi.importActual<typeof import('./tauri')>('./tauri')
+    const readiness = await actual.getReadiness()
+    const result = await actual.testInputDevice(null)
+    seedPreviewReadiness({
+      ...readiness,
+      microphoneReady: false,
+      firstRunComplete: false,
+    })
+    const test = deferred<Awaited<ReturnType<typeof testInputDevice>>>()
+    vi.mocked(testInputDevice).mockImplementation(() => test.promise)
+    const { unmount } = render(<App />)
+    const testButton = await screen.findByRole('button', { name: 'Test selected' })
+    const readinessCalls = vi.mocked(getReadiness).mock.calls.length
+    fireEvent.click(testButton)
+
+    unmount()
+    test.resolve(result)
+    await act(async () => test.promise)
+
+    expect(getReadiness).toHaveBeenCalledTimes(readinessCalls)
   })
 
   it('shows a rejected microphone test and clears its busy state', async () => {

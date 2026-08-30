@@ -831,6 +831,7 @@ function SetupChecklist({
   const [micTest, setMicTest] = useState<MicrophoneTestResult | null>(null)
   const [testingMic, setTestingMic] = useState(false)
   const [setupError, setSetupError] = useState<string | null>(null)
+  const micTestVersion = useRef(0)
   const reportSetupError = useCallback((reason: unknown) => {
     setSetupError(messageFrom(reason))
   }, [])
@@ -848,19 +849,23 @@ function SetupChecklist({
     })
     return () => {
       active = false
+      micTestVersion.current += 1
     }
   }, [reportSetupError])
-  const handleSetupEvent = useCallback((event: SetupEvent): void | Promise<() => void> => {
+  const handleSetupEvent = useCallback((event: SetupEvent) => {
     if (event.kind === 'progress') {
       setReadiness((current) => current && applySetupProgress(current, event))
-      return
     }
     if (event.kind === 'failed') setSetupError(event.error)
-    return getReadiness().then((next) => () => setReadiness(next))
+  }, [])
+  const getSetupRefresh = useCallback((event: SetupEvent) => {
+    if (event.kind === 'progress') return null
+    return () => getReadiness().then((next) => () => setReadiness(next))
   }, [])
   useAsyncSubscription({
     subscribe: onSetupEvent,
     onEvent: handleSetupEvent,
+    getRefresh: getSetupRefresh,
     onError: reportSetupError,
   })
   // Verified, not asserted: only a passing shortcut test completes this.
@@ -895,6 +900,7 @@ function SetupChecklist({
                 .catch(reportSetupError)
             }}
             onSelect={(id) => {
+              micTestVersion.current += 1
               setMicTest(null)
               void setMicrophone(id)
                 .then((nextMicrophones) => {
@@ -905,16 +911,24 @@ function SetupChecklist({
                 .catch(reportSetupError)
             }}
             onTest={(id, fallback) => {
+              const version = ++micTestVersion.current
               setTestingMic(true)
               const run = fallback ? testMicrophoneFallback() : testInputDevice(id)
               void run
                 .then((result) => {
+                  if (micTestVersion.current !== version) return null
                   setMicTest(result)
                   return getReadiness()
                 })
-                .then(setReadiness)
-                .catch(reportSetupError)
-                .finally(() => setTestingMic(false))
+                .then((next) => {
+                  if (next && micTestVersion.current === version) setReadiness(next)
+                })
+                .catch((reason: unknown) => {
+                  if (micTestVersion.current === version) reportSetupError(reason)
+                })
+                .finally(() => {
+                  if (micTestVersion.current === version) setTestingMic(false)
+                })
             }}
           />
         </div>
@@ -1139,20 +1153,39 @@ function SettingsView({
   const [repairingLegacyShortcut, setRepairingLegacyShortcut] = useState(false)
   const [settingsWritePending, setSettingsWritePending] = useState(false)
   const [gpuDevices, setGpuDevices] = useState<GpuDevice[]>([])
+  const micTestVersion = useRef(0)
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      void getSettings()
-        .then((next) => {
+    let active = true
+    void getSettings()
+      .then((next) => {
+        if (active) {
           settingsRef.current = next
           setLocalSettings(next)
-        })
-        .catch((reason: unknown) => onError(messageFrom(reason)))
-      void listModels().then(setInventory).catch((reason: unknown) => onError(messageFrom(reason)))
-      void listLanguages().then(setLanguages).catch((reason: unknown) => onError(messageFrom(reason)))
-      void getReadiness().then(setReadiness).catch((reason: unknown) => onError(messageFrom(reason)))
-    }, 0)
-    return () => window.clearTimeout(timer)
+        }
+      })
+      .catch((reason: unknown) => {
+        if (active) onError(messageFrom(reason))
+      })
+    void listModels().then((next) => {
+      if (active) setInventory(next)
+    }).catch((reason: unknown) => {
+      if (active) onError(messageFrom(reason))
+    })
+    void listLanguages().then((next) => {
+      if (active) setLanguages(next)
+    }).catch((reason: unknown) => {
+      if (active) onError(messageFrom(reason))
+    })
+    void getReadiness().then((next) => {
+      if (active) setReadiness(next)
+    }).catch((reason: unknown) => {
+      if (active) onError(messageFrom(reason))
+    })
+    return () => {
+      active = false
+      micTestVersion.current += 1
+    }
   }, [onError])
 
   const wantsGpu = settings?.whisperAcceleration.effective === 'gpu'
@@ -1174,9 +1207,17 @@ function SettingsView({
   const gpuRuntimeReady = readiness != null && gpuPrerequisite == null
   useEffect(() => {
     if (!wantsGpu || !gpuRuntimeReady) return
+    let active = true
     void listGpuDevices(true)
-      .then(setGpuDevices)
-      .catch((reason: unknown) => onError(messageFrom(reason)))
+      .then((next) => {
+        if (active) setGpuDevices(next)
+      })
+      .catch((reason: unknown) => {
+        if (active) onError(messageFrom(reason))
+      })
+    return () => {
+      active = false
+    }
   }, [wantsGpu, gpuRuntimeReady, onError])
 
   const reportSettingsError = useCallback((reason: unknown) => onError(messageFrom(reason)), [onError])
@@ -1195,13 +1236,15 @@ function SettingsView({
     }
   }, [refreshMicrophones])
 
-  const handleSettingsSetupEvent = useCallback((event: SetupEvent): void | Promise<() => void> => {
+  const handleSettingsSetupEvent = useCallback((event: SetupEvent) => {
     if (event.kind === 'progress') {
       setReadiness((current) => current && applySetupProgress(current, event))
-      return
     }
     if (event.kind === 'failed') onError(event.error)
-    return Promise.all([getReadiness(), listModels(), getSettings(), listLanguages()])
+  }, [onError])
+  const getSettingsSetupRefresh = useCallback((event: SetupEvent) => {
+    if (event.kind === 'progress') return null
+    return () => Promise.all([getReadiness(), listModels(), getSettings(), listLanguages()])
       .then(([nextReadiness, nextInventory, nextSettings, nextLanguages]) => () => {
         setReadiness(nextReadiness)
         setInventory(nextInventory)
@@ -1210,10 +1253,11 @@ function SettingsView({
         setLanguages(nextLanguages)
         void onStatusChange()
       })
-  }, [onError, onStatusChange])
+  }, [onStatusChange])
   useAsyncSubscription({
     subscribe: onSetupEvent,
     onEvent: handleSettingsSetupEvent,
+    getRefresh: getSettingsSetupRefresh,
     onError: reportSettingsError,
   })
 
@@ -1302,6 +1346,7 @@ function SettingsView({
             testing={testingMic}
             onRefresh={refreshMicrophones}
             onSelect={(id) => {
+              micTestVersion.current += 1
               setMicTest(null)
               void setMicrophone(id)
                 .then(setMicrophones)
@@ -1309,12 +1354,19 @@ function SettingsView({
                 .catch((reason: unknown) => onError(messageFrom(reason)))
             }}
             onTest={(id, fallback) => {
+              const version = ++micTestVersion.current
               setTestingMic(true)
               const run = fallback ? testMicrophoneFallback() : testInputDevice(id)
               void run
-                .then(setMicTest)
-                .catch(reportSettingsError)
-                .finally(() => setTestingMic(false))
+                .then((result) => {
+                  if (micTestVersion.current === version) setMicTest(result)
+                })
+                .catch((reason: unknown) => {
+                  if (micTestVersion.current === version) reportSettingsError(reason)
+                })
+                .finally(() => {
+                  if (micTestVersion.current === version) setTestingMic(false)
+                })
             }}
           />
         ) : (
