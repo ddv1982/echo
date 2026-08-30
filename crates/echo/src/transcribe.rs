@@ -513,6 +513,12 @@ pub fn prepare_with_config(
                 PrepareError::EngineMissing(format!("Whisper model {model} is not installed"))
             })?;
             let vad = runtime.models.vad.first().cloned();
+            // Selected last so the leased path pops off the end, and only when
+            // the run may actually use it. lock_selected leases every component
+            // a selected path belongs to, which is what keeps a concurrent
+            // remove or repair from deleting the GPU runtime mid-run.
+            let gpu_cli =
+                super::stt::installed_vulkan_runtime().map(|root| root.join("whisper-cli"));
             let mut selected = vec![runtime_candidate.cli.clone()];
             if let Some(server) = &runtime_candidate.server {
                 selected.push(server.clone());
@@ -521,10 +527,20 @@ pub fn prepare_with_config(
             if let Some(vad) = &vad {
                 selected.push(vad.clone());
             }
+            if let Some(gpu_cli) = &gpu_cli {
+                selected.push(gpu_cli.clone());
+            }
             let locked = runtime
                 .lock_selected(&selected)
                 .map_err(PrepareError::EngineMissing)?;
-            let mut paths = locked.paths.into_iter();
+            let mut leased_gpu_runtime = None;
+            let mut locked_paths = locked.paths;
+            if gpu_cli.is_some() {
+                leased_gpu_runtime = locked_paths
+                    .pop()
+                    .and_then(|cli| cli.parent().map(std::path::Path::to_path_buf));
+            }
+            let mut paths = locked_paths.into_iter();
             let mut locked_runtime = runtime_candidate;
             locked_runtime.cli = paths.next().expect("selected runtime has a CLI");
             locked_runtime.launch = whisper_runtime_launch(&locked_runtime.cli);
@@ -572,7 +588,13 @@ pub fn prepare_with_config(
                 && overrides.whisper_vulkan_driver_files.is_none()
                 && overrides.whisper_mesa_shader_cache_dir.is_none();
             let engine: Box<dyn Engine> = if wants_gpu {
-                match accelerated_engine(&plan, file.whisper_gpu_device.as_deref()) {
+                let accelerated = leased_gpu_runtime
+                    .as_deref()
+                    .ok_or(echo_core::WhisperAccelerationSkip::RuntimeMissing)
+                    .and_then(|runtime| {
+                        accelerated_engine(runtime, &plan, file.whisper_gpu_device.as_deref())
+                    });
+                match accelerated {
                     Ok(engine) => Box::new(engine),
                     Err(reason) => {
                         Box::new(WhisperEngine::with_plan(plan).skipped_acceleration(reason))

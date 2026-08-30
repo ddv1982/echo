@@ -51,13 +51,19 @@ fn accelerator_key(route: &LocalVulkanRoute) -> Result<AcceleratorKey, String> {
 
 /// Resolve the user's GPU choice into an engine, or say why it stayed on CPU.
 /// `pinned` is a `deviceUUID:driverUUID` pair, or `None` for automatic.
+///
+/// `runtime` is the caller's leased GPU runtime root rather than a fresh
+/// lookup, so removing or repairing the component cannot delete the CLI,
+/// probe, and libraries out from under a run that is already using them.
 pub(crate) fn accelerated_engine(
+    runtime: &std::path::Path,
     managed_cpu: &WhisperExecutionPlan,
     pinned: Option<&str>,
 ) -> Result<RecoveringWhisperEngine, WhisperAccelerationSkip> {
-    let runtime =
-        super::installed_vulkan_runtime().ok_or(WhisperAccelerationSkip::RuntimeMissing)?;
     let cli = runtime.join("whisper-cli");
+    if !cli.is_file() {
+        return Err(WhisperAccelerationSkip::RuntimeMissing);
+    }
     let probe = runtime.join("echo-whisper-runtime-probe");
     if !probe.is_file() {
         return Err(WhisperAccelerationSkip::RuntimeMissing);
