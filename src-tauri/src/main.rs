@@ -258,13 +258,17 @@ fn project_acceleration_skip(
             }
         });
     }
-    // A recovery row with a fallback reason means the accelerated attempt ran
-    // and lost. The specific reason is diagnostic, so the readout collapses it.
-    whisper
-        .recovery
-        .as_ref()
-        .filter(|recovery| recovery.fallback_reason.is_some())
-        .map(|_| AccelerationSkipReason::RecoveredToCpu)
+    // A recovery row does not on its own mean the GPU ran. A quarantine that
+    // lands between preparation and execution retreats without attempting
+    // anything, so accelerated_attempted is what separates a run that lost
+    // from a run that never started.
+    let recovery = whisper.recovery.as_ref()?;
+    recovery.fallback_reason?;
+    Some(if recovery.accelerated_attempted {
+        AccelerationSkipReason::RecoveredToCpu
+    } else {
+        AccelerationSkipReason::DeviceQuarantined
+    })
 }
 
 fn project_last_run_performance(detail: &RunDetail) -> Option<LastRunPerformance> {
@@ -3597,6 +3601,30 @@ mod settings_tests {
             project_acceleration_skip(&whisper),
             Some(AccelerationSkipReason::RecoveredToCpu),
         );
+    }
+
+    #[test]
+    fn a_quarantine_hit_is_not_reported_as_a_failed_gpu_run() {
+        // RecoveringWhisperEngine re-checks the quarantine after preparation,
+        // so an overlapping run that poisons it lands here having attempted
+        // nothing. Collapsing that into RecoveredToCpu told the user "GPU ran
+        // and failed" about a run the GPU never saw.
+        for reason in [
+            echo_core::WhisperRecoveryReason::Quarantined,
+            echo_core::WhisperRecoveryReason::QuarantineUnreadable,
+        ] {
+            let mut whisper = cpu_telemetry();
+            whisper.recovery = Some(echo_core::WhisperRecoveryTelemetry {
+                identity_key: "accelerator".to_string(),
+                accelerated_attempted: false,
+                fallback_reason: Some(reason),
+            });
+            assert_eq!(
+                project_acceleration_skip(&whisper),
+                Some(AccelerationSkipReason::DeviceQuarantined),
+                "{reason:?}"
+            );
+        }
     }
 
     #[test]
