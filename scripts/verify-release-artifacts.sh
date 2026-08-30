@@ -30,14 +30,24 @@ fail() {
     return 1
 }
 
-# Tauri rewrites a fixed-length bundle marker into the binary as it packages,
-# so target/release/echo-desktop carries _UNK while the copy inside the deb
-# carries _DEB and the rpm's carries _RPM. Comparing raw digests can therefore
-# never pass. Normalising that one token compares everything that should be
-# identical and still catches a binary from a different build.
-canonical_digest() {
-    perl -0777 -pe \
-        's/__TAURI_BUNDLE_TYPE_VAR_(?:DEB|RPM|APP|UNK)/__TAURI_BUNDLE_TYPE_VAR_UNK/g' "$1" \
+# Tauri rewrites a fixed-length marker into the binary as it packages, so the
+# canonical build carries _UNK while the copy inside the deb carries _DEB and
+# the rpm's carries _RPM. Raw digests therefore never match across the three.
+#
+# Build the exact variant each package should contain and compare against that,
+# rather than normalising the token away. Erasing it would accept a deb that
+# carried the rpm's marker. This mirrors the invariant
+# scripts/patch-tauri-bundle-type.py already models.
+MARKER=__TAURI_BUNDLE_TYPE_VAR
+
+variant_digest() {
+    local source=$1 token=$2 markers
+    markers=$(grep -c "${MARKER}_UNK" "$source" 2>/dev/null || true)
+    if [ "${markers:-0}" -eq 0 ]; then
+        fail "$source carries no ${MARKER}_UNK marker to substitute"
+        return 1
+    fi
+    perl -0777 -pe "s/\Q${MARKER}\E_UNK/${MARKER}_${token}/g" "$source" \
         | sha256sum | cut -d' ' -f1
 }
 
@@ -55,7 +65,7 @@ check_tree() {
             return 1
         fi
     done
-    found=$(canonical_digest "$tree/$BINARY")
+    found=$(sha256sum "$tree/$BINARY" | cut -d' ' -f1)
     if [ "$found" != "$expected" ]; then
         fail "$label ships a binary CI did not build: $found, expected $expected"
         return 1
@@ -113,7 +123,7 @@ verify_rpm_fallback() {
 }
 
 verify_publish_dir() {
-    local publish=$1 work expected
+    local publish=$1 work deb_expected rpm_expected
     shopt -s nullglob
     local debs=("$publish"/*.deb)
     local rpms=("$publish"/*.rpm)
@@ -124,18 +134,21 @@ verify_publish_dir() {
         fail "expected one deb, one rpm, and the binary; found ${#debs[@]} deb and ${#rpms[@]} rpm"
         return 1
     fi
-    expected=$(canonical_digest "$publish/echo-desktop")
+    deb_expected=$(variant_digest "$publish/echo-desktop" DEB)
+    rpm_expected=$(variant_digest "$publish/echo-desktop" RPM)
 
     work=$(scratch_dir)
 
     dpkg-deb -x "${debs[0]}" "$work/deb"
-    check_tree "$(basename "${debs[0]}")" "$work/deb" "$expected"
+    check_tree "$(basename "${debs[0]}")" "$work/deb" "$deb_expected"
 
     extract_rpm "${rpms[0]}" "$work/rpm"
-    check_tree "$(basename "${rpms[0]}")" "$work/rpm" "$expected"
+    check_tree "$(basename "${rpms[0]}")" "$work/rpm" "$rpm_expected"
 
-    # The AppImage relocates and patches its binary, so its digest is
-    # legitimately its own. Presence is what can be asserted there.
+    # Presence only, not a digest. linuxdeploy runs patchelf over the relocated
+    # binary, so unlike the deb and rpm it differs from the CI build beyond the
+    # bundle marker. Measured on the v0.13.0 artefacts: deb and rpm match their
+    # variants exactly, the AppImage matches neither.
     if [ "${#appimages[@]}" -gt 0 ]; then
         # An AppImage can only be opened by running it, and artifact upload
         # restores files as 0644, so what the publish job stages is not
@@ -157,17 +170,32 @@ verify_publish_dir() {
         done
     fi
 
-    printf 'every published artefact carries CI build %s\n' "$expected"
+    printf 'every published artefact carries CI build %s\n' \
+        "$(sha256sum "$publish/echo-desktop" | cut -d' ' -f1)"
 }
 
 self_test() {
-    local root tree expected
+    local root tree canonical expected
     root=$(scratch_dir)
     tree="$root/tree"
     mkdir -p "$tree/usr/bin" "$tree/usr/share/applications"
-    printf 'the binary CI built' >"$tree/$BINARY"
+    # Shaped like a real build: one bundle marker, which the packager rewrites.
+    canonical="$root/echo-desktop"
+    printf 'head%s_UNKtail' "$MARKER" >"$canonical"
+    printf 'head%s_DEBtail' "$MARKER" >"$tree/$BINARY"
     printf 'Exec=/usr/bin/echo-desktop\n' >"$tree/usr/share/applications/$DESKTOP_ENTRY"
-    expected=$(canonical_digest "$tree/$BINARY")
+    expected=$(variant_digest "$canonical" DEB)
+
+    if variant_digest "$tree/$BINARY" DEB >/dev/null 2>&1; then
+        echo "self-test: an already-packaged binary was accepted as canonical" >&2
+        return 1
+    fi
+
+    # The case normalising the marker away would have missed.
+    if check_tree wrong-variant "$tree" "$(variant_digest "$canonical" RPM)" 2>/dev/null; then
+        echo "self-test: a package carrying another type's marker was accepted" >&2
+        return 1
+    fi
 
     check_tree good "$tree" "$expected" ||
         { echo "self-test: a correct tree was rejected" >&2; return 1; }
@@ -191,7 +219,7 @@ self_test() {
 
     local publish="$root/publish"
     mkdir -p "$publish"
-    printf 'the binary CI built' >"$publish/echo-desktop"
+    printf 'head%s_UNKtail' "$MARKER" >"$publish/echo-desktop"
     if verify_publish_dir "$publish" 2>/dev/null; then
         echo "self-test: a publish set with no packages was accepted" >&2
         return 1
