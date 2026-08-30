@@ -5,6 +5,10 @@ The program ships Vulkan first on compatible Linux x86_64 hardware.
 PR 16.1 through PR 16.5 form the required sequence.
 PR 16.6 measures persistent model reuse and stops unless it earns implementation.
 
+## Continuation
+
+This program did not finish. Its release-simplification half landed ahead of the acceleration feature it depended on, which is why v0.12.6 shipped with no acceleration payload and no check objected. Selectable GPU acceleration continues in [Plan 17](../17-selectable-gpu-acceleration/overview.md), which replaces host-exact admission with a two-state CPU or GPU preference, a device picker, and a runtime downloaded on demand. Treat the unchecked boxes below as history, not as work queued.
+
 ## How to read this
 
 One box is one unit of work. Every box names the evidence that checks it. Check a box only when its evidence exists, such as a file, log line, screenshot, test run, or SHA. The body is a how-to. The appendices explain and record.

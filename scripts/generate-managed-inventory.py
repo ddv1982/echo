@@ -17,6 +17,10 @@ ARCHIVES = {
             "whisper-bin-ubuntu-x64/libggml*",
         ],
     ),
+    "whisper-vulkan-runtime": (
+        "echo-whisper-vulkan-runtime.tar.gz",
+        ["runtime/*"],
+    ),
     "sherpa-runtime": (
         "sherpa.tar.bz2",
         ["sherpa-onnx-v1.13.6-linux-x64-static-no-tts/bin/sherpa-onnx-offline"],
