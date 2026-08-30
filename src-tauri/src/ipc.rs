@@ -6,6 +6,7 @@ mod tests {
 
     struct CommandContract {
         handler: &'static str,
+        source: &'static str,
         payload_types: &'static [&'static str],
     }
 
@@ -14,117 +15,154 @@ mod tests {
         payload_types: &'static [&'static str],
     }
 
+    const DEVICES: &str = include_str!("commands/devices.rs");
+    const LIBRARY: &str = include_str!("commands/library.rs");
+    const RECORDING: &str = include_str!("commands/recording.rs");
+    const SETTINGS: &str = include_str!("commands/settings.rs");
+    const SHORTCUTS: &str = include_str!("commands/shortcuts.rs");
+    const STATUS: &str = include_str!("commands/status.rs");
+    const SYSTEM: &str = include_str!("commands/system.rs");
+    const SETUP: &str = include_str!("setup.rs");
+
     const COMMANDS: &[CommandContract] = &[
         CommandContract {
             handler: "get_app_status",
+            source: STATUS,
             payload_types: &["AppStatus"],
         },
         CommandContract {
             handler: "get_shortcut_status",
+            source: SHORTCUTS,
             payload_types: &["ShortcutStatus"],
         },
         CommandContract {
             handler: "retry_shortcut",
+            source: SHORTCUTS,
             payload_types: &["ShortcutStatus"],
         },
         CommandContract {
             handler: "repair_legacy_shortcut",
+            source: SHORTCUTS,
             payload_types: &["LegacyShortcutSetup"],
         },
         CommandContract {
             handler: "get_history",
+            source: LIBRARY,
             payload_types: &["HistoryItem"],
         },
         CommandContract {
             handler: "get_dictionary",
+            source: LIBRARY,
             payload_types: &["DictionaryItem"],
         },
         CommandContract {
             handler: "add_dictionary_entry",
+            source: LIBRARY,
             payload_types: &["DictionaryItem"],
         },
         CommandContract {
             handler: "remove_dictionary_entry",
+            source: LIBRARY,
             payload_types: &[],
         },
         CommandContract {
             handler: "toggle_recording",
+            source: RECORDING,
             payload_types: &[],
         },
         CommandContract {
             handler: "stop_recording",
+            source: RECORDING,
             payload_types: &[],
         },
         CommandContract {
             handler: "get_recording_level",
+            source: RECORDING,
             payload_types: &[],
         },
         CommandContract {
             handler: "copy_text",
+            source: LIBRARY,
             payload_types: &[],
         },
         CommandContract {
             handler: "remove_stale_installs",
+            source: SYSTEM,
             payload_types: &[],
         },
         CommandContract {
             handler: "get_settings",
+            source: SETTINGS,
             payload_types: &["Settings"],
         },
         CommandContract {
             handler: "set_settings",
+            source: SETTINGS,
             payload_types: &["Settings"],
         },
         CommandContract {
             handler: "list_models",
+            source: DEVICES,
             payload_types: &["ModelInventory"],
         },
         CommandContract {
             handler: "list_gpu_devices",
+            source: DEVICES,
             payload_types: &["GpuDevice"],
         },
         CommandContract {
             handler: "list_languages",
+            source: DEVICES,
             payload_types: &["LanguageOptions"],
         },
         CommandContract {
             handler: "setup::get_readiness",
+            source: SETUP,
             payload_types: &["Readiness"],
         },
         CommandContract {
             handler: "setup::start_setup",
+            source: SETUP,
             payload_types: &["SetupPlanId"],
         },
         CommandContract {
             handler: "setup::repair_managed",
+            source: SETUP,
             payload_types: &["ComponentId"],
         },
         CommandContract {
             handler: "setup::verify_managed",
+            source: SETUP,
             payload_types: &["ComponentId"],
         },
         CommandContract {
             handler: "setup::remove_managed",
+            source: SETUP,
             payload_types: &["ComponentId"],
         },
         CommandContract {
             handler: "setup::cancel_setup",
+            source: SETUP,
             payload_types: &[],
         },
         CommandContract {
             handler: "get_microphones",
+            source: DEVICES,
             payload_types: &["MicrophoneSnapshot"],
         },
         CommandContract {
             handler: "set_microphone",
+            source: DEVICES,
             payload_types: &["MicrophoneSnapshot"],
         },
         CommandContract {
             handler: "test_input_device",
+            source: DEVICES,
             payload_types: &["MicrophoneTestResult"],
         },
         CommandContract {
             handler: "test_microphone_fallback",
+            source: DEVICES,
             payload_types: &["MicrophoneTestResult"],
         },
     ];
@@ -162,7 +200,6 @@ mod tests {
     #[test]
     fn command_and_event_payloads_are_registered() {
         let main = include_str!("main.rs");
-        let setup = include_str!("setup.rs");
         assert_eq!(
             handler_names(main),
             COMMANDS
@@ -174,12 +211,7 @@ mod tests {
         let registered = echo_ipc::registered_type_names();
         let mut manifest_types = BTreeSet::new();
         for command in COMMANDS {
-            let source = if command.handler.starts_with("setup::") {
-                setup
-            } else {
-                main
-            };
-            let signature = signature(source, command.handler);
+            let signature = signature(command.source, command.handler);
             for payload_type in command.payload_types {
                 assert!(
                     signature.contains(payload_type),
@@ -193,9 +225,9 @@ mod tests {
         }
 
         for event in EVENTS {
-            assert!(setup.contains(&format!("\"{}\"", event.name)));
+            assert!(SETUP.contains(&format!("\"{}\"", event.name)));
             for payload_type in event.payload_types {
-                assert!(setup.contains(payload_type));
+                assert!(SETUP.contains(payload_type));
                 assert!(registered.contains(*payload_type));
                 manifest_types.insert((*payload_type).to_string());
             }

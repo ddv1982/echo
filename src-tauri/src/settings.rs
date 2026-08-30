@@ -1,0 +1,524 @@
+use std::env;
+use std::sync::Mutex;
+
+use echo_desktop::ipc::{SettingField, SettingSource, Settings};
+
+static CONFIG_WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+pub(super) fn update_file_config(
+    update: impl FnOnce(&mut echo_core::Config) -> Result<(), String>,
+) -> Result<(), String> {
+    let _write = CONFIG_WRITE_LOCK.lock().expect("config write lock");
+    let mut config = echo_core::Config::load().unwrap_or_default();
+    update(&mut config)?;
+    config.save()?;
+    echo::settings::reload();
+    crate::status::health_invalidate();
+    Ok(())
+}
+
+#[derive(Debug, Default, Clone)]
+struct SettingsEnv {
+    engine: Option<String>,
+    whisper_model: Option<String>,
+    cleanup: Option<String>,
+    hud: Option<String>,
+    record_seconds: Option<String>,
+    language: Option<String>,
+    whisper_acceleration: Option<String>,
+}
+
+pub(super) fn read() -> Result<Settings, String> {
+    let file = echo::settings::file_config();
+    let catalog = echo::transcribe::language_catalog(None, &file);
+    let language_default = match catalog.selection {
+        echo::transcribe::LanguageSelection::EnglishOnly => "en",
+        echo::transcribe::LanguageSelection::AutoOrPinned if catalog.model.is_none() => "en",
+        echo::transcribe::LanguageSelection::AutoOrPinned
+        | echo::transcribe::LanguageSelection::AutomaticOnly => "auto",
+    };
+    settings_from(&process_settings_env(), &file, language_default)
+}
+
+pub(super) fn write(settings: Settings) -> Result<Settings, String> {
+    update_file_config(|config| {
+        *config = config_from_values_with_base(&settings, config.clone())?;
+        Ok(())
+    })?;
+    read()
+}
+
+fn process_settings_env() -> SettingsEnv {
+    SettingsEnv {
+        engine: env::var("ECHO_ENGINE").ok(),
+        whisper_model: env::var("ECHO_WHISPER_MODEL").ok(),
+        cleanup: env::var("ECHO_CLEANUP").ok(),
+        hud: env::var("ECHO_HUD").ok(),
+        record_seconds: env::var("ECHO_RECORD_SECONDS").ok(),
+        language: env::var("ECHO_LANGUAGE").ok(),
+        whisper_acceleration: env::var("ECHO_WHISPER_ACCELERATION").ok(),
+    }
+}
+
+fn settings_from(
+    env: &SettingsEnv,
+    file: &echo_core::Config,
+    language_default: &str,
+) -> Result<Settings, String> {
+    let env_cleanup = env
+        .cleanup
+        .as_deref()
+        .and_then(|raw| echo_core::CleanupMode::parse(raw).ok())
+        .map(|mode| cleanup_name(&mode));
+    Ok(Settings {
+        engine: setting_field(
+            env.engine
+                .as_deref()
+                .and_then(echo_core::EngineChoice::from_env_var)
+                .map(engine_name),
+            file.engine.map(engine_name),
+            "auto".to_string(),
+        ),
+        whisper_model: setting_field(
+            env.whisper_model.clone().filter(|name| !name.is_empty()),
+            file.whisper_model.clone(),
+            String::new(),
+        ),
+        cleanup: setting_field(
+            env_cleanup,
+            file.cleanup.as_ref().map(cleanup_name),
+            "rules".to_string(),
+        ),
+        hud: hud_field(env.hud.as_deref(), file.hud),
+        record_seconds: record_seconds_field(env.record_seconds.as_deref(), file.record_seconds),
+        language: setting_field(
+            env.language
+                .as_deref()
+                .and_then(echo_core::LanguageChoice::parse)
+                .map(|choice| choice.as_str().to_string()),
+            file.language.map(|choice| choice.as_str().to_string()),
+            language_default.to_string(),
+        ),
+        whisper_acceleration: setting_field(
+            env.whisper_acceleration
+                .as_deref()
+                .and_then(echo_core::WhisperAccelerationPreference::parse)
+                .map(echo_core::WhisperAccelerationPreference::as_str)
+                .map(str::to_string),
+            file.whisper_acceleration
+                .map(echo_core::WhisperAccelerationPreference::as_str)
+                .map(str::to_string),
+            echo::stt::whisper_acceleration_factory_default()
+                .as_str()
+                .to_string(),
+        ),
+        whisper_gpu_device: setting_field(
+            None,
+            file.whisper_gpu_device
+                .as_deref()
+                .and_then(parse_gpu_device),
+            String::new(),
+        ),
+    })
+}
+
+#[cfg(test)]
+fn config_from_values(settings: &Settings) -> Result<echo_core::Config, String> {
+    config_from_values_with_base(settings, echo_core::Config::load().unwrap_or_default())
+}
+
+fn config_from_values_with_base(
+    settings: &Settings,
+    mut config: echo_core::Config,
+) -> Result<echo_core::Config, String> {
+    config.engine = match settings.engine.value.as_deref() {
+        None => None,
+        Some(raw) => Some(
+            echo_core::EngineChoice::from_env_var(raw)
+                .ok_or_else(|| format!("unknown engine {raw}"))?,
+        ),
+    };
+    config.whisper_model = nonempty(settings.whisper_model.value.clone());
+    config.cleanup = match settings.cleanup.value.as_deref() {
+        None => None,
+        Some(raw) => Some(echo_core::CleanupMode::parse(raw).map_err(|err| err.to_string())?),
+    };
+    config.hud = settings.hud.value;
+    config.record_seconds = settings
+        .record_seconds
+        .value
+        .map(|secs| echo_core::RecordingLimit::clamped(u64::from(secs)).seconds());
+    config.language = match settings.language.value.as_deref() {
+        None => None,
+        Some(raw) => Some(
+            echo_core::LanguageChoice::parse(raw)
+                .ok_or_else(|| format!("unknown language {raw}"))?,
+        ),
+    };
+    config.whisper_acceleration = match settings.whisper_acceleration.value.as_deref() {
+        None => None,
+        Some(raw) => Some(
+            echo_core::WhisperAccelerationPreference::parse(raw)
+                .ok_or_else(|| format!("unknown Whisper acceleration {raw}"))?,
+        ),
+    };
+    config.whisper_gpu_device = match settings.whisper_gpu_device.value.as_deref() {
+        None | Some("") => None,
+        Some(raw) => {
+            Some(parse_gpu_device(raw).ok_or_else(|| format!("unknown GPU device {raw}"))?)
+        }
+    };
+    Ok(config)
+}
+
+fn parse_gpu_device(raw: &str) -> Option<String> {
+    let (device, driver) = raw.split_once(':')?;
+    [device, driver]
+        .iter()
+        .all(|uuid| {
+            uuid.len() == 32
+                && uuid
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                && !uuid.bytes().all(|b| b == b'0')
+        })
+        .then(|| raw.to_string())
+}
+
+fn setting_field<T: Clone>(env: Option<T>, file: Option<T>, default: T) -> SettingField<T> {
+    let source = if env.is_some() {
+        SettingSource::Env
+    } else if file.is_some() {
+        SettingSource::File
+    } else {
+        SettingSource::Default
+    };
+    SettingField {
+        value: file.clone(),
+        effective: echo_core::resolve(env, file, default),
+        source,
+    }
+}
+
+fn hud_field(env: Option<&str>, file: Option<bool>) -> SettingField<bool> {
+    match env {
+        Some("0" | "false" | "off") => SettingField {
+            value: file,
+            effective: false,
+            source: SettingSource::Env,
+        },
+        Some("1" | "true" | "on") => SettingField {
+            value: file,
+            effective: true,
+            source: SettingSource::Env,
+        },
+        _ => SettingField {
+            value: file,
+            effective: file != Some(false),
+            source: if file.is_some() {
+                SettingSource::File
+            } else {
+                SettingSource::Default
+            },
+        },
+    }
+}
+
+fn record_seconds_field(env: Option<&str>, file: Option<u32>) -> SettingField<u32> {
+    let resolved = echo_core::resolve_recording_limit(env, file);
+    SettingField {
+        value: file,
+        effective: resolved.limit.seconds(),
+        source: match resolved.source {
+            echo_core::RecordingLimitSource::Environment => SettingSource::Env,
+            echo_core::RecordingLimitSource::File => SettingSource::File,
+            echo_core::RecordingLimitSource::Default => SettingSource::Default,
+        },
+    }
+}
+
+fn engine_name(choice: echo_core::EngineChoice) -> String {
+    match choice {
+        echo_core::EngineChoice::Whisper => "whisper",
+        echo_core::EngineChoice::Parakeet => "parakeet",
+        echo_core::EngineChoice::Fake => "fake",
+        echo_core::EngineChoice::Auto => "auto",
+    }
+    .to_string()
+}
+
+fn cleanup_name(mode: &echo_core::CleanupMode) -> String {
+    match mode {
+        echo_core::CleanupMode::Off => "off".to_string(),
+        echo_core::CleanupMode::Rules => "rules".to_string(),
+        echo_core::CleanupMode::LocalModel { model } => format!("local:{model}"),
+    }
+}
+
+fn nonempty(value: Option<String>) -> Option<String> {
+    value.filter(|raw| !raw.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use echo_core::{Config, EngineChoice};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn scratch_path(label: &str) -> std::path::PathBuf {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "echo-settings-ipc-{label}-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("config.json")
+    }
+
+    #[test]
+    fn env_beats_file_for_engine_source() {
+        let env = SettingsEnv {
+            engine: Some("whisper".into()),
+            ..SettingsEnv::default()
+        };
+        let file = Config {
+            engine: Some(EngineChoice::Fake),
+            ..Config::default()
+        };
+        let settings = settings_from(&env, &file, "en").unwrap();
+        assert_eq!(settings.engine.value.as_deref(), Some("fake"));
+        assert_eq!(settings.engine.effective, "whisper");
+        assert_eq!(settings.engine.source, SettingSource::Env);
+    }
+
+    #[test]
+    fn write_then_read_round_trips_file_values() {
+        let path = scratch_path("roundtrip");
+        let incoming = Settings {
+            engine: SettingField {
+                value: Some("parakeet".into()),
+                effective: "auto".into(),
+                source: SettingSource::Default,
+            },
+            whisper_model: SettingField {
+                value: Some("tiny.en".into()),
+                effective: "base.en".into(),
+                source: SettingSource::Default,
+            },
+            cleanup: SettingField {
+                value: Some("off".into()),
+                effective: "rules".into(),
+                source: SettingSource::Default,
+            },
+            hud: SettingField {
+                value: Some(false),
+                effective: true,
+                source: SettingSource::Default,
+            },
+            record_seconds: SettingField {
+                value: Some(8),
+                effective: 3,
+                source: SettingSource::Default,
+            },
+            language: SettingField {
+                value: Some("de".into()),
+                effective: "en".into(),
+                source: SettingSource::Default,
+            },
+            whisper_acceleration: SettingField {
+                value: Some("gpu".into()),
+                effective: "cpu".into(),
+                source: SettingSource::Default,
+            },
+            whisper_gpu_device: SettingField {
+                value: Some(format!("{}:{}", "a".repeat(32), "b".repeat(32))),
+                effective: String::new(),
+                source: SettingSource::Default,
+            },
+        };
+        config_from_values(&incoming)
+            .unwrap()
+            .save_to(&path)
+            .unwrap();
+        let loaded = Config::load_from(&path).unwrap();
+        let got = settings_from(&SettingsEnv::default(), &loaded, "en").unwrap();
+        assert_eq!(got.engine.value.as_deref(), Some("parakeet"));
+        assert_eq!(got.engine.effective, "parakeet");
+        assert_eq!(got.engine.source, SettingSource::File);
+        assert_eq!(got.whisper_model.value.as_deref(), Some("tiny.en"));
+        assert_eq!(got.whisper_model.effective, "tiny.en");
+        assert_eq!(got.cleanup.value.as_deref(), Some("off"));
+        assert_eq!(got.cleanup.effective, "off");
+        assert_eq!(got.hud.value, Some(false));
+        assert!(!got.hud.effective);
+        assert_eq!(got.record_seconds.value, Some(8));
+        assert_eq!(got.record_seconds.effective, 8);
+        assert_eq!(got.record_seconds.source, SettingSource::File);
+        assert_eq!(got.language.value.as_deref(), Some("de"));
+        assert_eq!(got.language.effective, "de");
+        assert_eq!(got.language.source, SettingSource::File);
+        assert_eq!(got.whisper_acceleration.value.as_deref(), Some("gpu"));
+        assert_eq!(got.whisper_acceleration.effective, "gpu");
+        assert_eq!(got.whisper_acceleration.source, SettingSource::File);
+        let pinned = format!("{}:{}", "a".repeat(32), "b".repeat(32));
+        assert_eq!(
+            got.whisper_gpu_device.value.as_deref(),
+            Some(pinned.as_str())
+        );
+        assert_eq!(got.whisper_gpu_device.source, SettingSource::File);
+    }
+
+    #[test]
+    fn legacy_auto_acceleration_settings_resolve_to_cpu() {
+        let path = scratch_path("legacy-auto-acceleration");
+        std::fs::write(&path, r#"{"whisper_acceleration":"auto"}"#).unwrap();
+        let loaded = Config::load_from(&path).unwrap();
+        let got = settings_from(&SettingsEnv::default(), &loaded, "en").unwrap();
+        assert_eq!(got.whisper_acceleration.value.as_deref(), Some("cpu"));
+        assert_eq!(got.whisper_acceleration.effective, "cpu");
+    }
+
+    #[test]
+    fn settings_patch_preserves_concurrently_owned_microphone_field() {
+        let microphone = echo_core::MicrophoneSelection::Device {
+            id: "alsa:buds".into(),
+            last_seen_label: "Earbuds".into(),
+        };
+        let base = Config {
+            microphone: Some(microphone.clone()),
+            ..Config::default()
+        };
+        let incoming = settings_from(&SettingsEnv::default(), &base, "en").unwrap();
+        let updated = config_from_values_with_base(&incoming, base).unwrap();
+        assert_eq!(updated.microphone, Some(microphone));
+    }
+
+    #[test]
+    fn language_defaults_to_english_and_env_wins() {
+        let settings = settings_from(&SettingsEnv::default(), &Config::default(), "en").unwrap();
+        assert_eq!(settings.language.value, None);
+        assert_eq!(settings.language.effective, "en");
+        assert_eq!(settings.language.source, SettingSource::Default);
+
+        let env = SettingsEnv {
+            language: Some("auto".into()),
+            ..SettingsEnv::default()
+        };
+        let file = Config {
+            language: Some(echo_core::LanguageChoice::Pinned(
+                echo_core::Language::from_code("de").unwrap(),
+            )),
+            ..Config::default()
+        };
+        let settings = settings_from(&env, &file, "en").unwrap();
+        assert_eq!(settings.language.value.as_deref(), Some("de"));
+        assert_eq!(settings.language.effective, "auto");
+        assert_eq!(settings.language.source, SettingSource::Env);
+
+        let invalid = SettingsEnv {
+            language: Some("klingon".into()),
+            ..SettingsEnv::default()
+        };
+        let settings = settings_from(&invalid, &file, "en").unwrap();
+        assert_eq!(settings.language.effective, "de");
+        assert_eq!(settings.language.source, SettingSource::File);
+    }
+
+    #[test]
+    fn recording_limit_settings_preserve_sources_and_clamping() {
+        let defaults = record_seconds_field(None, None);
+        assert_eq!(defaults.effective, 600);
+        assert_eq!(defaults.source, SettingSource::Default);
+
+        let custom = record_seconds_field(None, Some(90));
+        assert_eq!(custom.effective, 90);
+        assert_eq!(custom.source, SettingSource::File);
+
+        let invalid = record_seconds_field(Some("invalid"), Some(61));
+        assert_eq!(invalid.effective, 61);
+        assert_eq!(invalid.source, SettingSource::File);
+
+        let env = SettingsEnv {
+            record_seconds: Some(((u32::MAX as u64) + 1).to_string()),
+            ..SettingsEnv::default()
+        };
+        let file = Config {
+            record_seconds: Some(12),
+            ..Config::default()
+        };
+        let settings = settings_from(&env, &file, "en").unwrap();
+        assert_eq!(settings.record_seconds.value, Some(12));
+        assert_eq!(settings.record_seconds.effective, 600);
+        assert_eq!(settings.record_seconds.source, SettingSource::Env);
+
+        let mut incoming = settings;
+        incoming.record_seconds.value = Some(u32::MAX);
+        assert_eq!(
+            config_from_values_with_base(&incoming, Config::default())
+                .unwrap()
+                .record_seconds,
+            Some(600)
+        );
+    }
+
+    #[test]
+    fn hud_enable_tokens_override_file_false() {
+        for token in ["1", "true", "on"] {
+            let env = SettingsEnv {
+                hud: Some(token.into()),
+                ..SettingsEnv::default()
+            };
+            let file = Config {
+                hud: Some(false),
+                ..Config::default()
+            };
+            let settings = settings_from(&env, &file, "en").unwrap();
+            assert_eq!(settings.hud.value, Some(false), "token {token}");
+            assert!(settings.hud.effective, "token {token}");
+            assert_eq!(settings.hud.source, SettingSource::Env, "token {token}");
+        }
+    }
+
+    #[test]
+    fn hud_off_tokens_disable_and_unknown_consults_file() {
+        let disabled = Config {
+            hud: Some(false),
+            ..Config::default()
+        };
+        let enabled = Config {
+            hud: Some(true),
+            ..Config::default()
+        };
+        for token in ["0", "false", "off"] {
+            let env = SettingsEnv {
+                hud: Some(token.into()),
+                ..SettingsEnv::default()
+            };
+            let settings = settings_from(&env, &enabled, "en").unwrap();
+            assert!(!settings.hud.effective, "token {token}");
+            assert_eq!(settings.hud.source, SettingSource::Env, "token {token}");
+        }
+        let unknown = SettingsEnv {
+            hud: Some("maybe".into()),
+            ..SettingsEnv::default()
+        };
+        assert!(
+            !settings_from(&unknown, &disabled, "en")
+                .unwrap()
+                .hud
+                .effective
+        );
+        assert_eq!(
+            settings_from(&unknown, &disabled, "en").unwrap().hud.source,
+            SettingSource::File
+        );
+        assert!(
+            settings_from(&unknown, &enabled, "en")
+                .unwrap()
+                .hud
+                .effective
+        );
+    }
+}
