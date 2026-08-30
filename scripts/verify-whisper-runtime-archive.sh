@@ -8,9 +8,9 @@ scratch_dir=
 "$repo_dir/scripts/verify-whisper-vulkan-runtime.sh" --self-test
 "$repo_dir/scripts/verify-whisper-runtime-performance.py" --self-test
 "$repo_dir/scripts/verify-whisper-runtime-performance.py" --verify \
-  "$repo_dir/.audit/pr16-1-evidence/performance-runs.json" \
-  "$repo_dir/.audit/pr16-1-evidence/performance-summary.json" \
-  "$repo_dir/.audit/pr16-1-evidence/interleaved.tsv"
+  "$repo_dir/scripts/fixtures/whisper-runtime-performance/performance-runs.json" \
+  "$repo_dir/scripts/fixtures/whisper-runtime-performance/performance-summary.json" \
+  "$repo_dir/scripts/fixtures/whisper-runtime-performance/interleaved.tsv"
 
 if [ -z "$archive_path" ]; then
   scratch_dir=$(mktemp -d /tmp/echo-whisper-runtime.XXXXXX)

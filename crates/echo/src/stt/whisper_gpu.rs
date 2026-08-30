@@ -18,9 +18,9 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Beam 3, best-of 5, temperature fallback enabled. This is the configuration
 /// with 400 transcriptions of zero WER delta across five languages and a 57.8
-/// percent paired median reduction, recorded in
-/// `.audit/whisper-phase5-small-v192-b3/decision.md`. It is applied to the
-/// accelerated plan and to its CPU fallback so recovery is not a downgrade.
+/// percent paired median reduction. The archived evidence is indexed in
+/// `docs/history/evidence-2026-08-30.md`. It is applied to the accelerated plan
+/// and to its CPU fallback so recovery is not a downgrade.
 #[must_use]
 pub(crate) fn qualified_tuning() -> WhisperTuning {
     WhisperTuning {
