@@ -93,6 +93,11 @@ pub struct Config {
     pub language: Option<LanguageChoice>,
     #[serde(default)]
     pub whisper_acceleration: Option<WhisperAccelerationPreference>,
+    /// The Vulkan device the user pinned, as a `deviceUUID:driverUUID` pair.
+    /// Kept beside the preference rather than inside it so a chosen card
+    /// survives a trip through CPU and back.
+    #[serde(default)]
+    pub whisper_gpu_device: Option<String>,
 }
 
 impl Config {
@@ -181,6 +186,7 @@ mod tests {
             }),
             language: Some(LanguageChoice::Auto),
             whisper_acceleration: Some(WhisperAccelerationPreference::Cpu),
+            whisper_gpu_device: Some("aa".repeat(16) + ":" + &"bb".repeat(16)),
         };
         original.save_to(&path).unwrap();
         assert_eq!(Config::load_from(&path).unwrap(), original);
@@ -199,6 +205,7 @@ mod tests {
         assert_eq!(loaded.microphone, None);
         assert_eq!(loaded.language, None);
         assert_eq!(loaded.whisper_acceleration, None);
+        assert_eq!(loaded.whisper_gpu_device, None);
     }
 
     #[test]

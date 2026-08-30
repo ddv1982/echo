@@ -25,6 +25,7 @@ import {
   getShortcutStatus,
   getSettings,
   getMicrophones,
+  listGpuDevices,
   listLanguages,
   listModels,
   onSetupEvent,
@@ -48,6 +49,7 @@ import { presentShortcut } from './shortcut'
 import type {
   AppStatus,
   DictionaryItem,
+  GpuDevice,
   HistoryItem,
   LastRun,
   LanguageOptions,
@@ -1106,6 +1108,7 @@ function SettingsView({
   const [testingMic, setTestingMic] = useState(false)
   const [repairingLegacyShortcut, setRepairingLegacyShortcut] = useState(false)
   const [settingsWritePending, setSettingsWritePending] = useState(false)
+  const [gpuDevices, setGpuDevices] = useState<GpuDevice[]>([])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -1122,6 +1125,14 @@ function SettingsView({
     }, 0)
     return () => window.clearTimeout(timer)
   }, [onError])
+
+  const wantsGpu = settings?.whisperAcceleration.effective === 'gpu'
+  useEffect(() => {
+    if (!wantsGpu) return
+    void listGpuDevices()
+      .then(setGpuDevices)
+      .catch((reason: unknown) => onError(messageFrom(reason)))
+  }, [wantsGpu, onError])
 
   const refreshMicrophones = useCallback(() => {
     void getMicrophones()
@@ -1400,6 +1411,17 @@ function SettingsView({
                 ))}
               </div>
             </div>
+            {settings.whisperAcceleration.effective === 'gpu' ? (
+              <GpuDeviceRow
+                devices={gpuDevices}
+                pinned={settings.whisperGpuDevice.effective}
+                disabled={settingsWritePending}
+                onRefresh={() => {
+                  void listGpuDevices(true).then(setGpuDevices).catch((reason: unknown) => onError(messageFrom(reason)))
+                }}
+                onSelect={(value) => void patch('whisperGpuDevice', value)}
+              />
+            ) : null}
             <div className="setting-row">
               <div>
                 <strong>Speech engine</strong>
@@ -1489,6 +1511,54 @@ function SettingsView({
           <p className="settings-path">Saved at <code>{status.settingsPath}</code></p>
         ) : null}
       </details>
+    </div>
+  )
+}
+
+function GpuDeviceRow({
+  devices,
+  pinned,
+  disabled,
+  onRefresh,
+  onSelect,
+}: {
+  devices: GpuDevice[]
+  pinned: string
+  disabled: boolean
+  onRefresh: () => void
+  onSelect: (value: string) => void
+}) {
+  const key = (device: GpuDevice) => `${device.id.deviceUUID}:${device.id.driverUUID}`
+  const missing = pinned !== '' && !devices.some((device) => key(device) === pinned)
+  return (
+    <div className="setting-row">
+      <div>
+        <strong>GPU device</strong>
+        <span>
+          {missing
+            ? 'The pinned device is not detected. Transcription stays on the CPU until it returns, and your choice is kept.'
+            : devices.length === 0
+              ? 'No Vulkan device detected. Transcription stays on the CPU.'
+              : 'Which GPU runs Whisper. Automatic picks the first non-software device.'}
+        </span>
+      </div>
+      <div className="setting-actions">
+        <select
+          aria-label="GPU device"
+          value={pinned}
+          disabled={disabled}
+          onChange={(event) => onSelect(event.target.value)}
+        >
+          <option value="">Automatic</option>
+          {devices.map((device) => (
+            <option key={key(device)} value={key(device)}>
+              {device.software ? `${device.name} · software` : device.name}
+            </option>
+          ))}
+          {missing ? <option value={pinned}>Pinned device · not detected</option> : null}
+        </select>
+        <button type="button" onClick={onRefresh} disabled={disabled}>Detect</button>
+      </div>
     </div>
   )
 }

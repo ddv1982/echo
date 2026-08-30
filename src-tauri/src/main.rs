@@ -273,6 +273,7 @@ struct Settings {
     record_seconds: SettingField<u32>,
     language: SettingField<String>,
     whisper_acceleration: SettingField<String>,
+    whisper_gpu_device: SettingField<String>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -1537,6 +1538,11 @@ fn settings_from(
                 .as_str()
                 .to_string(),
         ),
+        whisper_gpu_device: setting_field(
+            None,
+            file.whisper_gpu_device.as_deref().and_then(parse_gpu_device),
+            String::new(),
+        ),
     })
 }
 
@@ -1580,7 +1586,27 @@ fn config_from_values_with_base(
                 .ok_or_else(|| format!("unknown Whisper acceleration {raw}"))?,
         ),
     };
+    config.whisper_gpu_device = match settings.whisper_gpu_device.value.as_deref() {
+        None | Some("") => None,
+        Some(raw) => {
+            Some(parse_gpu_device(raw).ok_or_else(|| format!("unknown GPU device {raw}"))?)
+        }
+    };
     Ok(config)
+}
+
+/// A pinned device is `deviceUUID:driverUUID`, both nonzero lowercase 32-hex.
+/// Anything else is refused at the boundary rather than carried inward.
+fn parse_gpu_device(raw: &str) -> Option<String> {
+    let (device, driver) = raw.split_once(':')?;
+    [device, driver]
+        .iter()
+        .all(|uuid| {
+            uuid.len() == 32
+                && uuid.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                && !uuid.bytes().all(|b| b == b'0')
+        })
+        .then(|| raw.to_string())
 }
 
 fn setting_field<T: Clone>(env: Option<T>, file: Option<T>, default: T) -> SettingField<T> {
@@ -2966,6 +2992,11 @@ mod settings_tests {
                 effective: "cpu".into(),
                 source: SettingSource::Default,
             },
+            whisper_gpu_device: SettingField {
+                value: Some(format!("{}:{}", "a".repeat(32), "b".repeat(32))),
+                effective: String::new(),
+                source: SettingSource::Default,
+            },
         };
         config_from_values(&incoming)
             .unwrap()
@@ -2991,6 +3022,9 @@ mod settings_tests {
         assert_eq!(got.whisper_acceleration.value.as_deref(), Some("gpu"));
         assert_eq!(got.whisper_acceleration.effective, "gpu");
         assert_eq!(got.whisper_acceleration.source, SettingSource::File);
+        let pinned = format!("{}:{}", "a".repeat(32), "b".repeat(32));
+        assert_eq!(got.whisper_gpu_device.value.as_deref(), Some(pinned.as_str()));
+        assert_eq!(got.whisper_gpu_device.source, SettingSource::File);
     }
 
     #[test]
