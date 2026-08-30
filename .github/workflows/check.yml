@@ -30,6 +30,9 @@ jobs:
       - name: Check release cleanup policy
         run: python3 scripts/test_release_history.py
 
+      - name: Check public documentation links
+        run: python3 scripts/check-doc-links.py
+
       - name: Install native dependencies
         run: |
           sudo apt-get update
