@@ -1,0 +1,76 @@
+{
+  "schema": 1,
+  "repository": "ddv1982/echo",
+  "delete_draft_releases": [
+    {
+      "id": 376578178,
+      "tag_name": "qualification-868fd35dfb31a35da9712e6cbe3344c77f138f6b",
+      "target_commitish": "868fd35dfb31a35da9712e6cbe3344c77f138f6b",
+      "assets": [
+        {"id": 529527657, "name": "echo-desktop", "size": 27958848, "digest": "sha256:1b77c0a62652022c5ce91e1ecb3cf3266f0fc7a7d36d544b3394bf8c428acddc"},
+        {"id": 529527659, "name": "io.github.ddv1982.echo-0.12.0-1.x86_64.rpm", "size": 51807733, "digest": "sha256:d3ec35b419e91c7c4521fcdeb4abac6e9d9dabf381587392d57b463c6295f198"},
+        {"id": 529527655, "name": "io.github.ddv1982.echo_0.12.0_amd64.deb", "size": 51803076, "digest": "sha256:e8535096606f698c154b97f557698bcc52a73ceb11714e1355b76aee794a0818"},
+        {"id": 529527656, "name": "qualified-release.json", "size": 4645, "digest": "sha256:ef676753e1ba67740ccea9f5131f52c82e04c08094c22f8cae9dd29cb9497589"}
+      ]
+    },
+    {
+      "id": 376674985,
+      "tag_name": "qualification-4a97bd06615bcfe69426d1884a06a7ce57695d50",
+      "target_commitish": "4a97bd06615bcfe69426d1884a06a7ce57695d50",
+      "assets": [
+        {"id": 529706462, "name": "echo-desktop", "size": 27958376, "digest": "sha256:a9aeb6d880beda3710d189593bbfe499b92f332098ce78a942e2c179906981bc"},
+        {"id": 529706458, "name": "io.github.ddv1982.echo-0.12.1-1.x86_64.rpm", "size": 51807803, "digest": "sha256:187b842302afab57a3492b976f39ccbf045f445522f123ad75b44c7ffe01f351"},
+        {"id": 529706469, "name": "io.github.ddv1982.echo_0.12.1_amd64.deb", "size": 51803222, "digest": "sha256:8356dd75c6ea381f63e6c4160fe437e95a3d8305070e847e571d65d93b4aae18"},
+        {"id": 529706468, "name": "qualified-release.json", "size": 4645, "digest": "sha256:14cb8f269685fbfa13910ba8d45e912fc058d5b11b07f46563aadfb059b5f3d5"}
+      ]
+    },
+    {
+      "id": 376737426,
+      "tag_name": "qualification-439659d664ef2a15a6d45c904eacaefee94415e5",
+      "target_commitish": "439659d664ef2a15a6d45c904eacaefee94415e5",
+      "assets": [
+        {"id": 529820283, "name": "echo-desktop", "size": 27959088, "digest": "sha256:80a05a29d038a45704aaf274eb88e993ed095184458925603185f391e13bba3f"},
+        {"id": 529820282, "name": "io.github.ddv1982.echo-0.12.2-1.x86_64.rpm", "size": 51807651, "digest": "sha256:241849e30f8e3764bea74e65027ddaf6467800fc963fc83070157cdd45b5f9e5"},
+        {"id": 529820280, "name": "io.github.ddv1982.echo_0.12.2_amd64.deb", "size": 51802952, "digest": "sha256:bcbffac557dac1a0afc11dc4e3789249612d42a7a69f44b8def0dc21354ccdba"},
+        {"id": 529820281, "name": "qualified-release.json", "size": 4645, "digest": "sha256:25c046ef88d39c5b036ac9c481f08b32cb5172e030402f2c24a40233a967c45d"}
+      ]
+    },
+    {
+      "id": 376787053,
+      "tag_name": "qualification-2447228bfe26452b2f4d4f38459d5f2bed6deb74",
+      "target_commitish": "2447228bfe26452b2f4d4f38459d5f2bed6deb74",
+      "assets": [
+        {"id": 529976312, "name": "echo-desktop", "size": 27952720, "digest": "sha256:863bbf50d3814e269c9773439691faa229a6ccc167b00399b594606fc5b61b11"},
+        {"id": 529976313, "name": "io.github.ddv1982.echo-0.12.3-1.x86_64.rpm", "size": 51805131, "digest": "sha256:4c696a3a0dd0269ab4dc5041242a0d331bd817b238eefae7babd042040bf1316"},
+        {"id": 529976315, "name": "io.github.ddv1982.echo_0.12.3_amd64.deb", "size": 51801890, "digest": "sha256:d18b9bb26aca3e1707994e473ef778815c7fe8662bb062b1cb217141cc35946d"},
+        {"id": 529976319, "name": "qualified-release.json", "size": 4645, "digest": "sha256:75620f6452574c8a4584fa89ce8a524339957b5fbda60c8082e7f33b6247ce43"}
+      ]
+    },
+    {
+      "id": 377308963,
+      "tag_name": "qualification-dfa8cd12cc8baf40106460ce30225d0a55fa5d65",
+      "target_commitish": "dfa8cd12cc8baf40106460ce30225d0a55fa5d65",
+      "assets": [
+        {"id": 531116251, "name": "echo-desktop", "size": 28045056, "digest": "sha256:c74b5854b2911c49e305a15394eaba1fa03bf80cd32c4e5e104cf7f01bd628b6"},
+        {"id": 531116250, "name": "io.github.ddv1982.echo-0.12.4-1.x86_64.rpm", "size": 52505803, "digest": "sha256:70e181c55bca5b542bd3dc76ece27a3821b64006db7d9a4157492927fede1520"},
+        {"id": 531116247, "name": "io.github.ddv1982.echo_0.12.4_amd64.deb", "size": 52490192, "digest": "sha256:6c0dce775d67aca1669c58b5ae11de56e2d7a30015a134837b30c6a60ebf453d"},
+        {"id": 531116253, "name": "qualified-release.json", "size": 5327, "digest": "sha256:8b391561ca26e97014e6332581324da3964d4b448a00fdccef8dac4376272219"}
+      ]
+    }
+  ],
+  "superseded_release_note": {
+    "id": 379067749,
+    "tag_name": "v0.12.6",
+    "target_commitish": "main",
+    "prerelease": false,
+    "assets": [
+      {"id": 535575818, "name": "echo-desktop", "size": 25260480, "digest": "sha256:8dcb66c75b2a02a1eb7ada369cb86aca9946a4b2c6e37ce1d61694bbdb81dd76"},
+      {"id": 535575815, "name": "io.github.ddv1982.echo-0.12.6-1.x86_64.rpm", "size": 9236560, "digest": "sha256:1cf0030ec49d5dd5fd19e1afb72a8fd006413c66c6bb312c4911e74fd37ddb99"},
+      {"id": 535608357, "name": "io.github.ddv1982.echo_0.12.6_amd64.AppImage", "size": 83560952, "digest": "sha256:f8eb3cd33b167759a32512f155b68d4de5328a5c04db34b5b33e7f6fee1fff1b"},
+      {"id": 535575817, "name": "io.github.ddv1982.echo_0.12.6_amd64.deb", "size": 9236626, "digest": "sha256:d4344f9cc946ae7aac5b87d4e7512c2a9432d4381b9d445b86ab73c8a3871f2a"}
+    ],
+    "expected_body_sha256": "sha256:b6e23f9a3c52c656e1410f7fd420d38cad14440c03030108ff7be4ad15b2ef2e",
+    "applied_body_sha256": "sha256:8b7c2caac223ed86278730c1eb218ec81228e1e8c4f5214b3b2585f7e135d4a3",
+    "notice": "> [!WARNING]\n> Superseded by [v0.13.0](https://github.com/ddv1982/echo/releases/tag/v0.13.0). v0.12.6 shipped without the acceleration payload its GPU path expected. Install v0.13.0 or later.\n\n"
+  }
+}
