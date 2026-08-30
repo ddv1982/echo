@@ -69,11 +69,18 @@ fn pinned_vulkan_runtime_archive_installs() {
 
     let root = scratch("pinned-vulkan-runtime");
     let transport = FixtureTransport(Mutex::new(VecDeque::from([body])));
+    // The real probe, matching the CPU archive test. Accepting any payload here
+    // is what let a runtime whose whisper-cli cannot resolve its own libraries
+    // pass every test while failing every real install.
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    let probe = CommandRuntimeProbe;
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+    let probe = AcceptProbe;
     let installer = Installer {
         store: ManagedStore::new(&root),
         transport: &transport,
         disk: &UnlimitedDisk,
-        probe: &AcceptProbe,
+        probe: &probe,
     };
     let record = installer
         .ensure_component(
