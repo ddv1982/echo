@@ -42,6 +42,8 @@ import {
   toggleRecording,
 } from './tauri'
 import { formatSize } from './format'
+import { useAsyncSubscription } from './hooks/useAsyncSubscription'
+import { useSerialPoll } from './hooks/useSerialPoll'
 import { MicrophoneChooser } from './settings/MicrophoneChooser'
 import { SpeechSetupSection } from './settings/SpeechSetupSection'
 import { applySetupProgress } from './setup'
@@ -64,6 +66,7 @@ import type {
   SettingField,
   SettingSource,
   Settings as AppSettings,
+  SetupEvent,
   WhisperModelInfo,
 } from './generated/ipc'
 import type { ThemeMode, View } from './types'
@@ -120,14 +123,19 @@ function App() {
   const recordingSeconds = useElapsedSeconds(recordingStartedAt)
   const shortcut = presentShortcut(status.shortcut)
 
-  const refreshCollections = useCallback(async () => {
-    const [nextHistory, nextDictionary] = await Promise.all([getHistory(), getDictionary()])
+  const loadCollections = useCallback(
+    () => Promise.all([getHistory(), getDictionary()]),
+    [],
+  )
+  const applyCollections = useCallback(([nextHistory, nextDictionary]: Awaited<ReturnType<typeof loadCollections>>) => {
     setHistory(nextHistory)
     setDictionary(nextDictionary)
   }, [])
+  const refreshCollections = useCallback(async () => {
+    applyCollections(await loadCollections())
+  }, [applyCollections, loadCollections])
 
-  const refreshStatus = useCallback(async () => {
-    const next = await getAppStatus()
+  const applyStatus = useCallback((next: AppStatus) => {
     setStatus(next)
     const observedAt = Date.now()
     setRecordingStartedAt((prev) => (next.recording ? (prev ?? observedAt) : null))
@@ -137,23 +145,27 @@ function App() {
     previousPhase.current = next.phase
   }, [refreshCollections])
 
+  const reportError = useCallback((reason: unknown) => setError(messageFrom(reason)), [])
+  const pollWhileVisible = useCallback(() => !document.hidden, [])
+  const refreshStatus = useSerialPoll({
+    request: getAppStatus,
+    onResult: applyStatus,
+    onError: reportError,
+    intervalMs: 400,
+    shouldPoll: pollWhileVisible,
+  })
+
   useEffect(() => {
-    // The timeout keeps the initial fetch's setError out of the effect body,
-    // which react-hooks/set-state-in-effect would reject.
-    const initialTimer = window.setTimeout(() => {
-      void Promise.all([refreshStatus(), refreshCollections()]).catch((reason: unknown) => {
-        setError(messageFrom(reason))
-      })
-    }, 0)
-    const timer = window.setInterval(() => {
-      if (document.hidden) return
-      void refreshStatus().catch((reason: unknown) => setError(messageFrom(reason)))
-    }, 400)
+    let active = true
+    void loadCollections().then((collections) => {
+      if (active) applyCollections(collections)
+    }).catch((reason: unknown) => {
+      if (active) reportError(reason)
+    })
     return () => {
-      window.clearTimeout(initialTimer)
-      window.clearInterval(timer)
+      active = false
     }
-  }, [refreshCollections, refreshStatus])
+  }, [applyCollections, loadCollections, reportError])
 
   useEffect(() => {
     localStorage.setItem('echo-theme', theme)
@@ -463,15 +475,15 @@ const LEVEL_BAR_COUNT = 14
 
 function LevelBars({ live }: { live: boolean }) {
   const [levels, setLevels] = useState<number[]>(() => Array(LEVEL_BAR_COUNT).fill(0))
-  useEffect(() => {
-    if (!live) return
-    const timer = window.setInterval(() => {
-      void getRecordingLevel().then((level) => {
-        setLevels((previous) => [...previous.slice(1), level])
-      })
-    }, 60)
-    return () => window.clearInterval(timer)
-  }, [live])
+  const addLevel = useCallback((level: number) => {
+    setLevels((previous) => [...previous.slice(1), level])
+  }, [])
+  useSerialPoll({
+    request: getRecordingLevel,
+    onResult: addLevel,
+    intervalMs: 60,
+    enabled: live,
+  })
   return (
     <div className="level-bars" data-live={live} aria-hidden="true">
       {levels.map((level, index) => (
@@ -819,22 +831,43 @@ function SetupChecklist({
   const [micTest, setMicTest] = useState<MicrophoneTestResult | null>(null)
   const [testingMic, setTestingMic] = useState(false)
   const [setupError, setSetupError] = useState<string | null>(null)
-  useEffect(() => {
-    let unlisten: (() => void) | undefined
-    void getReadiness().then(setReadiness).catch((reason: unknown) => setSetupError(messageFrom(reason)))
-    void getMicrophones().then(setMicrophones).catch((reason: unknown) => setSetupError(messageFrom(reason)))
-    void onSetupEvent((event) => {
-      if (event.kind === 'progress') {
-        setReadiness((current) => current && applySetupProgress(current, event))
-        return
-      }
-      if (event.kind === 'failed') setSetupError(event.error)
-      void getReadiness().then(setReadiness).catch((reason: unknown) => setSetupError(messageFrom(reason)))
-    }).then((next) => {
-      unlisten = next
-    }).catch((reason: unknown) => setSetupError(messageFrom(reason)))
-    return () => unlisten?.()
+  const micTestVersion = useRef(0)
+  const reportSetupError = useCallback((reason: unknown) => {
+    setSetupError(messageFrom(reason))
   }, [])
+  useEffect(() => {
+    let active = true
+    void getReadiness().then((next) => {
+      if (active) setReadiness(next)
+    }).catch((reason: unknown) => {
+      if (active) reportSetupError(reason)
+    })
+    void getMicrophones().then((next) => {
+      if (active) setMicrophones(next)
+    }).catch((reason: unknown) => {
+      if (active) reportSetupError(reason)
+    })
+    return () => {
+      active = false
+      micTestVersion.current += 1
+    }
+  }, [reportSetupError])
+  const handleSetupEvent = useCallback((event: SetupEvent) => {
+    if (event.kind === 'progress') {
+      setReadiness((current) => current && applySetupProgress(current, event))
+    }
+    if (event.kind === 'failed') setSetupError(event.error)
+  }, [])
+  const getSetupRefresh = useCallback((event: SetupEvent) => {
+    if (event.kind === 'progress') return null
+    return () => getReadiness().then((next) => () => setReadiness(next))
+  }, [])
+  useAsyncSubscription({
+    subscribe: onSetupEvent,
+    onEvent: handleSetupEvent,
+    getRefresh: getSetupRefresh,
+    onError: reportSetupError,
+  })
   // Verified, not asserted: only a passing shortcut test completes this.
   const identity = presentShortcut(status.shortcut).verificationIdentity
   const verified = identity != null
@@ -864,9 +897,10 @@ function SetupChecklist({
                   setMicrophones(nextMicrophones)
                   setReadiness(nextReadiness)
                 })
-                .catch((reason: unknown) => setSetupError(messageFrom(reason)))
+                .catch(reportSetupError)
             }}
             onSelect={(id) => {
+              micTestVersion.current += 1
               setMicTest(null)
               void setMicrophone(id)
                 .then((nextMicrophones) => {
@@ -874,19 +908,27 @@ function SetupChecklist({
                   return getReadiness()
                 })
                 .then(setReadiness)
-                .catch((reason: unknown) => setSetupError(messageFrom(reason)))
+                .catch(reportSetupError)
             }}
             onTest={(id, fallback) => {
+              const version = ++micTestVersion.current
               setTestingMic(true)
               const run = fallback ? testMicrophoneFallback() : testInputDevice(id)
               void run
                 .then((result) => {
+                  if (micTestVersion.current !== version) return null
                   setMicTest(result)
                   return getReadiness()
                 })
-                .then(setReadiness)
-                .catch((reason: unknown) => setSetupError(messageFrom(reason)))
-                .finally(() => setTestingMic(false))
+                .then((next) => {
+                  if (next && micTestVersion.current === version) setReadiness(next)
+                })
+                .catch((reason: unknown) => {
+                  if (micTestVersion.current === version) reportSetupError(reason)
+                })
+                .finally(() => {
+                  if (micTestVersion.current === version) setTestingMic(false)
+                })
             }}
           />
         </div>
@@ -897,7 +939,7 @@ function SetupChecklist({
           <SpeechSetupSection
             readiness={readiness}
             guided
-            onRefresh={() => void getReadiness().then(setReadiness)}
+            onRefresh={() => void getReadiness().then(setReadiness).catch(reportSetupError)}
             onError={setSetupError}
           />
         </div>
@@ -1111,21 +1153,39 @@ function SettingsView({
   const [repairingLegacyShortcut, setRepairingLegacyShortcut] = useState(false)
   const [settingsWritePending, setSettingsWritePending] = useState(false)
   const [gpuDevices, setGpuDevices] = useState<GpuDevice[]>([])
+  const micTestVersion = useRef(0)
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      void getSettings()
-        .then((next) => {
+    let active = true
+    void getSettings()
+      .then((next) => {
+        if (active) {
           settingsRef.current = next
           setLocalSettings(next)
-        })
-        .catch((reason: unknown) => onError(messageFrom(reason)))
-      void getMicrophones().then(setMicrophones).catch((reason: unknown) => onError(messageFrom(reason)))
-      void listModels().then(setInventory).catch((reason: unknown) => onError(messageFrom(reason)))
-      void listLanguages().then(setLanguages).catch((reason: unknown) => onError(messageFrom(reason)))
-      void getReadiness().then(setReadiness).catch((reason: unknown) => onError(messageFrom(reason)))
-    }, 0)
-    return () => window.clearTimeout(timer)
+        }
+      })
+      .catch((reason: unknown) => {
+        if (active) onError(messageFrom(reason))
+      })
+    void listModels().then((next) => {
+      if (active) setInventory(next)
+    }).catch((reason: unknown) => {
+      if (active) onError(messageFrom(reason))
+    })
+    void listLanguages().then((next) => {
+      if (active) setLanguages(next)
+    }).catch((reason: unknown) => {
+      if (active) onError(messageFrom(reason))
+    })
+    void getReadiness().then((next) => {
+      if (active) setReadiness(next)
+    }).catch((reason: unknown) => {
+      if (active) onError(messageFrom(reason))
+    })
+    return () => {
+      active = false
+      micTestVersion.current += 1
+    }
   }, [onError])
 
   const wantsGpu = settings?.whisperAcceleration.effective === 'gpu'
@@ -1147,54 +1207,59 @@ function SettingsView({
   const gpuRuntimeReady = readiness != null && gpuPrerequisite == null
   useEffect(() => {
     if (!wantsGpu || !gpuRuntimeReady) return
+    let active = true
     void listGpuDevices(true)
-      .then(setGpuDevices)
-      .catch((reason: unknown) => onError(messageFrom(reason)))
+      .then((next) => {
+        if (active) setGpuDevices(next)
+      })
+      .catch((reason: unknown) => {
+        if (active) onError(messageFrom(reason))
+      })
+    return () => {
+      active = false
+    }
   }, [wantsGpu, gpuRuntimeReady, onError])
 
-  const refreshMicrophones = useCallback(() => {
-    void getMicrophones()
-      .then(setMicrophones)
-      .catch((reason: unknown) => onError(messageFrom(reason)))
-  }, [onError])
+  const reportSettingsError = useCallback((reason: unknown) => onError(messageFrom(reason)), [onError])
+  const refreshMicrophones = useSerialPoll({
+    request: getMicrophones,
+    onResult: setMicrophones,
+    onError: reportSettingsError,
+    intervalMs: 3_000,
+  })
 
   useEffect(() => {
-    const interval = window.setInterval(refreshMicrophones, 3_000)
-    window.addEventListener('focus', refreshMicrophones)
+    const refreshOnFocus = () => void refreshMicrophones()
+    window.addEventListener('focus', refreshOnFocus)
     return () => {
-      window.clearInterval(interval)
-      window.removeEventListener('focus', refreshMicrophones)
+      window.removeEventListener('focus', refreshOnFocus)
     }
   }, [refreshMicrophones])
 
-  useEffect(() => {
-    let unlisten: (() => void) | undefined
-    const timer = window.setTimeout(() => {
-      void onSetupEvent((event) => {
-        if (event.kind === 'progress') {
-          setReadiness((current) => current && applySetupProgress(current, event))
-          return
-        }
-        if (event.kind === 'failed') onError(event.error)
-        void Promise.all([getReadiness(), listModels(), getSettings(), listLanguages()])
-          .then(([nextReadiness, nextInventory, nextSettings, nextLanguages]) => {
-            setReadiness(nextReadiness)
-            setInventory(nextInventory)
-            settingsRef.current = nextSettings
-            setLocalSettings(nextSettings)
-            setLanguages(nextLanguages)
-            void onStatusChange()
-          })
-          .catch((reason: unknown) => onError(messageFrom(reason)))
-      }).then((fn) => {
-        unlisten = fn
-      })
-    }, 0)
-    return () => {
-      window.clearTimeout(timer)
-      unlisten?.()
+  const handleSettingsSetupEvent = useCallback((event: SetupEvent) => {
+    if (event.kind === 'progress') {
+      setReadiness((current) => current && applySetupProgress(current, event))
     }
-  }, [onError, onStatusChange])
+    if (event.kind === 'failed') onError(event.error)
+  }, [onError])
+  const getSettingsSetupRefresh = useCallback((event: SetupEvent) => {
+    if (event.kind === 'progress') return null
+    return () => Promise.all([getReadiness(), listModels(), getSettings(), listLanguages()])
+      .then(([nextReadiness, nextInventory, nextSettings, nextLanguages]) => () => {
+        setReadiness(nextReadiness)
+        setInventory(nextInventory)
+        settingsRef.current = nextSettings
+        setLocalSettings(nextSettings)
+        setLanguages(nextLanguages)
+        void onStatusChange()
+      })
+  }, [onStatusChange])
+  useAsyncSubscription({
+    subscribe: onSetupEvent,
+    onEvent: handleSettingsSetupEvent,
+    getRefresh: getSettingsSetupRefresh,
+    onError: reportSettingsError,
+  })
 
   useEffect(() => {
     settingsRef.current = settings
@@ -1281,6 +1346,7 @@ function SettingsView({
             testing={testingMic}
             onRefresh={refreshMicrophones}
             onSelect={(id) => {
+              micTestVersion.current += 1
               setMicTest(null)
               void setMicrophone(id)
                 .then(setMicrophones)
@@ -1288,9 +1354,19 @@ function SettingsView({
                 .catch((reason: unknown) => onError(messageFrom(reason)))
             }}
             onTest={(id, fallback) => {
+              const version = ++micTestVersion.current
               setTestingMic(true)
               const run = fallback ? testMicrophoneFallback() : testInputDevice(id)
-              void run.then(setMicTest).finally(() => setTestingMic(false))
+              void run
+                .then((result) => {
+                  if (micTestVersion.current === version) setMicTest(result)
+                })
+                .catch((reason: unknown) => {
+                  if (micTestVersion.current === version) reportSettingsError(reason)
+                })
+                .finally(() => {
+                  if (micTestVersion.current === version) setTestingMic(false)
+                })
             }}
           />
         ) : (
@@ -1346,7 +1422,7 @@ function SettingsView({
         {readiness ? (
           <SpeechSetupSection
             readiness={readiness}
-            onRefresh={() => void getReadiness().then(setReadiness)}
+            onRefresh={() => void getReadiness().then(setReadiness).catch(reportSettingsError)}
             onError={onError}
           />
         ) : null}
