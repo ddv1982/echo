@@ -35,6 +35,10 @@ export interface PreviewDesktopApi extends DesktopApi {
   seedPreviewReadiness(readiness: Readiness): void
 }
 
+function ipcSnapshot<T>(value: T): T {
+  return structuredClone(value)
+}
+
 export function createPreviewDesktopApi(): PreviewDesktopApi {
 
   const PREVIEW_RECORDING_POLICY: RecordingPolicy = {
@@ -65,7 +69,7 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
       cleanupName: 'Rules · fillers and punctuation',
       hudEnabled: true,
       recordingLimitSeconds: PREVIEW_RECORDING_POLICY.defaultSeconds,
-      recordingPolicy: PREVIEW_RECORDING_POLICY,
+      recordingPolicy: ipcSnapshot(PREVIEW_RECORDING_POLICY),
       settingsPath: '/tmp/echo-preview/config.json',
       version: __APP_VERSION__,
       lastError: null,
@@ -196,7 +200,7 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
   }
 
   function seedPreviewInventory(inventory: ModelInventory) {
-    previewInventory = inventory
+    previewInventory = ipcSnapshot(inventory)
   }
 
   let previewDictionary: DictionaryItem[] = defaultPreviewDictionary()
@@ -209,15 +213,15 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
   }
 
   function getAppStatus(): Promise<AppStatus> {
-    return Promise.resolve({ ...previewStatus })
+    return Promise.resolve(ipcSnapshot(previewStatus))
   }
 
   function getShortcutStatus(): Promise<ShortcutStatus> {
-    return Promise.resolve(previewStatus.shortcut)
+    return Promise.resolve(ipcSnapshot(previewStatus.shortcut))
   }
 
   function retryShortcut(): Promise<ShortcutStatus> {
-    return Promise.resolve(previewStatus.shortcut)
+    return Promise.resolve(ipcSnapshot(previewStatus.shortcut))
   }
 
   function repairLegacyShortcut(): Promise<LegacyShortcutSetup> {
@@ -247,21 +251,21 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
         verificationIdentity: `gnome:${repaired.binding}:${repaired.command}`,
       },
     }
-    return Promise.resolve(repaired)
+    return Promise.resolve(ipcSnapshot(repaired))
   }
 
   function getHistory(): Promise<HistoryItem[]> {
-    return Promise.resolve([...previewHistory])
+    return Promise.resolve(ipcSnapshot(previewHistory))
   }
 
   function getDictionary(): Promise<DictionaryItem[]> {
-    return Promise.resolve([...previewDictionary])
+    return Promise.resolve(ipcSnapshot(previewDictionary))
   }
 
   function addDictionaryEntry(spoken: string, written: string): Promise<DictionaryItem> {
     const entry = { spoken, written, createdAt: Math.floor(Date.now() / 1000) }
     previewDictionary = [...previewDictionary, entry]
-    return Promise.resolve(entry)
+    return Promise.resolve(ipcSnapshot(entry))
   }
 
   function removeDictionaryEntry(spoken: string, written: string): Promise<boolean> {
@@ -343,15 +347,15 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
       staleInstalls: [],
       firstPathHit: previewStatus.currentExe || previewStatus.firstPathHit,
     }
-    return Promise.resolve(removed)
+    return Promise.resolve(ipcSnapshot(removed))
   }
 
   function getSettings(): Promise<Settings> {
-    return Promise.resolve({ ...previewSettings })
+    return Promise.resolve(ipcSnapshot(previewSettings))
   }
 
   function listModels(): Promise<ModelInventory> {
-    return Promise.resolve({ ...previewInventory })
+    return Promise.resolve(ipcSnapshot(previewInventory))
   }
 
   function defaultPreviewLanguages(): LanguageOptions {
@@ -374,11 +378,11 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
 
   function listLanguages(): Promise<LanguageOptions> {
     if (previewLanguagesError) return Promise.reject(new Error(previewLanguagesError))
-    return Promise.resolve({ ...previewLanguages })
+    return Promise.resolve(ipcSnapshot(previewLanguages))
   }
 
   function seedPreviewLanguages(languages: LanguageOptions) {
-    previewLanguages = languages
+    previewLanguages = ipcSnapshot(languages)
   }
 
   function seedPreviewLanguagesError(message: string) {
@@ -403,14 +407,14 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
       previewLanguages = defaultPreviewLanguages()
     }
     applyPreviewStatus(next)
-    return Promise.resolve({ ...next })
+    return Promise.resolve(ipcSnapshot(next))
   }
 
   let previewMicTestError: string | null = null
 
   function seedPreviewSettings(settings: Settings) {
-    previewSettings = settings
-    applyPreviewStatus(settings)
+    previewSettings = ipcSnapshot(settings)
+    applyPreviewStatus(previewSettings)
   }
 
   function seedPreviewMicTestError(message: string) {
@@ -459,15 +463,15 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
 
   function listGpuDevices(refresh = false): Promise<GpuDevice[]> {
     void refresh
-    return Promise.resolve(previewGpuDevices.map((device) => ({ ...device })))
+    return Promise.resolve(ipcSnapshot(previewGpuDevices))
   }
 
   function seedPreviewGpuDevices(devices: GpuDevice[]) {
-    previewGpuDevices = devices
+    previewGpuDevices = ipcSnapshot(devices)
   }
 
   function seedPreviewStatus(status: Partial<AppStatus>) {
-    previewStatus = { ...previewStatus, ...status }
+    previewStatus = { ...previewStatus, ...ipcSnapshot(status) }
   }
 
   function resetPreviewSettings() {
@@ -616,7 +620,7 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
   let previewMicrophones: MicrophoneSnapshot = defaultPreviewMicrophones(previewDevices)
 
   function getMicrophones(): Promise<MicrophoneSnapshot> {
-    return Promise.resolve(previewMicrophones)
+    return Promise.resolve(ipcSnapshot(previewMicrophones))
   }
 
   function setMicrophone(id: string | null): Promise<MicrophoneSnapshot> {
@@ -637,7 +641,7 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
       firstRunComplete:
         microphoneReady && previewReadiness.speechReady && previewReadiness.hasSuccessfulDictation,
     }
-    return Promise.resolve(previewMicrophones)
+    return Promise.resolve(ipcSnapshot(previewMicrophones))
   }
 
   function previewMicrophoneTest(device: InputDevice | null): MicrophoneTestResult {
@@ -660,7 +664,7 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
     const device = id == null
       ? previewMicrophones.systemDefault
       : previewDevices.find((candidate) => candidate.id === id) ?? null
-    return Promise.resolve(previewMicrophoneTest(device))
+    return Promise.resolve(ipcSnapshot(previewMicrophoneTest(device)))
   }
 
   function testMicrophoneFallback(): Promise<MicrophoneTestResult> {
@@ -669,14 +673,12 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
       : previewMicrophones.selection.kind === 'ambiguous-legacy-name'
         ? previewMicrophones.selection.fallback
         : previewMicrophones.systemDefault
-    return Promise.resolve(
-      previewMicrophoneTest(fallback),
-    )
+    return Promise.resolve(ipcSnapshot(previewMicrophoneTest(fallback)))
   }
 
   function seedPreviewMicrophones(snapshot: MicrophoneSnapshot) {
-    previewDevices = snapshot.devices
-    previewMicrophones = snapshot
+    previewMicrophones = ipcSnapshot(snapshot)
+    previewDevices = previewMicrophones.devices
   }
 
   function defaultPreviewReadiness(): Readiness {
@@ -724,11 +726,14 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
   const previewSetupTimers = new Map<string, number>()
 
   function getReadiness(): Promise<Readiness> {
-    return Promise.resolve(previewReadiness)
+    return Promise.resolve(ipcSnapshot(previewReadiness))
   }
 
   function startSetup(plan: SetupPlanId, managedCopy = false): Promise<string> {
     void managedCopy
+    if (previewReadiness.activeOperation != null) {
+      return Promise.reject(new Error('setup operation already in progress'))
+    }
     const operationId = `preview-${plan}`
     previewReadiness = { ...previewReadiness, activeOperation: operationId, activeCancellable: true }
     const selected = previewReadiness.plans.find((candidate) => candidate.id === plan)
@@ -793,7 +798,7 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
   }
 
   function seedPreviewReadiness(readiness: Readiness) {
-    previewReadiness = readiness
+    previewReadiness = ipcSnapshot(readiness)
   }
 
   function defaultPreviewSettings(): Settings {
