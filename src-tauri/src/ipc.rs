@@ -182,7 +182,9 @@ mod tests {
             .0;
         body.lines()
             .map(|line| line.trim().trim_end_matches(','))
-            .filter(|line| !line.is_empty())
+            .filter(|line| {
+                !line.is_empty() && !line.starts_with("#[cfg") && !line.starts_with("perf::")
+            })
             .collect()
     }
 

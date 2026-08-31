@@ -27,6 +27,7 @@ tokio = { version = "1.43", default-features = false, features = ["macros", "rt"
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+status-perf-probe = []
 
 [dev-dependencies]
 tauri = { version = "2.11.5", features = ["test"] }

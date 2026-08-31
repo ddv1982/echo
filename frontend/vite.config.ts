@@ -2,15 +2,15 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { workspaceVersionFromManifest } from './src/workspaceVersion.ts'
+
+const statusPerfProbe = process.env.VITE_STATUS_PERF_PROBE === '1'
 
 // The workspace Cargo.toml is the single version source. The frontend reads
 // it at build time; nothing in the frontend may hardcode a version.
 function workspaceVersion(): string {
   const manifest = readFileSync(fileURLToPath(new URL('../Cargo.toml', import.meta.url)), 'utf8')
-  const section = manifest.match(/\[workspace\.package\]([^[]*)/)
-  const version = section?.[1]?.match(/version\s*=\s*"([^"]+)"/)
-  if (!version) throw new Error('workspace.package.version not found in Cargo.toml')
-  return version[1]
+  return workspaceVersionFromManifest(manifest)
 }
 
 export default defineConfig({
@@ -26,7 +26,12 @@ export default defineConfig({
       apply: 'build',
       generateBundle: (options, bundle) => {
         void options
-        const previewModules = ['/src/preview.tsx', '/src/api/previewDesktopApi.ts']
+        if (statusPerfProbe) return
+        const previewModules = [
+          '/src/preview.tsx',
+          '/src/api/previewDesktopApi.ts',
+          '/src/perf/statusPerf.ts',
+        ]
         const previewStrings = ['Jabra Elite 8 Active', 'This is a test. This is a test.', 'echo-preview']
         for (const output of Object.values(bundle)) {
           if (output.type !== 'chunk') continue
