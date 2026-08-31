@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import {
+  addDictionaryEntriesBatch,
   addDictionaryEntry,
   getDictionary,
   removeDictionaryEntry,
@@ -59,5 +60,16 @@ export function useDictionary(onError: (reason: unknown) => void) {
     }
   }, [onError, refresh])
 
-  return { items, add, remove, refresh }
+  const addBatch = useCallback(async (written: string, spoken: string[]) => {
+    try {
+      const result = await addDictionaryEntriesBatch(written, spoken)
+      if (active.current) setItems(result.entries)
+      return result
+    } catch (reason) {
+      if (active.current) onError(reason)
+      throw reason
+    }
+  }, [onError])
+
+  return { items, add, addBatch, remove, refresh }
 }

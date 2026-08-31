@@ -54,6 +54,7 @@ export function useAppController() {
   const {
     items: dictionary,
     add: addDictionaryEntry,
+    addBatch: addDictionaryEntriesBatch,
     remove: removeDictionaryEntry,
     refresh: refreshDictionary,
   } = useDictionary(reportError)
@@ -117,6 +118,7 @@ export function useAppController() {
     refreshStatus,
     toggleRecording: toggle,
     addDictionaryEntry,
+    addDictionaryEntriesBatch,
     removeDictionaryEntry,
   }
 }

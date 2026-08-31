@@ -464,7 +464,7 @@ describe('Echo desktop shell', () => {
     expect(await screen.findByRole('button', { name: 'Stop and transcribe' })).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Dictionary' }))
-    fireEvent.change(screen.getByLabelText('What Whisper hears'), { target: { value: 'ray cast' } })
+    fireEvent.change(screen.getByLabelText('What Echo hears'), { target: { value: 'ray cast' } })
     fireEvent.change(screen.getByLabelText('What Echo should write'), { target: { value: 'Raycast' } })
     fireEvent.click(screen.getByRole('button', { name: 'Add' }))
     expect(await screen.findByText('Raycast')).toBeInTheDocument()

@@ -36,6 +36,7 @@ function App() {
     refreshStatus,
     toggleRecording,
     addDictionaryEntry,
+    addDictionaryEntriesBatch,
     removeDictionaryEntry,
   } = useAppController()
   const shortcut = presentShortcut(status.shortcut)
@@ -109,6 +110,7 @@ function App() {
             <DictionaryView
               items={dictionary}
               onAdd={addDictionaryEntry}
+              onAddBatch={addDictionaryEntriesBatch}
               onRemove={removeDictionaryEntry}
             />
           ) : null}
