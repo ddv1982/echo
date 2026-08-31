@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.14.1
+
+- The frontend now reads `workspace.package.version` from the correct Cargo manifest field. The Rust toolchain version can no longer replace the Echo version in frontend build metadata.
+- Maintainers can measure cold and warm status-call latency through a release WebView. The probe is excluded from normal builds, and committed baselines separate Tauri overhead from backend discovery and presentation costs.
+
 ## v0.14.0
 
 - Managed components no longer trust a persistent verification marker. Echo validates strong file identity in each process, rehashes after metadata changes, and always hashes during an explicit Verify.
