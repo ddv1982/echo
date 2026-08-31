@@ -14,7 +14,8 @@ DATA_DIR="$VERIFY_ROOT/data"
 MODEL_DIR="$VERIFY_ROOT/models"
 mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$MODEL_DIR" "$VERIFY_ROOT/bin"
 printf '%s' 'corrupt config sentinel' > "$CONFIG_DIR/config.json"
-printf '%s' '{"entries":[{"spoken":"claude code","written":"Claude Code","created_at":1}]}' > "$DATA_DIR/dictionary.json"
+DICTIONARY_JSON='{"entries":[{"spoken":"claude code","written":"Claude Code","created_at":1}]}'
+printf '%s' "$DICTIONARY_JSON" > "$DATA_DIR/dictionary.json"
 
 run_fake() {
   ECHO_ENGINE=fake \
@@ -59,7 +60,7 @@ test ! -e "$VERIFY_ROOT/exact.output.txt"
 )
 cmp "$VERIFY_ROOT/expected-clean" "$VERIFY_ROOT/relative.output"
 test "$(cat "$CONFIG_DIR/config.json")" = 'corrupt config sentinel'
-test "$(cat "$DATA_DIR/dictionary.json")" = 'corrupt dictionary sentinel'
+test "$(cat "$DATA_DIR/dictionary.json")" = "$DICTIONARY_JSON"
 test ! -e "$CONFIG_DIR/config.json.corrupt"
 for name in history.json status recording.lock recording.stop dictionary.json.corrupt; do
   test ! -e "$DATA_DIR/$name"
