@@ -394,6 +394,21 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
 
 
   function setSettings(change: SettingsChange): Promise<SettingsSnapshot> {
+    if (change.kind === 'enableWhisperGpu') {
+      const variable =
+        previewSettings.engine.source === 'env' &&
+        previewSettings.engine.effective !== 'whisper'
+        ? 'ECHO_ENGINE'
+        : previewSettings.whisperAcceleration.source === 'env' &&
+            previewSettings.whisperAcceleration.effective !== 'gpu'
+          ? 'ECHO_WHISPER_ACCELERATION'
+          : null
+      if (variable) {
+        return Promise.reject(new Error(
+          `${variable} controls this setting; remove the environment override to use Whisper with GPU`,
+        ))
+      }
+    }
     const next = applyPreviewSettingsChange(change)
     previewSettings = next
     if (next.engine.effective === 'parakeet') {
@@ -846,6 +861,16 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
         kind: 'ready',
         engine: { kind: 'parakeet', model: previewLanguages.model ?? 'tdt-0.6b-v3' },
         language: 'auto',
+      }
+    }
+    const requestedModel = previewSettings.whisperModel.effective
+    if (
+      requestedModel &&
+      !previewInventory.whisper.some((model) => model.name === requestedModel)
+    ) {
+      return {
+        kind: 'unavailable',
+        reason: `Whisper model ${requestedModel} is not installed`,
       }
     }
     if (

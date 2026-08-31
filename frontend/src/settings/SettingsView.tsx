@@ -99,7 +99,6 @@ export function SettingsView({
     whisper,
     lastUsed,
     parakeetRuns,
-    whisperRuns,
     selectEngine,
     enableWhisperGpu,
     updateLanguage,
@@ -119,6 +118,27 @@ export function SettingsView({
     testMicrophone,
   } = useSettingsController({ onStatusChange, onError })
   const previousRun = status.lastRun ?? lastUsed
+  const resolvedWhisperModel =
+    nextRun?.kind === 'ready' && nextRun.engine.kind === 'whisper'
+      ? nextRun.engine.model
+      : null
+  const canChooseWhisperModel =
+    resolvedWhisperModel != null ||
+    (nextRun?.kind === 'unavailable' &&
+      (settings?.engine.effective === 'whisper' || settings?.engine.effective === 'auto'))
+  const selectedWhisperModelMeta = inventory && settings
+    ? selectedModelMeta(
+        inventory.whisper,
+        resolvedWhisperModel ?? settings.whisperModel.effective,
+      )
+    : null
+  const gpuTransitionOverride =
+    settings?.engine.source === 'env' && settings.engine.effective !== 'whisper'
+    ? 'ECHO_ENGINE'
+    : settings?.whisperAcceleration.source === 'env' &&
+        settings.whisperAcceleration.effective !== 'gpu'
+      ? 'ECHO_WHISPER_ACCELERATION'
+      : null
 
   return (
     <div className="view-stack settings-view" data-settings-surface>
@@ -177,13 +197,18 @@ export function SettingsView({
             </div>
             <span className="status-note chip">Parakeet TDT 0.6B v3</span>
           </div>
-        ) : settings && whisperRuns && inventory && nextRun?.kind === 'ready' && nextRun.engine.kind === 'whisper' ? (
+        ) : settings && inventory && canChooseWhisperModel ? (
           <div className="setting-row">
             <div>
               <strong>Speech model</strong>
-              <span>{overrideHintPlain(settings.whisperModel.source, `Automatic currently resolves ${nextRun.engine.model}.`)}</span>
-              {selectedModelMeta(inventory.whisper, nextRun.engine.model) ? (
-                <span className="model-meta">{selectedModelMeta(inventory.whisper, nextRun.engine.model)}</span>
+              <span>{overrideHintPlain(
+                settings.whisperModel.source,
+                resolvedWhisperModel
+                  ? `Automatic currently resolves ${resolvedWhisperModel}.`
+                  : 'Choose an installed Whisper model to recover transcription.',
+              )}</span>
+              {selectedWhisperModelMeta ? (
+                <span className="model-meta">{selectedWhisperModelMeta}</span>
               ) : null}
             </div>
             <select
@@ -192,7 +217,11 @@ export function SettingsView({
               disabled={settings.whisperModel.source === 'env' || settingsWritePending}
               onChange={(event) => void updateWhisperModel(event.target.value || null)}
             >
-              <option value="">Automatic · currently {nextRun.engine.model}</option>
+              <option value="">
+                {resolvedWhisperModel
+                  ? `Automatic · currently ${resolvedWhisperModel}`
+                  : 'Automatic · best installed'}
+              </option>
               {modelOptions(inventory.whisper, settings.whisperModel.effective).map((option) => (
                 <option key={option.value} value={option.value}>{option.label}</option>
               ))}
@@ -253,9 +282,13 @@ export function SettingsView({
               <span className="status-note chip">
                 {settings.whisperAcceleration.effective === 'gpu' ? 'GPU saved' : 'CPU saved'}
               </span>
-              <button type="button" onClick={() => void enableWhisperGpu()} disabled={settingsWritePending}>
-                Use Whisper with GPU
-              </button>
+              {gpuTransitionOverride ? (
+                <span className="status-note chip">{gpuTransitionOverride}</span>
+              ) : (
+                <button type="button" onClick={() => void enableWhisperGpu()} disabled={settingsWritePending}>
+                  Use Whisper with GPU
+                </button>
+              )}
             </div>
           </div>
         ) : null}

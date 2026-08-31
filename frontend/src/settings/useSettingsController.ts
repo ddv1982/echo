@@ -247,7 +247,6 @@ export function useSettingsController({
   }, [reportSettingsError])
 
   const parakeetRuns = nextRun?.kind === 'ready' && nextRun.engine.kind === 'parakeet'
-  const whisperRuns = nextRun?.kind === 'ready' && nextRun.engine.kind === 'whisper'
 
   const updateLanguage = useCallback((value: string | null) =>
     updateSettings({ kind: 'language', value }), [updateSettings])
@@ -280,7 +279,6 @@ export function useSettingsController({
     whisper,
     lastUsed,
     parakeetRuns,
-    whisperRuns,
     selectEngine,
     enableWhisperGpu,
     updateLanguage,

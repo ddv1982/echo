@@ -808,6 +808,28 @@ describe('Echo desktop shell', () => {
     await waitFor(async () => expect((await getPreferences()).whisperModel.value).toBeNull())
   })
 
+  it('keeps the Whisper model picker available when the saved model is missing', async () => {
+    const defaults = await getPreferences()
+    seedPreviewSettings({
+      ...defaults,
+      engine: { value: 'whisper', effective: 'whisper', source: 'file' },
+      whisperModel: { value: 'missing-model', effective: 'missing-model', source: 'file' },
+    })
+
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+
+    expect(await screen.findByText('Whisper model missing-model is not installed')).toBeInTheDocument()
+    const picker = screen.getByLabelText('Speech model')
+    expect(picker).toHaveValue('missing-model')
+    expect(within(picker).getByRole('option', { name: 'missing-model · not on disk' }))
+      .toBeInTheDocument()
+
+    fireEvent.change(picker, { target: { value: 'small' } })
+    await waitFor(() => expect(screen.getByText('Whisper · small · Automatic language')).toBeInTheDocument())
+  })
+
   it('projects Auto as Parakeet when the backend language mode resolves Parakeet', async () => {
     seedPreviewLanguages({
       mode: 'parakeet',
@@ -860,6 +882,44 @@ describe('Echo desktop shell', () => {
         .getByRole('button', { name: 'GPU' }),
     ).toHaveAttribute('data-active', 'true')
     expect(await screen.findByRole('button', { name: /Install Whisper/ })).toBeInTheDocument()
+  })
+
+  it.each([
+    {
+      label: 'engine',
+      expectedVariable: 'ECHO_ENGINE',
+      engine: { value: null, effective: 'parakeet', source: 'env' as const },
+      acceleration: { value: 'gpu', effective: 'gpu', source: 'file' as const },
+    },
+    {
+      label: 'acceleration',
+      expectedVariable: 'ECHO_WHISPER_ACCELERATION',
+      engine: { value: 'parakeet', effective: 'parakeet', source: 'file' as const },
+      acceleration: { value: 'gpu', effective: 'cpu', source: 'env' as const },
+    },
+  ])('does not offer a GPU transition blocked by an $label override', async ({
+    expectedVariable,
+    engine,
+    acceleration,
+  }) => {
+    const defaults = await getPreferences()
+    seedPreviewSettings({
+      ...defaults,
+      engine,
+      whisperAcceleration: acceleration,
+    })
+    seedPreviewLanguages({
+      mode: 'parakeet',
+      model: 'tdt-0.6b-v3',
+      options: [{ code: 'en', englishName: 'english', group: 'all' }],
+    })
+
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+
+    expect(await screen.findAllByText(expectedVariable)).not.toHaveLength(0)
+    expect(screen.queryByRole('button', { name: 'Use Whisper with GPU' })).not.toBeInTheDocument()
   })
 
   it('honors a backend Whisper projection over a file-backed Parakeet choice', async () => {
@@ -1309,7 +1369,8 @@ describe('Echo desktop shell', () => {
     expect(
       await screen.findAllByText(/ggml-base\.en\.bin is English-only/),
     ).not.toHaveLength(0)
-    // An English-only model offers no picker.
+    expect(screen.getByLabelText('Speech model')).toBeInTheDocument()
+    // An English-only model offers no language picker.
     expect(screen.queryByLabelText('Language')).not.toBeInTheDocument()
   })
 

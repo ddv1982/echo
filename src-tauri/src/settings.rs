@@ -48,7 +48,30 @@ fn read_from_file(file: &echo_core::Config) -> Result<Settings, String> {
 }
 
 pub(super) fn change(change: SettingsChange) -> Result<(), String> {
+    if matches!(&change, SettingsChange::EnableWhisperGpu) {
+        if let Some(variable) = whisper_gpu_environment_override(&process_settings_env()) {
+            return Err(format!(
+                "{variable} controls this setting; remove the environment override to use Whisper with GPU"
+            ));
+        }
+    }
     update_file_config(|config| apply_change(config, change))
+}
+
+fn whisper_gpu_environment_override(env: &SettingsEnv) -> Option<&'static str> {
+    if env
+        .engine
+        .as_deref()
+        .and_then(echo_core::EngineChoice::from_env_var)
+        .is_some_and(|engine| engine != echo_core::EngineChoice::Whisper)
+    {
+        return Some("ECHO_ENGINE");
+    }
+    env.whisper_acceleration
+        .as_deref()
+        .and_then(echo_core::WhisperAccelerationPreference::parse)
+        .filter(|preference| *preference != echo_core::WhisperAccelerationPreference::Gpu)
+        .map(|_| "ECHO_WHISPER_ACCELERATION")
 }
 
 fn apply_change(config: &mut echo_core::Config, change: SettingsChange) -> Result<(), String> {
@@ -512,6 +535,34 @@ mod tests {
             config.whisper_acceleration,
             Some(echo_core::WhisperAccelerationPreference::Gpu)
         );
+    }
+
+    #[test]
+    fn environment_overrides_block_the_combined_whisper_gpu_change() {
+        let engine = SettingsEnv {
+            engine: Some("parakeet".into()),
+            ..SettingsEnv::default()
+        };
+        assert_eq!(
+            whisper_gpu_environment_override(&engine),
+            Some("ECHO_ENGINE")
+        );
+
+        let acceleration = SettingsEnv {
+            whisper_acceleration: Some("cpu".into()),
+            ..SettingsEnv::default()
+        };
+        assert_eq!(
+            whisper_gpu_environment_override(&acceleration),
+            Some("ECHO_WHISPER_ACCELERATION")
+        );
+
+        let desired = SettingsEnv {
+            engine: Some("whisper".into()),
+            whisper_acceleration: Some("gpu".into()),
+            ..SettingsEnv::default()
+        };
+        assert_eq!(whisper_gpu_environment_override(&desired), None);
     }
 
     #[test]
