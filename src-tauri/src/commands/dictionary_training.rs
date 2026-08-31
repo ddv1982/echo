@@ -14,7 +14,12 @@ static NEXT_CAPTURE_ID: AtomicU64 = AtomicU64::new(1);
 struct ActiveCapture {
     id: String,
     cancel: CancellationToken,
-    recording: JoinHandle<Result<CaptureResult, echo::audio::AudioError>>,
+    recording: JoinHandle<Result<TrainingCapture, echo::audio::AudioError>>,
+}
+
+struct TrainingCapture {
+    audio: CaptureResult,
+    _session: echo::rec::RecordingSession,
 }
 
 #[derive(Default)]
@@ -63,6 +68,7 @@ pub(crate) fn start_dictionary_training_sample(
         return Err("A voice training sample is already recording.".to_string());
     }
 
+    let session = echo::rec::RecordingSession::acquire()?;
     let capture = AudioCapture::open_default().map_err(|error| error.to_string())?;
     let cancel = capture.cancel.clone();
     let capture_id = format!(
@@ -72,7 +78,25 @@ pub(crate) fn start_dictionary_training_sample(
     );
     let recording = std::thread::Builder::new()
         .name("echo-dictionary-training".to_string())
-        .spawn(move || capture.record(MAX_SAMPLE_DURATION, None))
+        .spawn(move || {
+            let audio = std::thread::scope(|scope| {
+                let stop = capture.cancel.clone();
+                let session_ref = &session;
+                scope.spawn(move || {
+                    while !stop.is_cancelled() && !session_ref.stop_requested() {
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                    stop.cancel();
+                });
+                let audio = capture.record(MAX_SAMPLE_DURATION, None);
+                capture.cancel.cancel();
+                audio
+            })?;
+            Ok(TrainingCapture {
+                audio,
+                _session: session,
+            })
+        })
         .map_err(|error| error.to_string())?;
     *active = Some(ActiveCapture {
         id: capture_id.clone(),
@@ -103,7 +127,10 @@ pub(crate) async fn finish_dictionary_training_sample(
         )
         .map_err(|error| error.to_string())?;
         let transcript = prepared
-            .transcribe(&captured.pcm, TranscriptionPurpose::DictionaryTraining)
+            .transcribe(
+                &captured.audio.pcm,
+                TranscriptionPurpose::DictionaryTraining,
+            )
             .map_err(|error| error.to_string())?;
         Ok(DictionaryTrainingSample {
             transcript: transcript.raw,

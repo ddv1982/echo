@@ -96,9 +96,11 @@ export function DictionaryTrainer({
     [items, state],
   )
   const uniqueReviewed = useMemo(() => uniqueReviewSamples(reviewed), [reviewed])
+  const closeBlocked = state.kind === 'saving' ||
+    (state.kind === 'collecting' && state.capture.kind === 'finishing')
 
   const close = () => {
-    if (state.kind === 'saving') return
+    if (closeBlocked) return
     const capture = activeCapture(state)
     if (capture) void cancelDictionaryTrainingSample(capture.captureId)
     onClose()
@@ -215,7 +217,13 @@ export function DictionaryTrainer({
               Say the same word or phrase five times. Echo will learn the different ways your selected transcription model hears it.
             </p>
           </div>
-          <button className="icon-button" type="button" onClick={close} aria-label="Close voice training" disabled={state.kind === 'saving'}>
+          <button
+            className="icon-button"
+            type="button"
+            onClick={close}
+            aria-label="Close voice training"
+            disabled={closeBlocked}
+          >
             <X size={18} aria-hidden="true" />
           </button>
         </header>

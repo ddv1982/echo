@@ -196,4 +196,39 @@ describe('dictionary voice trainer', () => {
 
     await waitFor(() => expect(trainingMocks.cancel).toHaveBeenCalledWith('late-capture'))
   })
+
+  it('keeps the dialog open while a stopped take is transcribing', async () => {
+    let resolveFinish: ((sample: DictionaryTrainingSample) => void) | undefined
+    trainingMocks.finish.mockImplementation(() => new Promise((resolve) => {
+      resolveFinish = resolve
+    }))
+    const onClose = vi.fn()
+    const triggerRef = createRef<HTMLButtonElement>()
+    render(
+      <>
+        <button ref={triggerRef} type="button">Voice trigger</button>
+        <DictionaryTrainer
+          items={[]}
+          triggerRef={triggerRef}
+          onClose={onClose}
+          onSave={() => Promise.reject(new Error('not reached'))}
+        />
+      </>,
+    )
+
+    fireEvent.change(screen.getByLabelText('Exact word or phrase'), { target: { value: 'Canonical' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Start five takes' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Record take 1' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop take 1' }))
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Close voice training' })).toBeDisabled()
+    })
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    expect(onClose).not.toHaveBeenCalled()
+
+    resolveFinish?.({ transcript: 'heard phrase', engine: 'whisper-small' })
+    expect(await screen.findByText('heard phrase', { selector: 'q' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Close voice training' })).toBeEnabled()
+  })
 })
