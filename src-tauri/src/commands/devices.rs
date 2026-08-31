@@ -224,6 +224,17 @@ pub(crate) fn test_microphone_fallback() -> echo_desktop::ipc::MicrophoneTestRes
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::future::Future;
+
+    fn assert_async_gpu_devices(
+        _: impl Future<Output = Result<Vec<echo_desktop::ipc::GpuDevice>, String>>,
+    ) {
+    }
+
+    #[test]
+    fn gpu_device_listing_yields_before_detection() {
+        assert_async_gpu_devices(list_gpu_devices(false));
+    }
 
     #[test]
     fn dedicated_microphone_update_writes_id_and_clears_legacy_name() {
