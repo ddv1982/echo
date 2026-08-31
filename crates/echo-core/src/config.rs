@@ -3,7 +3,6 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::cleanup::CleanupMode;
 use crate::engine::WhisperAccelerationPreference;
 use crate::language::LanguageChoice;
 use crate::paths::{config_path, set_aside_corrupt, write_atomic};
@@ -81,8 +80,6 @@ pub struct Config {
     pub engine: Option<EngineChoice>,
     #[serde(default)]
     pub whisper_model: Option<String>,
-    #[serde(default)]
-    pub cleanup: Option<CleanupMode>,
     #[serde(default)]
     pub hud: Option<bool>,
     #[serde(default)]
@@ -175,9 +172,6 @@ mod tests {
         let original = Config {
             engine: Some(EngineChoice::Whisper),
             whisper_model: Some("base.en".into()),
-            cleanup: Some(CleanupMode::LocalModel {
-                model: "llama3".into(),
-            }),
             hud: Some(true),
             record_seconds: Some(8),
             microphone: Some(MicrophoneSelection::Device {
@@ -199,7 +193,6 @@ mod tests {
         let loaded = Config::load_from(&path).unwrap();
         assert_eq!(loaded.engine, Some(EngineChoice::Fake));
         assert_eq!(loaded.whisper_model, None);
-        assert_eq!(loaded.cleanup, None);
         assert_eq!(loaded.hud, None);
         assert_eq!(loaded.record_seconds, None);
         assert_eq!(loaded.microphone, None);
@@ -272,6 +265,25 @@ mod tests {
         assert!(!saved.contains("hold_key"));
         assert!(!saved.contains("toggle_shortcut"));
         assert_eq!(Config::load_from(&path).unwrap(), loaded);
+    }
+
+    #[test]
+    fn obsolete_cleanup_is_ignored_and_removed_on_save() {
+        let path = scratch_path("old-cleanup");
+        fs::write(
+            &path,
+            r#"{"engine":"parakeet","cleanup":"rules","hud":false,"record_seconds":12}"#,
+        )
+        .unwrap();
+
+        let loaded = Config::load_from(&path).unwrap();
+        assert_eq!(loaded.engine, Some(EngineChoice::Parakeet));
+        assert_eq!(loaded.hud, Some(false));
+        assert_eq!(loaded.record_seconds, Some(12));
+
+        loaded.save_to(&path).unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+        assert!(!saved.contains("cleanup"), "saved config: {saved}");
     }
 
     #[test]

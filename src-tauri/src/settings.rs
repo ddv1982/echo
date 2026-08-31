@@ -23,7 +23,6 @@ pub(super) fn update_file_config(
 struct SettingsEnv {
     engine: Option<String>,
     whisper_model: Option<String>,
-    cleanup: Option<String>,
     hud: Option<String>,
     record_seconds: Option<String>,
     language: Option<String>,
@@ -91,12 +90,6 @@ fn apply_change(config: &mut echo_core::Config, change: SettingsChange) -> Resul
         SettingsChange::WhisperModel { value } => {
             config.whisper_model = nonempty(value);
         }
-        SettingsChange::Cleanup { value } => {
-            config.cleanup = value
-                .as_deref()
-                .map(|raw| echo_core::CleanupMode::parse(raw).map_err(|error| error.to_string()))
-                .transpose()?;
-        }
         SettingsChange::Hud { value } => {
             config.hud = value;
         }
@@ -142,7 +135,6 @@ fn process_settings_env() -> SettingsEnv {
     SettingsEnv {
         engine: env::var("ECHO_ENGINE").ok(),
         whisper_model: env::var("ECHO_WHISPER_MODEL").ok(),
-        cleanup: env::var("ECHO_CLEANUP").ok(),
         hud: env::var("ECHO_HUD").ok(),
         record_seconds: env::var("ECHO_RECORD_SECONDS").ok(),
         language: env::var("ECHO_LANGUAGE").ok(),
@@ -155,11 +147,6 @@ fn settings_from(
     file: &echo_core::Config,
     language_default: &str,
 ) -> Result<Settings, String> {
-    let env_cleanup = env
-        .cleanup
-        .as_deref()
-        .and_then(|raw| echo_core::CleanupMode::parse(raw).ok())
-        .map(|mode| cleanup_name(&mode));
     Ok(Settings {
         engine: setting_field(
             env.engine
@@ -173,11 +160,6 @@ fn settings_from(
             env.whisper_model.clone().filter(|name| !name.is_empty()),
             file.whisper_model.clone(),
             String::new(),
-        ),
-        cleanup: setting_field(
-            env_cleanup,
-            file.cleanup.as_ref().map(cleanup_name),
-            "rules".to_string(),
         ),
         hud: hud_field(env.hud.as_deref(), file.hud),
         record_seconds: record_seconds_field(env.record_seconds.as_deref(), file.record_seconds),
@@ -230,10 +212,6 @@ fn config_from_values_with_base(
         ),
     };
     config.whisper_model = nonempty(settings.whisper_model.value.clone());
-    config.cleanup = match settings.cleanup.value.as_deref() {
-        None => None,
-        Some(raw) => Some(echo_core::CleanupMode::parse(raw).map_err(|err| err.to_string())?),
-    };
     config.hud = settings.hud.value;
     config.record_seconds = settings
         .record_seconds
@@ -338,14 +316,6 @@ fn engine_name(choice: echo_core::EngineChoice) -> String {
     .to_string()
 }
 
-fn cleanup_name(mode: &echo_core::CleanupMode) -> String {
-    match mode {
-        echo_core::CleanupMode::Off => "off".to_string(),
-        echo_core::CleanupMode::Rules => "rules".to_string(),
-        echo_core::CleanupMode::LocalModel { model } => format!("local:{model}"),
-    }
-}
-
 fn nonempty(value: Option<String>) -> Option<String> {
     value.filter(|raw| !raw.is_empty())
 }
@@ -398,11 +368,6 @@ mod tests {
                 effective: "base.en".into(),
                 source: SettingSource::Default,
             },
-            cleanup: SettingField {
-                value: Some("off".into()),
-                effective: "rules".into(),
-                source: SettingSource::Default,
-            },
             hud: SettingField {
                 value: Some(false),
                 effective: true,
@@ -440,8 +405,6 @@ mod tests {
         assert_eq!(got.engine.source, SettingSource::File);
         assert_eq!(got.whisper_model.value.as_deref(), Some("tiny.en"));
         assert_eq!(got.whisper_model.effective, "tiny.en");
-        assert_eq!(got.cleanup.value.as_deref(), Some("off"));
-        assert_eq!(got.cleanup.effective, "off");
         assert_eq!(got.hud.value, Some(false));
         assert!(!got.hud.effective);
         assert_eq!(got.record_seconds.value, Some(8));
@@ -501,17 +464,6 @@ mod tests {
 
         apply_change(
             &mut config,
-            SettingsChange::Cleanup {
-                value: Some("off".into()),
-            },
-        )
-        .unwrap();
-        assert_eq!(config.engine, Some(EngineChoice::Whisper));
-        assert_eq!(config.whisper_model.as_deref(), Some("small"));
-        assert_eq!(config.microphone, Some(microphone));
-
-        apply_change(
-            &mut config,
             SettingsChange::Engine {
                 value: Some("parakeet".into()),
             },
@@ -519,6 +471,7 @@ mod tests {
         .unwrap();
         assert_eq!(config.engine, Some(EngineChoice::Parakeet));
         assert_eq!(config.whisper_model, None);
+        assert_eq!(config.microphone, Some(microphone));
     }
 
     #[test]

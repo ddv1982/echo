@@ -151,11 +151,7 @@ fn run_record_with_limit(mut stop: StopWhen, limit: RecordingLimit) -> i32 {
             return 1;
         }
     };
-    let transcript = match prepared.transcribe(
-        &capture.pcm,
-        &dict,
-        crate::transcribe::CleanupPolicy::DictionaryFallback,
-    ) {
+    let transcript = match prepared.transcribe(&capture.pcm, &dict) {
         Ok(transcript) => transcript,
         Err(err) => {
             hud.set_state(crate::ui::hud::HudState::Failed);
@@ -175,9 +171,6 @@ fn run_record_with_limit(mut stop: StopWhen, limit: RecordingLimit) -> i32 {
         }
     };
 
-    if session.begin_cleaning().is_ok() {
-        log_state(&session);
-    }
     if session.begin_injecting().is_ok() {
         log_state(&session);
     }
@@ -551,7 +544,6 @@ fn log_state(session: &Session) {
         SessionState::Idle => "Idle",
         SessionState::Recording { .. } => "Recording",
         SessionState::Transcribing => "Transcribing",
-        SessionState::Cleaning => "Cleaning",
         SessionState::Injecting => "Injecting",
         SessionState::Failed { reason } => {
             println!("session Failed {}", reason.as_str());

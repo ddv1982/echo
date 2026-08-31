@@ -2,7 +2,7 @@
 
 Echo is private, local dictation for Linux. Press **Super+Alt+Space**, speak,
 then press it again. Echo transcribes the recording on your machine and inserts
-the cleaned text at the active cursor.
+the transcribed text at the active cursor.
 
 ## Install
 
@@ -37,9 +37,9 @@ you define spoken-to-written replacements.
 
 ## Privacy and local data
 
-Audio and transcripts stay on this machine. Speech recognition, cleanup, and
-text insertion run locally. Echo uses the network only to download speech
-models and managed runtime components that you choose to install.
+Audio and transcripts stay on this machine. Speech recognition, Dictionary
+replacements, and text insertion run locally. Echo uses the network only to
+download speech models and managed runtime components that you choose to install.
 
 Settings and local data follow the XDG directories. Models and managed
 components normally live in `~/.cache/echo`; history and dictionary data

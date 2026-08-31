@@ -1,4 +1,3 @@
-mod cleanup;
 mod config;
 mod dictionary;
 mod engine;
@@ -12,9 +11,8 @@ mod recording;
 mod session;
 mod types;
 
-pub use cleanup::{Cleanup, CleanupError, CleanupMode, OffCleanup, RulesCleanup};
 pub use config::{resolve, Config, EngineChoice, MicrophoneSelection};
-pub use dictionary::{DictEntry, Dictionary, RecognitionHints, Rewrite};
+pub use dictionary::{DictEntry, Dictionary, RecognitionHints};
 pub use engine::{
     DecodeOptions, Engine, EngineError, RunDetail, Transcript, WhisperAccelerationPreference,
     WhisperAccelerationSkip, WhisperAttemptTelemetry, WhisperRecoveryReason,

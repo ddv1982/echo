@@ -15,7 +15,6 @@ pub struct AppStatus {
     pub injection_name: String,
     pub injection_ready: bool,
     pub shortcut: ShortcutStatus,
-    pub cleanup_name: String,
     pub hud_enabled: bool,
     pub recording_limit_seconds: Option<u32>,
     pub recording_policy: RecordingPolicy,
@@ -249,7 +248,6 @@ pub struct SettingField<T> {
 pub struct Settings {
     pub engine: SettingField<String>,
     pub whisper_model: SettingField<String>,
-    pub cleanup: SettingField<String>,
     pub hud: SettingField<bool>,
     pub record_seconds: SettingField<u32>,
     pub language: SettingField<String>,
@@ -266,7 +264,6 @@ pub struct Settings {
 pub enum SettingsChange {
     Engine { value: Option<String> },
     WhisperModel { value: Option<String> },
-    Cleanup { value: Option<String> },
     Hud { value: Option<bool> },
     RecordSeconds { value: Option<u32> },
     Language { value: Option<String> },

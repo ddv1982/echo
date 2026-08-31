@@ -7,7 +7,6 @@ pub enum SessionState {
     Idle,
     Recording { started: Instant },
     Transcribing,
-    Cleaning,
     Injecting,
     Failed { reason: FailReason },
 }
@@ -79,19 +78,9 @@ impl Session {
         }
     }
 
-    pub fn begin_cleaning(&mut self) -> Result<(), SessionError> {
-        match self.state {
-            SessionState::Transcribing => {
-                self.state = SessionState::Cleaning;
-                Ok(())
-            }
-            _ => Err(self.illegal("begin_cleaning")),
-        }
-    }
-
     pub fn begin_injecting(&mut self) -> Result<(), SessionError> {
         match self.state {
-            SessionState::Cleaning => {
+            SessionState::Transcribing => {
                 self.state = SessionState::Injecting;
                 Ok(())
             }
@@ -147,7 +136,6 @@ mod tests {
         Idle,
         Recording,
         Transcribing,
-        Cleaning,
         Injecting,
         Failed,
     }
@@ -156,7 +144,6 @@ mod tests {
     enum Event {
         StartRecording,
         FinishRecording,
-        BeginCleaning,
         BeginInjecting,
         CompleteInject,
         Fail,
@@ -172,15 +159,9 @@ mod tests {
                 session.start_recording().unwrap();
                 session.finish_recording().unwrap();
             }
-            Kind::Cleaning => {
-                session.start_recording().unwrap();
-                session.finish_recording().unwrap();
-                session.begin_cleaning().unwrap();
-            }
             Kind::Injecting => {
                 session.start_recording().unwrap();
                 session.finish_recording().unwrap();
-                session.begin_cleaning().unwrap();
                 session.begin_injecting().unwrap();
             }
             Kind::Failed => {
@@ -195,7 +176,6 @@ mod tests {
         match event {
             Event::StartRecording => session.start_recording(),
             Event::FinishRecording => session.finish_recording(),
-            Event::BeginCleaning => session.begin_cleaning(),
             Event::BeginInjecting => session.begin_injecting(),
             Event::CompleteInject => session.complete_inject(),
             Event::Fail => session.fail(FailReason::EngineError),
@@ -208,7 +188,6 @@ mod tests {
             SessionState::Idle => Kind::Idle,
             SessionState::Recording { .. } => Kind::Recording,
             SessionState::Transcribing => Kind::Transcribing,
-            SessionState::Cleaning => Kind::Cleaning,
             SessionState::Injecting => Kind::Injecting,
             SessionState::Failed { .. } => Kind::Failed,
         }
@@ -218,13 +197,11 @@ mod tests {
         match (from, event) {
             (Kind::Idle, Event::StartRecording) => Some(Kind::Recording),
             (Kind::Recording, Event::FinishRecording) => Some(Kind::Transcribing),
-            (Kind::Transcribing, Event::BeginCleaning) => Some(Kind::Cleaning),
-            (Kind::Cleaning, Event::BeginInjecting) => Some(Kind::Injecting),
+            (Kind::Transcribing, Event::BeginInjecting) => Some(Kind::Injecting),
             (Kind::Injecting, Event::CompleteInject) => Some(Kind::Idle),
-            (
-                Kind::Recording | Kind::Transcribing | Kind::Cleaning | Kind::Injecting,
-                Event::Fail,
-            ) => Some(Kind::Failed),
+            (Kind::Recording | Kind::Transcribing | Kind::Injecting, Event::Fail) => {
+                Some(Kind::Failed)
+            }
             (Kind::Failed, Event::Ack) => Some(Kind::Idle),
             _ => None,
         }
@@ -236,14 +213,12 @@ mod tests {
             Kind::Idle,
             Kind::Recording,
             Kind::Transcribing,
-            Kind::Cleaning,
             Kind::Injecting,
             Kind::Failed,
         ];
         let events = [
             Event::StartRecording,
             Event::FinishRecording,
-            Event::BeginCleaning,
             Event::BeginInjecting,
             Event::CompleteInject,
             Event::Fail,

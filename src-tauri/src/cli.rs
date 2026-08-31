@@ -49,7 +49,10 @@ struct TranscribeArgs {
     format: OutputFormat,
     #[arg(long, default_value = "-")]
     output: PathBuf,
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Print the engine transcript before Echo's post-recognition Dictionary replacements"
+    )]
     raw: bool,
     #[arg(long)]
     whisper_threads: Option<NonZeroUsize>,
@@ -289,14 +292,8 @@ fn run_transcribe(args: TranscribeArgs) -> Result<(), CliFailure> {
                 CliFailure::runtime(message)
             }
         })?;
-    let cleanup_policy = if args.raw {
-        echo::transcribe::CleanupPolicy::Skip
-    } else {
-        echo::transcribe::CleanupPolicy::Strict
-    };
-    let result =
-        echo::transcribe::transcribe_file(&args.file, &prepared, &dictionary, cleanup_policy)
-            .map_err(|error| CliFailure::runtime(error.to_string()))?;
+    let result = echo::transcribe::transcribe_file(&args.file, &prepared, &dictionary)
+        .map_err(|error| CliFailure::runtime(error.to_string()))?;
     let payload = render_transcription(&result, prepared.resolved(), args.format, args.raw)
         .map_err(CliFailure::runtime)?;
     write_payload(&args.output, &payload).map_err(CliFailure::runtime)

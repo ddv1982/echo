@@ -169,7 +169,6 @@ pub(super) fn app_status() -> AppStatus {
     #[cfg(feature = "status-perf-probe")]
     timer.mark(crate::perf::StatusStage::History);
     let recording_in_process = status.state == "Recording" && echo::rec::recording_in_process();
-    let cleanup_name = echo::cleanup::mode_name();
     let hud_enabled = echo::ui::hud::enabled();
     let settings_path = echo_core::config_path().to_string_lossy().into_owned();
     #[cfg(feature = "status-perf-probe")]
@@ -184,7 +183,6 @@ pub(super) fn app_status() -> AppStatus {
         injection_name: health.injection_name,
         injection_ready: health.injection_ready,
         shortcut,
-        cleanup_name,
         hud_enabled,
         recording_limit_seconds: recording_limit.map(echo_core::RecordingLimit::seconds),
         recording_policy: recording_policy_dto(),

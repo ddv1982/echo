@@ -1,9 +1,8 @@
 use std::path::{Path, PathBuf};
 
 use echo_core::{
-    CleanupError, CleanupMode, Config, DecodeOptions, Dictionary, Engine, EngineChoice,
-    EngineError, EngineId, Language, LanguageChoice, Pcm16kMono, RecognitionHints, RunDetail,
-    WhisperAccelerationPreference,
+    Config, DecodeOptions, Dictionary, Engine, EngineChoice, EngineError, EngineId, Language,
+    LanguageChoice, Pcm16kMono, RecognitionHints, RunDetail, WhisperAccelerationPreference,
 };
 
 use crate::install::ManagedPath;
@@ -30,7 +29,6 @@ pub struct EnvOptions {
     pub engine: Option<EngineChoice>,
     pub whisper_model: Option<String>,
     pub language: Option<LanguageChoice>,
-    pub cleanup: Option<CleanupMode>,
 }
 
 impl EnvOptions {
@@ -48,10 +46,6 @@ impl EnvOptions {
                 .ok()
                 .as_deref()
                 .and_then(LanguageChoice::parse),
-            cleanup: std::env::var("ECHO_CLEANUP")
-                .ok()
-                .as_deref()
-                .and_then(|raw| CleanupMode::parse(raw).ok()),
         }
     }
 }
@@ -67,14 +61,6 @@ pub(crate) fn requested_engine_for_process(file: &Config) -> EngineChoice {
 #[must_use]
 pub(crate) fn requested_language_for_process(file: &Config) -> Option<LanguageChoice> {
     EnvOptions::read().language.or(file.language)
-}
-
-#[must_use]
-pub(crate) fn resolved_cleanup_for_process(file: &Config) -> CleanupMode {
-    EnvOptions::read()
-        .cleanup
-        .or_else(|| file.cleanup.clone())
-        .unwrap_or(CleanupMode::Rules)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,7 +143,6 @@ pub enum ResolvedEngine {
 pub struct ResolvedRun {
     pub engine: ResolvedEngine,
     pub language: LanguageChoice,
-    pub cleanup: CleanupMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,7 +179,6 @@ struct RequestedRun {
     language_source: Option<Source>,
     whisper_model: Option<String>,
     model_source: Option<Source>,
-    cleanup: CleanupMode,
 }
 
 impl RequestedRun {
@@ -233,11 +217,6 @@ impl RequestedRun {
             language_source,
             whisper_model,
             model_source,
-            cleanup: env
-                .cleanup
-                .clone()
-                .or_else(|| file.cleanup.clone())
-                .unwrap_or(CleanupMode::Rules),
         }
     }
 
@@ -360,7 +339,6 @@ pub fn resolve_run(
     Ok(ResolvedRun {
         engine: selected,
         language,
-        cleanup: requested.cleanup,
     })
 }
 
@@ -399,13 +377,6 @@ pub struct PreparedTranscription {
     _managed_paths: Vec<ManagedPath>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CleanupPolicy {
-    Strict,
-    DictionaryFallback,
-    Skip,
-}
-
 impl PreparedTranscription {
     #[must_use]
     pub fn resolved(&self) -> &ResolvedRun {
@@ -416,7 +387,6 @@ impl PreparedTranscription {
         &self,
         pcm: &Pcm16kMono,
         dictionary: &Dictionary,
-        cleanup_policy: CleanupPolicy,
     ) -> Result<CompletedTranscription, TranscriptionError> {
         let hints = match self.resolved.engine {
             ResolvedEngine::Whisper { .. } => RecognitionHints::from_dictionary(dictionary),
@@ -431,28 +401,10 @@ impl PreparedTranscription {
             .engine
             .transcribe(pcm, &options)
             .map_err(TranscriptionError::Engine)?;
-        let english = self
-            .resolved
-            .language
-            .permits_english_rules(transcript.detail.language.as_deref());
-        let rewrite = match cleanup_policy {
-            CleanupPolicy::Skip => echo_core::Rewrite {
-                text: transcript.raw.clone(),
-            },
-            CleanupPolicy::Strict | CleanupPolicy::DictionaryFallback => {
-                let cleanup = effective_cleanup(self.resolved.cleanup.clone(), english);
-                match cleanup.apply(&transcript.raw, dictionary) {
-                    Ok(rewrite) => rewrite,
-                    Err(_) if cleanup_policy == CleanupPolicy::DictionaryFallback => {
-                        dictionary.rewrite(&transcript.raw)
-                    }
-                    Err(error) => return Err(TranscriptionError::Cleanup(error)),
-                }
-            }
-        };
+        let text = dictionary.rewrite(&transcript.raw);
         Ok(CompletedTranscription {
             raw: transcript.raw,
-            text: rewrite.text,
+            text,
             engine: transcript.engine,
             audio_ms: transcript.audio_ms,
             infer_ms: transcript.infer_ms,
@@ -461,14 +413,6 @@ impl PreparedTranscription {
             hint_count,
         })
     }
-}
-
-fn effective_cleanup(mode: CleanupMode, english: bool) -> Box<dyn echo_core::Cleanup> {
-    let mode = match (mode, english) {
-        (CleanupMode::Rules, false) => CleanupMode::Off,
-        (mode, _) => mode,
-    };
-    crate::cleanup::from_mode(mode)
 }
 
 pub fn prepare_with_config(
@@ -692,10 +636,9 @@ pub fn transcribe_file(
     path: &Path,
     prepared: &PreparedTranscription,
     dictionary: &Dictionary,
-    cleanup_policy: CleanupPolicy,
 ) -> Result<CompletedTranscription, TranscriptionError> {
     let capture = crate::audio::load_wav(path).map_err(TranscriptionError::Audio)?;
-    prepared.transcribe(&capture.pcm, dictionary, cleanup_policy)
+    prepared.transcribe(&capture.pcm, dictionary)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -714,7 +657,6 @@ pub struct CompletedTranscription {
 pub enum TranscriptionError {
     Audio(crate::audio::AudioError),
     Engine(EngineError),
-    Cleanup(CleanupError),
 }
 
 impl std::fmt::Display for TranscriptionError {
@@ -722,7 +664,6 @@ impl std::fmt::Display for TranscriptionError {
         match self {
             Self::Audio(error) => error.fmt(f),
             Self::Engine(error) => error.fmt(f),
-            Self::Cleanup(error) => error.fmt(f),
         }
     }
 }
@@ -989,13 +930,11 @@ mod tests {
         let file = Config {
             engine: Some(EngineChoice::Parakeet),
             language: Some(german()),
-            cleanup: Some(CleanupMode::Off),
             ..Config::default()
         };
         let env = EnvOptions {
             engine: Some(EngineChoice::Whisper),
             language: Some(LanguageChoice::Auto),
-            cleanup: Some(CleanupMode::Rules),
             ..EnvOptions::default()
         };
         let error = resolve_run(
@@ -1018,7 +957,6 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(resolved.engine, ResolvedEngine::Whisper { .. }));
-        assert_eq!(resolved.cleanup, CleanupMode::Rules);
     }
 
     #[test]

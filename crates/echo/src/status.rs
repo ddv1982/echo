@@ -34,7 +34,6 @@ pub fn state_name(state: SessionState) -> String {
         SessionState::Idle => "Idle".to_string(),
         SessionState::Recording { .. } => "Recording".to_string(),
         SessionState::Transcribing => "Transcribing".to_string(),
-        SessionState::Cleaning => "Cleaning".to_string(),
         SessionState::Injecting => "Injecting".to_string(),
         SessionState::Failed { reason } => format!("Failed {}", reason.as_str()),
     }

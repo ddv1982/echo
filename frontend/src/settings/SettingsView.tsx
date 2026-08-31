@@ -27,11 +27,6 @@ const ENGINE_LABELS: Record<string, string> = {
   fake: 'Fake',
 }
 
-const CLEANUP_OPTIONS = [
-  { value: 'off', label: 'Off' },
-  { value: 'rules', label: 'Rules' },
-] as const
-
 const THEME_OPTIONS: readonly ThemeMode[] = ['system', 'light', 'dark']
 
 const DEFAULT_RECORDING_LIMIT_OPTION = 'default'
@@ -107,7 +102,6 @@ export function SettingsView({
     updateWhisperAcceleration,
     updateWhisperGpuDevice,
     updateHud,
-    updateCleanup,
     repairLegacy,
     retryShortcutStatus,
     refreshMicrophones,
@@ -330,38 +324,17 @@ export function SettingsView({
         />
       </section>
 
-      <section className="panel settings-section" aria-label="Text and appearance">
-        <SectionHeading title="Text and appearance" subtitle="Transcript cleanup and application display." />
+      <section className="panel settings-section" aria-label="Appearance">
+        <SectionHeading title="Appearance" subtitle="Application display." />
         {settings ? (
-          <>
-            <div className="setting-row">
-              <div>
-                <strong>Cleanup</strong>
-                <span>{overrideHint(settings.cleanup.source, 'ECHO_CLEANUP', 'Drop filler words, capitalize, and add punctuation.')}</span>
-              </div>
-              <div className="segmented-control" role="group" aria-label="Cleanup">
-                {CLEANUP_OPTIONS.map((option) => (
-                  <button
-                    type="button"
-                    key={option.value}
-                    data-active={settings.cleanup.effective === option.value}
-                    disabled={settings.cleanup.source === 'env'}
-                    onClick={() => void updateCleanup(option.value)}
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <SettingToggle
-              label="Recording HUD"
-              description="Show the recording capsule while you dictate."
-              value={settings.hud.effective}
-              source={settings.hud.source}
-              envName="ECHO_HUD"
-              onChange={(value) => void updateHud(value)}
-            />
-          </>
+          <SettingToggle
+            label="Recording HUD"
+            description="Show the recording capsule while you dictate."
+            value={settings.hud.effective}
+            source={settings.hud.source}
+            envName="ECHO_HUD"
+            onChange={(value) => void updateHud(value)}
+          />
         ) : null}
         <div className="setting-row">
           <div><strong>Theme</strong><span>Applied to the Echo window only.</span></div>

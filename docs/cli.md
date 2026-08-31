@@ -40,7 +40,7 @@ Common options:
 | `--language auto\|CODE` | Detect the language or pin a Whisper language code. |
 | `--format text\|json` | Select the output format. |
 | `--output PATH` | Write to a file. Use `-` for standard output. |
-| `--raw` | Skip Echo's cleanup pass. Cannot be used with JSON. |
+| `--raw` | Print the engine transcript before Echo's post-recognition Dictionary replacements. Cannot be used with JSON. |
 | `--whisper-acceleration cpu\|gpu` | Select the Whisper runtime. |
 | `--whisper-threads N` | Override Whisper worker threads. |
 | `--whisper-beam-size N` | Override the Whisper beam size. |

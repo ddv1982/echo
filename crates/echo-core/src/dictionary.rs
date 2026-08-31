@@ -75,11 +75,6 @@ pub struct DictEntry {
     pub created_at: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Rewrite {
-    pub text: String,
-}
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct DictFile {
     entries: Vec<DictEntry>,
@@ -182,11 +177,9 @@ impl Dictionary {
     }
 
     #[must_use]
-    pub fn rewrite(&self, text: &str) -> Rewrite {
+    pub fn rewrite(&self, text: &str) -> String {
         if text.is_empty() {
-            return Rewrite {
-                text: String::new(),
-            };
+            return String::new();
         }
         let hay = text.to_ascii_lowercase();
         let mut taken = vec![false; text.len()];
@@ -224,9 +217,7 @@ impl Dictionary {
             }
         }
         hits.sort_by_key(|hit| hit.0);
-        Rewrite {
-            text: apply_hits(text, &hits),
-        }
+        apply_hits(text, &hits)
     }
 }
 
@@ -285,35 +276,35 @@ mod tests {
     fn hit_rewrites_phrase() {
         let d = dict(&[("clawed code", "Claude Code")]);
         let rewrite = d.rewrite("open clawed code please");
-        assert_eq!(rewrite.text, "open Claude Code please");
+        assert_eq!(rewrite, "open Claude Code please");
     }
 
     #[test]
     fn miss_leaves_text() {
         let d = dict(&[("clawed code", "Claude Code")]);
         let rewrite = d.rewrite("open the editor");
-        assert_eq!(rewrite.text, "open the editor");
+        assert_eq!(rewrite, "open the editor");
     }
 
     #[test]
     fn longest_whole_phrase_wins() {
         let d = dict(&[("code", "CODE"), ("clawed code", "Claude Code")]);
         let rewrite = d.rewrite("clawed code and more code");
-        assert_eq!(rewrite.text, "Claude Code and more CODE");
+        assert_eq!(rewrite, "Claude Code and more CODE");
     }
 
     #[test]
     fn does_not_match_inside_words() {
         let d = dict(&[("code", "CODE")]);
         let rewrite = d.rewrite("codebase uses code");
-        assert_eq!(rewrite.text, "codebase uses CODE");
+        assert_eq!(rewrite, "codebase uses CODE");
     }
 
     #[test]
     fn empty_input() {
         let d = dict(&[("code", "CODE")]);
         let rewrite = d.rewrite("");
-        assert_eq!(rewrite.text, "");
+        assert_eq!(rewrite, "");
     }
 
     #[test]

@@ -6,7 +6,7 @@ fn fixture() -> PathBuf {
 }
 
 #[test]
-fn rec_once_falls_back_from_cleanup_failure_and_writes_stores() {
+fn rec_once_writes_transcript_stores() {
     let data = std::env::temp_dir().join(format!("echo-hist-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
     std::fs::create_dir_all(&data).unwrap();
@@ -15,7 +15,6 @@ fn rec_once_falls_back_from_cleanup_failure_and_writes_stores() {
         .args(["rec", "--once"])
         .env("ECHO_AUDIO_FIXTURE", fixture())
         .env("ECHO_ENGINE", "fake")
-        .env("ECHO_CLEANUP", "local:/definitely/missing-echo-cleaner")
         .env("ECHO_SKIP_INJECT", "1")
         .env("ECHO_DATA_DIR", &data)
         .output()
