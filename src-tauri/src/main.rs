@@ -22,6 +22,7 @@ mod perf;
 mod settings;
 mod setup;
 mod shortcuts;
+mod speech;
 mod status;
 
 #[cfg(test)]

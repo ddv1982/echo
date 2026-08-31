@@ -12,6 +12,7 @@ import type {
   GpuDevice,
   LanguageOptions,
   LastRun,
+  NextSpeechRun,
   RecordingPolicy,
   SettingField,
   SettingSource,
@@ -94,10 +95,19 @@ export function SettingsView({
     settingsWritePending,
     gpuDevices,
     gpuPrerequisite,
+    nextRun,
+    whisper,
+    lastUsed,
     parakeetRuns,
-    whisperRuns,
-    patch,
     selectEngine,
+    enableWhisperGpu,
+    updateLanguage,
+    updateWhisperModel,
+    updateRecordSeconds,
+    updateWhisperAcceleration,
+    updateWhisperGpuDevice,
+    updateHud,
+    updateCleanup,
     repairLegacy,
     retryShortcutStatus,
     refreshMicrophones,
@@ -107,169 +117,46 @@ export function SettingsView({
     selectMicrophone,
     testMicrophone,
   } = useSettingsController({ onStatusChange, onError })
+  const previousRun = status.lastRun ?? lastUsed
+  const resolvedWhisperModel =
+    nextRun?.kind === 'ready' && nextRun.engine.kind === 'whisper'
+      ? nextRun.engine.model
+      : null
+  const canChooseWhisperModel =
+    resolvedWhisperModel != null ||
+    (nextRun?.kind === 'unavailable' &&
+      (settings?.engine.effective === 'whisper' || settings?.engine.effective === 'auto'))
+  const selectedWhisperModelMeta = inventory && settings
+    ? selectedModelMeta(
+        inventory.whisper,
+        resolvedWhisperModel ?? settings.whisperModel.effective,
+      )
+    : null
+  const gpuTransitionOverride =
+    settings?.engine.source === 'env' && settings.engine.effective !== 'whisper'
+    ? 'ECHO_ENGINE'
+    : settings?.whisperAcceleration.source === 'env' &&
+        settings.whisperAcceleration.effective !== 'gpu'
+      ? 'ECHO_WHISPER_ACCELERATION'
+      : null
 
   return (
     <div className="view-stack settings-view" data-settings-surface>
       <ViewHeader title="Settings" subtitle="Change how Echo records and transcribes, on this machine." />
-      <section className="panel settings-section" aria-label="General">
-        <SectionHeading title="General" subtitle="The few decisions that matter." />
-        {microphones ? (
-          <MicrophoneChooser
-            snapshot={microphones}
-            test={micTest}
-            testing={testingMic}
-            onRefresh={refreshMicrophones}
-            onSelect={selectMicrophone}
-            onTest={testMicrophone}
-          />
-        ) : (
-          <SettingLine label="Microphone" value={status.microphoneReady ? 'Default input available' : 'No default input'} tone={status.microphoneReady ? 'ok' : 'attention'} />
-        )}
-        {settings && languages ? (
-          <LanguageRow
-            languages={languages}
-            settings={settings}
-            status={status}
-            onChange={(value) => void patch('language', value)}
-          />
+      <section className="panel settings-section" aria-label="Transcription">
+        <SectionHeading title="Transcription" subtitle="Choose what Echo will use for the next recording." />
+        {settings && nextRun ? (
+          <NextRunSummary nextRun={nextRun} settings={settings} />
         ) : null}
-        {status.languageWarning ? (
-          <div className="setting-row" role="status">
-            <span className="status-note" data-tone="attention">
-              <span className="status-dot" data-tone="attention" aria-hidden="true" />
-              {status.languageWarning}
-            </span>
-          </div>
-        ) : null}
-        {settings && parakeetRuns ? (
-          <div className="setting-row">
-            <div>
-              <strong>Speech model</strong>
-              <span>Fixed for Parakeet. Switch the speech engine in Advanced to use Whisper models.</span>
-              <span className="model-meta">Fixed model · automatic across 25 European languages</span>
-            </div>
-            <span className="status-note chip">Parakeet TDT 0.6B v3</span>
-          </div>
-        ) : settings && whisperRuns && inventory ? (
-          <div className="setting-row">
-            <div>
-              <strong>Speech model</strong>
-              <span>{overrideHintPlain(settings.whisperModel.source, 'Auto runs the best installed Whisper model.')}</span>
-              {selectedModelMeta(inventory.whisper, settings.whisperModel.effective) ? (
-                <span className="model-meta">{selectedModelMeta(inventory.whisper, settings.whisperModel.effective)}</span>
-              ) : null}
-            </div>
-            <select
-              aria-label="Speech model"
-              value={settings.whisperModel.effective}
-              disabled={settings.whisperModel.source === 'env' || settingsWritePending}
-              onChange={(event) => void patch('whisperModel', event.target.value || null)}
-            >
-              <option value="">Auto · best installed</option>
-              {modelOptions(inventory.whisper, settings.whisperModel.effective).map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
-          </div>
-        ) : null}
-        {readiness ? (
-          <SpeechSetupSection
-            readiness={readiness}
-            onRefresh={refreshReadiness}
-            onError={onError}
-          />
-        ) : null}
-        {settings ? (
-          <SettingSelect
-            label="Maximum recording length"
-            description="Stops timed recordings and recordings started from the button or shortcut."
-            value={recordingLimitValue(settings.recordSeconds)}
-            options={recordingLimitOptions(status.recordingPolicy, settings.recordSeconds)}
-            source={settings.recordSeconds.source}
-            envName="ECHO_RECORD_SECONDS"
-            onChange={(value) =>
-              void patch(
-                'recordSeconds',
-                value === DEFAULT_RECORDING_LIMIT_OPTION ? null : Number(value),
-              )
-            }
-          />
-        ) : null}
-        <ShortcutRow
-          status={status}
-          repairing={repairingLegacyShortcut}
-          onRepair={() => void repairLegacy()}
-          onError={onError}
-          onRetry={retryShortcutStatus}
-        />
-        <div className="setting-row">
-          <div><strong>Theme</strong><span>Applied to the Echo window only.</span></div>
-          <div className="segmented-control" role="group" aria-label="Application theme">
-            {THEME_OPTIONS.map((mode) => (
-              <button type="button" key={mode} data-active={theme === mode} onClick={() => onThemeChange(mode)}>{capitalize(mode)}</button>
-            ))}
-          </div>
-        </div>
-      </section>
-      <details className="panel settings-section advanced-section">
-        <summary>Advanced</summary>
         {settings ? (
           <>
             <div className="setting-row">
               <div>
-                <strong>Whisper acceleration</strong>
-                <span>
-                  {overrideHint(
-                    settings.whisperAcceleration.source,
-                    'ECHO_WHISPER_ACCELERATION',
-                    'CPU always works. GPU is measured on Intel and unproven on other vendors, and falls back to CPU when it cannot run.',
-                  )}
-                </span>
-              </div>
-              <div className="segmented-control" role="group" aria-label="Whisper acceleration">
-                {([
-                  { value: 'cpu', label: 'CPU' },
-                  { value: 'gpu', label: 'GPU' },
-                ] as const).map((option) => (
-                  <button
-                    type="button"
-                    key={option.value}
-                    data-active={settings.whisperAcceleration.effective === option.value}
-                    disabled={settings.whisperAcceleration.source === 'env' || settingsWritePending}
-                    onClick={() =>
-                      void patch(
-                        'whisperAcceleration',
-                        option.value === settings.whisperAcceleration.effective &&
-                          settings.whisperAcceleration.source === 'default'
-                          ? null
-                          : option.value,
-                      )
-                    }
-                  >
-                    {option.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-            {settings.whisperAcceleration.effective === 'gpu' && readiness != null ? (
-              <GpuDeviceRow
-                devices={gpuDevices}
-                pinned={settings.whisperGpuDevice.effective}
-                disabled={settingsWritePending}
-                prerequisite={gpuPrerequisite}
-                installBusy={readiness?.activeOperation != null}
-                onInstall={installGpuPrerequisite}
-                onRefresh={refreshGpuDevices}
-                onSelect={(value) => void patch('whisperGpuDevice', value)}
-              />
-            ) : null}
-            <div className="setting-row">
-              <div>
                 <strong>Speech engine</strong>
-                <span>{overrideHint(settings.engine.source, 'ECHO_ENGINE', 'Which local engine transcribes recordings.')}</span>
+                <span>{overrideHint(settings.engine.source, 'ECHO_ENGINE', 'Automatic shows the engine Echo has resolved for the next recording.')}</span>
               </div>
               <div className="segmented-control" role="group" aria-label="Speech engine">
-                {[{ value: 'auto', label: 'Auto' }]
+                {[{ value: 'auto', label: 'Automatic' }]
                   .concat(
                     (inventory?.engines ?? []).map((engine) => ({
                       value: engine.id,
@@ -277,15 +164,15 @@ export function SettingsView({
                     })),
                   )
                   .map((option) => (
-                    <button
-                      type="button"
-                      key={option.value}
-                      data-active={settings.engine.effective === option.value}
-                      disabled={settings.engine.source === 'env' || settingsWritePending}
-                      onClick={() => void selectEngine(option.value)}
-                    >
-                      {option.label}
-                    </button>
+                  <button
+                    type="button"
+                    key={option.value}
+                    data-active={settings.engine.effective === option.value}
+                    disabled={settings.engine.source === 'env' || settingsWritePending}
+                    onClick={() => void selectEngine(option.value)}
+                  >
+                    {option.label}
+                  </button>
                   ))}
               </div>
             </div>
@@ -299,18 +186,158 @@ export function SettingsView({
                   </span>
                 </div>
               ))}
-            <SettingToggle
-              label="Recording HUD"
-              description="Show the recording capsule while you dictate."
-              value={settings.hud.effective}
-              source={settings.hud.source}
-              envName="ECHO_HUD"
-              onChange={(value) => void patch('hud', value)}
-            />
+          </>
+        ) : null}
+        {settings && parakeetRuns ? (
+          <div className="setting-row">
+            <div>
+              <strong>Speech model</strong>
+              <span>Parakeet uses one fixed model and chooses language automatically.</span>
+              <span className="model-meta">Fixed model · 25 European languages</span>
+            </div>
+            <span className="status-note chip">Parakeet TDT 0.6B v3</span>
+          </div>
+        ) : settings && inventory && canChooseWhisperModel ? (
+          <div className="setting-row">
+            <div>
+              <strong>Speech model</strong>
+              <span>{overrideHintPlain(
+                settings.whisperModel.source,
+                resolvedWhisperModel
+                  ? `Automatic currently resolves ${resolvedWhisperModel}.`
+                  : 'Choose an installed Whisper model to recover transcription.',
+              )}</span>
+              {selectedWhisperModelMeta ? (
+                <span className="model-meta">{selectedWhisperModelMeta}</span>
+              ) : null}
+            </div>
+            <select
+              aria-label="Speech model"
+              value={settings.whisperModel.effective}
+              disabled={settings.whisperModel.source === 'env' || settingsWritePending}
+              onChange={(event) => void updateWhisperModel(event.target.value || null)}
+            >
+              <option value="">
+                {resolvedWhisperModel
+                  ? `Automatic · currently ${resolvedWhisperModel}`
+                  : 'Automatic · best installed'}
+              </option>
+              {modelOptions(inventory.whisper, settings.whisperModel.effective).map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </div>
+        ) : null}
+        {settings && languages ? (
+          <LanguageRow
+            languages={languages}
+            settings={settings}
+            lastUsed={previousRun}
+            onChange={(value) => void updateLanguage(value)}
+          />
+        ) : null}
+        {settings && whisper?.kind === 'applicable' ? (
+          <>
+            <div className="setting-row">
+              <div>
+                <strong>Whisper performance</strong>
+                <span>{overrideHint(settings.whisperAcceleration.source, 'ECHO_WHISPER_ACCELERATION', 'GPU is a preference with automatic CPU fallback when it cannot run.')}</span>
+              </div>
+              <div className="segmented-control" role="group" aria-label="Whisper acceleration">
+                {([{ value: 'cpu', label: 'CPU' }, { value: 'gpu', label: 'GPU' }] as const)
+                  .map((option) => (
+                    <button
+                      type="button"
+                      key={option.value}
+                      data-active={settings.whisperAcceleration.effective === option.value}
+                      disabled={settings.whisperAcceleration.source === 'env' || settingsWritePending}
+                      onClick={() => void updateWhisperAcceleration(option.value)}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+              </div>
+            </div>
+            {settings.whisperAcceleration.effective === 'gpu' && readiness ? (
+              <GpuDeviceRow
+                devices={gpuDevices}
+                pinned={settings.whisperGpuDevice.effective}
+                disabled={settingsWritePending}
+                prerequisite={gpuPrerequisite}
+                installBusy={readiness.activeOperation != null}
+                onInstall={installGpuPrerequisite}
+                onRefresh={refreshGpuDevices}
+                onSelect={(value) => void updateWhisperGpuDevice(value)}
+              />
+            ) : null}
+          </>
+        ) : null}
+        {settings && whisper?.kind === 'deferred' ? (
+          <div className="setting-row">
+            <div>
+              <strong>Whisper performance</strong>
+              <span>{whisper.reason}</span>
+            </div>
+            <div className="setting-actions">
+              <span className="status-note chip">
+                {settings.whisperAcceleration.effective === 'gpu' ? 'GPU saved' : 'CPU saved'}
+              </span>
+              {gpuTransitionOverride ? (
+                <span className="status-note chip">{gpuTransitionOverride}</span>
+              ) : (
+                <button type="button" onClick={() => void enableWhisperGpu()} disabled={settingsWritePending}>
+                  Use Whisper with GPU
+                </button>
+              )}
+            </div>
+          </div>
+        ) : null}
+      </section>
+
+      <section className="panel settings-section" aria-label="Input and controls">
+        <SectionHeading title="Input and controls" subtitle="Recording source, limits, and shortcuts." />
+        {microphones ? (
+          <MicrophoneChooser
+            snapshot={microphones}
+            test={micTest}
+            testing={testingMic}
+            onRefresh={refreshMicrophones}
+            onSelect={selectMicrophone}
+            onTest={testMicrophone}
+          />
+        ) : (
+          <SettingLine label="Microphone" value={status.microphoneReady ? 'Default input available' : 'No default input'} tone={status.microphoneReady ? 'ok' : 'attention'} />
+        )}
+        {settings ? (
+          <SettingSelect
+            label="Maximum recording length"
+            description="Stops timed recordings and recordings started from the button or shortcut."
+            value={recordingLimitValue(settings.recordSeconds)}
+            options={recordingLimitOptions(status.recordingPolicy, settings.recordSeconds)}
+            source={settings.recordSeconds.source}
+            envName="ECHO_RECORD_SECONDS"
+            onChange={(value) => void updateRecordSeconds(
+              value === DEFAULT_RECORDING_LIMIT_OPTION ? null : Number(value),
+            )}
+          />
+        ) : null}
+        <ShortcutRow
+          status={status}
+          repairing={repairingLegacyShortcut}
+          onRepair={() => void repairLegacy()}
+          onError={onError}
+          onRetry={retryShortcutStatus}
+        />
+      </section>
+
+      <section className="panel settings-section" aria-label="Text and appearance">
+        <SectionHeading title="Text and appearance" subtitle="Transcript cleanup and application display." />
+        {settings ? (
+          <>
             <div className="setting-row">
               <div>
                 <strong>Cleanup</strong>
-                <span>{overrideHint(settings.cleanup.source, 'ECHO_CLEANUP', 'Tidy transcripts: drop um and uh, capitalize, punctuate.')}</span>
+                <span>{overrideHint(settings.cleanup.source, 'ECHO_CLEANUP', 'Drop filler words, capitalize, and add punctuation.')}</span>
               </div>
               <div className="segmented-control" role="group" aria-label="Cleanup">
                 {CLEANUP_OPTIONS.map((option) => (
@@ -319,17 +346,39 @@ export function SettingsView({
                     key={option.value}
                     data-active={settings.cleanup.effective === option.value}
                     disabled={settings.cleanup.source === 'env'}
-                    onClick={() => void patch('cleanup', option.value)}
+                    onClick={() => void updateCleanup(option.value)}
                   >
                     {option.label}
                   </button>
                 ))}
               </div>
             </div>
+            <SettingToggle
+              label="Recording HUD"
+              description="Show the recording capsule while you dictate."
+              value={settings.hud.effective}
+              source={settings.hud.source}
+              envName="ECHO_HUD"
+              onChange={(value) => void updateHud(value)}
+            />
           </>
         ) : null}
+        <div className="setting-row">
+          <div><strong>Theme</strong><span>Applied to the Echo window only.</span></div>
+          <div className="segmented-control" role="group" aria-label="Application theme">
+            {THEME_OPTIONS.map((mode) => (
+              <button type="button" key={mode} data-active={theme === mode} onClick={() => onThemeChange(mode)}>{capitalize(mode)}</button>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="panel settings-section" aria-label="Setup and diagnostics">
+        <SectionHeading title="Setup and diagnostics" subtitle="Installed components and evidence from previous recordings." />
+        {readiness ? (
+          <SpeechSetupSection readiness={readiness} onRefresh={refreshReadiness} onError={onError} />
+        ) : null}
         <SettingLine label="Text insertion" value={status.injectionName} tone={status.injectionReady ? 'ok' : 'attention'} />
-        <SettingLine label="Resolved engine" value={status.engineName} tone={status.engineReady ? 'ok' : 'attention'} />
         {status.lastError ? (
           <div className="setting-line">
             <div><strong>Last failure</strong><span>{status.lastError}</span></div>
@@ -339,19 +388,64 @@ export function SettingsView({
             </span>
           </div>
         ) : null}
-        {status.lastRun ? (
+        {previousRun ? (
           <>
-            <SettingLine label="Last run" value={`${status.lastRun.engine} · ${status.lastRun.inferMs} ms`} />
-            {status.lastRun.performance ? (
-              <SettingLine label="Acceleration" value={whisperAccelerationLabel(status.lastRun.performance)} />
+            <SettingLine label="Previous transcription" value={`${previousRun.engine} · ${previousRun.inferMs} ms`} />
+            {previousRun.performance ? (
+              <SettingLine label="Last used processing" value={whisperAccelerationLabel(previousRun.performance)} />
             ) : null}
-            <SettingLine label="Version" value={status.version} />
           </>
         ) : null}
+        <SettingLine label="Version" value={status.version} />
         {status.settingsPath ? (
           <p className="settings-path">Saved at <code>{status.settingsPath}</code></p>
         ) : null}
-      </details>
+      </section>
+    </div>
+  )
+}
+
+function NextRunSummary({
+  nextRun,
+  settings,
+}: {
+  nextRun: NextSpeechRun
+  settings: AppSettings
+}) {
+  if (nextRun.kind === 'unavailable') {
+    return (
+      <div className="speech-summary next-run-summary" data-state="needs-setup">
+        <div className="speech-summary-copy">
+          <span className="status-dot" data-tone="attention" aria-hidden="true" />
+          <div>
+            <strong>Next transcription needs setup</strong>
+            <span>{nextRun.reason}</span>
+          </div>
+        </div>
+      </div>
+    )
+  }
+  const engine = nextRun.engine.kind === 'whisper'
+    ? `Whisper · ${nextRun.engine.model}`
+    : nextRun.engine.kind === 'parakeet'
+      ? `Parakeet · ${nextRun.engine.model}`
+      : 'Fake test engine'
+  const language = nextRun.language === 'auto'
+    ? 'Automatic language'
+    : nextRun.language.toUpperCase()
+  const processing = nextRun.engine.kind === 'whisper'
+    ? settings.whisperAcceleration.effective === 'gpu' ? 'GPU preferred' : 'CPU'
+    : 'Engine-managed processing'
+  return (
+    <div className="speech-summary next-run-summary" data-state="ready">
+      <div className="speech-summary-copy">
+        <span className="status-dot" data-tone="ok" aria-hidden="true" />
+        <div>
+          <strong>Next transcription</strong>
+          <span>{engine} · {language}</span>
+        </div>
+      </div>
+      <span className="status-note chip">{processing}</span>
     </div>
   )
 }
@@ -513,12 +607,12 @@ const COMMON_LANGUAGE_ORDER = ['en', 'de', 'es', 'fr']
 function LanguageRow({
   languages,
   settings,
-  status,
+  lastUsed,
   onChange,
 }: {
   languages: LanguageOptions
   settings: AppSettings
-  status: AppStatus
+  lastUsed: LastRun | null
   onChange: (value: string) => void
 }) {
   if (languages.mode === 'parakeet') {
@@ -532,7 +626,7 @@ function LanguageRow({
   if (languages.mode === 'english') {
     return <SettingLine label="Language" value="English" />
   }
-  const detected = status.lastRun?.language ?? null
+  const detected = lastUsed?.language ?? null
   const common = [
     ...COMMON_LANGUAGE_ORDER.flatMap((code) =>
       languages.options.filter((option) => option.code === code),
@@ -545,7 +639,7 @@ function LanguageRow({
   const detectedOption = detected
     ? languages.options.find((option) => option.code === detected)
     : null
-  const probability = status.lastRun?.languageProbability ?? null
+  const probability = lastUsed?.languageProbability ?? null
   const lowConfidence = probability != null && probability < 0.5
   const confident = probability != null && probability >= 0.8
   return (

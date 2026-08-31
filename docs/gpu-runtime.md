@@ -30,10 +30,10 @@ inventory are its verification contract.
 
 ## Diagnose a fallback
 
-Open **Settings → Advanced** and inspect the last-run acceleration result. Echo
-distinguishes a missing runtime, no Vulkan devices, an absent pinned device, a
-quarantined device, a missing CPU fallback, and a GPU run that failed before a
-CPU retry.
+Open **Settings**. Under **Setup and diagnostics**, inspect **Last used
+processing**. Echo distinguishes a missing runtime, no Vulkan devices, an
+absent pinned device, a quarantined device, a missing CPU fallback, and a GPU
+run that failed before a CPU retry.
 
 If the runtime is missing or corrupt, use the repair action in Settings. If the
 device disappeared after a driver or hardware change, choose a currently listed

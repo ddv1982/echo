@@ -1,7 +1,9 @@
 use std::env;
 use std::sync::Mutex;
 
-use echo_desktop::ipc::{SettingField, SettingSource, Settings};
+use echo_desktop::ipc::{
+    Readiness, SettingField, SettingSource, Settings, SettingsChange, SettingsSnapshot,
+};
 
 static CONFIG_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
@@ -28,24 +30,112 @@ struct SettingsEnv {
     whisper_acceleration: Option<String>,
 }
 
-pub(super) fn read() -> Result<Settings, String> {
+pub(super) fn snapshot(readiness: Readiness) -> Result<SettingsSnapshot, String> {
     let file = echo::settings::file_config();
-    let catalog = echo::transcribe::language_catalog(None, &file);
+    let preferences = read_from_file(&file)?;
+    Ok(crate::speech::snapshot(preferences, &file, readiness))
+}
+
+fn read_from_file(file: &echo_core::Config) -> Result<Settings, String> {
+    let catalog = echo::transcribe::language_catalog(None, file);
     let language_default = match catalog.selection {
         echo::transcribe::LanguageSelection::EnglishOnly => "en",
         echo::transcribe::LanguageSelection::AutoOrPinned if catalog.model.is_none() => "en",
         echo::transcribe::LanguageSelection::AutoOrPinned
         | echo::transcribe::LanguageSelection::AutomaticOnly => "auto",
     };
-    settings_from(&process_settings_env(), &file, language_default)
+    settings_from(&process_settings_env(), file, language_default)
 }
 
-pub(super) fn write(settings: Settings) -> Result<Settings, String> {
-    update_file_config(|config| {
-        *config = config_from_values_with_base(&settings, config.clone())?;
-        Ok(())
-    })?;
-    read()
+pub(super) fn change(change: SettingsChange) -> Result<(), String> {
+    if matches!(&change, SettingsChange::EnableWhisperGpu) {
+        if let Some(variable) = whisper_gpu_environment_override(&process_settings_env()) {
+            return Err(format!(
+                "{variable} controls this setting; remove the environment override to use Whisper with GPU"
+            ));
+        }
+    }
+    update_file_config(|config| apply_change(config, change))
+}
+
+fn whisper_gpu_environment_override(env: &SettingsEnv) -> Option<&'static str> {
+    if env
+        .engine
+        .as_deref()
+        .and_then(echo_core::EngineChoice::from_env_var)
+        .is_some_and(|engine| engine != echo_core::EngineChoice::Whisper)
+    {
+        return Some("ECHO_ENGINE");
+    }
+    env.whisper_acceleration
+        .as_deref()
+        .and_then(echo_core::WhisperAccelerationPreference::parse)
+        .filter(|preference| *preference != echo_core::WhisperAccelerationPreference::Gpu)
+        .map(|_| "ECHO_WHISPER_ACCELERATION")
+}
+
+fn apply_change(config: &mut echo_core::Config, change: SettingsChange) -> Result<(), String> {
+    match change {
+        SettingsChange::Engine { value } => {
+            config.engine = value
+                .as_deref()
+                .map(|raw| {
+                    echo_core::EngineChoice::from_env_var(raw)
+                        .ok_or_else(|| format!("unknown engine {raw}"))
+                })
+                .transpose()?;
+            if config.engine == Some(echo_core::EngineChoice::Parakeet) {
+                config.whisper_model = None;
+            }
+        }
+        SettingsChange::WhisperModel { value } => {
+            config.whisper_model = nonempty(value);
+        }
+        SettingsChange::Cleanup { value } => {
+            config.cleanup = value
+                .as_deref()
+                .map(|raw| echo_core::CleanupMode::parse(raw).map_err(|error| error.to_string()))
+                .transpose()?;
+        }
+        SettingsChange::Hud { value } => {
+            config.hud = value;
+        }
+        SettingsChange::RecordSeconds { value } => {
+            config.record_seconds = value
+                .map(|seconds| echo_core::RecordingLimit::clamped(u64::from(seconds)).seconds());
+        }
+        SettingsChange::Language { value } => {
+            config.language = value
+                .as_deref()
+                .map(|raw| {
+                    echo_core::LanguageChoice::parse(raw)
+                        .ok_or_else(|| format!("unknown language {raw}"))
+                })
+                .transpose()?;
+        }
+        SettingsChange::WhisperAcceleration { value } => {
+            config.whisper_acceleration = value
+                .as_deref()
+                .map(|raw| {
+                    echo_core::WhisperAccelerationPreference::parse(raw)
+                        .ok_or_else(|| format!("unknown Whisper acceleration {raw}"))
+                })
+                .transpose()?;
+        }
+        SettingsChange::WhisperGpuDevice { value } => {
+            config.whisper_gpu_device = match value.as_deref() {
+                None | Some("") => None,
+                Some(raw) => {
+                    Some(parse_gpu_device(raw).ok_or_else(|| format!("unknown GPU device {raw}"))?)
+                }
+            };
+        }
+        SettingsChange::EnableWhisperGpu => {
+            config.engine = Some(echo_core::EngineChoice::Whisper);
+            config.whisper_acceleration = Some(echo_core::WhisperAccelerationPreference::Gpu);
+        }
+    }
+    Ok(())
 }
 
 fn process_settings_env() -> SettingsEnv {
@@ -127,6 +217,7 @@ fn config_from_values(settings: &Settings) -> Result<echo_core::Config, String> 
     config_from_values_with_base(settings, echo_core::Config::load().unwrap_or_default())
 }
 
+#[cfg(test)]
 fn config_from_values_with_base(
     settings: &Settings,
     mut config: echo_core::Config,
@@ -393,6 +484,85 @@ mod tests {
         let incoming = settings_from(&SettingsEnv::default(), &base, "en").unwrap();
         let updated = config_from_values_with_base(&incoming, base).unwrap();
         assert_eq!(updated.microphone, Some(microphone));
+    }
+
+    #[test]
+    fn field_changes_preserve_unrelated_config_and_engine_rules() {
+        let microphone = echo_core::MicrophoneSelection::Device {
+            id: "alsa:buds".into(),
+            last_seen_label: "Earbuds".into(),
+        };
+        let mut config = Config {
+            engine: Some(EngineChoice::Whisper),
+            whisper_model: Some("small".into()),
+            microphone: Some(microphone.clone()),
+            ..Config::default()
+        };
+
+        apply_change(
+            &mut config,
+            SettingsChange::Cleanup {
+                value: Some("off".into()),
+            },
+        )
+        .unwrap();
+        assert_eq!(config.engine, Some(EngineChoice::Whisper));
+        assert_eq!(config.whisper_model.as_deref(), Some("small"));
+        assert_eq!(config.microphone, Some(microphone));
+
+        apply_change(
+            &mut config,
+            SettingsChange::Engine {
+                value: Some("parakeet".into()),
+            },
+        )
+        .unwrap();
+        assert_eq!(config.engine, Some(EngineChoice::Parakeet));
+        assert_eq!(config.whisper_model, None);
+    }
+
+    #[test]
+    fn enabling_whisper_gpu_changes_both_preferences_atomically() {
+        let mut config = Config {
+            engine: Some(EngineChoice::Parakeet),
+            ..Config::default()
+        };
+
+        apply_change(&mut config, SettingsChange::EnableWhisperGpu).unwrap();
+
+        assert_eq!(config.engine, Some(EngineChoice::Whisper));
+        assert_eq!(
+            config.whisper_acceleration,
+            Some(echo_core::WhisperAccelerationPreference::Gpu)
+        );
+    }
+
+    #[test]
+    fn environment_overrides_block_the_combined_whisper_gpu_change() {
+        let engine = SettingsEnv {
+            engine: Some("parakeet".into()),
+            ..SettingsEnv::default()
+        };
+        assert_eq!(
+            whisper_gpu_environment_override(&engine),
+            Some("ECHO_ENGINE")
+        );
+
+        let acceleration = SettingsEnv {
+            whisper_acceleration: Some("cpu".into()),
+            ..SettingsEnv::default()
+        };
+        assert_eq!(
+            whisper_gpu_environment_override(&acceleration),
+            Some("ECHO_WHISPER_ACCELERATION")
+        );
+
+        let desired = SettingsEnv {
+            engine: Some("whisper".into()),
+            whisper_acceleration: Some("gpu".into()),
+            ..SettingsEnv::default()
+        };
+        assert_eq!(whisper_gpu_environment_override(&desired), None);
     }
 
     #[test]

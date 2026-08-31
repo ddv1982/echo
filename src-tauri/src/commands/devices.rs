@@ -3,8 +3,7 @@ use std::sync::{Mutex, OnceLock};
 
 use echo::audio::AudioCapture;
 use echo_desktop::ipc::{
-    EngineAvailability, LanguageGroup, LanguageMode, LanguageOption, LanguageOptions,
-    ModelInventory, WhisperModelInfo,
+    LanguageGroup, LanguageMode, LanguageOption, LanguageOptions, ModelInventory,
 };
 
 #[tauri::command]
@@ -83,38 +82,7 @@ pub(crate) async fn list_gpu_devices(
 
 #[tauri::command]
 pub(crate) fn list_models() -> Result<ModelInventory, String> {
-    let cache = echo::stt::ModelCache::from_env();
-    let inventory = echo::stt::SpeechRuntimeInventory::from_cache(&cache).models;
-    Ok(ModelInventory {
-        whisper: inventory
-            .whisper
-            .iter()
-            .map(|model| WhisperModelInfo {
-                name: model.name.clone(),
-                path: model.path.to_string_lossy().into_owned(),
-                family: model.family.label().to_string(),
-                multilingual: model.multilingual,
-                quantisation: model.quantisation.clone(),
-                size_bytes: model.size_bytes,
-            })
-            .collect(),
-        vad: inventory
-            .vad
-            .iter()
-            .map(|path| path.to_string_lossy().into_owned())
-            .collect(),
-        parakeet: inventory
-            .parakeet
-            .map(|path| path.to_string_lossy().into_owned()),
-        engines: echo::stt::engine_availability()
-            .into_iter()
-            .map(|engine| EngineAvailability {
-                id: engine.id.to_string(),
-                available: engine.available,
-                reason: engine.reason,
-            })
-            .collect(),
-    })
+    Ok(crate::speech::model_inventory())
 }
 
 #[tauri::command]

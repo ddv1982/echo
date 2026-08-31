@@ -22,7 +22,7 @@ describe('settings preview wrappers', () => {
       presetsSeconds: [30, 60, 120, 300, 600],
     })
     expect(status.recordingLimitSeconds).toBe(600)
-    expect((await getSettings()).recordSeconds).toEqual({
+    expect((await getSettings()).preferences.recordSeconds).toEqual({
       value: null,
       effective: 600,
       source: 'default',
@@ -31,16 +31,13 @@ describe('settings preview wrappers', () => {
 
   it('setSettings mutates the preview fixture', async () => {
     const before = await getSettings()
-    expect(before.engine).toEqual({ value: null, effective: 'auto', source: 'default' })
-    const written = await setSettings({
-      ...before,
-      engine: { ...before.engine, value: 'fake' },
-      hud: { ...before.hud, value: false },
-      recordSeconds: { ...before.recordSeconds, value: 12 },
-    })
-    expect(written.engine).toEqual({ value: 'fake', effective: 'fake', source: 'file' })
-    expect(written.hud).toEqual({ value: false, effective: false, source: 'file' })
-    expect(written.recordSeconds).toEqual({ value: 12, effective: 12, source: 'file' })
+    expect(before.preferences.engine).toEqual({ value: null, effective: 'auto', source: 'default' })
+    await setSettings({ kind: 'engine', value: 'fake' })
+    await setSettings({ kind: 'hud', value: false })
+    const written = await setSettings({ kind: 'recordSeconds', value: 12 })
+    expect(written.preferences.engine).toEqual({ value: 'fake', effective: 'fake', source: 'file' })
+    expect(written.preferences.hud).toEqual({ value: false, effective: false, source: 'file' })
+    expect(written.preferences.recordSeconds).toEqual({ value: 12, effective: 12, source: 'file' })
     expect(await getSettings()).toEqual(written)
   })
 
@@ -48,11 +45,7 @@ describe('settings preview wrappers', () => {
     await toggleRecording()
     expect((await getAppStatus()).recordingLimitSeconds).toBe(600)
 
-    const settings = await getSettings()
-    await setSettings({
-      ...settings,
-      recordSeconds: { ...settings.recordSeconds, value: 120 },
-    })
+    await setSettings({ kind: 'recordSeconds', value: 120 })
     expect((await getAppStatus()).recordingLimitSeconds).toBe(600)
     const shortcut = (await getAppStatus()).shortcut
     if (shortcut.kind !== 'active') throw new Error('active preview shortcut')
@@ -68,11 +61,7 @@ describe('settings preview wrappers', () => {
   it('stops preview recording at the snapped deadline', async () => {
     vi.useFakeTimers()
     try {
-      const settings = await getSettings()
-      await setSettings({
-        ...settings,
-        recordSeconds: { ...settings.recordSeconds, value: 1 },
-      })
+      await setSettings({ kind: 'recordSeconds', value: 1 })
       await toggleRecording()
       expect((await getAppStatus()).recording).toBe(true)
 

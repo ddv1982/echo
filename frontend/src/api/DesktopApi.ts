@@ -10,7 +10,8 @@ import type {
   MicrophoneTestResult,
   ModelInventory,
   Readiness,
-  Settings,
+  SettingsChange,
+  SettingsSnapshot,
   SetupEvent,
   SetupPlanId,
   ShortcutStatus,
@@ -30,10 +31,10 @@ export interface DesktopApi {
   getRecordingLevel(): Promise<number>
   copyText(text: string): Promise<void>
   removeStaleInstalls(): Promise<string[]>
-  getSettings(): Promise<Settings>
+  getSettings(): Promise<SettingsSnapshot>
   listModels(): Promise<ModelInventory>
   listLanguages(): Promise<LanguageOptions>
-  setSettings(settings: Settings): Promise<Settings>
+  setSettings(change: SettingsChange): Promise<SettingsSnapshot>
   listGpuDevices(refresh?: boolean): Promise<GpuDevice[]>
   getMicrophones(): Promise<MicrophoneSnapshot>
   setMicrophone(id: string | null): Promise<MicrophoneSnapshot>

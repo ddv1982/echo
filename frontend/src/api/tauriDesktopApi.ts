@@ -11,7 +11,8 @@ import type {
   MicrophoneTestResult,
   ModelInventory,
   Readiness,
-  Settings,
+  SettingsChange,
+  SettingsSnapshot,
   SetupEvent,
   ShortcutStatus,
 } from '../generated/ipc'
@@ -34,10 +35,11 @@ export function createTauriDesktopApi(): DesktopApi {
     getRecordingLevel: () => invoke<number>('get_recording_level'),
     copyText: (text) => invoke<void>('copy_text', { text }),
     removeStaleInstalls: () => invoke<string[]>('remove_stale_installs'),
-    getSettings: () => invoke<Settings>('get_settings'),
+    getSettings: () => invoke<SettingsSnapshot>('get_settings'),
     listModels: () => invoke<ModelInventory>('list_models'),
     listLanguages: () => invoke<LanguageOptions>('list_languages'),
-    setSettings: (settings) => invoke<Settings>('set_settings', { settings }),
+    setSettings: (change: SettingsChange) =>
+      invoke<SettingsSnapshot>('set_settings', { change }),
     listGpuDevices: (refresh = false) => invoke<GpuDevice[]>('list_gpu_devices', { refresh }),
     getMicrophones: () => invoke<MicrophoneSnapshot>('get_microphones'),
     setMicrophone: (id) => invoke<MicrophoneSnapshot>('set_microphone', { id }),

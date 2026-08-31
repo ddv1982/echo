@@ -4,10 +4,7 @@ import { createPreviewDesktopApi } from '../api/previewDesktopApi'
 import type { SetupEvent } from '../generated/ipc'
 import {
   configureDesktopApi,
-  getReadiness,
   getSettings,
-  listLanguages,
-  listModels,
   onSetupEvent,
   setSettings,
 } from '../tauri'
@@ -19,12 +16,9 @@ vi.mock('../tauri', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../tauri')>()
   return {
     ...actual,
-    getReadiness: vi.fn(() => actual.getReadiness()),
     getSettings: vi.fn(() => actual.getSettings()),
-    listLanguages: vi.fn(() => actual.listLanguages()),
-    listModels: vi.fn(() => actual.listModels()),
     onSetupEvent: vi.fn((handler) => actual.onSetupEvent(handler)),
-    setSettings: vi.fn((settings) => actual.setSettings(settings)),
+    setSettings: vi.fn((change) => actual.setSettings(change)),
   }
 })
 
@@ -47,28 +41,22 @@ describe('useSettingsController', () => {
     configureDesktopApi(previewDesktopApi)
     previewDesktopApi.resetPreviewSettings()
     const actual = await vi.importActual<typeof import('../tauri')>('../tauri')
-    vi.mocked(getReadiness).mockReset()
-    vi.mocked(getReadiness).mockImplementation(() => actual.getReadiness())
     vi.mocked(getSettings).mockReset()
     vi.mocked(getSettings).mockImplementation(() => actual.getSettings())
-    vi.mocked(listLanguages).mockReset()
-    vi.mocked(listLanguages).mockImplementation(() => actual.listLanguages())
-    vi.mocked(listModels).mockReset()
-    vi.mocked(listModels).mockImplementation(() => actual.listModels())
     vi.mocked(onSetupEvent).mockReset()
     vi.mocked(onSetupEvent).mockImplementation((handler) => actual.onSetupEvent(handler))
     vi.mocked(setSettings).mockReset()
-    vi.mocked(setSettings).mockImplementation((settings) => actual.setSettings(settings))
+    vi.mocked(setSettings).mockImplementation((change) => actual.setSettings(change))
   })
 
-  it('applies queued writes in call order against the latest stored settings', async () => {
+  it('applies queued field changes in call order', async () => {
     const actual = await vi.importActual<typeof import('../tauri')>('../tauri')
     const firstWriteStarted = deferred<void>()
     const releaseFirstWrite = deferred<void>()
-    vi.mocked(setSettings).mockImplementationOnce(async (settings) => {
+    vi.mocked(setSettings).mockImplementationOnce(async (change) => {
       firstWriteStarted.resolve()
       await releaseFirstWrite.promise
-      return actual.setSettings(settings)
+      return actual.setSettings(change)
     })
     const onStatusChange = vi.fn().mockResolvedValue(undefined)
     const onError = vi.fn()
@@ -82,8 +70,8 @@ describe('useSettingsController', () => {
     let cleanupWrite: Promise<void>
     let hudWrite: Promise<void>
     act(() => {
-      cleanupWrite = result.current.patch('cleanup', 'off')
-      hudWrite = result.current.patch('hud', false)
+      cleanupWrite = result.current.updateCleanup('off')
+      hudWrite = result.current.updateHud(false)
     })
     await firstWriteStarted.promise
     expect(setSettings).toHaveBeenCalledOnce()
@@ -92,9 +80,12 @@ describe('useSettingsController', () => {
     await act(async () => Promise.all([cleanupWrite, hudWrite]))
 
     expect(setSettings).toHaveBeenCalledTimes(2)
-    const secondWrite = vi.mocked(setSettings).mock.calls[1][0]
-    expect(secondWrite.cleanup.value).toBe('off')
-    expect(secondWrite.hud.value).toBe(false)
+    expect(vi.mocked(setSettings).mock.calls.map(([change]) => change)).toEqual([
+      { kind: 'cleanup', value: 'off' },
+      { kind: 'hud', value: false },
+    ])
+    expect(result.current.settings?.cleanup.value).toBe('off')
+    expect(result.current.settings?.hud.value).toBe(false)
   })
 
   it('does not let a stale setup refresh replace a newer settings write', async () => {
@@ -113,14 +104,13 @@ describe('useSettingsController', () => {
       expect(result.current.settings).not.toBeNull()
       expect(setupEvent).not.toBeNull()
     })
-    const staleSettings = result.current.settings
-    if (!staleSettings) throw new Error('settings did not load')
+    const staleSettings = await previewDesktopApi.getSettings()
     const staleRefresh = deferred<Awaited<ReturnType<typeof getSettings>>>()
     vi.mocked(getSettings).mockImplementationOnce(() => staleRefresh.promise)
 
     act(() => setupEvent?.({ kind: 'finished', operationId: 'setup' }))
     await waitFor(() => expect(getSettings).toHaveBeenCalledTimes(2))
-    await act(async () => result.current.patch('cleanup', 'off'))
+    await act(async () => result.current.updateCleanup('off'))
 
     staleRefresh.resolve(staleSettings)
     await act(async () => staleRefresh.promise)

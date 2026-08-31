@@ -55,7 +55,7 @@ describe('preview desktop adapter contract', () => {
     systemDefault.label = 'Mutated microphone'
     microphones.devices[0].extended.push('mutated')
     inventory.whisper[0].name = 'mutated-model'
-    settings.engine.effective = 'mutated-engine'
+    settings.preferences.engine.effective = 'mutated-engine'
     status.recordingPolicy.presetsSeconds[0] = 999
     performance.tuning.threads = 99
 
@@ -65,7 +65,7 @@ describe('preview desktop adapter contract', () => {
     expect((await preview.getMicrophones()).systemDefault?.label).toBe('System default')
     expect((await preview.getMicrophones()).devices[0].extended).toEqual([])
     expect((await preview.listModels()).whisper[0].name).toBe('base.en-q5_1')
-    expect((await preview.getSettings()).engine.effective).toBe('auto')
+    expect((await preview.getSettings()).preferences.engine.effective).toBe('auto')
     expect((await preview.getAppStatus()).recordingPolicy.presetsSeconds[0]).toBe(30)
     expect((await preview.getAppStatus()).lastRun?.performance?.tuning.threads).toBe(4)
   })
@@ -85,13 +85,13 @@ describe('preview desktop adapter contract', () => {
     preview.seedPreviewReadiness(readiness)
     preview.seedPreviewMicrophones(microphones)
     preview.seedPreviewInventory(inventory)
-    preview.seedPreviewSettings(settings)
+    preview.seedPreviewSettings(settings.preferences)
     preview.seedPreviewStatus(status)
 
     readiness.components[0].external[0].path = '/mutated/runtime'
     systemDefault.label = 'Mutated microphone'
     inventory.whisper[0].name = 'mutated-model'
-    settings.engine.effective = 'mutated-engine'
+    settings.preferences.engine.effective = 'mutated-engine'
     status.recordingPolicy.presetsSeconds[0] = 999
     performance.tuning.threads = 99
 
@@ -99,7 +99,7 @@ describe('preview desktop adapter contract', () => {
       .toBe('/usr/bin/whisper-cli')
     expect((await preview.getMicrophones()).systemDefault?.label).toBe('System default')
     expect((await preview.listModels()).whisper[0].name).toBe('base.en-q5_1')
-    expect((await preview.getSettings()).engine.effective).toBe('auto')
+    expect((await preview.getSettings()).preferences.engine.effective).toBe('auto')
     expect((await preview.getAppStatus()).recordingPolicy.presetsSeconds[0]).toBe(30)
     expect((await preview.getAppStatus()).lastRun?.performance?.tuning.threads).toBe(4)
   })

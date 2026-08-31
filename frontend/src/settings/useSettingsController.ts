@@ -6,11 +6,8 @@ import { useSerialPoll } from '../hooks/useSerialPoll'
 import { applySetupProgress } from '../setup'
 import {
   getMicrophones,
-  getReadiness,
   getSettings,
   listGpuDevices,
-  listLanguages,
-  listModels,
   onSetupEvent,
   repairLegacyShortcut,
   repairManaged,
@@ -22,12 +19,10 @@ import {
 } from '../tauri'
 import type {
   GpuDevice,
-  LanguageOptions,
   MicrophoneSnapshot,
   MicrophoneTestResult,
-  ModelInventory,
-  Readiness,
-  Settings as AppSettings,
+  SettingsChange,
+  SettingsSnapshot,
   SetupEvent,
 } from '../generated/ipc'
 
@@ -40,15 +35,11 @@ export function useSettingsController({
   onStatusChange,
   onError,
 }: UseSettingsControllerArgs) {
-  const [settings, setLocalSettings] = useState<AppSettings | null>(null)
-  const settingsRef = useRef<AppSettings | null>(null)
+  const [snapshot, setSnapshot] = useState<SettingsSnapshot | null>(null)
   const writeChainRef = useRef(Promise.resolve())
   const settingsMutationVersion = useRef(0)
   const active = useRef(true)
   const [microphones, setMicrophones] = useState<MicrophoneSnapshot | null>(null)
-  const [inventory, setInventory] = useState<ModelInventory | null>(null)
-  const [languages, setLanguages] = useState<LanguageOptions | null>(null)
-  const [readiness, setReadiness] = useState<Readiness | null>(null)
   const [micTest, setMicTest] = useState<MicrophoneTestResult | null>(null)
   const [testingMic, setTestingMic] = useState(false)
   const [repairingLegacyShortcut, setRepairingLegacyShortcut] = useState(false)
@@ -66,28 +57,12 @@ export function useSettingsController({
     void getSettings()
       .then((next) => {
         if (current && active.current) {
-          settingsRef.current = next
-          setLocalSettings(next)
+          setSnapshot(next)
         }
       })
       .catch((reason: unknown) => {
         if (current && active.current) reportSettingsError(reason)
       })
-    void listModels().then((next) => {
-      if (current && active.current) setInventory(next)
-    }).catch((reason: unknown) => {
-      if (current && active.current) reportSettingsError(reason)
-    })
-    void listLanguages().then((next) => {
-      if (current && active.current) setLanguages(next)
-    }).catch((reason: unknown) => {
-      if (current && active.current) reportSettingsError(reason)
-    })
-    void getReadiness().then((next) => {
-      if (current && active.current) setReadiness(next)
-    }).catch((reason: unknown) => {
-      if (current && active.current) reportSettingsError(reason)
-    })
     return () => {
       current = false
       active.current = false
@@ -95,11 +70,21 @@ export function useSettingsController({
     }
   }, [reportSettingsError])
 
-  const wantsGpu = settings?.whisperAcceleration.effective === 'gpu'
-  const gpuPrerequisite = (['whisper-runtime', 'whisper-vulkan-runtime'] as const)
-    .map((id) => readiness?.components.find((component) => component.id === id) ?? null)
-    .find((component) => component != null && component.managed.kind !== 'ready') ?? null
-  const gpuRuntimeReady = readiness != null && gpuPrerequisite == null
+  const settings = snapshot?.preferences ?? null
+  const inventory = snapshot?.transcription.models ?? null
+  const languages = snapshot?.transcription.languages ?? null
+  const readiness = snapshot?.readiness ?? null
+  const nextRun = snapshot?.transcription.nextRun ?? null
+  const whisper = snapshot?.transcription.whisper ?? null
+  const lastUsed = snapshot?.transcription.lastUsed ?? null
+  const wantsGpu =
+    whisper?.kind === 'applicable' && settings?.whisperAcceleration.effective === 'gpu'
+  const gpuPrerequisite =
+    whisper?.kind === 'applicable' &&
+    (whisper.gpu.kind === 'needs-install' || whisper.gpu.kind === 'unsupported')
+      ? whisper.gpu.component
+      : null
+  const gpuRuntimeReady = whisper?.kind === 'applicable' && whisper.gpu.kind === 'ready'
 
   useEffect(() => {
     if (!wantsGpu || !gpuRuntimeReady) return
@@ -133,24 +118,22 @@ export function useSettingsController({
 
   const handleSettingsSetupEvent = useCallback((event: SetupEvent) => {
     if (event.kind === 'progress') {
-      setReadiness((current) => current && applySetupProgress(current, event))
+      setSnapshot((current) => current && {
+        ...current,
+        readiness: applySetupProgress(current.readiness, event),
+      })
     }
     if (event.kind === 'failed') onError(event.error)
   }, [onError])
   const getSettingsSetupRefresh = useCallback((event: SetupEvent) => {
     if (event.kind === 'progress') return null
     const version = settingsMutationVersion.current
-    return () => Promise.all([getReadiness(), listModels(), getSettings(), listLanguages()])
-      .then(([nextReadiness, nextInventory, nextSettings, nextLanguages]) => () => {
-        setReadiness(nextReadiness)
-        setInventory(nextInventory)
-        if (settingsMutationVersion.current === version) {
-          settingsRef.current = nextSettings
-          setLocalSettings(nextSettings)
-          setLanguages(nextLanguages)
-        }
-        void onStatusChange()
-      })
+    return () => getSettings().then((next) => () => {
+      if (settingsMutationVersion.current === version) {
+        setSnapshot(next)
+      }
+      void onStatusChange()
+    })
   }, [onStatusChange])
   useAsyncSubscription({
     subscribe: onSetupEvent,
@@ -159,41 +142,21 @@ export function useSettingsController({
     onError: reportSettingsError,
   })
 
-  useEffect(() => {
-    settingsRef.current = settings
-  }, [settings])
-
-  const commit = useCallback(async (next: AppSettings) => {
+  const commit = useCallback(async (change: SettingsChange) => {
     try {
-      const written = await setSettings(next)
+      const written = await setSettings(change)
       if (!active.current) return
-      settingsRef.current = written
-      setLocalSettings(written)
-      setLanguages(null)
-      const [statusResult, languageResult] = await Promise.allSettled([
-        onStatusChange(),
-        listLanguages(),
-      ])
-      if (!active.current) return
-      if (statusResult.status === 'rejected') reportSettingsError(statusResult.reason)
-      if (languageResult.status === 'fulfilled') {
-        setLanguages(languageResult.value)
-      } else {
-        reportSettingsError(languageResult.reason)
-      }
+      setSnapshot(written)
+      await onStatusChange()
     } catch (reason) {
       reportSettingsError(reason)
     }
   }, [onStatusChange, reportSettingsError])
 
-  const updateSettings = useCallback(async (update: (current: AppSettings) => AppSettings) => {
+  const updateSettings = useCallback(async (change: SettingsChange) => {
     setSettingsWritePending(true)
     settingsMutationVersion.current += 1
-    const queued = writeChainRef.current.then(async () => {
-      const current = settingsRef.current
-      if (!current) return
-      await commit(update(current))
-    })
+    const queued = writeChainRef.current.then(() => commit(change))
     writeChainRef.current = queued
     try {
       await queued
@@ -202,21 +165,12 @@ export function useSettingsController({
     }
   }, [commit])
 
-  const patch = useCallback(async <K extends keyof AppSettings>(key: K, value: AppSettings[K]['value']) => {
-    await updateSettings((current) => ({ ...current, [key]: { ...current[key], value } }))
+  const selectEngine = useCallback(async (engine: string) => {
+    await updateSettings({ kind: 'engine', value: engine })
   }, [updateSettings])
 
-  const selectEngine = useCallback(async (engine: string) => {
-    await updateSettings((current) => {
-      if (engine !== 'parakeet') {
-        return { ...current, engine: { ...current.engine, value: engine } }
-      }
-      return {
-        ...current,
-        engine: { ...current.engine, value: engine },
-        whisperModel: { ...current.whisperModel, value: null },
-      }
-    })
+  const enableWhisperGpu = useCallback(async () => {
+    await updateSettings({ kind: 'enableWhisperGpu' })
   }, [updateSettings])
 
   const repairLegacy = useCallback(async () => {
@@ -243,17 +197,17 @@ export function useSettingsController({
   }, [onStatusChange, reportSettingsError])
 
   const refreshReadiness = useCallback(() => {
-    void getReadiness().then((next) => {
-      if (active.current) setReadiness(next)
+    void getSettings().then((next) => {
+      if (active.current) setSnapshot(next)
     }).catch(reportSettingsError)
   }, [reportSettingsError])
 
   const installGpuPrerequisite = useCallback(() => {
     if (gpuPrerequisite == null) return
     void repairManaged(gpuPrerequisite.id)
-      .then(() => getReadiness())
+      .then(() => getSettings())
       .then((next) => {
-        if (active.current) setReadiness(next)
+        if (active.current) setSnapshot(next)
       })
       .catch(reportSettingsError)
   }, [gpuPrerequisite, reportSettingsError])
@@ -292,9 +246,22 @@ export function useSettingsController({
       })
   }, [reportSettingsError])
 
-  const parakeetRuns = languages?.mode === 'parakeet'
-  const whisperRuns =
-    languages != null && settings?.engine.effective !== 'fake' && !parakeetRuns
+  const parakeetRuns = nextRun?.kind === 'ready' && nextRun.engine.kind === 'parakeet'
+
+  const updateLanguage = useCallback((value: string | null) =>
+    updateSettings({ kind: 'language', value }), [updateSettings])
+  const updateWhisperModel = useCallback((value: string | null) =>
+    updateSettings({ kind: 'whisperModel', value }), [updateSettings])
+  const updateRecordSeconds = useCallback((value: number | null) =>
+    updateSettings({ kind: 'recordSeconds', value }), [updateSettings])
+  const updateWhisperAcceleration = useCallback((value: string | null) =>
+    updateSettings({ kind: 'whisperAcceleration', value }), [updateSettings])
+  const updateWhisperGpuDevice = useCallback((value: string | null) =>
+    updateSettings({ kind: 'whisperGpuDevice', value }), [updateSettings])
+  const updateHud = useCallback((value: boolean | null) =>
+    updateSettings({ kind: 'hud', value }), [updateSettings])
+  const updateCleanup = useCallback((value: string | null) =>
+    updateSettings({ kind: 'cleanup', value }), [updateSettings])
 
   return {
     settings,
@@ -308,10 +275,19 @@ export function useSettingsController({
     settingsWritePending,
     gpuDevices,
     gpuPrerequisite,
+    nextRun,
+    whisper,
+    lastUsed,
     parakeetRuns,
-    whisperRuns,
-    patch,
     selectEngine,
+    enableWhisperGpu,
+    updateLanguage,
+    updateWhisperModel,
+    updateRecordSeconds,
+    updateWhisperAcceleration,
+    updateWhisperGpuDevice,
+    updateHud,
+    updateCleanup,
     repairLegacy,
     retryShortcutStatus,
     refreshMicrophones,

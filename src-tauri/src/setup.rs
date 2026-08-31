@@ -146,7 +146,8 @@ fn plan_space(components: impl IntoIterator<Item = (u64, u64, u64)>) -> (u64, u6
 }
 
 impl SetupService {
-    fn snapshot(&self) -> Readiness {
+    #[must_use]
+    pub(crate) fn snapshot(&self) -> Readiness {
         let cache = ModelCache::from_env();
         let store = ManagedStore::new(cache.dir());
         let (active_operation, active_cancellable, activity) = {
