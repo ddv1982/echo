@@ -46,6 +46,7 @@ fn status_ipc_latency_probe() {
             current_exe: String::new(),
             first_path_hit: None,
             stale_installs: Vec::new(),
+            language_warning: None,
         },
     ));
     let app = tauri::test::mock_builder()
@@ -409,6 +410,7 @@ fn legacy_wayland_host_repairs_only_the_echo_owned_binding() {
         current_exe: "/usr/bin/echo-desktop".to_string(),
         first_path_hit: None,
         stale_installs: Vec::new(),
+        language_warning: None,
     };
     *HEALTH.lock().expect("health cache lock") = Some((Instant::now(), health));
     let app = tauri::test::mock_builder()

@@ -79,6 +79,7 @@ pub(super) struct Health {
     pub(super) current_exe: String,
     pub(super) first_path_hit: Option<String>,
     pub(super) stale_installs: Vec<String>,
+    pub(super) language_warning: Option<String>,
 }
 
 pub(super) static HEALTH: Mutex<Option<(Instant, Health)>> = Mutex::new(None);
@@ -121,6 +122,7 @@ fn health_snapshot() -> Health {
             .unwrap_or_default(),
         first_path_hit,
         stale_installs,
+        language_warning: echo::stt::language_warning(),
     };
     *cache = Some((Instant::now(), health.clone()));
     health
@@ -165,7 +167,6 @@ pub(super) fn app_status() -> AppStatus {
     let cleanup_name = echo::cleanup::mode_name();
     let hud_enabled = echo::ui::hud::enabled();
     let settings_path = echo_core::config_path().to_string_lossy().into_owned();
-    let language_warning = echo::stt::language_warning();
     #[cfg(feature = "status-perf-probe")]
     timer.mark(crate::perf::StatusStage::Presentation);
     let app_status = AppStatus {
@@ -186,7 +187,7 @@ pub(super) fn app_status() -> AppStatus {
         version: env!("CARGO_PKG_VERSION").to_string(),
         last_error: status.error,
         last_run,
-        language_warning,
+        language_warning: health.language_warning,
         recording_in_process,
         current_exe: health.current_exe,
         first_path_hit: health.first_path_hit,
