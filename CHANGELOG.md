@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.14.2
+
+- Status checks no longer rebuild the speech runtime inventory on every 400 ms poll. The existing ten-second health snapshot now caches the language warning and refreshes it after settings or setup changes.
+- In matched release WebView measurements with existing user data, warm status p95 fell from 20 ms to 1 ms. The no-op and fixed-payload controls remained at 1 ms p95.
+
 ## v0.14.1
 
 - The frontend now reads `workspace.package.version` from the correct Cargo manifest field. The Rust toolchain version can no longer replace the Echo version in frontend build metadata.
