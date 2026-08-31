@@ -569,10 +569,27 @@ pub fn cancel_setup(operation: String, state: State<'_, SetupService>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_plan_config, plan_space};
+    use super::{apply_plan_config, get_readiness, plan_space, Readiness, SetupService};
     use echo::install::catalog::HardwareProfile;
     use echo::install::SetupPlanId;
     use echo_core::{Config, EngineChoice};
+    use std::future::Future;
+    use std::sync::{Arc, Mutex};
+    use tauri::Manager;
+
+    fn assert_async_readiness(_: impl Future<Output = Result<Readiness, String>>) {}
+
+    #[test]
+    fn readiness_snapshot_yields_before_collection() {
+        let app = tauri::test::mock_builder()
+            .manage(SetupService {
+                active: Arc::new(Mutex::new(None)),
+            })
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+
+        assert_async_readiness(get_readiness(app.state()));
+    }
 
     #[test]
     fn plan_disk_check_includes_payloads_retained_by_earlier_components() {
