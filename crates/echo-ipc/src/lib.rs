@@ -356,10 +356,33 @@ pub struct HistoryItem {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+pub struct DictionaryBatchResult {
+    pub entries: Vec<DictionaryItem>,
+    pub added: usize,
+    pub unchanged: usize,
+    pub conflicts: Vec<DictionaryConflict>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DictionaryConflict {
+    pub spoken: String,
+    pub written: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub struct DictionaryItem {
     pub spoken: String,
     pub written: String,
     pub created_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct DictionaryTrainingSample {
+    pub transcript: String,
+    pub engine: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
@@ -793,7 +816,10 @@ fn contract_parts() -> (String, BTreeSet<String>) {
         ComponentId,
         ComponentOrigin,
         ComponentStatus,
+        DictionaryBatchResult,
+        DictionaryConflict,
         DictionaryItem,
+        DictionaryTrainingSample,
         EndpointTier,
         EngineAvailability,
         ExternalComponent,

@@ -1,4 +1,5 @@
 mod devices;
+mod dictionary_training;
 mod library;
 mod recording;
 mod settings;
@@ -10,8 +11,13 @@ pub(super) use devices::{
     get_microphones, list_gpu_devices, list_languages, list_models, set_microphone,
     test_input_device, test_microphone_fallback,
 };
+pub(super) use dictionary_training::{
+    cancel_dictionary_training_sample, finish_dictionary_training_sample,
+    start_dictionary_training_sample, DictionaryTrainingCaptures,
+};
 pub(super) use library::{
-    add_dictionary_entry, copy_text, get_dictionary, get_history, remove_dictionary_entry,
+    add_dictionary_entries_batch, add_dictionary_entry, copy_text, get_dictionary, get_history,
+    remove_dictionary_entry,
 };
 pub(super) use recording::{
     get_recording_level, start_recording_thread, stop_recording, toggle_recording,

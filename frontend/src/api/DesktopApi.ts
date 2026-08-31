@@ -1,7 +1,9 @@
 import type {
   AppStatus,
   ComponentId,
+  DictionaryBatchResult,
   DictionaryItem,
+  DictionaryTrainingSample,
   GpuDevice,
   HistoryItem,
   LanguageOptions,
@@ -25,7 +27,11 @@ export interface DesktopApi {
   getHistory(): Promise<HistoryItem[]>
   getDictionary(): Promise<DictionaryItem[]>
   addDictionaryEntry(spoken: string, written: string): Promise<DictionaryItem>
+  addDictionaryEntriesBatch(written: string, spoken: string[]): Promise<DictionaryBatchResult>
   removeDictionaryEntry(spoken: string, written: string): Promise<boolean>
+  startDictionaryTrainingSample(): Promise<string>
+  finishDictionaryTrainingSample(captureId: string): Promise<DictionaryTrainingSample>
+  cancelDictionaryTrainingSample(captureId: string): Promise<boolean>
   toggleRecording(): Promise<void>
   stopRecording(activation: string): Promise<boolean>
   getRecordingLevel(): Promise<number>

@@ -39,6 +39,41 @@ describe('preview desktop adapter contract', () => {
     expect(await second.getDictionary()).toHaveLength(2)
   })
 
+  it('runs five deterministic voice samples and saves them in one batch', async () => {
+    const preview = createPreviewDesktopApi()
+    const samples = []
+    for (let take = 0; take < 5; take += 1) {
+      const capture = await preview.startDictionaryTrainingSample()
+      samples.push(await preview.finishDictionaryTrainingSample(capture))
+    }
+
+    expect(samples.map(({ transcript }) => transcript)).toEqual([
+      'kuber netties',
+      'cooper net ease',
+      'Kubernetes',
+      'kuber netties',
+      'cube er netties',
+    ])
+    expect(new Set(samples.map(({ engine }) => engine))).toEqual(new Set(['whisper-small']))
+
+    const result = await preview.addDictionaryEntriesBatch(
+      'Kubernetes',
+      samples.map(({ transcript }) => transcript),
+    )
+    expect(result).toMatchObject({ added: 3, unchanged: 2, conflicts: [] })
+    expect(result.entries.filter(({ written }) => written === 'Kubernetes')).toHaveLength(3)
+  })
+
+  it('rolls back a preview batch when a spoken form conflicts', async () => {
+    const preview = createPreviewDesktopApi()
+    const before = await preview.getDictionary()
+    const result = await preview.addDictionaryEntriesBatch('Different', ['new phrase', 'post grass'])
+
+    expect(result.added).toBe(0)
+    expect(result.conflicts).toEqual([{ spoken: 'post grass', written: 'Postgres' }])
+    expect(await preview.getDictionary()).toEqual(before)
+  })
+
   it('returns detached nested snapshots', async () => {
     const preview = createPreviewDesktopApi()
     const readiness = await preview.getReadiness()

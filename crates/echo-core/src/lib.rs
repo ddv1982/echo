@@ -12,7 +12,9 @@ mod session;
 mod types;
 
 pub use config::{resolve, Config, EngineChoice, MicrophoneSelection};
-pub use dictionary::{DictEntry, Dictionary, RecognitionHints};
+pub use dictionary::{
+    DictEntry, Dictionary, DictionaryBatchOutcome, DictionaryConflict, RecognitionHints,
+};
 pub use engine::{
     DecodeOptions, Engine, EngineError, RunDetail, Transcript, WhisperAccelerationPreference,
     WhisperAccelerationSkip, WhisperAttemptTelemetry, WhisperRecoveryReason,

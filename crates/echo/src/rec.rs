@@ -151,7 +151,10 @@ fn run_record_with_limit(mut stop: StopWhen, limit: RecordingLimit) -> i32 {
             return 1;
         }
     };
-    let transcript = match prepared.transcribe(&capture.pcm, &dict) {
+    let transcript = match prepared.transcribe(
+        &capture.pcm,
+        crate::transcribe::TranscriptionPurpose::Dictation(&dict),
+    ) {
         Ok(transcript) => transcript,
         Err(err) => {
             hud.set_state(crate::ui::hud::HudState::Failed);

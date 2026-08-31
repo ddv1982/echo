@@ -1,6 +1,8 @@
 import type {
   AppStatus,
+  DictionaryBatchResult,
   DictionaryItem,
+  DictionaryTrainingSample,
   GpuDevice,
   HistoryItem,
   InputDevice,
@@ -205,6 +207,15 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
   }
 
   let previewDictionary: DictionaryItem[] = defaultPreviewDictionary()
+  const previewTrainingTranscripts = [
+    'kuber netties',
+    'cooper net ease',
+    'Kubernetes',
+    'kuber netties',
+    'cube er netties',
+  ]
+  let previewTrainingIndex = 0
+  let activeTrainingCapture: string | null = null
 
   function defaultPreviewDictionary(): DictionaryItem[] {
     return [
@@ -269,10 +280,102 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
     return Promise.resolve(ipcSnapshot(entry))
   }
 
+  function cleanPhrase(value: string): string {
+    return value.trim().split(/\s+/).filter(Boolean).join(' ')
+  }
+
+  function phraseKey(value: string): string {
+    return cleanPhrase(value).toLocaleLowerCase()
+  }
+
+  function addDictionaryEntriesBatch(
+    written: string,
+    spoken: string[],
+  ): Promise<DictionaryBatchResult> {
+    const canonical = cleanPhrase(written)
+    if (!canonical) return Promise.reject(new Error('The written form is required.'))
+    const canonicalKey = phraseKey(canonical)
+    const seen = new Set<string>()
+    const additions: string[] = []
+    let unchanged = 0
+    const conflicts: DictionaryBatchResult['conflicts'] = []
+
+    for (const value of spoken) {
+      const candidate = cleanPhrase(value)
+      const key = phraseKey(candidate)
+      if (!candidate || key === canonicalKey || seen.has(key)) {
+        unchanged += 1
+        continue
+      }
+      seen.add(key)
+      const matching = previewDictionary.filter((entry) => phraseKey(entry.spoken) === key)
+      if (matching.length === 0) {
+        additions.push(candidate)
+      } else if (matching.every((entry) => cleanPhrase(entry.written) === canonical)) {
+        unchanged += 1
+      } else {
+        matching
+          .filter((entry) => cleanPhrase(entry.written) !== canonical)
+          .forEach((entry) => conflicts.push({ spoken: candidate, written: entry.written }))
+      }
+    }
+
+    if (conflicts.length > 0) {
+      return Promise.resolve(ipcSnapshot({
+        entries: previewDictionary,
+        added: 0,
+        unchanged,
+        conflicts,
+      }))
+    }
+    const createdAt = Math.floor(Date.now() / 1000)
+    previewDictionary = [
+      ...previewDictionary,
+      ...additions.map((candidate) => ({ spoken: candidate, written: canonical, createdAt })),
+    ]
+    return Promise.resolve(ipcSnapshot({
+      entries: previewDictionary,
+      added: additions.length,
+      unchanged,
+      conflicts: [],
+    }))
+  }
+
   function removeDictionaryEntry(spoken: string, written: string): Promise<boolean> {
     previewDictionary = previewDictionary.filter(
       (entry) => entry.spoken !== spoken || entry.written !== written,
     )
+    return Promise.resolve(true)
+  }
+
+  function startDictionaryTrainingSample(): Promise<string> {
+    if (activeTrainingCapture) {
+      return Promise.reject(new Error('A voice training sample is already recording.'))
+    }
+    activeTrainingCapture = `preview-training-${previewTrainingIndex + 1}`
+    return Promise.resolve(activeTrainingCapture)
+  }
+
+  function finishDictionaryTrainingSample(captureId: string): Promise<DictionaryTrainingSample> {
+    if (activeTrainingCapture !== captureId) {
+      return Promise.reject(new Error('This voice training capture is no longer active.'))
+    }
+    activeTrainingCapture = null
+    const transcript = previewTrainingTranscripts[previewTrainingIndex % previewTrainingTranscripts.length]
+    previewTrainingIndex += 1
+    const engine = previewSettings.engine.effective === 'parakeet'
+      ? 'parakeet-tdt-0.6b-v3'
+      : previewSettings.engine.effective === 'fake'
+        ? 'fake'
+        : previewSettings.whisperModel.effective
+          ? `whisper-${previewSettings.whisperModel.effective}`
+          : previewStatus.lastRun?.engine ?? 'whisper-small'
+    return Promise.resolve({ transcript, engine })
+  }
+
+  function cancelDictionaryTrainingSample(captureId: string): Promise<boolean> {
+    if (activeTrainingCapture !== captureId) return Promise.resolve(false)
+    activeTrainingCapture = null
     return Promise.resolve(true)
   }
 
@@ -499,6 +602,8 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
     previewSettings = defaultPreviewSettings()
     previewStatus = richPreviewStatus()
     previewDictionary = defaultPreviewDictionary()
+    previewTrainingIndex = 0
+    activeTrainingCapture = null
     previewMicTestError = null
     previewRemoveStaleError = null
     previewLanguages = defaultPreviewLanguages()
@@ -1020,7 +1125,11 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
     getHistory,
     getDictionary,
     addDictionaryEntry,
+    addDictionaryEntriesBatch,
     removeDictionaryEntry,
+    startDictionaryTrainingSample,
+    finishDictionaryTrainingSample,
+    cancelDictionaryTrainingSample,
     toggleRecording,
     stopRecording,
     getRecordingLevel,

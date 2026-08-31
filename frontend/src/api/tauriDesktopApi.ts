@@ -2,7 +2,9 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import type {
   AppStatus,
+  DictionaryBatchResult,
   DictionaryItem,
+  DictionaryTrainingSample,
   GpuDevice,
   HistoryItem,
   LanguageOptions,
@@ -28,8 +30,16 @@ export function createTauriDesktopApi(): DesktopApi {
     getDictionary: () => invoke<DictionaryItem[]>('get_dictionary'),
     addDictionaryEntry: (spoken, written) =>
       invoke<DictionaryItem>('add_dictionary_entry', { spoken, written }),
+    addDictionaryEntriesBatch: (written, spoken) =>
+      invoke<DictionaryBatchResult>('add_dictionary_entries_batch', { written, spoken }),
     removeDictionaryEntry: (spoken, written) =>
       invoke<boolean>('remove_dictionary_entry', { spoken, written }),
+    startDictionaryTrainingSample: () =>
+      invoke<string>('start_dictionary_training_sample'),
+    finishDictionaryTrainingSample: (captureId) =>
+      invoke<DictionaryTrainingSample>('finish_dictionary_training_sample', { captureId }),
+    cancelDictionaryTrainingSample: (captureId) =>
+      invoke<boolean>('cancel_dictionary_training_sample', { captureId }),
     toggleRecording: () => invoke<void>('toggle_recording'),
     stopRecording: (activation) => invoke<boolean>('stop_recording', { activation }),
     getRecordingLevel: () => invoke<number>('get_recording_level'),

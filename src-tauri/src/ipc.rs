@@ -61,8 +61,28 @@ mod tests {
             payload_types: &["DictionaryItem"],
         },
         CommandContract {
+            handler: "add_dictionary_entries_batch",
+            source: LIBRARY,
+            payload_types: &["DictionaryBatchResult"],
+        },
+        CommandContract {
             handler: "remove_dictionary_entry",
             source: LIBRARY,
+            payload_types: &[],
+        },
+        CommandContract {
+            handler: "start_dictionary_training_sample",
+            source: include_str!("commands/dictionary_training.rs"),
+            payload_types: &[],
+        },
+        CommandContract {
+            handler: "finish_dictionary_training_sample",
+            source: include_str!("commands/dictionary_training.rs"),
+            payload_types: &["DictionaryTrainingSample"],
+        },
+        CommandContract {
+            handler: "cancel_dictionary_training_sample",
+            source: include_str!("commands/dictionary_training.rs"),
             payload_types: &[],
         },
         CommandContract {
@@ -234,6 +254,6 @@ mod tests {
                 manifest_types.insert((*payload_type).to_string());
             }
         }
-        assert_eq!(manifest_types.len(), 17);
+        assert_eq!(manifest_types.len(), 19);
     }
 }

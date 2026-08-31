@@ -75,6 +75,19 @@ pub struct DictEntry {
     pub created_at: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DictionaryConflict {
+    pub spoken: String,
+    pub written: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DictionaryBatchOutcome {
+    pub added: usize,
+    pub unchanged: usize,
+    pub conflicts: Vec<DictionaryConflict>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct DictFile {
     entries: Vec<DictEntry>,
@@ -168,6 +181,100 @@ impl Dictionary {
         Ok(removed)
     }
 
+    pub fn add_batch(
+        &mut self,
+        written: &str,
+        spoken_variants: impl IntoIterator<Item = String>,
+    ) -> Result<DictionaryBatchOutcome, String> {
+        let written = clean_phrase(written);
+        if written.is_empty() {
+            return Err("The written form is required.".to_string());
+        }
+
+        let canonical_key = phrase_key(&written);
+        let mut seen = std::collections::HashSet::new();
+        let mut candidates = Vec::new();
+        let mut unchanged = 0;
+
+        for spoken in spoken_variants {
+            let spoken = clean_phrase(&spoken);
+            if spoken.is_empty() {
+                unchanged += 1;
+                continue;
+            }
+            let key = phrase_key(&spoken);
+            if key == canonical_key || !seen.insert(key.clone()) {
+                unchanged += 1;
+                continue;
+            }
+            candidates.push((key, spoken));
+        }
+
+        let mut additions = Vec::new();
+        let mut conflicts = Vec::new();
+        for (key, spoken) in candidates {
+            let matching = self
+                .entries
+                .iter()
+                .filter(|entry| phrase_key(&entry.spoken) == key)
+                .collect::<Vec<_>>();
+            if matching.is_empty() {
+                additions.push(spoken);
+                continue;
+            }
+            if matching
+                .iter()
+                .all(|entry| clean_phrase(&entry.written) == written)
+            {
+                unchanged += 1;
+                continue;
+            }
+            for entry in matching {
+                if clean_phrase(&entry.written) != written {
+                    conflicts.push(DictionaryConflict {
+                        spoken: spoken.clone(),
+                        written: entry.written.clone(),
+                    });
+                }
+            }
+        }
+
+        conflicts.sort_by(|left, right| {
+            phrase_key(&left.spoken)
+                .cmp(&phrase_key(&right.spoken))
+                .then_with(|| left.written.cmp(&right.written))
+        });
+        conflicts.dedup();
+        if !conflicts.is_empty() {
+            return Ok(DictionaryBatchOutcome {
+                added: 0,
+                unchanged,
+                conflicts,
+            });
+        }
+
+        let added = additions.len();
+        let created_at = now_secs();
+        let original_len = self.entries.len();
+        self.entries
+            .extend(additions.into_iter().map(|spoken| DictEntry {
+                spoken,
+                written: written.clone(),
+                created_at,
+            }));
+        if added > 0 {
+            if let Err(error) = self.save() {
+                self.entries.truncate(original_len);
+                return Err(error);
+            }
+        }
+        Ok(DictionaryBatchOutcome {
+            added,
+            unchanged,
+            conflicts: Vec::new(),
+        })
+    }
+
     pub fn save(&self) -> Result<(), String> {
         let file = DictFile {
             entries: self.entries.clone(),
@@ -246,6 +353,14 @@ fn is_word_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '\''
 }
 
+fn clean_phrase(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn phrase_key(value: &str) -> String {
+    clean_phrase(value).to_lowercase()
+}
+
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -270,6 +385,21 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    fn persisted_dict(entries: &[(&str, &str)]) -> Dictionary {
+        let path = std::env::temp_dir().join(format!(
+            "echo-dictionary-batch-{}-{}.json",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let mut dictionary = dict(entries);
+        dictionary.path = path;
+        dictionary.save().unwrap();
+        dictionary
     }
 
     #[test]
@@ -298,6 +428,89 @@ mod tests {
         let d = dict(&[("code", "CODE")]);
         let rewrite = d.rewrite("codebase uses code");
         assert_eq!(rewrite, "codebase uses CODE");
+    }
+
+    #[test]
+    fn batch_deduplicates_and_is_idempotent() {
+        let mut dictionary = persisted_dict(&[("already heard", "Canonical")]);
+        let outcome = dictionary
+            .add_batch(
+                "  Canonical ",
+                [
+                    "new hearing".to_string(),
+                    " NEW   HEARING ".to_string(),
+                    "Canonical".to_string(),
+                    "already heard".to_string(),
+                ],
+            )
+            .unwrap();
+
+        assert_eq!(outcome.added, 1);
+        assert_eq!(outcome.unchanged, 3);
+        assert!(outcome.conflicts.is_empty());
+        assert_eq!(dictionary.entries().len(), 2);
+
+        let second = dictionary
+            .add_batch("Canonical", ["new hearing".to_string()])
+            .unwrap();
+        assert_eq!(second.added, 0);
+        assert_eq!(second.unchanged, 1);
+        assert_eq!(
+            Dictionary::load_from(&dictionary.path)
+                .unwrap()
+                .entries()
+                .len(),
+            2
+        );
+        let _ = fs::remove_file(&dictionary.path);
+    }
+
+    #[test]
+    fn batch_conflict_rolls_back_every_candidate() {
+        let mut dictionary = persisted_dict(&[("shared sound", "Existing")]);
+        let before = fs::read_to_string(&dictionary.path).unwrap();
+        let outcome = dictionary
+            .add_batch(
+                "Canonical",
+                ["new hearing".to_string(), "shared sound".to_string()],
+            )
+            .unwrap();
+
+        assert_eq!(outcome.added, 0);
+        assert_eq!(
+            outcome.conflicts,
+            vec![DictionaryConflict {
+                spoken: "shared sound".to_string(),
+                written: "Existing".to_string(),
+            }]
+        );
+        assert_eq!(dictionary.entries().len(), 1);
+        assert_eq!(fs::read_to_string(&dictionary.path).unwrap(), before);
+        let _ = fs::remove_file(&dictionary.path);
+    }
+
+    #[test]
+    fn batch_write_failure_keeps_in_memory_entries_unchanged() {
+        let parent = std::env::temp_dir().join(format!(
+            "echo-dictionary-batch-blocked-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        fs::write(&parent, "not a directory").unwrap();
+        let mut dictionary = dict(&[("existing", "Existing")]);
+        dictionary.path = parent.join("dictionary.json");
+
+        let result = dictionary.add_batch("Canonical", ["new hearing".to_string()]);
+
+        assert!(result.is_err());
+        assert_eq!(
+            dictionary.entries(),
+            dict(&[("existing", "Existing")]).entries()
+        );
+        let _ = fs::remove_file(parent);
     }
 
     #[test]
