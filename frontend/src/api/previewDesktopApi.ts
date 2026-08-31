@@ -68,7 +68,6 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
         activation: null,
         verificationIdentity: 'portal:Super+Alt+Space',
       },
-      cleanupName: 'Rules · fillers and punctuation',
       hudEnabled: true,
       recordingLimitSeconds: PREVIEW_RECORDING_POLICY.defaultSeconds,
       recordingPolicy: ipcSnapshot(PREVIEW_RECORDING_POLICY),
@@ -824,7 +823,6 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
     return projectPreviewSettings({
       engine: { value: null, effective: 'auto', source: 'default' },
       whisperModel: { value: null, effective: '', source: 'default' },
-      cleanup: { value: null, effective: 'rules', source: 'default' },
       hud: { value: null, effective: true, source: 'default' },
       recordSeconds: {
         value: null,
@@ -931,9 +929,6 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
       case 'whisperModel':
         next = { ...previewSettings, whisperModel: { ...previewSettings.whisperModel, value: change.value } }
         break
-      case 'cleanup':
-        next = { ...previewSettings, cleanup: { ...previewSettings.cleanup, value: change.value } }
-        break
       case 'hud':
         next = { ...previewSettings, hud: { ...previewSettings.hud, value: change.value } }
         break
@@ -981,7 +976,6 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
     return {
       engine: previewField(settings.engine.value, 'auto'),
       whisperModel: previewField(settings.whisperModel.value, ''),
-      cleanup: previewField(settings.cleanup.value, 'rules'),
       hud: previewField(settings.hud.value, true),
       recordSeconds: previewField(recordValue, PREVIEW_RECORDING_POLICY.defaultSeconds),
       language: previewField(settings.language.value, 'auto'),
@@ -1005,15 +999,10 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
       parakeet: 'Parakeet · tdt-0.6b-v3',
       fake: 'Fake test engine',
     }
-    const cleanupNames: Record<string, string> = {
-      off: 'Off',
-      rules: 'Rules · fillers and punctuation',
-    }
     previewStatus = {
       ...previewStatus,
       engineName: engineNames[settings.engine.effective] ?? settings.engine.effective,
       engineReady: settings.engine.effective !== 'auto',
-      cleanupName: cleanupNames[settings.cleanup.effective] ?? settings.cleanup.effective,
       hudEnabled: settings.hud.effective,
       recordingLimitSeconds: previewStatus.recording
         ? previewStatus.recordingLimitSeconds

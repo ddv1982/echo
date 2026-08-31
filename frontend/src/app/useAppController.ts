@@ -19,7 +19,6 @@ const initialStatus: AppStatus = {
   injectionName: 'Checking insertion…',
   injectionReady: false,
   shortcut: { kind: 'probing', desired: 'Super+Alt+Space' },
-  cleanupName: 'Rules · fillers and punctuation',
   hudEnabled: true,
   recordingLimitSeconds: 0,
   recordingPolicy: {

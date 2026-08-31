@@ -14,7 +14,7 @@ DATA_DIR="$VERIFY_ROOT/data"
 MODEL_DIR="$VERIFY_ROOT/models"
 mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$MODEL_DIR" "$VERIFY_ROOT/bin"
 printf '%s' 'corrupt config sentinel' > "$CONFIG_DIR/config.json"
-printf '%s' 'corrupt dictionary sentinel' > "$DATA_DIR/dictionary.json"
+printf '%s' '{"entries":[{"spoken":"claude code","written":"Claude Code","created_at":1}]}' > "$DATA_DIR/dictionary.json"
 
 run_fake() {
   ECHO_ENGINE=fake \
@@ -24,17 +24,13 @@ run_fake() {
   "$BIN" "$@"
 }
 
-printf 'Claude code.\n' > "$VERIFY_ROOT/expected-clean"
+printf 'Claude Code\n' > "$VERIFY_ROOT/expected-clean"
 run_fake transcribe "$WAV" > "$VERIFY_ROOT/clean"
 cmp "$VERIFY_ROOT/expected-clean" "$VERIFY_ROOT/clean"
 
 printf 'claude code\n' > "$VERIFY_ROOT/expected-raw"
 run_fake transcribe "$WAV" --raw > "$VERIFY_ROOT/raw"
 cmp "$VERIFY_ROOT/expected-raw" "$VERIFY_ROOT/raw"
-ECHO_CLEANUP=local:/definitely/missing-echo-cleaner \
-  run_fake transcribe "$WAV" --raw > "$VERIFY_ROOT/raw-without-cleanup"
-cmp "$VERIFY_ROOT/expected-raw" "$VERIFY_ROOT/raw-without-cleanup"
-
 run_fake transcribe "$WAV" --format json > "$VERIFY_ROOT/fake.json"
 python3 - "$VERIFY_ROOT/fake.json" <<'PY'
 import json
@@ -45,7 +41,7 @@ raw = pathlib.Path(sys.argv[1]).read_bytes()
 assert raw.endswith(b"\n") and not raw.endswith(b"\n\n")
 value = json.loads(raw)
 assert value["schemaVersion"] == 1
-assert value["text"] == "Claude code."
+assert value["text"] == "Claude Code"
 assert value["raw"] == "claude code"
 assert value["engine"]["id"] == "fake"
 assert value["engine"]["model"] == "fake"

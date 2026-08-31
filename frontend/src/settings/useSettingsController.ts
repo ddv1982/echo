@@ -260,8 +260,6 @@ export function useSettingsController({
     updateSettings({ kind: 'whisperGpuDevice', value }), [updateSettings])
   const updateHud = useCallback((value: boolean | null) =>
     updateSettings({ kind: 'hud', value }), [updateSettings])
-  const updateCleanup = useCallback((value: string | null) =>
-    updateSettings({ kind: 'cleanup', value }), [updateSettings])
 
   return {
     settings,
@@ -287,7 +285,6 @@ export function useSettingsController({
     updateWhisperAcceleration,
     updateWhisperGpuDevice,
     updateHud,
-    updateCleanup,
     repairLegacy,
     retryShortcutStatus,
     refreshMicrophones,

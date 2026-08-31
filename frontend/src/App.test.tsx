@@ -478,9 +478,9 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    fireEvent.click(within(await screen.findByRole('group', { name: 'Cleanup' })).getByRole('button', { name: 'Off' }))
-    expect(within(await screen.findByRole('group', { name: 'Cleanup' })).getByRole('button', { name: 'Off' })).toHaveAttribute('data-active', 'true')
-    expect((await getPreferences()).cleanup).toEqual({ value: 'off', effective: 'off', source: 'file' })
+    fireEvent.click(within(await screen.findByRole('group', { name: 'Recording HUD' })).getByRole('button', { name: 'Off' }))
+    expect(within(await screen.findByRole('group', { name: 'Recording HUD' })).getByRole('button', { name: 'Off' })).toHaveAttribute('data-active', 'true')
+    expect((await getPreferences()).hud).toEqual({ value: false, effective: false, source: 'file' })
   })
 
   it('offers the Rust recording policy under Input and clears the default override', async () => {
@@ -571,17 +571,17 @@ describe('Echo desktop shell', () => {
     const defaults = await getPreferences()
     seedPreviewSettings({
       ...defaults,
-      cleanup: { value: null, effective: 'off', source: 'env' },
+      hud: { value: null, effective: false, source: 'env' },
     })
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    const off = within(await screen.findByRole('group', { name: 'Cleanup' })).getByRole('button', { name: 'Off' })
+    const off = within(await screen.findByRole('group', { name: 'Recording HUD' })).getByRole('button', { name: 'Off' })
     expect(off).toBeDisabled()
     expect(off).toHaveAttribute('data-active', 'true')
-    expect(screen.getByText('ECHO_CLEANUP')).toBeInTheDocument()
-    fireEvent.click(within(await screen.findByRole('group', { name: 'Cleanup' })).getByRole('button', { name: 'Rules' }))
-    expect((await getPreferences()).cleanup.effective).toBe('off')
+    expect(screen.getByText('ECHO_HUD')).toBeInTheDocument()
+    fireEvent.click(within(await screen.findByRole('group', { name: 'Recording HUD' })).getByRole('button', { name: 'On' }))
+    expect((await getPreferences()).hud.effective).toBe(false)
   })
 
   it('persists two rapid settings writes', async () => {
@@ -607,14 +607,14 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    fireEvent.click(within(await screen.findByRole('group', { name: 'Cleanup' })).getByRole('button', { name: 'Off' }))
+    fireEvent.change(await screen.findByLabelText('Maximum recording length'), { target: { value: '30' } })
     await firstWriteStarted
     fireEvent.click(within(screen.getByRole('group', { name: 'Recording HUD' })).getByRole('button', { name: 'Off' }))
     releaseFirst()
 
     await waitFor(async () => {
       const stored = await getPreferences()
-      expect(stored.cleanup).toEqual({ value: 'off', effective: 'off', source: 'file' })
+      expect(stored.recordSeconds).toEqual({ value: 30, effective: 30, source: 'file' })
       expect(stored.hud).toEqual({ value: false, effective: false, source: 'file' })
     })
   })
@@ -624,10 +624,10 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    const cleanup = await screen.findByRole('group', { name: 'Cleanup' })
-    fireEvent.click(within(cleanup).getByRole('button', { name: 'Off' }))
+    const hud = await screen.findByRole('group', { name: 'Recording HUD' })
+    fireEvent.click(within(hud).getByRole('button', { name: 'Off' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('could not write settings')
-    expect(within(cleanup).getByRole('button', { name: 'Off' })).toHaveAttribute('data-active', 'false')
+    expect(within(hud).getByRole('button', { name: 'Off' })).toHaveAttribute('data-active', 'false')
   })
 
   it('shows one fixed toggle shortcut with no customization controls', async () => {
@@ -968,7 +968,7 @@ describe('Echo desktop shell', () => {
 
     expect(screen.getByRole('region', { name: 'Transcription' })).toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Input and controls' })).toBeInTheDocument()
-    expect(screen.getByRole('region', { name: 'Text and appearance' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Appearance' })).toBeInTheDocument()
     expect(screen.getByRole('region', { name: 'Setup and diagnostics' })).toBeInTheDocument()
     expect(document.querySelector('.advanced-section')).not.toBeInTheDocument()
     expect(screen.queryByText('Advanced', { exact: true })).not.toBeInTheDocument()
@@ -1659,7 +1659,7 @@ describe('Echo desktop shell', () => {
     }
   })
 
-  it('does not verify a shortcut when recording cleanup fails', async () => {
+  it('does not verify a shortcut when stopping the recording fails', async () => {
     vi.mocked(stopRecording).mockRejectedValueOnce(new Error('cannot stop recording'))
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
@@ -1667,7 +1667,7 @@ describe('Echo desktop shell', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Test shortcut' }))
     expect(await screen.findByText('Listening… press your shortcut')).toBeInTheDocument()
 
-    seedPreviewStatus({ shortcut: activeShortcut('native-toggle:cleanup-failure') })
+    seedPreviewStatus({ shortcut: activeShortcut('native-toggle:stop-failure') })
     await waitFor(() => expect(stopRecording).toHaveBeenCalledOnce())
     expect(localStorage.getItem('echo-shortcut-verified-at')).toBeNull()
     expect(await screen.findByText('No keypress seen — check the binding')).toBeInTheDocument()

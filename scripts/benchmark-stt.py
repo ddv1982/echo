@@ -139,7 +139,6 @@ def selected_environment(root: Path) -> dict[str, str]:
         {
             "ECHO_CONFIG_DIR": str(root / "config"),
             "ECHO_DATA_DIR": str(root / "data"),
-            "ECHO_CLEANUP": "off",
             "TMPDIR": str(root / "tmp"),
         }
     )

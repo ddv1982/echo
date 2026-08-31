@@ -9,7 +9,7 @@ and local operating-system capabilities.
 | Path | Responsibility |
 | --- | --- |
 | `crates/echo-core` | Domain types, config, history, dictionary, recording state, and paths. |
-| `crates/echo` | Audio, transcription engines, managed installation, cleanup, injection, HUD, and recording orchestration. |
+| `crates/echo` | Audio, transcription engines, managed installation, injection, HUD, and recording orchestration. |
 | `crates/echo-ipc` | Rust command, event, and payload contract exported to TypeScript. |
 | `crates/ipc-gen` | Deterministic generator and drift check for the frontend IPC contract. |
 | `src-tauri` | Desktop composition, command adapters, setup, status projection, shortcuts, tray, and CLI. |
@@ -24,7 +24,7 @@ and local operating-system capabilities.
 3. The configured local engine transcribes the captured audio. Whisper can use
    the managed CPU runtime or an explicitly selected GPU runtime; Parakeet uses
    its managed local runtime.
-4. Echo applies dictionary replacements and the selected cleanup policy.
+4. Echo applies personal Dictionary replacements to the engine transcript.
 5. The injector types or pastes the result into the active application.
 6. The desktop projects status and refreshes History and Dictionary after the
    session returns to Idle.

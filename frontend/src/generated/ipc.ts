@@ -4,7 +4,7 @@ export type AccelerationSkipReason = "runtimeMissing" | "noDeviceEnumerated" | "
 
 export type ActiveComponentOrigin = "managed" | "system" | "external";
 
-export type AppStatus = { phase: string, lastTranscript: string | null, recording: boolean, microphoneReady: boolean, engineName: string, engineReady: boolean, injectionName: string, injectionReady: boolean, shortcut: ShortcutStatus, cleanupName: string, hudEnabled: boolean, recordingLimitSeconds: number | null, recordingPolicy: RecordingPolicy, settingsPath: string, version: string, lastError: string | null, lastRun: LastRun | null, languageWarning: string | null, recordingInProcess: boolean, currentExe: string, firstPathHit: string | null, staleInstalls: Array<string>, };
+export type AppStatus = { phase: string, lastTranscript: string | null, recording: boolean, microphoneReady: boolean, engineName: string, engineReady: boolean, injectionName: string, injectionReady: boolean, shortcut: ShortcutStatus, hudEnabled: boolean, recordingLimitSeconds: number | null, recordingPolicy: RecordingPolicy, settingsPath: string, version: string, lastError: string | null, lastRun: LastRun | null, languageWarning: string | null, recordingInProcess: boolean, currentExe: string, firstPathHit: string | null, staleInstalls: Array<string>, };
 
 export type AudioHost = "pipe-wire" | "pulse-audio" | "alsa" | "core-audio" | "wasapi" | "other";
 
@@ -92,9 +92,9 @@ export type SettingField<T> = { value: T | null, effective: T, source: SettingSo
 
 export type SettingSource = "env" | "file" | "default";
 
-export type Settings = { engine: SettingField<string>, whisperModel: SettingField<string>, cleanup: SettingField<string>, hud: SettingField<boolean>, recordSeconds: SettingField<number>, language: SettingField<string>, whisperAcceleration: SettingField<string>, whisperGpuDevice: SettingField<string>, };
+export type Settings = { engine: SettingField<string>, whisperModel: SettingField<string>, hud: SettingField<boolean>, recordSeconds: SettingField<number>, language: SettingField<string>, whisperAcceleration: SettingField<string>, whisperGpuDevice: SettingField<string>, };
 
-export type SettingsChange = { "kind": "engine", value: string | null, } | { "kind": "whisperModel", value: string | null, } | { "kind": "cleanup", value: string | null, } | { "kind": "hud", value: boolean | null, } | { "kind": "recordSeconds", value: number | null, } | { "kind": "language", value: string | null, } | { "kind": "whisperAcceleration", value: string | null, } | { "kind": "whisperGpuDevice", value: string | null, } | { "kind": "enableWhisperGpu" };
+export type SettingsChange = { "kind": "engine", value: string | null, } | { "kind": "whisperModel", value: string | null, } | { "kind": "hud", value: boolean | null, } | { "kind": "recordSeconds", value: number | null, } | { "kind": "language", value: string | null, } | { "kind": "whisperAcceleration", value: string | null, } | { "kind": "whisperGpuDevice", value: string | null, } | { "kind": "enableWhisperGpu" };
 
 export type SettingsSnapshot = { preferences: Settings, transcription: TranscriptionSnapshot, readiness: Readiness, };
 

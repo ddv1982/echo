@@ -67,24 +67,24 @@ describe('useSettingsController', () => {
     }))
     await waitFor(() => expect(result.current.settings).not.toBeNull())
 
-    let cleanupWrite: Promise<void>
+    let languageWrite: Promise<void>
     let hudWrite: Promise<void>
     act(() => {
-      cleanupWrite = result.current.updateCleanup('off')
+      languageWrite = result.current.updateLanguage('en')
       hudWrite = result.current.updateHud(false)
     })
     await firstWriteStarted.promise
     expect(setSettings).toHaveBeenCalledOnce()
 
     await act(async () => releaseFirstWrite.resolve())
-    await act(async () => Promise.all([cleanupWrite, hudWrite]))
+    await act(async () => Promise.all([languageWrite, hudWrite]))
 
     expect(setSettings).toHaveBeenCalledTimes(2)
     expect(vi.mocked(setSettings).mock.calls.map(([change]) => change)).toEqual([
-      { kind: 'cleanup', value: 'off' },
+      { kind: 'language', value: 'en' },
       { kind: 'hud', value: false },
     ])
-    expect(result.current.settings?.cleanup.value).toBe('off')
+    expect(result.current.settings?.language.value).toBe('en')
     expect(result.current.settings?.hud.value).toBe(false)
   })
 
@@ -110,10 +110,10 @@ describe('useSettingsController', () => {
 
     act(() => setupEvent?.({ kind: 'finished', operationId: 'setup' }))
     await waitFor(() => expect(getSettings).toHaveBeenCalledTimes(2))
-    await act(async () => result.current.updateCleanup('off'))
+    await act(async () => result.current.updateHud(false))
 
     staleRefresh.resolve(staleSettings)
     await act(async () => staleRefresh.promise)
-    await waitFor(() => expect(result.current.settings?.cleanup.value).toBe('off'))
+    await waitFor(() => expect(result.current.settings?.hud.value).toBe(false))
   })
 })

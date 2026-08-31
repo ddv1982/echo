@@ -36,22 +36,28 @@ fn run(root: &Path, args: &[&str]) -> Output {
         .env("ECHO_MODEL_DIR", models)
         .env_remove("ECHO_LANGUAGE")
         .env_remove("ECHO_WHISPER_MODEL")
-        .env_remove("ECHO_CLEANUP")
         .output()
         .unwrap()
 }
 
 #[test]
-fn fake_text_raw_json_and_exact_output_are_stable() {
+fn text_applies_dictionary_while_raw_preserves_engine_output() {
     let root = scratch("fake-output");
     let wav = fixture();
+    let data = root.join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(
+        data.join("dictionary.json"),
+        r#"{"entries":[{"spoken":"claude code","written":"Claude Code","created_at":1}]}"#,
+    )
+    .unwrap();
     let clean = run(&root, &["transcribe", wav.to_str().unwrap()]);
     assert!(
         clean.status.success(),
         "stderr={}",
         String::from_utf8_lossy(&clean.stderr)
     );
-    assert_eq!(clean.stdout, b"Claude code.\n");
+    assert_eq!(clean.stdout, b"Claude Code\n");
     assert!(clean.stderr.is_empty());
 
     let raw = run(&root, &["transcribe", wav.to_str().unwrap(), "--raw"]);
@@ -67,7 +73,7 @@ fn fake_text_raw_json_and_exact_output_are_stable() {
     assert!(!json.stdout[..json.stdout.len() - 1].ends_with(b"\n"));
     let value: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
     assert_eq!(value["schemaVersion"], 1);
-    assert_eq!(value["text"], "Claude code.");
+    assert_eq!(value["text"], "Claude Code");
     assert_eq!(value["raw"], "claude code");
     assert_eq!(value["audioMs"], 400);
     assert_eq!(value["engine"]["id"], "fake");
@@ -90,7 +96,7 @@ fn fake_text_raw_json_and_exact_output_are_stable() {
     );
     assert!(written.status.success());
     assert!(written.stdout.is_empty());
-    assert_eq!(std::fs::read(&exact).unwrap(), b"Claude code.\n");
+    assert_eq!(std::fs::read(&exact).unwrap(), b"Claude Code\n");
     assert!(!root.join("result.data.txt").exists());
 
     let relative = Command::new(env!("CARGO_BIN_EXE_echo-desktop"))
@@ -114,7 +120,7 @@ fn fake_text_raw_json_and_exact_output_are_stable() {
     );
     assert_eq!(
         std::fs::read(root.join("relative.data")).unwrap(),
-        b"Claude code.\n"
+        b"claude code\n"
     );
 }
 
@@ -223,7 +229,7 @@ fn output_alias_with_a_missing_parent_cannot_overwrite_the_input() {
 }
 
 #[test]
-fn audio_setup_inference_cleanup_and_output_failures_exit_one() {
+fn audio_setup_inference_and_output_failures_exit_one() {
     let root = scratch("runtime-failures");
     let wav = fixture();
 
@@ -280,35 +286,6 @@ fn audio_setup_inference_cleanup_and_output_failures_exit_one() {
     assert!(inference.stdout.is_empty());
     assert!(String::from_utf8_lossy(&inference.stderr).contains("decoder failed"));
 
-    let cleanup = Command::new(env!("CARGO_BIN_EXE_echo-desktop"))
-        .args(["transcribe", wav.to_str().unwrap()])
-        .env("ECHO_ENGINE", "fake")
-        .env("ECHO_CLEANUP", "local:/definitely/missing-echo-cleaner")
-        .env("ECHO_CONFIG_DIR", root.join("cleanup-config"))
-        .env("ECHO_DATA_DIR", root.join("cleanup-data"))
-        .env("ECHO_MODEL_DIR", root.join("cleanup-models"))
-        .output()
-        .unwrap();
-    assert_eq!(cleanup.status.code(), Some(1));
-    assert!(cleanup.stdout.is_empty());
-    assert!(!cleanup.stderr.is_empty());
-
-    let raw_without_cleanup = Command::new(env!("CARGO_BIN_EXE_echo-desktop"))
-        .args(["transcribe", wav.to_str().unwrap(), "--raw"])
-        .env("ECHO_ENGINE", "fake")
-        .env("ECHO_CLEANUP", "local:/definitely/missing-echo-cleaner")
-        .env("ECHO_CONFIG_DIR", root.join("raw-cleanup-config"))
-        .env("ECHO_DATA_DIR", root.join("raw-cleanup-data"))
-        .env("ECHO_MODEL_DIR", root.join("raw-cleanup-models"))
-        .output()
-        .unwrap();
-    assert!(
-        raw_without_cleanup.status.success(),
-        "stderr={}",
-        String::from_utf8_lossy(&raw_without_cleanup.stderr)
-    );
-    assert_eq!(raw_without_cleanup.stdout, b"claude code\n");
-
     let output = run(
         &root,
         &[
@@ -321,26 +298,4 @@ fn audio_setup_inference_cleanup_and_output_failures_exit_one() {
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
     assert!(!output.stderr.is_empty());
-}
-
-#[test]
-fn automatic_language_without_observation_disables_english_cleanup() {
-    let root = scratch("unknown-language-cleanup");
-    let wav = fixture();
-    let config = root.join("config");
-    let data = root.join("data");
-    let models = root.join("models");
-    for dir in [&config, &data, &models] {
-        std::fs::create_dir_all(dir).unwrap();
-    }
-    let output = Command::new(env!("CARGO_BIN_EXE_echo-desktop"))
-        .args(["transcribe", wav.to_str().unwrap(), "--language", "auto"])
-        .env("ECHO_ENGINE", "fake")
-        .env("ECHO_CONFIG_DIR", config)
-        .env("ECHO_DATA_DIR", data)
-        .env("ECHO_MODEL_DIR", models)
-        .output()
-        .unwrap();
-    assert!(output.status.success());
-    assert_eq!(output.stdout, b"claude code\n");
 }

@@ -82,19 +82,6 @@ impl LanguageChoice {
             Self::Pinned(language) => language.code(),
         }
     }
-
-    /// Whether the English cleanup rules (filler dropping, ASCII punctuation)
-    /// may run for a session. Pinned English allows them, a pinned other
-    /// language forbids them, and under auto they run only when detection
-    /// reported English. An absent observation stays conservative because
-    /// engines such as Parakeet cannot report the detected language.
-    #[must_use]
-    pub fn permits_english_rules(&self, detected: Option<&str>) -> bool {
-        match self {
-            Self::Pinned(language) => *language == Language::ENGLISH,
-            Self::Auto => detected == Some("en"),
-        }
-    }
 }
 
 impl Serialize for LanguageChoice {
@@ -170,16 +157,6 @@ mod tests {
             "\"auto\""
         );
         assert!(serde_json::from_str::<LanguageChoice>("\"xx\"").is_err());
-    }
-
-    #[test]
-    fn english_rules_follow_the_resolved_language() {
-        let german = LanguageChoice::Pinned(Language::from_code("de").unwrap());
-        assert!(!german.permits_english_rules(None));
-        assert!(LanguageChoice::default().permits_english_rules(None));
-        assert!(LanguageChoice::Auto.permits_english_rules(Some("en")));
-        assert!(!LanguageChoice::Auto.permits_english_rules(Some("ja")));
-        assert!(!LanguageChoice::Auto.permits_english_rules(None));
     }
 
     #[test]
