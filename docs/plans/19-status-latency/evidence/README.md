@@ -3,6 +3,8 @@
 The benchmark uses a release build and the real Tauri WebView invoke path under
 Xvfb. The browser records transport durations with `performance.now()`. Rust
 records status stages in microseconds.
+The report keeps the first uncached backend reconstruction separately as
+`coldStatusStage`; the 40 entries in `statusStages` remain warm samples.
 
 Reference environment:
 

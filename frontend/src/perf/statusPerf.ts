@@ -67,8 +67,9 @@ async function measure(
 
 async function runStatusPerf(): Promise<void> {
   const noop = await measure('noop', 'perf_noop', 20, 500)
-  const fixedStatus = await measure('fixed-status', 'perf_fixed_status', 20, 500)
   await invoke('perf_clear_status_stages')
+  const fixedStatus = await measure('fixed-status', 'perf_fixed_status', 20, 500)
+  await invoke('perf_preserve_cold_status_stage')
   for (let index = 0; index < 3; index += 1) await invoke('get_app_status')
   await invoke('perf_clear_status_stages')
   const currentStatus = await measure('current-status', 'get_app_status', 0, 40)

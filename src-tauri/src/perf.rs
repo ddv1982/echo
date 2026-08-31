@@ -85,6 +85,11 @@ fn take_status_stage_samples() -> Vec<StatusStageSample> {
     )
 }
 
+fn cold_status_stage() -> &'static Mutex<Option<StatusStageSample>> {
+    static COLD: OnceLock<Mutex<Option<StatusStageSample>>> = OnceLock::new();
+    COLD.get_or_init(|| Mutex::new(None))
+}
+
 #[tauri::command]
 pub(crate) fn perf_noop() -> u64 {
     1
@@ -99,6 +104,21 @@ pub(crate) fn perf_fixed_status() -> AppStatus {
 #[tauri::command]
 pub(crate) fn perf_clear_status_stages() {
     take_status_stage_samples();
+}
+
+#[tauri::command]
+pub(crate) fn perf_preserve_cold_status_stage() -> Result<(), String> {
+    let mut samples = take_status_stage_samples();
+    if samples.len() != 1 {
+        return Err(format!(
+            "expected one cold status stage sample, found {}",
+            samples.len()
+        ));
+    }
+    *cold_status_stage()
+        .lock()
+        .expect("cold status performance sample lock") = samples.pop();
+    Ok(())
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -134,6 +154,7 @@ pub(crate) struct PerfReport {
 struct PerfOutput {
     commit: &'static str,
     report: PerfReport,
+    cold_status_stage: StatusStageSample,
     status_stages: Vec<StatusStageSample>,
 }
 
@@ -171,9 +192,15 @@ pub(crate) fn perf_report_complete(
     report: PerfReport,
 ) -> Result<(), String> {
     validate_report(&report)?;
+    let cold_status_stage = cold_status_stage()
+        .lock()
+        .expect("cold status performance sample lock")
+        .take()
+        .ok_or_else(|| "cold status performance sample is missing".to_string())?;
     let output = PerfOutput {
         commit: option_env!("ECHO_BUILD_SHA").unwrap_or("unknown"),
         report,
+        cold_status_stage,
         status_stages: take_status_stage_samples(),
     };
     println!(

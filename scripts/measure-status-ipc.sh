@@ -25,8 +25,10 @@ printf '{"rows":[]}\n' > "$perf_root/data/history.json"
 
 (
   cd "$repo_dir"
-  VITE_STATUS_PERF_PROBE=1 npm run build --prefix frontend
-  ECHO_BUILD_SHA="$commit" cargo build --release -p echo-desktop \
+  probe_dist="$perf_root/frontend-dist"
+  VITE_STATUS_PERF_PROBE=1 npm run build --prefix frontend -- --outDir "$probe_dist"
+  tauri_config="{\"build\":{\"frontendDist\":\"$probe_dist\"}}"
+  ECHO_BUILD_SHA="$commit" TAURI_CONFIG="$tauri_config" cargo build --release -p echo-desktop \
     --features status-perf-probe
 )
 
@@ -71,6 +73,7 @@ if document.get("commit") != commit:
     raise SystemExit("status performance commit does not match")
 lanes = document.get("report", {}).get("lanes")
 stages = document.get("statusStages")
+cold = document.get("coldStatusStage")
 if not isinstance(lanes, list) or [lane.get("name") for lane in lanes] != [
     "noop",
     "fixed-status",
@@ -79,6 +82,8 @@ if not isinstance(lanes, list) or [lane.get("name") for lane in lanes] != [
     raise SystemExit("status performance lanes are invalid")
 if not isinstance(stages, list) or len(stages) != 40:
     raise SystemExit("status performance stage sample count is invalid")
+if not isinstance(cold, dict) or not cold:
+    raise SystemExit("cold status performance stage sample is invalid")
 document["fixture"] = fixture
 path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n")
 for lane in lanes:
@@ -88,6 +93,7 @@ for lane in lanes:
         f"p50={summary['p50Ms']:.3f}ms p95={summary['p95Ms']:.3f}ms"
     )
 print(f"status-stage-samples: {len(stages)}")
+print(f"cold-status-total: {cold['totalUs'] / 1000:.3f}ms")
 for name in stages[0]:
     values = sorted(sample[name] for sample in stages)
     rank = (len(values) - 1) * 0.95

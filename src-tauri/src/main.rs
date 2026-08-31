@@ -170,6 +170,8 @@ fn run_desktop() {
             #[cfg(feature = "status-perf-probe")]
             perf::perf_clear_status_stages,
             #[cfg(feature = "status-perf-probe")]
+            perf::perf_preserve_cold_status_stage,
+            #[cfg(feature = "status-perf-probe")]
             perf::perf_report_complete,
             #[cfg(feature = "status-perf-probe")]
             perf::perf_report_failed,
