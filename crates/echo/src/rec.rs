@@ -151,7 +151,10 @@ fn run_record_with_limit(mut stop: StopWhen, limit: RecordingLimit) -> i32 {
             return 1;
         }
     };
-    let transcript = match prepared.transcribe(&capture.pcm, &dict) {
+    let transcript = match prepared.transcribe(
+        &capture.pcm,
+        crate::transcribe::TranscriptionPurpose::Dictation(&dict),
+    ) {
         Ok(transcript) => transcript,
         Err(err) => {
             hud.set_state(crate::ui::hud::HudState::Failed);
@@ -346,6 +349,26 @@ struct ToggleSession {
     lock_path: PathBuf,
     stop_path: PathBuf,
     token: String,
+}
+
+pub struct RecordingSession(ToggleSession);
+
+impl RecordingSession {
+    pub fn acquire() -> Result<Self, String> {
+        Self::acquire_in(&echo_core::data_dir())
+    }
+
+    fn acquire_in(dir: &Path) -> Result<Self, String> {
+        match ToggleSession::acquire_in(dir)? {
+            LockAcquisition::Started(session) => Ok(Self(session)),
+            LockAcquisition::Busy(_) => Err("Another recording is already active.".to_string()),
+        }
+    }
+
+    #[must_use]
+    pub fn stop_requested(&self) -> bool {
+        self.0.stop_requested()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -706,5 +729,22 @@ mod tests {
             ToggleSession::start_or_stop_in(&dir).unwrap(),
             ToggleAction::Start(_)
         ));
+    }
+
+    #[test]
+    fn recording_session_serializes_with_toggle_recording() {
+        let dir = std::env::temp_dir().join(format!(
+            "echo-shared-recording-session-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        let session = RecordingSession::acquire_in(&dir).unwrap();
+
+        assert!(ToggleSession::try_start_in(&dir).unwrap().is_none());
+        assert!(ToggleSession::request_stop_if_active_in(&dir).unwrap());
+        assert!(session.stop_requested());
+
+        drop(session);
+        assert!(ToggleSession::try_start_in(&dir).unwrap().is_some());
     }
 }

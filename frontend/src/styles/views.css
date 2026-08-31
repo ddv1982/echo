@@ -106,6 +106,25 @@
   background: hsl(var(--foreground));
 }
 
+.secondary-button {
+  display: inline-flex;
+  min-height: 2.65rem;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  border: 1px solid hsl(var(--border-strong));
+  border-radius: var(--radius-sm);
+  background: hsl(var(--surface-raised));
+  color: hsl(var(--foreground));
+  padding: 0 var(--space-4);
+  font-weight: var(--weight-medium);
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+
+.secondary-button:hover:not(:disabled) {
+  background: hsl(var(--surface-hover));
+}
+
 .record-hero[data-state='recording'] .primary-button {
   background: hsl(var(--recording));
   color: white;
@@ -266,6 +285,300 @@
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto;
   align-items: end;
   gap: var(--space-3);
+}
+
+.dictionary-training-prompt {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  border: 1px solid hsl(var(--border-subtle));
+  border-radius: var(--radius-lg);
+  background: hsl(var(--surface-card));
+  padding: var(--space-4) var(--space-5);
+}
+
+.dictionary-training-prompt > div {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.dictionary-training-prompt span {
+  color: hsl(var(--text-secondary));
+  font-size: var(--text-sm);
+}
+
+.trainer-backdrop {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow-y: auto;
+  background: hsl(0 0% 0% / 0.68);
+  padding: var(--space-5);
+}
+
+.dictionary-trainer {
+  width: min(100%, 44rem);
+  max-height: calc(100vh - 2.5rem);
+  overflow-y: auto;
+  border: 1px solid hsl(var(--border-strong));
+  border-radius: var(--radius-lg);
+  background: hsl(var(--surface-card));
+  box-shadow: 0 1.5rem 5rem hsl(0 0% 0% / 0.45);
+}
+
+.trainer-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-5);
+  border-bottom: 1px solid hsl(var(--border-subtle));
+  padding: var(--space-5);
+}
+
+.trainer-header h2 {
+  margin-top: var(--space-1);
+  font-size: var(--text-xl);
+}
+
+.trainer-header p:last-child {
+  max-width: 35rem;
+  color: hsl(var(--text-secondary));
+  margin-top: var(--space-2);
+}
+
+.trainer-header .eyebrow {
+  color: hsl(var(--text-tertiary));
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--label-tracking);
+  text-transform: uppercase;
+}
+
+.trainer-entry,
+.trainer-collection,
+.trainer-review {
+  padding: var(--space-5);
+}
+
+.trainer-entry {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.trainer-entry label,
+.trainer-review legend {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+
+.trainer-entry > p {
+  color: hsl(var(--text-tertiary));
+  font-size: var(--text-sm);
+}
+
+.trainer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+
+.trainer-target {
+  display: grid;
+  gap: var(--space-1);
+  border: 1px solid hsl(var(--border-subtle));
+  border-radius: var(--radius-sm);
+  background: hsl(var(--surface-raised));
+  padding: var(--space-3) var(--space-4);
+}
+
+.trainer-target span {
+  color: hsl(var(--text-tertiary));
+  font-size: var(--text-xs);
+  letter-spacing: var(--label-tracking);
+  text-transform: uppercase;
+}
+
+.trainer-progress-row {
+  display: grid;
+  grid-template-columns: auto minmax(8rem, 1fr);
+  align-items: center;
+  gap: var(--space-4);
+  color: hsl(var(--text-secondary));
+  margin: var(--space-4) 0;
+  font-size: var(--text-sm);
+}
+
+.trainer-progress-row progress {
+  width: 100%;
+  height: 0.45rem;
+  border: 0;
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+  background: hsl(var(--surface-raised));
+}
+
+.trainer-progress-row progress::-webkit-progress-bar {
+  background: hsl(var(--surface-raised));
+}
+
+.trainer-progress-row progress::-webkit-progress-value,
+.trainer-progress-row progress::-moz-progress-bar {
+  background: hsl(var(--success));
+}
+
+.take-list {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.take-row {
+  display: grid;
+  grid-template-columns: 2rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 4.5rem;
+  border: 1px solid hsl(var(--border-subtle));
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+}
+
+.take-row[data-state='recording'] {
+  border-color: hsl(var(--recording) / 0.65);
+  background: hsl(var(--recording-soft));
+}
+
+.take-number {
+  display: grid;
+  width: 1.75rem;
+  height: 1.75rem;
+  place-items: center;
+  border-radius: var(--radius-pill);
+  background: hsl(var(--surface-raised));
+  color: hsl(var(--text-secondary));
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+}
+
+.take-row[data-state='complete'] .take-number {
+  color: hsl(var(--success));
+}
+
+.take-copy {
+  display: grid;
+  min-width: 0;
+  gap: 0.1rem;
+}
+
+.take-copy > span {
+  overflow: hidden;
+  color: hsl(var(--text-secondary));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.take-copy small {
+  color: hsl(var(--text-tertiary));
+}
+
+.take-copy q,
+.review-row q,
+.trainer-conflicts q {
+  font-family: var(--font-mono);
+}
+
+.record-take-button {
+  display: inline-flex;
+  min-height: 2.25rem;
+  align-items: center;
+  gap: var(--space-2);
+  border: 1px solid hsl(var(--border-strong));
+  border-radius: var(--radius-sm);
+  background: hsl(var(--surface-raised));
+  padding: 0 var(--space-3);
+  font-size: var(--text-sm);
+}
+
+.record-take-button.is-recording {
+  border-color: hsl(var(--recording) / 0.65);
+  color: hsl(var(--recording));
+}
+
+.trainer-error,
+.trainer-conflicts {
+  display: grid;
+  gap: var(--space-2);
+  border: 1px solid hsl(var(--danger) / 0.45);
+  border-radius: var(--radius-sm);
+  background: hsl(var(--danger) / 0.08);
+  color: hsl(var(--foreground));
+  margin: var(--space-4) 0;
+  padding: var(--space-3);
+}
+
+.trainer-error button {
+  justify-self: start;
+  border: 0;
+  background: transparent;
+  color: hsl(var(--foreground));
+  padding: 0;
+  text-decoration: underline;
+}
+
+.trainer-review fieldset {
+  min-width: 0;
+  border: 0;
+  margin: var(--space-5) 0 0;
+  padding: 0;
+}
+
+.review-list {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.review-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  border: 1px solid hsl(var(--border-subtle));
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+}
+
+.review-row > input {
+  width: 1rem;
+  height: 1rem;
+}
+
+.review-row > span {
+  display: grid;
+  min-width: 0;
+}
+
+.review-row small,
+.review-row em {
+  color: hsl(var(--text-tertiary));
+  font-size: var(--text-xs);
+  font-style: normal;
+}
+
+.review-row[data-status='canonical'],
+.review-row[data-status='duplicate'],
+.review-row[data-status='existing'] {
+  opacity: 0.72;
+}
+
+.review-row[data-status='conflict'] {
+  border-color: hsl(var(--warning) / 0.45);
 }
 
 .dictionary-form label {
@@ -718,6 +1031,7 @@
   .hero-main { flex-direction: column; align-items: flex-start; }
   .home-grid { grid-template-columns: 1fr; }
   .dictionary-form { grid-template-columns: 1fr; }
+  .dictionary-training-prompt { align-items: stretch; flex-direction: column; }
   .mapping-arrow { display: none; }
 }
 
@@ -729,6 +1043,18 @@
   .dictionary-row strong,
   .table-header span:nth-child(2) { grid-column: 1; }
   .dictionary-row button { grid-column: 2; grid-row: 1 / span 2; }
+  .trainer-backdrop { place-items: start center; padding: 0; }
+  .dictionary-trainer { min-height: 100vh; max-height: none; border: 0; border-radius: 0; }
+  .trainer-header,
+  .trainer-entry,
+  .trainer-collection,
+  .trainer-review { padding: var(--space-4); }
+  .take-row { grid-template-columns: 2rem minmax(0, 1fr); }
+  .take-row .record-take-button { grid-column: 2; justify-self: start; }
+  .review-row { grid-template-columns: auto minmax(0, 1fr); }
+  .review-row em { grid-column: 2; }
+  .trainer-actions { align-items: stretch; flex-direction: column-reverse; }
+  .trainer-actions button { width: 100%; }
 }
 
 @media (max-height: 600px) {

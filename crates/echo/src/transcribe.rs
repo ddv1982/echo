@@ -377,6 +377,11 @@ pub struct PreparedTranscription {
     _managed_paths: Vec<ManagedPath>,
 }
 
+pub enum TranscriptionPurpose<'a> {
+    Dictation(&'a Dictionary),
+    DictionaryTraining,
+}
+
 impl PreparedTranscription {
     #[must_use]
     pub fn resolved(&self) -> &ResolvedRun {
@@ -386,11 +391,22 @@ impl PreparedTranscription {
     pub fn transcribe(
         &self,
         pcm: &Pcm16kMono,
-        dictionary: &Dictionary,
+        purpose: TranscriptionPurpose<'_>,
     ) -> Result<CompletedTranscription, TranscriptionError> {
-        let hints = match self.resolved.engine {
-            ResolvedEngine::Whisper { .. } => RecognitionHints::from_dictionary(dictionary),
-            ResolvedEngine::ParakeetTdt06bV3 | ResolvedEngine::Fake => RecognitionHints::default(),
+        let hints = match (&self.resolved.engine, &purpose) {
+            (ResolvedEngine::Whisper { .. }, TranscriptionPurpose::Dictation(dictionary)) => {
+                RecognitionHints::from_dictionary(dictionary)
+            }
+            (
+                ResolvedEngine::Whisper { .. }
+                | ResolvedEngine::ParakeetTdt06bV3
+                | ResolvedEngine::Fake,
+                TranscriptionPurpose::DictionaryTraining,
+            )
+            | (
+                ResolvedEngine::ParakeetTdt06bV3 | ResolvedEngine::Fake,
+                TranscriptionPurpose::Dictation(_),
+            ) => RecognitionHints::default(),
         };
         let hint_count = hints.terms().len();
         let options = DecodeOptions {
@@ -401,7 +417,10 @@ impl PreparedTranscription {
             .engine
             .transcribe(pcm, &options)
             .map_err(TranscriptionError::Engine)?;
-        let text = dictionary.rewrite(&transcript.raw);
+        let text = match purpose {
+            TranscriptionPurpose::Dictation(dictionary) => dictionary.rewrite(&transcript.raw),
+            TranscriptionPurpose::DictionaryTraining => transcript.raw.clone(),
+        };
         Ok(CompletedTranscription {
             raw: transcript.raw,
             text,
@@ -638,7 +657,7 @@ pub fn transcribe_file(
     dictionary: &Dictionary,
 ) -> Result<CompletedTranscription, TranscriptionError> {
     let capture = crate::audio::load_wav(path).map_err(TranscriptionError::Audio)?;
-    prepared.transcribe(&capture.pcm, dictionary)
+    prepared.transcribe(&capture.pcm, TranscriptionPurpose::Dictation(dictionary))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -749,6 +768,37 @@ pub fn language_catalog(engine: Option<EngineChoice>, file: &Config) -> Language
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
+
+    struct InspectingEngine {
+        hints: Arc<Mutex<Vec<Vec<String>>>>,
+    }
+
+    impl Engine for InspectingEngine {
+        fn id(&self) -> EngineId {
+            EngineId::Whisper {
+                model: "test".to_string(),
+            }
+        }
+
+        fn transcribe(
+            &self,
+            pcm: &Pcm16kMono,
+            options: &DecodeOptions,
+        ) -> Result<echo_core::Transcript, EngineError> {
+            self.hints
+                .lock()
+                .expect("hint capture lock")
+                .push(options.hints.terms().to_vec());
+            Ok(echo_core::Transcript {
+                raw: "clawed code".to_string(),
+                engine: self.id(),
+                audio_ms: pcm.duration_ms(),
+                infer_ms: 1,
+                detail: RunDetail::default(),
+            })
+        }
+    }
 
     fn available(multilingual: bool, parakeet: bool) -> EngineAvailabilitySnapshot {
         EngineAvailabilitySnapshot {
@@ -764,6 +814,54 @@ mod tests {
 
     fn german() -> LanguageChoice {
         LanguageChoice::Pinned(Language::from_code("de").unwrap())
+    }
+
+    #[test]
+    fn dictionary_training_returns_raw_output_without_dictionary_hints() {
+        let path = std::env::temp_dir().join(format!(
+            "echo-transcription-purpose-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let mut dictionary = Dictionary::load_from(&path).unwrap();
+        dictionary.add("clawed code", "Claude Code").unwrap();
+        let hints = Arc::new(Mutex::new(Vec::new()));
+        let prepared = PreparedTranscription {
+            resolved: ResolvedRun {
+                engine: ResolvedEngine::Whisper {
+                    model: "test".to_string(),
+                    multilingual: true,
+                    model_path: None,
+                },
+                language: LanguageChoice::Auto,
+            },
+            engine: Box::new(InspectingEngine {
+                hints: Arc::clone(&hints),
+            }),
+            _managed_paths: Vec::new(),
+        };
+        let pcm = Pcm16kMono::from_samples(vec![8_000; 160]);
+
+        let dictation = prepared
+            .transcribe(&pcm, TranscriptionPurpose::Dictation(&dictionary))
+            .unwrap();
+        let training = prepared
+            .transcribe(&pcm, TranscriptionPurpose::DictionaryTraining)
+            .unwrap();
+
+        assert_eq!(dictation.text, "Claude Code");
+        assert_eq!(dictation.hint_count, 1);
+        assert_eq!(training.raw, "clawed code");
+        assert_eq!(training.text, "clawed code");
+        assert_eq!(training.hint_count, 0);
+        assert_eq!(
+            *hints.lock().expect("hint capture lock"),
+            vec![vec!["Claude Code".to_string()], Vec::<String>::new()]
+        );
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

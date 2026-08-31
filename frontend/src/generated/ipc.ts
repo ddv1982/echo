@@ -14,7 +14,13 @@ export type ComponentOrigin = "system" | "external";
 
 export type ComponentStatus = { id: ComponentId, label: string, managed: ManagedComponentState, external: Array<ExternalComponent>, activeOrigin: ActiveComponentOrigin | null, activity: InstallProgress | null, };
 
+export type DictionaryBatchResult = { entries: Array<DictionaryItem>, added: number, unchanged: number, conflicts: Array<DictionaryConflict>, };
+
+export type DictionaryConflict = { spoken: string, written: string, };
+
 export type DictionaryItem = { spoken: string, written: string, createdAt: number, };
+
+export type DictionaryTrainingSample = { transcript: string, engine: string, };
 
 export type EndpointTier = "primary" | "advanced";
 

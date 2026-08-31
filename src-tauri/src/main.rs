@@ -3,11 +3,13 @@ use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use commands::{
-    add_dictionary_entry, copy_text, get_app_status, get_dictionary, get_history, get_microphones,
-    get_recording_level, get_settings, get_shortcut_status, list_gpu_devices, list_languages,
-    list_models, remove_dictionary_entry, remove_stale_installs, repair_legacy_shortcut,
-    retry_shortcut, set_microphone, set_settings, stop_recording, test_input_device,
-    test_microphone_fallback, toggle_recording,
+    add_dictionary_entries_batch, add_dictionary_entry, cancel_dictionary_training_sample,
+    copy_text, finish_dictionary_training_sample, get_app_status, get_dictionary, get_history,
+    get_microphones, get_recording_level, get_settings, get_shortcut_status, list_gpu_devices,
+    list_languages, list_models, remove_dictionary_entry, remove_stale_installs,
+    repair_legacy_shortcut, retry_shortcut, set_microphone, set_settings,
+    start_dictionary_training_sample, stop_recording, test_input_device, test_microphone_fallback,
+    toggle_recording, DictionaryTrainingCaptures,
 };
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem};
@@ -56,7 +58,9 @@ struct UpgradeWatch {
 fn run_desktop() {
     let mut context = tauri::generate_context!();
     context.config_mut().app.tray_icon = None;
-    let builder = tauri::Builder::default().manage(setup::SetupService::default());
+    let builder = tauri::Builder::default()
+        .manage(setup::SetupService::default())
+        .manage(DictionaryTrainingCaptures::default());
     #[cfg(not(feature = "status-perf-probe"))]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
         let Some(watch) = app.try_state::<UpgradeWatch>() else {
@@ -144,7 +148,11 @@ fn run_desktop() {
             get_history,
             get_dictionary,
             add_dictionary_entry,
+            add_dictionary_entries_batch,
             remove_dictionary_entry,
+            start_dictionary_training_sample,
+            finish_dictionary_training_sample,
+            cancel_dictionary_training_sample,
             toggle_recording,
             stop_recording,
             get_recording_level,

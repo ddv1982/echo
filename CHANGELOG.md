@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.14.6
+
+- Dictionary now has **Teach by voice**. Enter the exact text, record five takes with the selected transcription model, review what the model heard, and save the useful variants together. Manual entries remain available.
+- Echo keeps training audio local and temporary. Training bypasses existing dictionary corrections, does not add entries to history, and cannot overlap normal dictation. Batch saves reject conflicts without partial changes.
+
 ## v0.14.5
 
 - Echo no longer applies English-only cleanup rules after Whisper or Parakeet. The Cleanup setting, `ECHO_CLEANUP`, and external cleanup commands are gone.

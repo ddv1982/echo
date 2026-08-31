@@ -107,6 +107,15 @@ impl From<&echo_core::DictEntry> for DictionaryItem {
     }
 }
 
+impl From<echo_core::DictionaryConflict> for DictionaryConflict {
+    fn from(value: echo_core::DictionaryConflict) -> Self {
+        Self {
+            spoken: value.spoken,
+            written: value.written,
+        }
+    }
+}
+
 impl From<echo::stt::GpuDevice> for GpuDevice {
     fn from(value: echo::stt::GpuDevice) -> Self {
         Self {

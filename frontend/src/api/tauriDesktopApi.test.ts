@@ -32,7 +32,11 @@ describe('Tauri desktop adapter contract', () => {
     await tauriDesktopApi.getHistory()
     await tauriDesktopApi.getDictionary()
     await tauriDesktopApi.addDictionaryEntry('spoken', 'written')
+    await tauriDesktopApi.addDictionaryEntriesBatch('written', ['first', 'second'])
     await tauriDesktopApi.removeDictionaryEntry('spoken', 'written')
+    const capture = await tauriDesktopApi.startDictionaryTrainingSample()
+    await tauriDesktopApi.finishDictionaryTrainingSample(String(capture))
+    await tauriDesktopApi.cancelDictionaryTrainingSample(String(capture))
     await tauriDesktopApi.toggleRecording()
     await tauriDesktopApi.stopRecording('activation')
     await tauriDesktopApi.getRecordingLevel()
@@ -64,7 +68,11 @@ describe('Tauri desktop adapter contract', () => {
       ['get_history'],
       ['get_dictionary'],
       ['add_dictionary_entry', { spoken: 'spoken', written: 'written' }],
+      ['add_dictionary_entries_batch', { written: 'written', spoken: ['first', 'second'] }],
       ['remove_dictionary_entry', { spoken: 'spoken', written: 'written' }],
+      ['start_dictionary_training_sample'],
+      ['finish_dictionary_training_sample', { captureId: 'undefined' }],
+      ['cancel_dictionary_training_sample', { captureId: 'undefined' }],
       ['toggle_recording'],
       ['stop_recording', { activation: 'activation' }],
       ['get_recording_level'],

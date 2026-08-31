@@ -19,8 +19,16 @@ export const getHistory: DesktopApi['getHistory'] = () => api().getHistory()
 export const getDictionary: DesktopApi['getDictionary'] = () => api().getDictionary()
 export const addDictionaryEntry: DesktopApi['addDictionaryEntry'] = (spoken, written) =>
   api().addDictionaryEntry(spoken, written)
+export const addDictionaryEntriesBatch: DesktopApi['addDictionaryEntriesBatch'] = (written, spoken) =>
+  api().addDictionaryEntriesBatch(written, spoken)
 export const removeDictionaryEntry: DesktopApi['removeDictionaryEntry'] = (spoken, written) =>
   api().removeDictionaryEntry(spoken, written)
+export const startDictionaryTrainingSample: DesktopApi['startDictionaryTrainingSample'] = () =>
+  api().startDictionaryTrainingSample()
+export const finishDictionaryTrainingSample: DesktopApi['finishDictionaryTrainingSample'] = (captureId) =>
+  api().finishDictionaryTrainingSample(captureId)
+export const cancelDictionaryTrainingSample: DesktopApi['cancelDictionaryTrainingSample'] = (captureId) =>
+  api().cancelDictionaryTrainingSample(captureId)
 export const toggleRecording: DesktopApi['toggleRecording'] = () => api().toggleRecording()
 export const stopRecording: DesktopApi['stopRecording'] = (activation) => api().stopRecording(activation)
 export const getRecordingLevel: DesktopApi['getRecordingLevel'] = () => api().getRecordingLevel()
