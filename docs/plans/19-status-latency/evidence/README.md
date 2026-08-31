@@ -12,7 +12,7 @@ Reference environment:
 - WebKitGTK: 2.52.3
 - WebView user agent: AppleWebKit 605.1.15, Version 60.5
 - Platform: Linux x86_64, X11
-- Source base: `5c82378523aa138216b84366ff000594c8f083ae`
+- Source base: `6998ae063b95cef0bb8346ad15d7ab310f057dbb`
 
 ## Deterministic empty fixture
 
@@ -22,8 +22,8 @@ Reference environment:
 | Fixed `AppStatus` payload | <1 ms | 1 ms |
 | Current full status | <1 ms | 1 ms |
 
-Rust full-status total: 146 us p50 and 170 us p95. Presentation is 138 us
-p50 and 162 us p95.
+The cold backend reconstruction took 19.68 ms. The warm Rust full-status total
+is 155 us p50 and 177 us p95. Presentation is 148 us p50 and 165 us p95.
 
 Raw samples: [baseline-empty.json](baseline-empty.json).
 
@@ -33,16 +33,17 @@ Raw samples: [baseline-empty.json](baseline-empty.json).
 | --- | ---: | ---: |
 | No-op invoke | <1 ms | 1 ms |
 | Fixed `AppStatus` payload | <1 ms | 1 ms |
-| Current full status | 21 ms | 21 ms |
+| Current full status | 19 ms | 20 ms |
 
-Rust full-status total: 19.66 ms p50 and 20.44 ms p95.
+The cold backend reconstruction took 2.17 seconds. The warm Rust full-status
+total is 18.12 ms p50 and 19.02 ms p95.
 
 | Rust stage | p50 | p95 |
 | --- | ---: | ---: |
-| Status file | 8 us | 15 us |
-| Shortcut | 9 us | 12 us |
-| History | 135 us | 162 us |
-| Presentation | 19.51 ms | 20.28 ms |
+| Status file | 7 us | 12 us |
+| Shortcut | 7 us | 8 us |
+| History | 120 us | 145 us |
+| Presentation | 17.99 ms | 18.89 ms |
 
 The presentation stage includes cleanup, HUD, and `language_warning`. The
 language warning rebuilds the speech runtime inventory. It accounts for almost

@@ -26,7 +26,8 @@ printf '{"rows":[]}\n' > "$perf_root/data/history.json"
 (
   cd "$repo_dir"
   probe_dist="$perf_root/frontend-dist"
-  VITE_STATUS_PERF_PROBE=1 npm run build --prefix frontend -- --outDir "$probe_dist"
+  VITE_STATUS_PERF_PROBE=1 npm run build --prefix frontend -- \
+    --outDir "$probe_dist" --emptyOutDir
   tauri_config="{\"build\":{\"frontendDist\":\"$probe_dist\"}}"
   ECHO_BUILD_SHA="$commit" TAURI_CONFIG="$tauri_config" cargo build --release -p echo-desktop \
     --features status-perf-probe
