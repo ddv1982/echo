@@ -52,8 +52,7 @@ pub(crate) fn list_languages() -> LanguageOptions {
 
 static GPU_DEVICES: OnceLock<Mutex<Option<Vec<echo::stt::GpuDevice>>>> = OnceLock::new();
 
-#[tauri::command]
-pub(crate) fn list_gpu_devices(refresh: bool) -> Vec<echo_desktop::ipc::GpuDevice> {
+fn cached_gpu_devices(refresh: bool) -> Vec<echo_desktop::ipc::GpuDevice> {
     let cell = GPU_DEVICES.get_or_init(|| Mutex::new(None));
     let Ok(mut cached) = cell.lock() else {
         return echo::stt::list_gpu_devices()
@@ -70,6 +69,16 @@ pub(crate) fn list_gpu_devices(refresh: bool) -> Vec<echo_desktop::ipc::GpuDevic
         .into_iter()
         .map(Into::into)
         .collect()
+}
+
+#[tauri::command]
+pub(crate) async fn list_gpu_devices(
+    refresh: bool,
+) -> Result<Vec<echo_desktop::ipc::GpuDevice>, String> {
+    crate::blocking::run_blocking("GPU device enumeration", move || {
+        cached_gpu_devices(refresh)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -224,6 +233,17 @@ pub(crate) fn test_microphone_fallback() -> echo_desktop::ipc::MicrophoneTestRes
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::future::Future;
+
+    fn assert_async_gpu_devices(
+        _: impl Future<Output = Result<Vec<echo_desktop::ipc::GpuDevice>, String>>,
+    ) {
+    }
+
+    #[test]
+    fn gpu_device_listing_yields_before_detection() {
+        assert_async_gpu_devices(list_gpu_devices(false));
+    }
 
     #[test]
     fn dedicated_microphone_update_writes_id_and_clears_legacy_name() {

@@ -33,6 +33,7 @@ struct ActiveOperation {
     progress: Option<CoreInstallProgress>,
 }
 
+#[derive(Clone)]
 pub struct SetupService {
     active: Arc<Mutex<Option<ActiveOperation>>>,
 }
@@ -84,8 +85,8 @@ fn external_components(
                 }]
             })
             .unwrap_or_default(),
-        // A system whisper-cli is never Vulkan-capable, so there is no
-        // external equivalent to offer for the GPU runtime.
+        // GPU selection uses Echo's managed Vulkan probe, so a system
+        // whisper-cli does not satisfy this managed component.
         CoreComponentId::WhisperVulkanRuntime => Vec::new(),
         CoreComponentId::WhisperBaseQ51 => external_model(inventory, "base-q5_1"),
         CoreComponentId::WhisperSmall => external_model(inventory, "small"),
@@ -503,8 +504,9 @@ fn apply_plan_config(
 }
 
 #[tauri::command]
-pub fn get_readiness(state: State<'_, SetupService>) -> Readiness {
-    state.snapshot()
+pub async fn get_readiness(state: State<'_, SetupService>) -> Result<Readiness, String> {
+    let service = state.inner().clone();
+    crate::blocking::run_blocking("readiness snapshot", move || service.snapshot()).await
 }
 
 #[tauri::command]
@@ -569,10 +571,37 @@ pub fn cancel_setup(operation: String, state: State<'_, SetupService>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_plan_config, plan_space};
+    use super::{apply_plan_config, get_readiness, plan_space, Readiness, SetupService};
     use echo::install::catalog::HardwareProfile;
     use echo::install::SetupPlanId;
     use echo_core::{Config, EngineChoice};
+    use std::future::Future;
+    use std::sync::{Arc, Mutex};
+    use tauri::Manager;
+
+    fn assert_async_readiness(_: impl Future<Output = Result<Readiness, String>>) {}
+
+    #[test]
+    fn readiness_snapshot_yields_before_collection() {
+        let app = tauri::test::mock_builder()
+            .manage(SetupService {
+                active: Arc::new(Mutex::new(None)),
+            })
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+
+        assert_async_readiness(get_readiness(app.state()));
+    }
+
+    #[test]
+    fn setup_service_clone_shares_active_operation() {
+        let service = SetupService {
+            active: Arc::new(Mutex::new(None)),
+        };
+        let clone = service.clone();
+
+        assert!(Arc::ptr_eq(&service.active, &clone.active));
+    }
 
     #[test]
     fn plan_disk_check_includes_payloads_retained_by_earlier_components() {
