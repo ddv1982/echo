@@ -1,11 +1,15 @@
 # Changelog
 
-## v0.14.3
+## v0.14.4
 
 - Settings now groups controls by task instead of hiding engine and GPU choices in a top-level Advanced drawer. The Transcription section distinguishes the saved preference, the resolved next transcription, and the processing used by the previous transcription.
-- A saved GPU preference stays dormant when the next transcription resolves to Parakeet. Echo does not probe devices or offer a Whisper runtime download until Whisper applies, and the explicit **Use Whisper with GPU** action changes both preferences together.
+- A saved GPU preference stays dormant when the next transcription resolves to Parakeet. Echo does not probe devices or offer a Whisper runtime download until Whisper applies. The explicit **Use Whisper with GPU** action changes both preferences together and stays unavailable when a conflicting environment override controls either setting.
+- An unavailable Whisper run keeps its model picker. A missing saved model remains visible as not installed, and an incompatible English-only model can be replaced without editing the configuration file.
+
+## v0.14.3
+
 - Closing Echo now remains responsive while Settings collects readiness or detects Vulkan devices. Those blocking probes run outside GTK's native window-event path without changing GPU selection, explicit Detect refresh, or close-to-tray behavior.
-- On the affected GPU-selected sequence, automatic Settings close settled at 107 to 109 ms. Scrolling to the GPU device, selecting **Detect**, then closing settled at 108 to 117 ms. The previous healthy-host samples reached 640 ms, while a hung Vulkan probe could block for much longer.
+- On the affected GPU-selected sequence, automatic Settings close settled at 107 to 109 ms. Advanced, scroll, Detect, then close settled at 108 to 117 ms. The previous healthy-host samples reached 640 ms, while a hung Vulkan probe could block for much longer.
 
 ## v0.14.2
 
