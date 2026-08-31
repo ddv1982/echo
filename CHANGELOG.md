@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.14.5
+
+- Echo no longer applies English-only cleanup rules after Whisper or Parakeet. The Cleanup setting, `ECHO_CLEANUP`, and external cleanup commands are gone.
+- The personal Dictionary still provides Whisper recognition hints and applies replacements after recognition. `--raw` prints the engine transcript before those replacements, and legacy cleanup settings disappear the next time Echo saves the configuration.
+
 ## v0.14.4
 
 - Settings now groups controls by task instead of hiding engine and GPU choices in a top-level Advanced drawer. The Transcription section distinguishes the saved preference, the resolved next transcription, and the processing used by the previous transcription.
