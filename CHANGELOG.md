@@ -9,7 +9,7 @@
 ## v0.14.3
 
 - Closing Echo now remains responsive while Settings collects readiness or detects Vulkan devices. Those blocking probes run outside GTK's native window-event path without changing GPU selection, explicit Detect refresh, or close-to-tray behavior.
-- On the affected GPU-selected sequence, automatic Settings close settled at 107 to 109 ms. Scrolling to the GPU device, selecting **Detect**, then closing settled at 108 to 117 ms. The previous healthy-host samples reached 640 ms, while a hung Vulkan probe could block for much longer.
+- On the affected GPU-selected sequence, automatic Settings close settled at 107 to 109 ms. Advanced, scroll, Detect, then close settled at 108 to 117 ms. The previous healthy-host samples reached 640 ms, while a hung Vulkan probe could block for much longer.
 
 ## v0.14.2
 
