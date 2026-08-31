@@ -25,12 +25,16 @@ Exit: transport, serialization, and backend costs are independently measured.
 - Add generated `AppStatusUpdate` and `LastRun.id` types.
 - Add Tauri-managed `StatusService` and one async coordinator.
 - Publish the latest snapshot through `tokio::sync::watch`.
-- Make `get_app_status` an async cached clone.
+- Start one 250 ms coordinator tick that rebuilds the complete existing status
+  projection on `spawn_blocking`. Keep at most one rebuild in flight.
+- Retain the last good snapshot when a rebuild fails.
+- Make `get_app_status` an async cached clone only after the initial snapshot
+  and the repeating rebuild path are active.
 - Keep the existing 400 ms frontend poll during this phase.
-- Move the initial full status rebuild to `spawn_blocking`.
 
 Exit: the cached command passes the transport-relative gate and does no backend
-I/O.
+I/O. Recording, settings, health, and history continue to update while the
+frontend polls the cache.
 
 ## 19.3 Add facets and reconciliation
 
@@ -42,6 +46,8 @@ I/O.
   inventory.
 - Parse history only after its stamp changes.
 - Add semantic `StatusChange` hints and causal `ChangeReceipt` acknowledgements.
+- Replace the transitional full-snapshot rebuild tick after every facet has a
+  reconciliation or invalidation path.
 - Refresh History and Dictionary from `LastRun.id`.
 - Test external recorder writes, writer death, atomic replacements, races, and
   coalesced phases.
