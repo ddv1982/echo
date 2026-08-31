@@ -52,8 +52,7 @@ pub(crate) fn list_languages() -> LanguageOptions {
 
 static GPU_DEVICES: OnceLock<Mutex<Option<Vec<echo::stt::GpuDevice>>>> = OnceLock::new();
 
-#[tauri::command]
-pub(crate) fn list_gpu_devices(refresh: bool) -> Vec<echo_desktop::ipc::GpuDevice> {
+fn cached_gpu_devices(refresh: bool) -> Vec<echo_desktop::ipc::GpuDevice> {
     let cell = GPU_DEVICES.get_or_init(|| Mutex::new(None));
     let Ok(mut cached) = cell.lock() else {
         return echo::stt::list_gpu_devices()
@@ -70,6 +69,16 @@ pub(crate) fn list_gpu_devices(refresh: bool) -> Vec<echo_desktop::ipc::GpuDevic
         .into_iter()
         .map(Into::into)
         .collect()
+}
+
+#[tauri::command]
+pub(crate) async fn list_gpu_devices(
+    refresh: bool,
+) -> Result<Vec<echo_desktop::ipc::GpuDevice>, String> {
+    crate::blocking::run_blocking("GPU device enumeration", move || {
+        cached_gpu_devices(refresh)
+    })
+    .await
 }
 
 #[tauri::command]

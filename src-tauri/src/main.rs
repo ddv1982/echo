@@ -14,6 +14,7 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, WindowEvent};
 
+mod blocking;
 mod cli;
 mod commands;
 #[cfg(feature = "status-perf-probe")]
