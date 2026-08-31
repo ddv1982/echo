@@ -56,7 +56,7 @@ echo-desktop --version
 
 ## Find local state
 
-- settings: the path shown in **Settings → Advanced**;
+- settings: the path shown under **Settings → Setup and diagnostics**;
 - models and managed runtimes: `$XDG_CACHE_HOME/echo` or `~/.cache/echo`;
 - history, dictionary, and session status: `$XDG_DATA_HOME/echo` or
   `~/.local/share/echo`.

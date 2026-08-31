@@ -257,6 +257,94 @@ pub struct Settings {
     pub whisper_gpu_device: SettingField<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum SettingsChange {
+    Engine { value: Option<String> },
+    WhisperModel { value: Option<String> },
+    Cleanup { value: Option<String> },
+    Hud { value: Option<bool> },
+    RecordSeconds { value: Option<u32> },
+    Language { value: Option<String> },
+    WhisperAcceleration { value: Option<String> },
+    WhisperGpuDevice { value: Option<String> },
+    EnableWhisperGpu,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsSnapshot {
+    pub preferences: Settings,
+    pub transcription: TranscriptionSnapshot,
+    pub readiness: Readiness,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptionSnapshot {
+    pub next_run: NextSpeechRun,
+    pub languages: LanguageOptions,
+    pub models: ModelInventory,
+    pub whisper: WhisperApplicability,
+    pub last_used: Option<LastRun>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+pub enum NextSpeechRun {
+    Ready {
+        engine: ResolvedSpeechEngine,
+        language: String,
+    },
+    Unavailable {
+        reason: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+pub enum ResolvedSpeechEngine {
+    Whisper { model: String, multilingual: bool },
+    Parakeet { model: String },
+    Fake,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+pub enum WhisperApplicability {
+    Applicable { gpu: WhisperGpuSetup },
+    Deferred { reason: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+pub enum WhisperGpuSetup {
+    NotRequested,
+    Ready,
+    NeedsInstall { component: ComponentStatus },
+    Unsupported { component: ComponentStatus },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryItem {
@@ -736,23 +824,30 @@ fn contract_parts() -> (String, BTreeSet<String>) {
         MicrophoneTestOutcome,
         MicrophoneTestResult,
         ModelInventory,
+        NextSpeechRun,
         Readiness,
         RecordingPolicy,
         RecoveryReason,
         RecoveryTelemetry,
+        ResolvedSpeechEngine,
         RunMode,
         RuntimeBackend,
         RuntimeSource,
         SettingField<String>,
         SettingSource,
         Settings,
+        SettingsChange,
+        SettingsSnapshot,
         SetupEvent,
         SetupPlan,
         SetupPlanId,
         ShortcutBackend,
         ShortcutStatus,
+        TranscriptionSnapshot,
         TuningTelemetry,
         VulkanDeviceId,
+        WhisperApplicability,
+        WhisperGpuSetup,
         WhisperModelInfo,
     )
 }

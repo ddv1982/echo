@@ -47,6 +47,10 @@ const {
   seedPreviewStatus,
 } = previewDesktopApi
 
+async function getPreferences() {
+  return (await getSettings()).preferences
+}
+
 vi.mock('./tauri', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./tauri')>()
   return {
@@ -315,35 +319,17 @@ describe('Echo desktop shell', () => {
   })
 
   it('ignores Settings loader failures that settle after navigation', async () => {
-    const actual = await vi.importActual<typeof import('./tauri')>('./tauri')
     const settings = deferred<Awaited<ReturnType<typeof getSettings>>>()
-    const models = deferred<Awaited<ReturnType<typeof listModels>>>()
-    const languages = deferred<Awaited<ReturnType<typeof listLanguages>>>()
-    const readiness = deferred<Awaited<ReturnType<typeof getReadiness>>>()
     vi.mocked(getSettings).mockImplementation(() => settings.promise)
-    vi.mocked(listModels).mockImplementation(() => models.promise)
-    vi.mocked(listLanguages).mockImplementation(() => languages.promise)
-    vi.mocked(getReadiness)
-      .mockImplementationOnce(() => actual.getReadiness())
-      .mockImplementationOnce(() => readiness.promise)
-      .mockImplementation(() => actual.getReadiness())
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    await waitFor(() => {
-      expect(getSettings).toHaveBeenCalledOnce()
-      expect(listModels).toHaveBeenCalledOnce()
-      expect(listLanguages).toHaveBeenCalledOnce()
-      expect(getReadiness).toHaveBeenCalledTimes(2)
-    })
+    await waitFor(() => expect(getSettings).toHaveBeenCalledOnce())
 
     fireEvent.click(screen.getByRole('button', { name: 'Home' }))
     await act(async () => {
       settings.reject(new Error('late settings failure'))
-      models.reject(new Error('late models failure'))
-      languages.reject(new Error('late languages failure'))
-      readiness.reject(new Error('late readiness failure'))
-      await Promise.allSettled([settings.promise, models.promise, languages.promise, readiness.promise])
+      await Promise.allSettled([settings.promise])
     })
 
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
@@ -351,7 +337,7 @@ describe('Echo desktop shell', () => {
 
   it('ignores GPU enumeration failure after Settings unmounts', async () => {
     const actual = await vi.importActual<typeof import('./tauri')>('./tauri')
-    const settings = await actual.getSettings()
+    const settings = (await actual.getSettings()).preferences
     const readiness = await actual.getReadiness()
     const installed: ComponentStatus['managed'] = {
       kind: 'ready',
@@ -457,7 +443,7 @@ describe('Echo desktop shell', () => {
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     fireEvent.click(await screen.findByText('Installed components'))
-    vi.mocked(getReadiness).mockRejectedValueOnce(new Error('readiness refresh failed'))
+    vi.mocked(getSettings).mockRejectedValueOnce(new Error('readiness refresh failed'))
 
     fireEvent.click(await screen.findByRole('button', { name: 'Verify' }))
 
@@ -492,13 +478,12 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    fireEvent.click(await screen.findByText('Advanced'))
     fireEvent.click(within(await screen.findByRole('group', { name: 'Cleanup' })).getByRole('button', { name: 'Off' }))
     expect(within(await screen.findByRole('group', { name: 'Cleanup' })).getByRole('button', { name: 'Off' })).toHaveAttribute('data-active', 'true')
-    expect((await getSettings()).cleanup).toEqual({ value: 'off', effective: 'off', source: 'file' })
+    expect((await getPreferences()).cleanup).toEqual({ value: 'off', effective: 'off', source: 'file' })
   })
 
-  it('offers the Rust recording policy in General and clears the default override', async () => {
+  it('offers the Rust recording policy under Input and clears the default override', async () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
@@ -514,13 +499,13 @@ describe('Echo desktop shell', () => {
     expect(select).toHaveValue('default')
 
     fireEvent.change(select, { target: { value: '120' } })
-    await waitFor(async () => expect((await getSettings()).recordSeconds.value).toBe(120))
+    await waitFor(async () => expect((await getPreferences()).recordSeconds.value).toBe(120))
     fireEvent.change(select, { target: { value: 'default' } })
-    await waitFor(async () => expect((await getSettings()).recordSeconds.value).toBeNull())
+    await waitFor(async () => expect((await getPreferences()).recordSeconds.value).toBeNull())
   })
 
   it('preserves a custom recording limit and locks an environment override', async () => {
-    const defaults = await getSettings()
+    const defaults = await getPreferences()
     seedPreviewSettings({
       ...defaults,
       recordSeconds: { value: 90, effective: 90, source: 'file' },
@@ -544,7 +529,7 @@ describe('Echo desktop shell', () => {
   })
 
   it('shows an explicit 600-second environment override as selected', async () => {
-    const defaults = await getSettings()
+    const defaults = await getPreferences()
     seedPreviewSettings({
       ...defaults,
       recordSeconds: { value: null, effective: 600, source: 'env' },
@@ -583,7 +568,7 @@ describe('Echo desktop shell', () => {
   })
 
   it('disables an env-backed field and names the variable', async () => {
-    const defaults = await getSettings()
+    const defaults = await getPreferences()
     seedPreviewSettings({
       ...defaults,
       cleanup: { value: null, effective: 'off', source: 'env' },
@@ -596,7 +581,7 @@ describe('Echo desktop shell', () => {
     expect(off).toHaveAttribute('data-active', 'true')
     expect(screen.getByText('ECHO_CLEANUP')).toBeInTheDocument()
     fireEvent.click(within(await screen.findByRole('group', { name: 'Cleanup' })).getByRole('button', { name: 'Rules' }))
-    expect((await getSettings()).cleanup.effective).toBe('off')
+    expect((await getPreferences()).cleanup.effective).toBe('off')
   })
 
   it('persists two rapid settings writes', async () => {
@@ -622,14 +607,13 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    fireEvent.click(await screen.findByText('Advanced'))
     fireEvent.click(within(await screen.findByRole('group', { name: 'Cleanup' })).getByRole('button', { name: 'Off' }))
     await firstWriteStarted
     fireEvent.click(within(screen.getByRole('group', { name: 'Recording HUD' })).getByRole('button', { name: 'Off' }))
     releaseFirst()
 
     await waitFor(async () => {
-      const stored = await getSettings()
+      const stored = await getPreferences()
       expect(stored.cleanup).toEqual({ value: 'off', effective: 'off', source: 'file' })
       expect(stored.hud).toEqual({ value: false, effective: false, source: 'file' })
     })
@@ -640,7 +624,6 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    fireEvent.click(await screen.findByText('Advanced'))
     const cleanup = await screen.findByRole('group', { name: 'Cleanup' })
     fireEvent.click(within(cleanup).getByRole('button', { name: 'Off' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('could not write settings')
@@ -790,7 +773,7 @@ describe('Echo desktop shell', () => {
 
     // Default fixture: engine auto with Whisper available, so the picker shows.
     const picker = await screen.findByLabelText('Speech model')
-    expect(screen.getByRole('option', { name: 'Auto · best installed' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'Automatic · currently small' })).toBeInTheDocument()
     expect(
       screen.getByRole('option', { name: 'Recommended for fast dictation · small · multilingual · full precision · 466 MiB' }),
     ).toBeInTheDocument()
@@ -800,22 +783,20 @@ describe('Echo desktop shell', () => {
 
     fireEvent.change(picker, { target: { value: 'small' } })
     await waitFor(async () => {
-      expect((await getSettings()).whisperModel).toEqual({
+      expect((await getPreferences()).whisperModel).toEqual({
         value: 'small',
         effective: 'small',
         source: 'file',
       })
     })
 
-    // The engine override lives in Advanced.
-    fireEvent.click(await screen.findByText('Advanced'))
     const acceleration = within(await screen.findByRole('group', { name: 'Whisper acceleration' }))
-    expect(screen.getByText(/CPU always works/)).toBeInTheDocument()
-    expect(acceleration.queryByRole('button', { name: 'Auto' })).not.toBeInTheDocument()
+    expect(screen.getByText(/GPU is a preference with automatic CPU fallback/)).toBeInTheDocument()
+    expect(acceleration.queryByRole('button', { name: 'Automatic' })).not.toBeInTheDocument()
     expect(acceleration.getByRole('button', { name: 'CPU' })).toBeInTheDocument()
     fireEvent.click(acceleration.getByRole('button', { name: 'GPU' }))
     await waitFor(async () => {
-      expect((await getSettings()).whisperAcceleration).toEqual({
+      expect((await getPreferences()).whisperAcceleration).toEqual({
         value: 'gpu',
         effective: 'gpu',
         source: 'file',
@@ -824,7 +805,7 @@ describe('Echo desktop shell', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Parakeet' }))
     await waitFor(() => expect(screen.queryByLabelText('Speech model')).not.toBeInTheDocument())
     expect(screen.getByText('Parakeet TDT 0.6B v3')).toBeInTheDocument()
-    await waitFor(async () => expect((await getSettings()).whisperModel.value).toBeNull())
+    await waitFor(async () => expect((await getPreferences()).whisperModel.value).toBeNull())
   })
 
   it('projects Auto as Parakeet when the backend language mode resolves Parakeet', async () => {
@@ -844,8 +825,45 @@ describe('Echo desktop shell', () => {
     expect(screen.queryByLabelText('Speech model')).not.toBeInTheDocument()
   })
 
+  it('keeps a saved GPU preference dormant while the next run resolves Parakeet', async () => {
+    const defaults = await getPreferences()
+    seedPreviewSettings({
+      ...defaults,
+      whisperAcceleration: { value: 'gpu', effective: 'gpu', source: 'file' },
+    })
+    seedPreviewLanguages({
+      mode: 'parakeet',
+      model: 'tdt-0.6b-v3',
+      options: Array.from({ length: 25 }, (_, index) => ({
+        code: `p${index}`,
+        englishName: `parakeet language ${index}`,
+        group: 'all',
+      })),
+    })
+
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+
+    expect(await screen.findByText('GPU preference saved for Whisper')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Install Whisper/ })).not.toBeInTheDocument()
+    expect(listGpuDevices).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Use Whisper with GPU' }))
+    await waitFor(async () => {
+      const preferences = await getPreferences()
+      expect(preferences.engine.effective).toBe('whisper')
+      expect(preferences.whisperAcceleration.effective).toBe('gpu')
+    })
+    expect(
+      within(await screen.findByRole('group', { name: 'Whisper acceleration' }))
+        .getByRole('button', { name: 'GPU' }),
+    ).toHaveAttribute('data-active', 'true')
+    expect(await screen.findByRole('button', { name: /Install Whisper/ })).toBeInTheDocument()
+  })
+
   it('honors a backend Whisper projection over a file-backed Parakeet choice', async () => {
-    const defaults = await getSettings()
+    const defaults = await getPreferences()
     seedPreviewSettings({
       ...defaults,
       engine: { value: 'parakeet', effective: 'parakeet', source: 'file' },
@@ -863,21 +881,20 @@ describe('Echo desktop shell', () => {
     expect(screen.queryByText('Parakeet TDT 0.6B v3')).not.toBeInTheDocument()
   })
 
-  it('shows a saved engine change when its projection refresh fails', async () => {
+  it('keeps the last coherent snapshot when a settings refresh fails', async () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     await screen.findByLabelText('Speech model')
     seedPreviewLanguagesError('language projection failed')
-    fireEvent.click(await screen.findByText('Advanced'))
     const parakeet = await screen.findByRole('button', { name: 'Parakeet' })
     fireEvent.click(parakeet)
-    await waitFor(() => expect(parakeet).toHaveAttribute('data-active', 'true'))
-    expect(screen.queryByLabelText('Speech model')).not.toBeInTheDocument()
     expect(await screen.findByText('language projection failed')).toBeInTheDocument()
+    expect(parakeet).toHaveAttribute('data-active', 'false')
+    expect(screen.getByLabelText('Speech model')).toBeInTheDocument()
   })
 
-  it('pins the General surface and keeps Advanced collapsed until asked', async () => {
+  it('renders task-based Settings sections without a top-level Advanced drawer', async () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
@@ -889,14 +906,15 @@ describe('Echo desktop shell', () => {
     expect(screen.getByRole('group', { name: 'Application theme' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Test shortcut' })).toBeInTheDocument()
 
-    // Advanced is collapsed by default and expands on click. A details
-    // element keeps its children in the DOM; the open attribute is the state.
-    const advanced = document.querySelector('.advanced-section')!
-    expect(advanced).not.toHaveAttribute('open')
-    fireEvent.click(await screen.findByText('Advanced'))
-    expect(advanced).toHaveAttribute('open')
+    expect(screen.getByRole('region', { name: 'Transcription' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Input and controls' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Text and appearance' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Setup and diagnostics' })).toBeInTheDocument()
+    expect(document.querySelector('.advanced-section')).not.toBeInTheDocument()
+    expect(screen.queryByText('Advanced', { exact: true })).not.toBeInTheDocument()
     expect(await screen.findByRole('group', { name: 'Speech engine' })).toBeInTheDocument()
-    expect(screen.getByText('Resolved engine')).toBeInTheDocument()
+    expect(screen.getByText('Next transcription')).toBeInTheDocument()
+    expect(screen.getByText('Previous transcription')).toBeInTheDocument()
   })
 
   it('marks an unavailable engine with its reason', async () => {
@@ -950,7 +968,6 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    fireEvent.click(await screen.findByText('Advanced'))
     expect(screen.queryByLabelText('GPU device')).not.toBeInTheDocument()
 
     const acceleration = within(await screen.findByRole('group', { name: 'Whisper acceleration' }))
@@ -980,7 +997,6 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    fireEvent.click(await screen.findByText('Advanced'))
     const acceleration = within(await screen.findByRole('group', { name: 'Whisper acceleration' }))
     fireEvent.click(acceleration.getByRole('button', { name: 'GPU' }))
 
@@ -1002,7 +1018,6 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    fireEvent.click(await screen.findByText('Advanced'))
     const acceleration = within(await screen.findByRole('group', { name: 'Whisper acceleration' }))
     fireEvent.click(acceleration.getByRole('button', { name: 'GPU' }))
 
@@ -1017,7 +1032,6 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    fireEvent.click(await screen.findByText('Advanced'))
     const acceleration = within(await screen.findByRole('group', { name: 'Whisper acceleration' }))
     fireEvent.click(acceleration.getByRole('button', { name: 'GPU' }))
 
@@ -1033,7 +1047,6 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    fireEvent.click(await screen.findByText('Advanced'))
     const acceleration = within(await screen.findByRole('group', { name: 'Whisper acceleration' }))
     fireEvent.click(acceleration.getByRole('button', { name: 'GPU' }))
 
@@ -1043,14 +1056,14 @@ describe('Echo desktop shell', () => {
       target: { value: '1002744c0000000000010000000000aa:3f7b1c9a45e1e718c6121d36d8340000' },
     })
     await waitFor(async () => {
-      expect((await getSettings()).whisperGpuDevice.value).toBe(
+      expect((await getPreferences()).whisperGpuDevice.value).toBe(
         '1002744c0000000000010000000000aa:3f7b1c9a45e1e718c6121d36d8340000',
       )
     })
   })
 
   it('reports a pinned GPU that no longer enumerates without reassigning it', async () => {
-    const defaults = await getSettings()
+    const defaults = await getPreferences()
     seedPreviewGpuDevices([])
     seedPreviewSettings({
       ...defaults,
@@ -1065,7 +1078,6 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    fireEvent.click(await screen.findByText('Advanced'))
 
     const picker = await screen.findByLabelText('GPU device')
     expect(within(picker).getByRole('option', { name: /not detected/ })).toBeInTheDocument()
@@ -1157,7 +1169,7 @@ describe('Echo desktop shell', () => {
 
     fireEvent.change(picker, { target: { value: 'de' } })
     await waitFor(async () => {
-      expect((await getSettings()).language).toEqual({
+      expect((await getPreferences()).language).toEqual({
         value: 'de',
         effective: 'de',
         source: 'file',
@@ -1182,7 +1194,7 @@ describe('Echo desktop shell', () => {
   })
 
   it('shows the detected-language chip only when Auto is active', async () => {
-    const defaults = await getSettings()
+    const defaults = await getPreferences()
     seedPreviewSettings({
       ...defaults,
       language: { value: 'auto', effective: 'auto', source: 'file' },
@@ -1194,7 +1206,7 @@ describe('Echo desktop shell', () => {
   })
 
   it('hides the detected-language chip when a language is pinned', async () => {
-    const defaults = await getSettings()
+    const defaults = await getPreferences()
     seedPreviewSettings({
       ...defaults,
       language: { value: 'en', effective: 'en', source: 'file' },
@@ -1214,7 +1226,7 @@ describe('Echo desktop shell', () => {
     const pin = await screen.findByRole('button', { name: 'Pin German for speed' })
     fireEvent.click(pin)
     await waitFor(async () => {
-      expect((await getSettings()).language).toEqual({
+      expect((await getPreferences()).language).toEqual({
         value: 'de',
         effective: 'de',
         source: 'file',
@@ -1223,7 +1235,7 @@ describe('Echo desktop shell', () => {
   })
 
   it('keeps the pin suggestion silent on low confidence', async () => {
-    const defaults = await getSettings()
+    const defaults = await getPreferences()
     seedPreviewSettings({
       ...defaults,
       language: { value: 'auto', effective: 'auto', source: 'file' },
@@ -1249,7 +1261,7 @@ describe('Echo desktop shell', () => {
   })
 
   it('renders low detection confidence differently', async () => {
-    const defaults = await getSettings()
+    const defaults = await getPreferences()
     seedPreviewSettings({
       ...defaults,
       language: { value: 'auto', effective: 'auto', source: 'file' },
@@ -1275,7 +1287,7 @@ describe('Echo desktop shell', () => {
   })
 
   it('warns before recording when an English-only model meets a non-English choice', async () => {
-    const defaults = await getSettings()
+    const defaults = await getPreferences()
     seedPreviewSettings({
       ...defaults,
       engine: { value: 'whisper', effective: 'whisper', source: 'file' },
@@ -1302,7 +1314,7 @@ describe('Echo desktop shell', () => {
   })
 
   it('reports Parakeet as an automatic fixed speech model', async () => {
-    const defaults = await getSettings()
+    const defaults = await getPreferences()
     seedPreviewSettings({
       ...defaults,
       engine: { value: 'parakeet', effective: 'parakeet', source: 'file' },

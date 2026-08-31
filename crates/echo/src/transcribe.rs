@@ -478,6 +478,25 @@ pub fn prepare_with_config(
     let env = EnvOptions::read();
     let cache = ModelCache::from_env();
     let runtime = SpeechRuntimeInventory::from_cache(&cache);
+    let resolved = resolve_with_process_inventory(&overrides, &env, file, &cache, &runtime)?;
+    prepare_resolved(overrides, file, resolved, runtime)
+}
+
+pub fn resolve_next_run_for_process(file: &Config) -> Result<ResolvedRun, PrepareError> {
+    let overrides = RunOverrides::default();
+    let env = EnvOptions::read();
+    let cache = ModelCache::from_env();
+    let runtime = SpeechRuntimeInventory::from_cache(&cache);
+    resolve_with_process_inventory(&overrides, &env, file, &cache, &runtime)
+}
+
+fn resolve_with_process_inventory(
+    overrides: &RunOverrides,
+    env: &EnvOptions,
+    file: &Config,
+    cache: &ModelCache,
+    runtime: &SpeechRuntimeInventory,
+) -> Result<ResolvedRun, PrepareError> {
     let model_candidates = [
         overrides.whisper_model.clone(),
         env.whisper_model.clone(),
@@ -486,8 +505,16 @@ pub fn prepare_with_config(
     .into_iter()
     .flatten()
     .collect::<Vec<_>>();
-    let available = EngineAvailabilitySnapshot::from_process(&cache, &runtime, &model_candidates);
-    let resolved = resolve_run(&overrides, &env, file, &available)?;
+    let available = EngineAvailabilitySnapshot::from_process(cache, runtime, &model_candidates);
+    resolve_run(overrides, env, file, &available)
+}
+
+fn prepare_resolved(
+    overrides: RunOverrides,
+    file: &Config,
+    resolved: ResolvedRun,
+    runtime: SpeechRuntimeInventory,
+) -> Result<PreparedTranscription, PrepareError> {
     if (overrides.whisper_tuning.is_some()
         || overrides.whisper_force_cpu
         || overrides.whisper_vulkan_driver_files.is_some()

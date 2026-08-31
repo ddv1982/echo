@@ -132,6 +132,23 @@ pub(super) fn health_invalidate() {
     *HEALTH.lock().expect("health cache lock") = None;
 }
 
+#[must_use]
+pub(super) fn last_run() -> Option<LastRun> {
+    History::load().ok().and_then(|history| {
+        history.rows().last().map(|row| LastRun {
+            engine: row.engine.to_string(),
+            binary: row.detail.binary.clone(),
+            model_path: row.detail.model_path.clone(),
+            multilingual: row.detail.multilingual,
+            vad: row.detail.vad,
+            infer_ms: row.infer_ms,
+            language: row.detail.language.clone(),
+            language_probability: row.detail.language_probability,
+            performance: project_last_run_performance(&row.detail),
+        })
+    })
+}
+
 pub(super) fn app_status() -> AppStatus {
     #[cfg(feature = "status-perf-probe")]
     let mut timer = crate::perf::StatusStageTimer::start();
@@ -148,19 +165,7 @@ pub(super) fn app_status() -> AppStatus {
     let shortcut = crate::shortcuts::status(&health.current_exe);
     #[cfg(feature = "status-perf-probe")]
     timer.mark(crate::perf::StatusStage::Shortcut);
-    let last_run = History::load().ok().and_then(|history| {
-        history.rows().last().map(|row| LastRun {
-            engine: row.engine.to_string(),
-            binary: row.detail.binary.clone(),
-            model_path: row.detail.model_path.clone(),
-            multilingual: row.detail.multilingual,
-            vad: row.detail.vad,
-            infer_ms: row.infer_ms,
-            language: row.detail.language.clone(),
-            language_probability: row.detail.language_probability,
-            performance: project_last_run_performance(&row.detail),
-        })
-    });
+    let last_run = last_run();
     #[cfg(feature = "status-perf-probe")]
     timer.mark(crate::perf::StatusStage::History);
     let recording_in_process = status.state == "Recording" && echo::rec::recording_in_process();

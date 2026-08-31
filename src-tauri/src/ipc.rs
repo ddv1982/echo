@@ -93,12 +93,12 @@ mod tests {
         CommandContract {
             handler: "get_settings",
             source: SETTINGS,
-            payload_types: &["Settings"],
+            payload_types: &["SettingsSnapshot"],
         },
         CommandContract {
             handler: "set_settings",
             source: SETTINGS,
-            payload_types: &["Settings"],
+            payload_types: &["SettingsChange", "SettingsSnapshot"],
         },
         CommandContract {
             handler: "list_models",
@@ -234,6 +234,6 @@ mod tests {
                 manifest_types.insert((*payload_type).to_string());
             }
         }
-        assert_eq!(manifest_types.len(), 16);
+        assert_eq!(manifest_types.len(), 17);
     }
 }

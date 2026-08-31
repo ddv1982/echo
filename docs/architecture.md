@@ -37,6 +37,11 @@ health caching and the `AppStatus` projection. Focused command modules own
 devices, library data, recording, settings, shortcuts, status, and system
 operations.
 
+The Settings boundary returns one `SettingsSnapshot`. The snapshot keeps saved
+preferences, the resolved next transcription, setup readiness, and previous-run
+telemetry separate. `SettingsChange` updates one config field or performs the
+explicit Whisper GPU transition, then returns a new snapshot.
+
 Shortcut policy is one subsystem behind a small facade. It owns portal and X11
 listeners, the older-GNOME fallback, retry state, and shutdown cleanup. Desktop
 startup reconciles one listener; shutdown cancels and joins it.
@@ -55,9 +60,8 @@ browser development graph and cannot enter the production bundle.
 
 `App.tsx` composes navigation and feature surfaces. Shared status, theme,
 history, dictionary, and error state live in the app controller. Home and
-Settings own their subscriptions and device/setup lifetimes. Settings writes
-are serialized against the latest returned value, and stale setup refreshes
-cannot replace a newer user write.
+Settings own their subscriptions and device/setup lifetimes. Settings changes
+are serialized, and stale setup refreshes cannot replace a newer snapshot.
 
 Serial polling never overlaps requests and stops with component disposal.
 Subscriptions await their unlisten handle and dispose it even when unmount

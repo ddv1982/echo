@@ -33,52 +33,48 @@ for (const theme of ['light', 'dark'] as const) {
   })
 }
 
-test('Advanced controls stay inside the panel at every supported width', async ({ page }) => {
+test('task-based Settings controls stay inside their panels at every supported width', async ({ page }) => {
   for (const width of [761, 800, 920, 960, 1024, 1280, 1440, 1920]) {
     await page.setViewportSize({ width, height: 900 })
     await page.goto('/')
     await page.getByRole('button', { name: 'Settings', exact: true }).click()
-    await page.locator('.advanced-section > summary').click()
     await expect(page.getByRole('group', { name: 'Whisper acceleration' })).toBeVisible()
 
     const geometry = await page.evaluate(() => {
-      const panel = document.querySelector<HTMLElement>('.advanced-section')!
-      const edge = panel.getBoundingClientRect().right
       const fits = (node: HTMLElement) =>
-        node.scrollWidth <= node.clientWidth && node.getBoundingClientRect().right <= edge + 0.5
+        node.scrollWidth <= node.clientWidth &&
+        node.getBoundingClientRect().right <= node.closest('section')!.getBoundingClientRect().right + 0.5
+      const panels = [...document.querySelectorAll<HTMLElement>('.settings-section')]
       return {
-        panelFits: panel.scrollWidth <= panel.clientWidth,
-        controlsFit: [...panel.querySelectorAll<HTMLElement>('.segmented-control')].every(fits),
-        rowsFit: [...panel.querySelectorAll<HTMLElement>('.setting-row, .setting-line')].every(fits),
+        panelsFit: panels.every((panel) => panel.scrollWidth <= panel.clientWidth),
+        controlsFit: [...document.querySelectorAll<HTMLElement>('.settings-section .segmented-control')]
+          .every(fits),
+        rowsFit: [...document.querySelectorAll<HTMLElement>('.settings-section .setting-row, .settings-section .setting-line')]
+          .every(fits),
       }
     })
 
-    expect(geometry, `advanced at ${width}x900`).toEqual({
-      panelFits: true,
+    expect(geometry, `settings at ${width}x900`).toEqual({
+      panelsFit: true,
       controlsFit: true,
       rowsFit: true,
     })
   }
 })
 
-// The Acceleration readout is the one Advanced line whose text length is set by
-// a runtime outcome rather than by copy we control at build time. The longest
-// skip reason is written into the rendered line and measured in the same task,
-// before React can re-render over it.
-test('the Acceleration readout holds its longest skip reason inside the panel', async ({ page }) => {
+test('the last-used processing readout holds its longest reason inside Diagnostics', async ({ page }) => {
   const longest = 'CPU · GPU asked for, the device is disabled after a failure'
 
   for (const width of [761, 800, 920, 960, 1024, 1280, 1440, 1920]) {
     await page.setViewportSize({ width, height: 900 })
     await page.goto('/')
     await page.getByRole('button', { name: 'Settings', exact: true }).click()
-    await page.locator('.advanced-section > summary').click()
-    await expect(page.getByText('Acceleration', { exact: true })).toBeVisible()
+    await expect(page.getByText('Last used processing', { exact: true })).toBeVisible()
 
     const geometry = await page.evaluate((text) => {
-      const panel = document.querySelector<HTMLElement>('.advanced-section')!
+      const panel = document.querySelector<HTMLElement>('section[aria-label="Setup and diagnostics"]')!
       const line = [...panel.querySelectorAll<HTMLElement>('.setting-line')].find(
-        (node) => node.querySelector('strong')?.textContent === 'Acceleration',
+        (node) => node.querySelector('strong')?.textContent === 'Last used processing',
       )!
       line.querySelector('span')!.textContent = text
       const edge = panel.getBoundingClientRect().right
@@ -91,7 +87,7 @@ test('the Acceleration readout holds its longest skip reason inside the panel', 
       }
     }, longest)
 
-    expect(geometry, `acceleration readout at ${width}x900`).toEqual({
+    expect(geometry, `processing readout at ${width}x900`).toEqual({
       rendered: longest,
       panelFits: true,
       lineFits: true,

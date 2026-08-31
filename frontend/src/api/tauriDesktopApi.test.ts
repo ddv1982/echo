@@ -1,4 +1,4 @@
-import type { Settings, SetupEvent } from '../generated/ipc'
+import type { SettingsChange, SetupEvent } from '../generated/ipc'
 import { createTauriDesktopApi, tauriDesktopApi } from './tauriDesktopApi'
 
 const { invokeMock, listenMock } = vi.hoisted(() => ({
@@ -24,16 +24,7 @@ describe('Tauri desktop adapter contract', () => {
   })
 
   it('uses the exact command names and argument keys', async () => {
-    const settings: Settings = {
-      engine: { value: null, effective: 'auto', source: 'default' },
-      whisperModel: { value: null, effective: '', source: 'default' },
-      cleanup: { value: null, effective: 'rules', source: 'default' },
-      hud: { value: null, effective: true, source: 'default' },
-      recordSeconds: { value: null, effective: 600, source: 'default' },
-      language: { value: null, effective: 'auto', source: 'default' },
-      whisperAcceleration: { value: null, effective: 'cpu', source: 'default' },
-      whisperGpuDevice: { value: null, effective: '', source: 'default' },
-    }
+    const change: SettingsChange = { kind: 'whisperAcceleration', value: 'gpu' }
     await tauriDesktopApi.getAppStatus()
     await tauriDesktopApi.getShortcutStatus()
     await tauriDesktopApi.retryShortcut()
@@ -50,7 +41,7 @@ describe('Tauri desktop adapter contract', () => {
     await tauriDesktopApi.getSettings()
     await tauriDesktopApi.listModels()
     await tauriDesktopApi.listLanguages()
-    await tauriDesktopApi.setSettings(settings)
+    await tauriDesktopApi.setSettings(change)
     await tauriDesktopApi.listGpuDevices()
     await tauriDesktopApi.listGpuDevices(true)
     await tauriDesktopApi.getMicrophones()
@@ -82,7 +73,7 @@ describe('Tauri desktop adapter contract', () => {
       ['get_settings'],
       ['list_models'],
       ['list_languages'],
-      ['set_settings', { settings }],
+      ['set_settings', { change }],
       ['list_gpu_devices', { refresh: false }],
       ['list_gpu_devices', { refresh: true }],
       ['get_microphones'],

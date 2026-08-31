@@ -17,6 +17,8 @@ import type {
   ShortcutStatus,
   SettingField,
   Settings,
+  SettingsChange,
+  SettingsSnapshot,
 } from '../generated/ipc'
 import type { DesktopApi } from './DesktopApi'
 
@@ -350,8 +352,9 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
     return Promise.resolve(ipcSnapshot(removed))
   }
 
-  function getSettings(): Promise<Settings> {
-    return Promise.resolve(ipcSnapshot(previewSettings))
+  function getSettings(): Promise<SettingsSnapshot> {
+    if (previewLanguagesError) return Promise.reject(new Error(previewLanguagesError))
+    return Promise.resolve(ipcSnapshot(previewSettingsSnapshot()))
   }
 
   function listModels(): Promise<ModelInventory> {
@@ -390,13 +393,13 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
   }
 
 
-  function setSettings(settings: Settings): Promise<Settings> {
-    const next = projectPreviewSettings(settings)
+  function setSettings(change: SettingsChange): Promise<SettingsSnapshot> {
+    const next = applyPreviewSettingsChange(change)
     previewSettings = next
     if (next.engine.effective === 'parakeet') {
       previewLanguages = {
         mode: 'parakeet',
-        model: 'parakeet-tdt-0.6b-v3-int8',
+        model: 'tdt-0.6b-v3',
         options: Array.from({ length: 25 }, (_, index) => ({
           code: `p${index}`,
           englishName: `parakeet language ${index}`,
@@ -407,7 +410,8 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
       previewLanguages = defaultPreviewLanguages()
     }
     applyPreviewStatus(next)
-    return Promise.resolve(ipcSnapshot(next))
+    if (previewLanguagesError) return Promise.reject(new Error(previewLanguagesError))
+    return Promise.resolve(ipcSnapshot(previewSettingsSnapshot()))
   }
 
   let previewMicTestError: string | null = null
@@ -816,6 +820,129 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
       whisperAcceleration: { value: null, effective: 'cpu', source: 'default' },
       whisperGpuDevice: { value: null, effective: '', source: 'default' },
     })
+  }
+
+  function previewSettingsSnapshot(): SettingsSnapshot {
+    const nextRun = previewNextRun()
+    return {
+      preferences: previewSettings,
+      transcription: {
+        nextRun,
+        languages: previewLanguages,
+        models: previewInventory,
+        whisper: previewWhisperApplicability(nextRun),
+        lastUsed: previewStatus.lastRun,
+      },
+      readiness: previewReadiness,
+    }
+  }
+
+  function previewNextRun(): SettingsSnapshot['transcription']['nextRun'] {
+    if (previewSettings.engine.effective === 'fake') {
+      return { kind: 'ready', engine: { kind: 'fake' }, language: previewSettings.language.effective }
+    }
+    if (previewLanguages.mode === 'parakeet') {
+      return {
+        kind: 'ready',
+        engine: { kind: 'parakeet', model: previewLanguages.model ?? 'tdt-0.6b-v3' },
+        language: 'auto',
+      }
+    }
+    if (
+      previewLanguages.mode === 'english' &&
+      previewSettings.language.effective !== 'en'
+    ) {
+      const model = previewLanguages.model ?? 'English-only Whisper model'
+      return {
+        kind: 'unavailable',
+        reason: `${model} is English-only but the language is set to ${previewSettings.language.effective}. Choose a multilingual model or set the language to English.`,
+      }
+    }
+    const model = previewLanguages.model || previewSettings.whisperModel.effective || 'small'
+    return {
+      kind: 'ready',
+      engine: {
+        kind: 'whisper',
+        model,
+        multilingual: previewLanguages.mode === 'multilingual',
+      },
+      language: previewSettings.language.effective,
+    }
+  }
+
+  function previewWhisperApplicability(
+    nextRun: SettingsSnapshot['transcription']['nextRun'],
+  ): SettingsSnapshot['transcription']['whisper'] {
+    if (nextRun.kind !== 'ready' || nextRun.engine.kind !== 'whisper') {
+      return { kind: 'deferred', reason: 'GPU preference saved for Whisper' }
+    }
+    if (previewSettings.whisperAcceleration.effective !== 'gpu') {
+      return { kind: 'applicable', gpu: { kind: 'not-requested' } }
+    }
+    const prerequisite = (['whisper-runtime', 'whisper-vulkan-runtime'] as const)
+      .map((id) => previewReadiness.components.find((component) => component.id === id) ?? null)
+      .find((component) => component != null && component.managed.kind !== 'ready') ?? null
+    if (prerequisite?.managed.kind === 'unsupported') {
+      return { kind: 'applicable', gpu: { kind: 'unsupported', component: prerequisite } }
+    }
+    if (prerequisite) {
+      return { kind: 'applicable', gpu: { kind: 'needs-install', component: prerequisite } }
+    }
+    return { kind: 'applicable', gpu: { kind: 'ready' } }
+  }
+
+  function applyPreviewSettingsChange(change: SettingsChange): Settings {
+    let next: Settings
+    switch (change.kind) {
+      case 'engine':
+        next = {
+          ...previewSettings,
+          engine: { ...previewSettings.engine, value: change.value },
+          whisperModel: change.value === 'parakeet'
+            ? { ...previewSettings.whisperModel, value: null }
+            : previewSettings.whisperModel,
+        }
+        break
+      case 'whisperModel':
+        next = { ...previewSettings, whisperModel: { ...previewSettings.whisperModel, value: change.value } }
+        break
+      case 'cleanup':
+        next = { ...previewSettings, cleanup: { ...previewSettings.cleanup, value: change.value } }
+        break
+      case 'hud':
+        next = { ...previewSettings, hud: { ...previewSettings.hud, value: change.value } }
+        break
+      case 'recordSeconds':
+        next = { ...previewSettings, recordSeconds: { ...previewSettings.recordSeconds, value: change.value } }
+        break
+      case 'language':
+        next = { ...previewSettings, language: { ...previewSettings.language, value: change.value } }
+        break
+      case 'whisperAcceleration':
+        next = {
+          ...previewSettings,
+          whisperAcceleration: { ...previewSettings.whisperAcceleration, value: change.value },
+        }
+        break
+      case 'whisperGpuDevice':
+        next = {
+          ...previewSettings,
+          whisperGpuDevice: { ...previewSettings.whisperGpuDevice, value: change.value },
+        }
+        break
+      case 'enableWhisperGpu':
+        next = {
+          ...previewSettings,
+          engine: { ...previewSettings.engine, value: 'whisper' },
+          whisperAcceleration: { ...previewSettings.whisperAcceleration, value: 'gpu' },
+        }
+        break
+      default: {
+        const exhaustive: never = change
+        return exhaustive
+      }
+    }
+    return projectPreviewSettings(next)
   }
 
   function projectPreviewSettings(settings: Settings): Settings {
