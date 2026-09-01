@@ -96,7 +96,7 @@ jobs:
       - name: Reclaim clippy artifacts
         run: cargo clean
 
-      - run: xvfb-run -a cargo test --workspace
+      - run: timeout --signal=TERM --kill-after=30s 20m xvfb-run -a cargo test --workspace
 
       - run: ./scripts/verify-stt-benchmark.sh
 
