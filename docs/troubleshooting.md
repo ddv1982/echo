@@ -67,7 +67,7 @@ the next session begins.
 
 ## Build dependencies
 
-Echo requires Rust 1.88 or newer and Node.js 22 or newer. On Ubuntu, Debian,
+Echo requires Rust 1.89 or newer and Node.js 22 or newer. On Ubuntu, Debian,
 Zorin OS, and derivatives:
 
 ```sh
