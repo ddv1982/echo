@@ -19,9 +19,16 @@ The AppImage is required. The `release-assets` job waits for both package build
 jobs and verifies the same seven-file publish directory on pull requests,
 `main`, nightlies, and tags.
 
-Pin each third-party action to a full commit SHA. Dependabot checks the action
-pins each week and opens reviewable pull requests. The workflow pin check fails
-if a workflow uses a tag, branch, or short SHA.
+Pin each third-party action to a full commit SHA. Dependabot checks action pins
+plus Cargo and npm dependencies each week and opens reviewable pull requests.
+The workflow pin check fails if a workflow uses a tag, branch, or short SHA.
+
+CI audits the Cargo and npm lockfiles and fails on vulnerability findings;
+warning-class RustSec advisories remain visible without being promoted to
+failures. `RUSTSEC-2024-0429` currently concerns `glib 0.18.5`, which is
+transitive through the current Tauri/GTK graph, and Echo does not use
+`VariantStrIter`. Remove or re-evaluate this note when a compatible dependency
+graph no longer resolves the affected `glib` version.
 
 Create a repository ruleset for tags that match `v*`. Restrict tag updates and
 deletions, then limit bypass access to the release operators. The workflow also
