@@ -4,12 +4,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use commands::{
     add_dictionary_entries_batch, add_dictionary_entry, cancel_dictionary_training_sample,
-    copy_text, finish_dictionary_training_sample, get_app_status, get_dictionary, get_history,
-    get_microphones, get_recording_level, get_settings, get_shortcut_status, list_gpu_devices,
-    list_languages, list_models, remove_dictionary_entry, remove_stale_installs,
-    repair_legacy_shortcut, retry_shortcut, set_microphone, set_settings,
-    start_dictionary_training_sample, stop_recording, test_input_device, test_microphone_fallback,
-    toggle_recording, DictionaryTrainingCaptures,
+    clear_history, copy_text, delete_history_item, finish_dictionary_training_sample,
+    get_app_status, get_dictionary, get_history, get_microphones, get_recording_level,
+    get_settings, get_shortcut_status, list_gpu_devices, list_languages, list_models, quit_app,
+    remove_dictionary_entry, remove_stale_installs, repair_legacy_shortcut, retry_shortcut,
+    set_microphone, set_settings, start_dictionary_training_sample, stop_recording,
+    test_input_device, test_microphone_fallback, toggle_recording, DictionaryTrainingCaptures,
 };
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem};
@@ -34,8 +34,34 @@ const APP_ID: &str = "io.github.ddv1982.echo";
 
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
+        #[cfg(target_os = "linux")]
+        let was_hidden = matches!(window.is_visible(), Ok(false));
         let _ = window.show();
         let _ = window.unminimize();
+        #[cfg(target_os = "linux")]
+        if was_hidden
+            && env::var_os("WAYLAND_DISPLAY")
+                .map(|display| !display.is_empty())
+                .unwrap_or(false)
+            && !env::var_os("GDK_BACKEND")
+                .map(|backends| {
+                    backends
+                        .to_string_lossy()
+                        .split(',')
+                        .any(|backend| backend.trim().eq_ignore_ascii_case("x11"))
+                })
+                .unwrap_or(false)
+        {
+            // Remove with the Tauri 2.12/tao 0.36 Wayland decoration fix.
+            if let Err(err) = window.set_resizable(false) {
+                eprintln!("window workaround: failed to disable resizability: {err}");
+            } else if let Err(err) = window.set_resizable(true) {
+                eprintln!("window workaround: failed to restore resizability: {err}; retrying");
+                if let Err(retry_err) = window.set_resizable(true) {
+                    eprintln!("window workaround: resizability restore retry failed: {retry_err}");
+                }
+            }
+        }
         let _ = window.set_focus();
     }
 }
@@ -146,6 +172,8 @@ fn run_desktop() {
             retry_shortcut,
             repair_legacy_shortcut,
             get_history,
+            delete_history_item,
+            clear_history,
             get_dictionary,
             add_dictionary_entry,
             add_dictionary_entries_batch,
@@ -157,6 +185,7 @@ fn run_desktop() {
             stop_recording,
             get_recording_level,
             copy_text,
+            quit_app,
             remove_stale_installs,
             get_settings,
             set_settings,

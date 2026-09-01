@@ -4,6 +4,8 @@ import { createPreviewDesktopApi } from './api/previewDesktopApi'
 import { useSerialPoll } from './hooks/useSerialPoll'
 import {
   configureDesktopApi,
+  clearHistory,
+  deleteHistoryItem,
   getAppStatus,
   getRecordingLevel,
   getSettings,
@@ -12,6 +14,7 @@ import {
   listGpuDevices,
   listLanguages,
   listModels,
+  quitApp,
   removeStaleInstalls,
   repairLegacyShortcut,
   retryShortcut,
@@ -55,6 +58,8 @@ vi.mock('./tauri', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./tauri')>()
   return {
     ...actual,
+    clearHistory: vi.fn(() => Promise.resolve(0)),
+    deleteHistoryItem: vi.fn(() => Promise.resolve(false)),
     getAppStatus: vi.fn(() => actual.getAppStatus()),
     getRecordingLevel: vi.fn(() => actual.getRecordingLevel()),
     getSettings: vi.fn(() => actual.getSettings()),
@@ -63,6 +68,7 @@ vi.mock('./tauri', async (importOriginal) => {
     listGpuDevices: vi.fn((refresh) => actual.listGpuDevices(refresh)),
     listLanguages: vi.fn(() => actual.listLanguages()),
     listModels: vi.fn(() => actual.listModels()),
+    quitApp: vi.fn(() => actual.quitApp()),
     setSettings: vi.fn((settings) => actual.setSettings(settings)),
     setMicrophone: vi.fn((id) => actual.setMicrophone(id)),
     removeStaleInstalls: vi.fn(() => actual.removeStaleInstalls()),
@@ -125,11 +131,16 @@ function activeShortcut(
 
 describe('Echo desktop shell', () => {
   beforeEach(async () => {
+    vi.restoreAllMocks()
     configureDesktopApi(previewDesktopApi)
     resetPreviewSettings()
     localStorage.removeItem('echo-shortcut-verified-at')
     localStorage.removeItem('echo-shortcut-verified-identity')
     const actual = await vi.importActual<typeof import('./tauri')>('./tauri')
+    vi.mocked(clearHistory).mockReset()
+    vi.mocked(clearHistory).mockResolvedValue(3)
+    vi.mocked(deleteHistoryItem).mockReset()
+    vi.mocked(deleteHistoryItem).mockResolvedValue(true)
     vi.mocked(getAppStatus).mockReset()
     vi.mocked(getAppStatus).mockImplementation(() => actual.getAppStatus())
     vi.mocked(getRecordingLevel).mockReset()
@@ -156,6 +167,8 @@ describe('Echo desktop shell', () => {
     vi.mocked(setMicrophone).mockImplementation((id) => actual.setMicrophone(id))
     vi.mocked(listModels).mockReset()
     vi.mocked(listModels).mockImplementation(() => actual.listModels())
+    vi.mocked(quitApp).mockReset()
+    vi.mocked(quitApp).mockImplementation(() => actual.quitApp())
     vi.mocked(onSetupEvent).mockReset()
     vi.mocked(onSetupEvent).mockImplementation((handler) => actual.onSetupEvent(handler))
     vi.mocked(testInputDevice).mockReset()
@@ -455,6 +468,18 @@ describe('Echo desktop shell', () => {
     expect(await screen.findByRole('button', { name: 'Start recording' })).toBeInTheDocument()
     expect(screen.getByRole('navigation', { name: 'Echo sections' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Echo' })).toBeInTheDocument()
+  })
+
+  it('invokes the visible quit action and reports a rejection', async () => {
+    vi.mocked(quitApp).mockRejectedValueOnce(new Error('could not quit Echo'))
+    render(<App />)
+
+    const action = screen.getByRole('button', { name: 'Quit Echo' })
+    expect(action).toBeVisible()
+    fireEvent.click(action)
+
+    await waitFor(() => expect(quitApp).toHaveBeenCalledOnce())
+    expect(await screen.findByRole('alert')).toHaveTextContent('could not quit Echo')
   })
 
   it('navigates, toggles recording, and edits the preview dictionary', async () => {
@@ -1962,5 +1987,128 @@ describe('Echo desktop shell', () => {
           : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(day)
     const headers = await screen.findAllByRole('heading', { level: 3 })
     expect(headers.map((header) => header.textContent)).toContain(expected)
+  })
+
+  it('labels every history deletion with its transcript text', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'History' }))
+
+    for (const text of [
+      'This is a test. This is a test.',
+      'Open the project settings and update the release notes.',
+      'Claude Code.',
+    ]) {
+      expect(await screen.findByRole('button', { name: `Delete transcript: ${text}` }))
+        .toBeInTheDocument()
+    }
+  })
+
+  it('keeps a transcript when its deletion confirmation is canceled', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(false)
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'History' }))
+    const text = 'This is a test. This is a test.'
+
+    fireEvent.click(await screen.findByRole('button', { name: `Delete transcript: ${text}` }))
+
+    expect(window.confirm).toHaveBeenCalledOnce()
+    expect(deleteHistoryItem).not.toHaveBeenCalled()
+    expect(screen.getByText(text)).toBeInTheDocument()
+    expect(screen.getByText('Open the project settings and update the release notes.')).toBeInTheDocument()
+    expect(screen.getByText('Claude Code.')).toBeInTheDocument()
+  })
+
+  it('reports a failed transcript deletion and keeps history unchanged', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    vi.mocked(deleteHistoryItem).mockRejectedValueOnce(new Error('could not delete transcript'))
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'History' }))
+
+    fireEvent.click(await screen.findByRole('button', {
+      name: 'Delete transcript: This is a test. This is a test.',
+    }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('could not delete transcript')
+    expect(screen.getByText('This is a test. This is a test.')).toBeInTheDocument()
+    expect(screen.getByText('Open the project settings and update the release notes.')).toBeInTheDocument()
+    expect(screen.getByText('Claude Code.')).toBeInTheDocument()
+  })
+
+  it('deletes one confirmed transcript and updates Home history state', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'History' }))
+    const removed = 'This is a test. This is a test.'
+    const kept = [
+      'Open the project settings and update the release notes.',
+      'Claude Code.',
+    ]
+
+    fireEvent.click(await screen.findByRole('button', { name: `Delete transcript: ${removed}` }))
+
+    await waitFor(() => expect(deleteHistoryItem).toHaveBeenCalledOnce())
+    expect(deleteHistoryItem).toHaveBeenCalledWith('1787310400-11')
+    expect(window.confirm).toHaveBeenCalledOnce()
+    await waitFor(() => expect(screen.queryByText(removed)).not.toBeInTheDocument())
+    kept.forEach((text) => expect(screen.getByText(text)).toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Home' }))
+    expect(await screen.findByText('2 saved transcripts')).toBeInTheDocument()
+    const recent = screen.getByText('Recent').closest('section')!
+    expect(within(recent).queryByText(removed)).not.toBeInTheDocument()
+    kept.forEach((text) => expect(within(recent).getByText(text)).toBeInTheDocument())
+  })
+
+  it('clears confirmed history and updates Home history state', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'History' }))
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Clear all history' }))
+
+    await waitFor(() => expect(clearHistory).toHaveBeenCalledOnce())
+    expect(window.confirm).toHaveBeenCalledOnce()
+    expect(await screen.findByText('No transcripts yet')).toBeInTheDocument()
+    expect(screen.queryByText('This is a test. This is a test.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Open the project settings and update the release notes.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Claude Code.')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Home' }))
+    expect(await screen.findByText('0 saved transcripts')).toBeInTheDocument()
+    expect(screen.getByText('No history yet.')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Usage')).not.toBeInTheDocument()
+  })
+
+  it('reports a failed clear and preserves History and Home history state', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    vi.mocked(clearHistory).mockRejectedValueOnce(new Error('could not clear history'))
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'History' }))
+    const rows = [
+      'This is a test. This is a test.',
+      'Open the project settings and update the release notes.',
+      'Claude Code.',
+    ]
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Clear all history' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('could not clear history')
+    expect(clearHistory).toHaveBeenCalledOnce()
+    expect(window.confirm).toHaveBeenCalledOnce()
+    rows.forEach((text) => expect(screen.getByText(text)).toBeInTheDocument())
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Clear all history' })).toBeEnabled()
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Home' }))
+    expect(await screen.findByText('3 saved transcripts')).toBeInTheDocument()
+    const recent = screen.getByText('Recent').closest('section')!
+    rows.forEach((text) => expect(within(recent).getByText(text)).toBeInTheDocument())
   })
 })

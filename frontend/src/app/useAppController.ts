@@ -4,7 +4,7 @@ import { useDictionary } from '../dictionary/useDictionary'
 import type { AppStatus } from '../generated/ipc'
 import { useHistory } from '../history/useHistory'
 import { useSerialPoll } from '../hooks/useSerialPoll'
-import { getAppStatus, toggleRecording } from '../tauri'
+import { getAppStatus, quitApp, toggleRecording } from '../tauri'
 import type { ThemeMode, View } from '../types'
 import { messageFrom } from './formatting'
 import { useElapsedSeconds } from './useElapsedSeconds'
@@ -50,7 +50,12 @@ export function useAppController() {
   const previousPhase = useRef('Idle')
   const recordingSeconds = useElapsedSeconds(recordingStartedAt)
   const reportError = useCallback((reason: unknown) => setError(messageFrom(reason)), [])
-  const { items: history, refresh: refreshHistory } = useHistory(reportError)
+  const {
+    items: history,
+    remove: deleteHistoryItem,
+    clear: clearHistory,
+    refresh: refreshHistory,
+  } = useHistory(reportError)
   const {
     items: dictionary,
     add: addDictionaryEntry,
@@ -104,11 +109,21 @@ export function useAppController() {
     }
   }, [refreshStatus, reportError])
 
+  const quit = useCallback(async () => {
+    try {
+      await quitApp()
+    } catch (reason) {
+      reportError(reason)
+    }
+  }, [reportError])
+
   return {
     view,
     setView,
     status,
     history,
+    deleteHistoryItem,
+    clearHistory,
     dictionary,
     theme,
     setTheme,
@@ -117,6 +132,7 @@ export function useAppController() {
     recordingSeconds,
     refreshStatus,
     toggleRecording: toggle,
+    quitApp: quit,
     addDictionaryEntry,
     addDictionaryEntriesBatch,
     removeDictionaryEntry,

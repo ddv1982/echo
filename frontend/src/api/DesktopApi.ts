@@ -25,6 +25,8 @@ export interface DesktopApi {
   retryShortcut(): Promise<ShortcutStatus>
   repairLegacyShortcut(): Promise<LegacyShortcutSetup>
   getHistory(): Promise<HistoryItem[]>
+  deleteHistoryItem(id: string): Promise<boolean>
+  clearHistory(): Promise<number>
   getDictionary(): Promise<DictionaryItem[]>
   addDictionaryEntry(spoken: string, written: string): Promise<DictionaryItem>
   addDictionaryEntriesBatch(written: string, spoken: string[]): Promise<DictionaryBatchResult>
@@ -36,6 +38,7 @@ export interface DesktopApi {
   stopRecording(activation: string): Promise<boolean>
   getRecordingLevel(): Promise<number>
   copyText(text: string): Promise<void>
+  quitApp(): Promise<void>
   removeStaleInstalls(): Promise<string[]>
   getSettings(): Promise<SettingsSnapshot>
   listModels(): Promise<ModelInventory>

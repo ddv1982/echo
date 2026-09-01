@@ -16,6 +16,8 @@ export const getShortcutStatus: DesktopApi['getShortcutStatus'] = () => api().ge
 export const retryShortcut: DesktopApi['retryShortcut'] = () => api().retryShortcut()
 export const repairLegacyShortcut: DesktopApi['repairLegacyShortcut'] = () => api().repairLegacyShortcut()
 export const getHistory: DesktopApi['getHistory'] = () => api().getHistory()
+export const deleteHistoryItem: DesktopApi['deleteHistoryItem'] = (id) => api().deleteHistoryItem(id)
+export const clearHistory: DesktopApi['clearHistory'] = () => api().clearHistory()
 export const getDictionary: DesktopApi['getDictionary'] = () => api().getDictionary()
 export const addDictionaryEntry: DesktopApi['addDictionaryEntry'] = (spoken, written) =>
   api().addDictionaryEntry(spoken, written)
@@ -33,6 +35,7 @@ export const toggleRecording: DesktopApi['toggleRecording'] = () => api().toggle
 export const stopRecording: DesktopApi['stopRecording'] = (activation) => api().stopRecording(activation)
 export const getRecordingLevel: DesktopApi['getRecordingLevel'] = () => api().getRecordingLevel()
 export const copyText: DesktopApi['copyText'] = (text) => api().copyText(text)
+export const quitApp: DesktopApi['quitApp'] = () => api().quitApp()
 export const removeStaleInstalls: DesktopApi['removeStaleInstalls'] = () => api().removeStaleInstalls()
 export const getSettings: DesktopApi['getSettings'] = () => api().getSettings()
 export const listModels: DesktopApi['listModels'] = () => api().listModels()

@@ -27,6 +27,8 @@ export function createTauriDesktopApi(): DesktopApi {
     retryShortcut: () => invoke<ShortcutStatus>('retry_shortcut'),
     repairLegacyShortcut: () => invoke<LegacyShortcutSetup>('repair_legacy_shortcut'),
     getHistory: () => invoke<HistoryItem[]>('get_history'),
+    deleteHistoryItem: (id) => invoke<boolean>('delete_history_item', { id }),
+    clearHistory: () => invoke<number>('clear_history'),
     getDictionary: () => invoke<DictionaryItem[]>('get_dictionary'),
     addDictionaryEntry: (spoken, written) =>
       invoke<DictionaryItem>('add_dictionary_entry', { spoken, written }),
@@ -44,6 +46,7 @@ export function createTauriDesktopApi(): DesktopApi {
     stopRecording: (activation) => invoke<boolean>('stop_recording', { activation }),
     getRecordingLevel: () => invoke<number>('get_recording_level'),
     copyText: (text) => invoke<void>('copy_text', { text }),
+    quitApp: () => invoke<void>('quit_app'),
     removeStaleInstalls: () => invoke<string[]>('remove_stale_installs'),
     getSettings: () => invoke<SettingsSnapshot>('get_settings'),
     listModels: () => invoke<ModelInventory>('list_models'),

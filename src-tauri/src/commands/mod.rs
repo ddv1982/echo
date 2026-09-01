@@ -16,8 +16,8 @@ pub(super) use dictionary_training::{
     start_dictionary_training_sample, DictionaryTrainingCaptures,
 };
 pub(super) use library::{
-    add_dictionary_entries_batch, add_dictionary_entry, copy_text, get_dictionary, get_history,
-    remove_dictionary_entry,
+    add_dictionary_entries_batch, add_dictionary_entry, clear_history, copy_text,
+    delete_history_item, get_dictionary, get_history, remove_dictionary_entry,
 };
 pub(super) use recording::{
     get_recording_level, start_recording_thread, stop_recording, toggle_recording,
@@ -25,4 +25,4 @@ pub(super) use recording::{
 pub(super) use settings::{get_settings, set_settings};
 pub(super) use shortcuts::{get_shortcut_status, repair_legacy_shortcut, retry_shortcut};
 pub(super) use status::get_app_status;
-pub(super) use system::remove_stale_installs;
+pub(super) use system::{quit_app, remove_stale_installs};

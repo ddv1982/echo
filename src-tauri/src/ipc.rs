@@ -51,6 +51,16 @@ mod tests {
             payload_types: &["HistoryItem"],
         },
         CommandContract {
+            handler: "delete_history_item",
+            source: LIBRARY,
+            payload_types: &[],
+        },
+        CommandContract {
+            handler: "clear_history",
+            source: LIBRARY,
+            payload_types: &[],
+        },
+        CommandContract {
             handler: "get_dictionary",
             source: LIBRARY,
             payload_types: &["DictionaryItem"],
@@ -103,6 +113,11 @@ mod tests {
         CommandContract {
             handler: "copy_text",
             source: LIBRARY,
+            payload_types: &[],
+        },
+        CommandContract {
+            handler: "quit_app",
+            source: SYSTEM,
             payload_types: &[],
         },
         CommandContract {

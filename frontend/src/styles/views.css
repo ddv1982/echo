@@ -214,6 +214,29 @@
   padding-left: 2.35rem;
 }
 
+.history-toolbar {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.history-toolbar .search-field {
+  width: min(30rem, 100%);
+  min-width: 0;
+  flex: 1;
+}
+
+.history-toolbar .search-field input {
+  min-width: 0;
+}
+
+.history-clear-button {
+  flex: none;
+  white-space: nowrap;
+}
+
 .transcript-list,
 .dictionary-list {
   padding: 0;
@@ -246,6 +269,12 @@
 .transcript-main > p {
   font-size: var(--text-base);
   line-height: 1.55;
+}
+
+.transcript-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--space-2);
 }
 
 .metadata-row {
@@ -645,6 +674,19 @@
   color: hsl(var(--danger));
 }
 
+.history-toolbar .danger-button,
+.transcript-actions .danger-button {
+  border-color: hsl(var(--danger) / 0.3);
+  background: hsl(var(--danger) / 0.06);
+  color: hsl(var(--danger));
+}
+
+.history-toolbar .danger-button:hover:not(:disabled),
+.transcript-actions .danger-button:hover:not(:disabled) {
+  border-color: hsl(var(--danger) / 0.5);
+  background: hsl(var(--danger) / 0.12);
+}
+
 .settings-section {
   min-width: 0;
   padding: var(--space-5);
@@ -1011,7 +1053,7 @@
 
 @media (max-width: 960px) {
   .topbar { padding-inline: var(--space-4); }
-  .workspace { grid-template-columns: 1fr; }
+  .workspace { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
   .sidebar {
     position: sticky;
     z-index: 15;
@@ -1038,6 +1080,11 @@
 @media (max-width: 520px) {
   .status-pill { display: none; }
   .record-actions { align-items: flex-start; flex-direction: column; }
+  .history-toolbar { align-items: stretch; flex-direction: column; }
+  .history-toolbar .search-field,
+  .history-clear-button { width: 100%; max-width: none; }
+  .transcript-row { gap: var(--space-3); padding-inline: var(--space-4); }
+  .transcript-actions { flex-direction: column; }
   .dictionary-row,
   .table-header { grid-template-columns: minmax(0, 1fr) 2.4rem; }
   .dictionary-row strong,
