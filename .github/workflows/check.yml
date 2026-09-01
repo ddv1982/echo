@@ -33,6 +33,9 @@ jobs:
       - name: Check public documentation links
         run: python3 scripts/check-doc-links.py
 
+      - name: Lint Python scripts with Ruff
+        run: pipx run --spec ruff==0.14.11 ruff check scripts
+
       - name: Install native dependencies
         run: |
           sudo apt-get update
