@@ -156,8 +156,6 @@ impl VulkanBackend {
         }
     }
 
-    /// Awaits the GPU execution path, which needs a foreground deadline.
-    #[allow(dead_code)]
     pub(crate) fn bounded(
         probe: PathBuf,
         base_launch: WhisperRuntimeLaunch,
@@ -266,8 +264,6 @@ impl VulkanBackend {
         Ok(routes)
     }
 
-    /// Awaits the GPU execution path, which re-probes a device before use.
-    #[allow(dead_code)]
     pub(crate) fn ready(&self, route: &LocalVulkanRoute) -> Result<WhisperVulkanReceipt, String> {
         let mut launch = self.base_launch.clone();
         launch.vulkan_driver_files = Some(route.manifest_path.clone());

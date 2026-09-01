@@ -1,3 +1,4 @@
+import { capitalize, messageFrom } from '../app/formatting'
 import { formatSize } from '../format'
 import { presentSpeechSetup } from '../setup'
 import {
@@ -270,12 +271,4 @@ function managedStateLabel(component: Readiness['components'][number]) {
     case 'unsupported':
       return component.managed.reason
   }
-}
-
-function capitalize(value: string) {
-  return value.charAt(0).toUpperCase() + value.slice(1)
-}
-
-function messageFrom(reason: unknown) {
-  return reason instanceof Error ? reason.message : String(reason)
 }
