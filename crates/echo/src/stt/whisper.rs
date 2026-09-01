@@ -505,8 +505,6 @@ fn kill_and_reap(pid: rustix::process::Pid, receiver: &mpsc::Receiver<std::io::R
     let _ = receiver.recv_timeout(Duration::from_secs(CHILD_REAP_TIMEOUT_SECS));
 }
 
-/// Awaits the GPU execution path, which validates the device it selected.
-#[allow(dead_code)]
 pub(crate) fn probe_vulkan_runtime_receipt(
     binary: &Path,
     launch: &WhisperRuntimeLaunch,
