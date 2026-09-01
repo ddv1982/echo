@@ -407,7 +407,7 @@ mod tests {
     use super::*;
     use std::collections::VecDeque;
     use std::io::Cursor;
-    use std::sync::Mutex;
+    use std::sync::{mpsc::Receiver, Mutex};
 
     struct FakeDisk(Option<u64>);
 
@@ -445,23 +445,33 @@ mod tests {
         }
     }
 
-    struct SlowBody;
+    struct SlowBody {
+        started: mpsc::SyncSender<()>,
+        release: Receiver<()>,
+    }
 
     impl Read for SlowBody {
         fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
-            std::thread::sleep(Duration::from_secs(1));
+            let _ = self.started.send(());
+            let _ = self.release.recv();
             Ok(0)
         }
     }
 
-    struct SlowTransport;
+    struct SlowTransport {
+        started: mpsc::SyncSender<()>,
+        release: Mutex<Option<Receiver<()>>>,
+    }
 
     impl HttpTransport for SlowTransport {
         fn get(&self, _: &HttpRequest) -> Result<HttpResponse, InstallError> {
             Ok(HttpResponse {
                 status: 200,
                 headers: BTreeMap::new(),
-                body: Box::new(SlowBody),
+                body: Box::new(SlowBody {
+                    started: self.started.clone(),
+                    release: self.release.lock().unwrap().take().unwrap(),
+                }),
             })
         }
     }
@@ -615,24 +625,44 @@ mod tests {
         let root = scratch("stalled-cancel");
         let spec = spec(b"one byte");
         let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let (started_send, started_receive) = mpsc::sync_channel(0);
+        let (release_send, release_receive) = mpsc::sync_channel(0);
+        let transport = SlowTransport {
+            started: started_send,
+            release: Mutex::new(Some(release_receive)),
+        };
         let trigger = cancel.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(20));
+        let trigger = std::thread::spawn(move || {
+            started_receive.recv().unwrap();
             trigger.store(true, Ordering::Relaxed);
         });
-        let started = std::time::Instant::now();
+        let (finished_send, finished_receive) = mpsc::channel();
+        let (watchdog_send, watchdog_receive) = mpsc::channel();
+        let watchdog = std::thread::spawn(move || {
+            let finished_before_timeout = finished_receive
+                .recv_timeout(Duration::from_secs(5))
+                .is_ok();
+            let _ = release_send.send(());
+            let _ = watchdog_send.send(finished_before_timeout);
+        });
         let error = download_verified(
             &root,
             &spec,
-            &SlowTransport,
+            &transport,
             &FakeDisk(None),
             &OperationId::fixture("1"),
             &cancel,
             |_| {},
         )
         .unwrap_err();
+        let _ = finished_send.send(());
+        trigger.join().unwrap();
+        watchdog.join().unwrap();
+        assert!(
+            watchdog_receive.recv().unwrap(),
+            "cancellation waited for the stalled response body"
+        );
         assert!(matches!(error, InstallError::Cancelled));
-        assert!(started.elapsed() < Duration::from_millis(500));
     }
 
     #[test]
