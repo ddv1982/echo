@@ -25,7 +25,7 @@ sha2 = { version = "0.10", features = ["asm"] }
 tar = "0.4"
 tiny-skia = "0.12"
 ureq = "3.4.0"
-x11rb = { version = "0.13", features = ["shape"] }
+x11rb = { version = "0.14", features = ["shape"] }
 
 [dev-dependencies]
 filetime = "0.2"
