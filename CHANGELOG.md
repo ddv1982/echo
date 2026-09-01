@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.14.7
+
+- Echo now has a visible **Quit Echo** action that exits the process without relying on native titlebar controls. Restoring a tray-hidden window on Linux Wayland also repairs unresponsive titlebar controls without changing X11 or close-to-tray behavior.
+- History can now permanently delete one saved transcript or clear all saved transcripts after confirmation. Deletions persist across reloads and immediately update shared history and usage views.
+
 ## v0.14.6
 
 - Dictionary now has **Teach by voice**. Enter the exact text, record five takes with the selected transcription model, review what the model heard, and save the useful variants together. Manual entries remain available.

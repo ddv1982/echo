@@ -206,20 +206,18 @@ fn run_record_with_limit(mut stop: StopWhen, limit: RecordingLimit) -> i32 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
     let started_at = now.as_secs();
-    if let Ok(mut history) = History::load() {
-        let _ = history.append(HistoryRow {
-            // Nanoseconds plus pid keep ids unique across processes and after
-            // the store trims to its row cap.
-            id: format!("{started_at}-{}-{}", now.subsec_nanos(), std::process::id()),
-            text: transcript.text.clone(),
-            raw: transcript.raw.clone(),
-            engine: transcript.engine.clone(),
-            started_at,
-            infer_ms: transcript.infer_ms,
-            inject,
-            detail: transcript.detail.clone(),
-        });
-    }
+    let _ = History::append_default(HistoryRow {
+        // Nanoseconds plus pid keep ids unique across processes and after
+        // the store trims to its row cap.
+        id: format!("{started_at}-{}-{}", now.subsec_nanos(), std::process::id()),
+        text: transcript.text.clone(),
+        raw: transcript.raw.clone(),
+        engine: transcript.engine.clone(),
+        started_at,
+        infer_ms: transcript.infer_ms,
+        inject,
+        detail: transcript.detail.clone(),
+    });
     if failed {
         // Leave the Failed state visible; the next session overwrites it.
         let _ = status::write_status(session.state(), None, None);

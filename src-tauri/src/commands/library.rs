@@ -32,6 +32,16 @@ pub(crate) fn get_history() -> Result<Vec<HistoryItem>, String> {
 }
 
 #[tauri::command]
+pub(crate) fn delete_history_item(id: String) -> Result<bool, String> {
+    History::remove_default(&id)
+}
+
+#[tauri::command]
+pub(crate) fn clear_history() -> Result<usize, String> {
+    History::clear_default()
+}
+
+#[tauri::command]
 pub(crate) fn get_dictionary() -> Result<Vec<DictionaryItem>, String> {
     let dictionary = Dictionary::load()?;
     Ok(dictionary

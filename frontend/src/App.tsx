@@ -3,6 +3,7 @@ import {
   CircleAlert,
   History,
   Home,
+  Power,
   Settings,
 } from 'lucide-react'
 import { BrandMark, StatusPill } from './app/chrome'
@@ -27,6 +28,8 @@ function App() {
     setView,
     status,
     history,
+    deleteHistoryItem,
+    clearHistory,
     dictionary,
     theme,
     setTheme,
@@ -35,6 +38,7 @@ function App() {
     recordingSeconds,
     refreshStatus,
     toggleRecording,
+    quitApp,
     addDictionaryEntry,
     addDictionaryEntriesBatch,
     removeDictionaryEntry,
@@ -50,6 +54,15 @@ function App() {
         </div>
         <div className="topbar-actions">
           <StatusPill status={status} />
+          <button
+            type="button"
+            className="icon-button"
+            aria-label="Quit Echo"
+            title="Quit Echo"
+            onClick={() => void quitApp()}
+          >
+            <Power size={17} aria-hidden="true" />
+          </button>
         </div>
       </header>
 
@@ -105,7 +118,13 @@ function App() {
               onOpenSettings={() => setView('settings')}
             />
           ) : null}
-          {view === 'history' ? <HistoryView items={history} /> : null}
+          {view === 'history' ? (
+            <HistoryView
+              items={history}
+              onDelete={deleteHistoryItem}
+              onClear={clearHistory}
+            />
+          ) : null}
           {view === 'dictionary' ? (
             <DictionaryView
               items={dictionary}

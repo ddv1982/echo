@@ -1,6 +1,11 @@
 use std::env;
 
 #[tauri::command]
+pub(crate) fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
+#[tauri::command]
 pub(crate) fn remove_stale_installs() -> Result<Vec<String>, String> {
     let current = std::env::current_exe()
         .ok()

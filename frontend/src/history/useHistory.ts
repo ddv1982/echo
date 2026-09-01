@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { getHistory } from '../tauri'
+import { clearHistory, deleteHistoryItem, getHistory } from '../tauri'
 import type { HistoryItem } from '../generated/ipc'
 
 export function useHistory(onError: (reason: unknown) => void) {
   const [items, setItems] = useState<HistoryItem[]>([])
   const active = useRef(true)
+  const operations = useRef<Promise<void>>(Promise.resolve())
 
   useEffect(() => {
     active.current = true
@@ -14,26 +15,48 @@ export function useHistory(onError: (reason: unknown) => void) {
     }
   }, [])
 
-  const refresh = useCallback(async () => {
+  const enqueue = useCallback(<T,>(operation: () => Promise<T>) => {
+    const result = operations.current.then(operation)
+    operations.current = result.then(() => undefined, () => undefined)
+    return result
+  }, [])
+
+  const refresh = useCallback(() => enqueue(async () => {
     try {
       const next = await getHistory()
       if (active.current) setItems(next)
     } catch (reason) {
       if (active.current) onError(reason)
     }
-  }, [onError])
+  }), [enqueue, onError])
 
   useEffect(() => {
-    let current = true
-    void getHistory().then((next) => {
-      if (current && active.current) setItems(next)
-    }).catch((reason: unknown) => {
-      if (current && active.current) onError(reason)
-    })
-    return () => {
-      current = false
-    }
-  }, [onError])
+    void refresh()
+  }, [refresh])
 
-  return { items, refresh }
+  const remove = useCallback((id: string) => enqueue(async () => {
+    try {
+      const removed = await deleteHistoryItem(id)
+      if (active.current) {
+        setItems((current) => current.filter((item) => item.id !== id))
+      }
+      return removed
+    } catch (reason) {
+      if (active.current) onError(reason)
+      return false
+    }
+  }), [enqueue, onError])
+
+  const clear = useCallback(() => enqueue(async () => {
+    try {
+      const count = await clearHistory()
+      if (active.current) setItems([])
+      return count
+    } catch (reason) {
+      if (active.current) onError(reason)
+      return 0
+    }
+  }), [enqueue, onError])
+
+  return { items, remove, clear, refresh }
 }

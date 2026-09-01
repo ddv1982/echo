@@ -81,6 +81,16 @@ pub(crate) fn set_aside_corrupt(path: &Path) {
 /// Write via a same-directory temp file plus rename, so a crash mid-write
 /// never corrupts the previous contents and readers never see a partial file.
 pub fn write_atomic(path: &Path, contents: &[u8]) -> Result<(), String> {
+    write_atomic_with_dir_sync(path, contents, |parent| {
+        fs::File::open(parent).and_then(|directory| directory.sync_all())
+    })
+}
+
+fn write_atomic_with_dir_sync(
+    path: &Path,
+    contents: &[u8],
+    sync_directory: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<(), String> {
     // Pid alone is not unique enough: two threads of the desktop app can
     // write the same file concurrently, so each call gets its own counter.
     static WRITE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -105,9 +115,8 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> Result<(), String> {
         file.sync_all().map_err(|err| err.to_string())?;
         drop(file);
         fs::rename(&tmp, path).map_err(|err| err.to_string())?;
-        fs::File::open(parent)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|err| err.to_string())
+        let _ = sync_directory(parent);
+        Ok(())
     })();
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
@@ -165,5 +174,23 @@ mod tests {
             "/tmp/echo-data",
         );
         assert_eq!(got, PathBuf::from("/home/tester/.local/share/echo"));
+    }
+
+    #[test]
+    fn directory_sync_failure_after_rename_does_not_report_write_failure() {
+        let dir =
+            std::env::temp_dir().join(format!("echo-atomic-post-rename-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("store.json");
+        fs::write(&path, b"old contents").unwrap();
+
+        let result = write_atomic_with_dir_sync(&path, b"replacement contents", |parent| {
+            assert_eq!(parent, dir);
+            Err(std::io::Error::other("injected directory sync failure"))
+        });
+
+        assert!(result.is_ok());
+        assert_eq!(fs::read(&path).unwrap(), b"replacement contents");
     }
 }

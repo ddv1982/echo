@@ -30,6 +30,8 @@ describe('Tauri desktop adapter contract', () => {
     await tauriDesktopApi.retryShortcut()
     await tauriDesktopApi.repairLegacyShortcut()
     await tauriDesktopApi.getHistory()
+    await tauriDesktopApi.deleteHistoryItem('history-id')
+    await tauriDesktopApi.clearHistory()
     await tauriDesktopApi.getDictionary()
     await tauriDesktopApi.addDictionaryEntry('spoken', 'written')
     await tauriDesktopApi.addDictionaryEntriesBatch('written', ['first', 'second'])
@@ -41,6 +43,7 @@ describe('Tauri desktop adapter contract', () => {
     await tauriDesktopApi.stopRecording('activation')
     await tauriDesktopApi.getRecordingLevel()
     await tauriDesktopApi.copyText('text')
+    await tauriDesktopApi.quitApp()
     await tauriDesktopApi.removeStaleInstalls()
     await tauriDesktopApi.getSettings()
     await tauriDesktopApi.listModels()
@@ -66,6 +69,8 @@ describe('Tauri desktop adapter contract', () => {
       ['retry_shortcut'],
       ['repair_legacy_shortcut'],
       ['get_history'],
+      ['delete_history_item', { id: 'history-id' }],
+      ['clear_history'],
       ['get_dictionary'],
       ['add_dictionary_entry', { spoken: 'spoken', written: 'written' }],
       ['add_dictionary_entries_batch', { written: 'written', spoken: ['first', 'second'] }],
@@ -77,6 +82,7 @@ describe('Tauri desktop adapter contract', () => {
       ['stop_recording', { activation: 'activation' }],
       ['get_recording_level'],
       ['copy_text', { text: 'text' }],
+      ['quit_app'],
       ['remove_stale_installs'],
       ['get_settings'],
       ['list_models'],

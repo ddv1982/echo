@@ -133,7 +133,7 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
     previewTimers.delete(timer)
   }
 
-  const previewHistory: HistoryItem[] = [
+  let previewHistory: HistoryItem[] = [
     {
       id: '1787310400-11',
       text: 'This is a test. This is a test.',
@@ -268,6 +268,19 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
 
   function getHistory(): Promise<HistoryItem[]> {
     return Promise.resolve(ipcSnapshot(previewHistory))
+  }
+
+  function deleteHistoryItem(id: string): Promise<boolean> {
+    const next = previewHistory.filter((item) => item.id !== id)
+    if (next.length === previewHistory.length) return Promise.resolve(false)
+    previewHistory = next
+    return Promise.resolve(true)
+  }
+
+  function clearHistory(): Promise<number> {
+    const count = previewHistory.length
+    if (count > 0) previewHistory = []
+    return Promise.resolve(count)
   }
 
   function getDictionary(): Promise<DictionaryItem[]> {
@@ -435,6 +448,10 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
 
   function copyText(text: string): Promise<void> {
     return navigator.clipboard.writeText(text)
+  }
+
+  function quitApp(): Promise<void> {
+    return Promise.resolve()
   }
 
   let previewRemoveStaleError: string | null = null
@@ -1123,6 +1140,8 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
     retryShortcut,
     repairLegacyShortcut,
     getHistory,
+    deleteHistoryItem,
+    clearHistory,
     getDictionary,
     addDictionaryEntry,
     addDictionaryEntriesBatch,
@@ -1134,6 +1153,7 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
     stopRecording,
     getRecordingLevel,
     copyText,
+    quitApp,
     seedPreviewRemoveStaleError,
     removeStaleInstalls,
     getSettings,
