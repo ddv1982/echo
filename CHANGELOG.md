@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.14.8
+
+- Rust cancellation and recording-stop tests are now deterministic.
+- Confirmed stale suppressions and imports, plus duplicate frontend helpers, were removed without behavior changes.
+- Ruff script linting is pinned for reproducible maintenance checks.
+- Weekly Actions, Cargo, and npm Dependabot updates are bounded, with Cargo and npm lockfiles audited.
+- Completed plan-18 execution artifacts were retired while preserving maintained managed-integrity documentation.
+
 ## v0.14.7
 
 - Echo now has a visible **Quit Echo** action that exits the process without relying on native titlebar controls. Restoring a tray-hidden window on Linux Wayland also repairs unresponsive titlebar controls without changing X11 or close-to-tray behavior.

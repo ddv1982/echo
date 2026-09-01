@@ -626,7 +626,7 @@ mod tests {
         let spec = spec(b"one byte");
         let cancel = std::sync::Arc::new(AtomicBool::new(false));
         let (started_send, started_receive) = mpsc::sync_channel(0);
-        let (release_send, release_receive) = mpsc::sync_channel(0);
+        let (release_send, release_receive) = mpsc::channel();
         let transport = SlowTransport {
             started: started_send,
             release: Mutex::new(Some(release_receive)),
@@ -635,15 +635,6 @@ mod tests {
         let trigger = std::thread::spawn(move || {
             started_receive.recv().unwrap();
             trigger.store(true, Ordering::Relaxed);
-        });
-        let (finished_send, finished_receive) = mpsc::channel();
-        let (watchdog_send, watchdog_receive) = mpsc::channel();
-        let watchdog = std::thread::spawn(move || {
-            let finished_before_timeout = finished_receive
-                .recv_timeout(Duration::from_secs(5))
-                .is_ok();
-            let _ = release_send.send(());
-            let _ = watchdog_send.send(finished_before_timeout);
         });
         let error = download_verified(
             &root,
@@ -655,13 +646,8 @@ mod tests {
             |_| {},
         )
         .unwrap_err();
-        let _ = finished_send.send(());
+        release_send.send(()).expect("stalled body receiver");
         trigger.join().unwrap();
-        watchdog.join().unwrap();
-        assert!(
-            watchdog_receive.recv().unwrap(),
-            "cancellation waited for the stalled response body"
-        );
         assert!(matches!(error, InstallError::Cancelled));
     }
 

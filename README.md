@@ -58,7 +58,7 @@ catalogs, and one-run engine overrides.
 
 ## Build from source
 
-You need Rust 1.88 or newer, Node.js 22 or newer, and the native desktop
+You need Rust 1.89 or newer, Node.js 22 or newer, and the native desktop
 dependencies for your distribution. On a prepared system:
 
 ```sh
