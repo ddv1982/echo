@@ -595,7 +595,7 @@ fn log_state(session: &Session) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Instant;
+    use std::sync::mpsc;
 
     #[test]
     fn stop_only_never_starts_a_recording() {
@@ -705,18 +705,11 @@ mod tests {
         let capture = audio::CaptureResult::from_pcm(pcm);
         let full_duration = capture.duration;
         let meter = audio::LevelMeter::new();
+        let (started_send, started_receive) = mpsc::sync_channel(0);
         let stopper = std::thread::spawn({
             let dir = dir.clone();
-            let probe = meter.clone();
             move || {
-                let watchdog = Instant::now() + Duration::from_secs(5);
-                while probe.level() == 0.0 {
-                    assert!(
-                        Instant::now() < watchdog,
-                        "fixture playback did not start before the watchdog"
-                    );
-                    std::thread::sleep(Duration::from_millis(5));
-                }
+                started_receive.recv().expect("fixture player start");
                 ToggleSession::request_stop_if_active_in(&dir).unwrap()
             }
         });
@@ -726,16 +719,11 @@ mod tests {
             &StopWhen::ToggleFile(session),
             RecordingLimit::MAX,
             &meter,
-            |pcm, meter, cancel| {
-                let full_len = pcm.len();
-                let partial_len = (SAMPLE_RATE_HZ as usize / 33).min(full_len);
+            |pcm, _meter, cancel| {
+                let partial_len = (SAMPLE_RATE_HZ as usize / 33).min(pcm.len());
                 std::thread::spawn(move || {
-                    meter.publish(0.5);
-                    let watchdog = Instant::now() + Duration::from_secs(5);
+                    started_send.send(()).expect("fixture start receiver");
                     while !cancel.is_cancelled() {
-                        if Instant::now() >= watchdog {
-                            return full_len;
-                        }
                         std::thread::sleep(Duration::from_millis(5));
                     }
                     partial_len
