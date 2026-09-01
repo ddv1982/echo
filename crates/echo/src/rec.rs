@@ -319,12 +319,25 @@ fn spawn_toggle_stop_watcher<'scope>(
             cancel.cancel();
             return;
         }
+        #[cfg(test)]
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(0);
         scope.spawn(move || {
+            #[cfg(test)]
+            let stop_requested = toggle.stop_requested();
+            #[cfg(test)]
+            ready_tx.send(()).expect("watcher readiness receiver");
+            #[cfg(test)]
+            if stop_requested {
+                cancel.cancel();
+                return;
+            }
             while !cancel.is_cancelled() && !toggle.stop_requested() {
                 std::thread::sleep(Duration::from_millis(20));
             }
             cancel.cancel();
         });
+        #[cfg(test)]
+        ready_rx.recv().expect("watcher readiness sender");
     }
 }
 
@@ -581,6 +594,7 @@ fn log_state(session: &Session) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
 
     #[test]
     fn stop_only_never_starts_a_recording() {
@@ -684,6 +698,45 @@ mod tests {
     #[test]
     fn fixture_obeys_a_token_scoped_toggle_stop() {
         let dir = std::env::temp_dir().join(format!("echo-fixture-stop-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let session = ToggleSession::try_start_in(&dir).unwrap().unwrap();
+        let pcm = Pcm16kMono::from_samples(vec![i16::MAX / 4; SAMPLE_RATE_HZ as usize * 2]);
+        let capture = audio::CaptureResult::from_pcm(pcm);
+        let full_duration = capture.duration;
+        let meter = audio::LevelMeter::new();
+        let stopper = std::thread::spawn({
+            let dir = dir.clone();
+            let probe = meter.clone();
+            move || {
+                let watchdog = Instant::now() + Duration::from_secs(5);
+                while probe.level() == 0.0 {
+                    assert!(
+                        Instant::now() < watchdog,
+                        "fixture playback did not start before the watchdog"
+                    );
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                ToggleSession::request_stop_if_active_in(&dir).unwrap()
+            }
+        });
+
+        let result = play_fixture_capture(
+            capture,
+            &StopWhen::ToggleFile(session),
+            RecordingLimit::MAX,
+            &meter,
+        )
+        .unwrap();
+
+        assert!(stopper.join().expect("stopper thread"));
+        assert!(result.duration > Duration::ZERO);
+        assert!(result.duration < full_duration);
+    }
+
+    #[test]
+    fn fixture_obeys_an_already_present_token_scoped_toggle_stop() {
+        let dir =
+            std::env::temp_dir().join(format!("echo-fixture-present-stop-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         let session = ToggleSession::try_start_in(&dir).unwrap().unwrap();
         let pcm = Pcm16kMono::from_samples(vec![i16::MAX / 4; SAMPLE_RATE_HZ as usize * 2]);
