@@ -276,6 +276,20 @@ fn play_fixture_capture(
     limit: RecordingLimit,
     meter: &audio::LevelMeter,
 ) -> Result<audio::CaptureResult, FailReason> {
+    play_fixture_capture_with_player(capture, stop, limit, meter, audio::play_fixture_meter)
+}
+
+fn play_fixture_capture_with_player(
+    capture: audio::CaptureResult,
+    stop: &StopWhen,
+    limit: RecordingLimit,
+    meter: &audio::LevelMeter,
+    play: impl FnOnce(
+        &Pcm16kMono,
+        audio::LevelMeter,
+        CancellationToken,
+    ) -> std::thread::JoinHandle<usize>,
+) -> Result<audio::CaptureResult, FailReason> {
     let max_samples = (limit.seconds() as usize)
         .saturating_mul(SAMPLE_RATE_HZ as usize)
         .min(capture.pcm.len());
@@ -284,7 +298,7 @@ fn play_fixture_capture(
 
     let played = std::thread::scope(|scope| {
         spawn_toggle_stop_watcher(scope, stop, cancel.clone());
-        let player = audio::play_fixture_meter(&pcm, meter.clone(), cancel.clone());
+        let player = play(&pcm, meter.clone(), cancel.clone());
         let played = player.join().unwrap_or(0);
         cancel.cancel();
         played
@@ -319,25 +333,12 @@ fn spawn_toggle_stop_watcher<'scope>(
             cancel.cancel();
             return;
         }
-        #[cfg(test)]
-        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(0);
         scope.spawn(move || {
-            #[cfg(test)]
-            let stop_requested = toggle.stop_requested();
-            #[cfg(test)]
-            ready_tx.send(()).expect("watcher readiness receiver");
-            #[cfg(test)]
-            if stop_requested {
-                cancel.cancel();
-                return;
-            }
             while !cancel.is_cancelled() && !toggle.stop_requested() {
                 std::thread::sleep(Duration::from_millis(20));
             }
             cancel.cancel();
         });
-        #[cfg(test)]
-        ready_rx.recv().expect("watcher readiness sender");
     }
 }
 
@@ -720,11 +721,26 @@ mod tests {
             }
         });
 
-        let result = play_fixture_capture(
+        let result = play_fixture_capture_with_player(
             capture,
             &StopWhen::ToggleFile(session),
             RecordingLimit::MAX,
             &meter,
+            |pcm, meter, cancel| {
+                let full_len = pcm.len();
+                let partial_len = (SAMPLE_RATE_HZ as usize / 33).min(full_len);
+                std::thread::spawn(move || {
+                    meter.publish(0.5);
+                    let watchdog = Instant::now() + Duration::from_secs(5);
+                    while !cancel.is_cancelled() {
+                        if Instant::now() >= watchdog {
+                            return full_len;
+                        }
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    partial_len
+                })
+            },
         )
         .unwrap();
 
