@@ -315,6 +315,10 @@ fn spawn_toggle_stop_watcher<'scope>(
     cancel: CancellationToken,
 ) {
     if let StopWhen::ToggleFile(toggle) = stop {
+        if toggle.stop_requested() {
+            cancel.cancel();
+            return;
+        }
         scope.spawn(move || {
             while !cancel.is_cancelled() && !toggle.stop_requested() {
                 std::thread::sleep(Duration::from_millis(20));
@@ -684,13 +688,7 @@ mod tests {
         let session = ToggleSession::try_start_in(&dir).unwrap().unwrap();
         let pcm = Pcm16kMono::from_samples(vec![i16::MAX / 4; SAMPLE_RATE_HZ as usize * 2]);
         let capture = audio::CaptureResult::from_pcm(pcm);
-        let stopper = std::thread::spawn({
-            let dir = dir.clone();
-            move || {
-                std::thread::sleep(Duration::from_millis(80));
-                ToggleSession::request_stop_if_active_in(&dir).unwrap()
-            }
-        });
+        assert!(ToggleSession::request_stop_if_active_in(&dir).unwrap());
 
         let result = play_fixture_capture(
             capture,
@@ -700,8 +698,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(stopper.join().unwrap());
-        assert!(result.duration < Duration::from_millis(500));
+        assert_eq!(result.duration, Duration::ZERO);
     }
 
     #[test]
