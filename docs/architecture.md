@@ -16,6 +16,21 @@ and local operating-system capabilities.
 | `frontend` | React views, feature controllers, desktop API adapters, and generated IPC types. |
 | `crates/xtask` | Repository maintenance tasks such as icon generation. |
 
+## Managed component integrity
+
+`installer.rs` orchestrates managed installation. `store.rs` owns lifecycle and
+locking, `payload.rs` owns payload projection, extraction plans, hashing, and the
+process-local verification cache, and `filesystem.rs` owns containment, cleanup,
+and resume calculations. `install/mod.rs` is the facade.
+
+Legacy payload-adjacent `verified.json` is not a trust source. Shallow
+verification immediately rejects a wrong file type, regular-file size or
+permission mode, or symlink target. If those structural checks pass, a cold
+process cache or changed fingerprint causes full hashing. The fingerprint covers
+relative path, file type, full mode, size, device, inode, ctime, mtime, and
+symlink target. Explicit Verify also forces a full hash. This detects persistent
+mutation, but an active same-account writer is outside the boundary.
+
 ## Dictation flow
 
 1. A tray, UI, CLI, portal, GNOME, or X11 action requests a recording toggle.
