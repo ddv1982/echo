@@ -185,7 +185,7 @@ impl<C: Pasteboard> LinuxInjector<C> {
     }
 
     fn paste_text(&self, text: &str, window: Option<&str>) -> InjectReport {
-        self.paste_with(text, || {
+        let report = self.paste_with(text, || {
             if window.is_some() {
                 return paste_key(self.runner.as_ref(), window).then_some(InjectBackend::Xdotool);
             }
@@ -198,7 +198,13 @@ impl<C: Pasteboard> LinuxInjector<C> {
             self.runner
                 .run("ydotool", &["key", "ctrl+v"])
                 .then_some(InjectBackend::Ydotool)
-        })
+        });
+        match (window, report) {
+            (Some(_), InjectReport::ClipboardOnly) => InjectReport::Failed {
+                reason: FailReason::InjectUnconfirmed,
+            },
+            (_, report) => report,
+        }
     }
 
     fn paste_with(
@@ -437,7 +443,12 @@ mod tests {
 
         let report = injector.inject("nonce", &captured_target());
 
-        assert_eq!(report, InjectReport::ClipboardOnly);
+        assert_eq!(
+            report,
+            InjectReport::Failed {
+                reason: FailReason::InjectUnconfirmed
+            }
+        );
         assert_eq!(board.text(), "nonce");
         let calls = runner.calls();
         assert_only_targeted_x11_dispatch(&calls);
