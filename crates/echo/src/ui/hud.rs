@@ -104,8 +104,16 @@ impl RecordingHud {
 
 impl Drop for RecordingHud {
     fn drop(&mut self) {
-        if let Some(running) = &self.running {
-            running.store(false, Ordering::SeqCst);
+        let terminal = self.state.as_ref().is_some_and(|state| {
+            matches!(
+                HudState::from_bits(state.load(Ordering::SeqCst)),
+                HudState::Done | HudState::Failed
+            )
+        });
+        if !terminal {
+            if let Some(running) = &self.running {
+                running.store(false, Ordering::SeqCst);
+            }
         }
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
@@ -133,10 +141,39 @@ pub fn enabled() -> bool {
     !hud_disabled()
 }
 
-const WIDTH: u32 = 152;
-const HEIGHT: u32 = 44;
+/// The capsule itself. With a compositor the window is larger by `MARGIN` on
+/// every side so a soft shadow can be drawn around it; without one the
+/// window is exactly the capsule and the SHAPE extension rounds its ends.
+const CAPSULE_WIDTH: u32 = 164;
+const CAPSULE_HEIGHT: u32 = 36;
+const MARGIN: u32 = 14;
+/// Gap between the capsule's bottom edge and the bottom of the screen.
+const BOTTOM_OFFSET: i32 = 48;
 const FRAME: Duration = Duration::from_millis(33);
-const BAR_COUNT: usize = 11;
+const BAR_COUNT: usize = 20;
+const BAR_WIDTH: f32 = 3.0;
+const BAR_PITCH: f32 = 6.0;
+/// Center of the status indicator (dot, spinner, badge) inside the capsule.
+const INDICATOR_X: f32 = 19.0;
+/// The waveform occupies the remainder of the capsule after the indicator.
+const BARS_LEFT: f32 = 34.0;
+const BARS_RIGHT_PAD: f32 = 12.0;
+
+fn window_size(translucent: bool) -> (u32, u32) {
+    if translucent {
+        (CAPSULE_WIDTH + MARGIN * 2, CAPSULE_HEIGHT + MARGIN * 2)
+    } else {
+        (CAPSULE_WIDTH, CAPSULE_HEIGHT)
+    }
+}
+
+fn capsule_origin(translucent: bool) -> (f32, f32) {
+    if translucent {
+        (MARGIN as f32, MARGIN as f32)
+    } else {
+        (0.0, 0.0)
+    }
+}
 /// Done holds briefly, then the capsule fades. Failed holds about a second.
 const DONE_HOLD: Duration = Duration::from_millis(300);
 const DONE_FADE: Duration = Duration::from_millis(200);
@@ -158,7 +195,7 @@ fn smooth(displayed: f32, measured: f32) -> f32 {
 }
 
 const BAR_MIN: f32 = 3.0;
-const BAR_MAX: f32 = 26.0;
+const BAR_MAX: f32 = 22.0;
 /// Speech RMS sits well under 1.0; gain brings conversational levels to
 /// mid-scale, and the square root keeps quiet sounds visible.
 const LEVEL_GAIN: f32 = 3.0;
@@ -186,11 +223,14 @@ impl FrameBuffer {
 }
 
 // Paired with the dark-theme tokens in frontend/src/styles/tokens.css:
-// --surface-card 0 0% 7%, --recording 354 100% 67%, --text-secondary 0 0% 70%.
-// X11 cannot read CSS, so update both places together.
+// --surface-card 0 0% 7%, --recording 354 100% 67%, --foreground 0 0% 95%,
+// --success 153 52% 48%. X11 cannot read CSS, so update both places together.
 const BG: (u8, u8, u8) = (0x12, 0x12, 0x12);
 const RED: (u8, u8, u8) = (0xff, 0x57, 0x68);
-const GRAY: (u8, u8, u8) = (0xb3, 0xb3, 0xb3);
+const FG: (u8, u8, u8) = (0xf2, 0xf2, 0xf2);
+const GREEN: (u8, u8, u8) = (0x3b, 0xba, 0x81);
+const WHITE: (u8, u8, u8) = (0xff, 0xff, 0xff);
+const BLACK: (u8, u8, u8) = (0x00, 0x00, 0x00);
 
 fn color((r, g, b): (u8, u8, u8), alpha: f32) -> tiny_skia::Color {
     tiny_skia::Color::from_rgba(
@@ -221,6 +261,39 @@ fn rounded_rect(x: f32, y: f32, width: f32, height: f32, radius: f32) -> tiny_sk
     })
 }
 
+fn circle(cx: f32, cy: f32, radius: f32) -> tiny_skia::Path {
+    rounded_rect(cx - radius, cy - radius, radius * 2.0, radius * 2.0, radius)
+}
+
+/// An open arc as a polyline; tiny-skia has no arc primitive and a round-capped
+/// stroke over 24 segments is indistinguishable from a true curve at this size.
+fn arc(cx: f32, cy: f32, radius: f32, start: f32, sweep: f32) -> Option<tiny_skia::Path> {
+    const SEGMENTS: usize = 24;
+    let mut builder = tiny_skia::PathBuilder::new();
+    for step in 0..=SEGMENTS {
+        let angle = start + sweep * step as f32 / SEGMENTS as f32;
+        let (x, y) = (cx + radius * angle.cos(), cy + radius * angle.sin());
+        if step == 0 {
+            builder.move_to(x, y);
+        } else {
+            builder.line_to(x, y);
+        }
+    }
+    builder.finish()
+}
+
+fn polyline(points: &[(f32, f32)]) -> Option<tiny_skia::Path> {
+    let mut builder = tiny_skia::PathBuilder::new();
+    for (index, (x, y)) in points.iter().enumerate() {
+        if index == 0 {
+            builder.move_to(*x, *y);
+        } else {
+            builder.line_to(*x, *y);
+        }
+    }
+    builder.finish()
+}
+
 fn fill(frame: &mut FrameBuffer, path: &tiny_skia::Path, rgb: (u8, u8, u8), alpha: f32) {
     let mut paint = tiny_skia::Paint::default();
     paint.set_color(color(rgb, alpha));
@@ -234,10 +307,34 @@ fn fill(frame: &mut FrameBuffer, path: &tiny_skia::Path, rgb: (u8, u8, u8), alph
     );
 }
 
+fn stroke(
+    frame: &mut FrameBuffer,
+    path: &tiny_skia::Path,
+    rgb: (u8, u8, u8),
+    alpha: f32,
+    width: f32,
+) {
+    let mut paint = tiny_skia::Paint::default();
+    paint.set_color(color(rgb, alpha));
+    paint.anti_alias = true;
+    frame.pixmap.stroke_path(
+        path,
+        &paint,
+        &tiny_skia::Stroke {
+            width,
+            line_cap: tiny_skia::LineCap::Round,
+            line_join: tiny_skia::LineJoin::Round,
+            ..tiny_skia::Stroke::default()
+        },
+        tiny_skia::Transform::identity(),
+        None,
+    );
+}
+
 /// Draw one frame. `translucent` selects the compositor path: per-pixel alpha
-/// with a translucent capsule fill, a hairline border, and a soft glow behind
-/// the dot. Without a compositor the same layout flattens onto an opaque
-/// fill, because ARGB transparency would render black there.
+/// with a translucent capsule fill, a soft drop shadow, and a hairline
+/// highlight on the rim. Without a compositor the same layout flattens onto
+/// an opaque fill, because ARGB transparency would render black there.
 fn render_frame(
     frame: &mut FrameBuffer,
     state: HudState,
@@ -246,100 +343,127 @@ fn render_frame(
     fade: f32,
     translucent: bool,
 ) {
-    let width = frame.width as f32;
-    let height = frame.height as f32;
     frame.pixmap.fill(tiny_skia::Color::TRANSPARENT);
+    let (x0, y0) = capsule_origin(translucent);
+    let (width, height) = (CAPSULE_WIDTH as f32, CAPSULE_HEIGHT as f32);
+    let radius = height / 2.0;
 
-    let capsule_alpha = if translucent { 0.82 * fade } else { fade };
-    let capsule = rounded_rect(0.0, 0.0, width, height, height / 2.0);
+    if translucent {
+        // Stacked, expanding rounded rects approximate a blurred shadow:
+        // dense next to the rim, thinning toward the margin, shifted down so
+        // the capsule reads as lifted rather than outlined.
+        const LAYERS: u32 = 8;
+        for layer in 1..=LAYERS {
+            let spread = layer as f32 * 1.25;
+            let shadow = rounded_rect(
+                x0 - spread,
+                y0 - spread + 3.0,
+                width + spread * 2.0,
+                height + spread * 2.0,
+                radius + spread,
+            );
+            let weight = 1.0 - (layer as f32 - 1.0) / LAYERS as f32;
+            fill(frame, &shadow, BLACK, 0.045 * weight * fade);
+        }
+    }
+
+    let capsule = rounded_rect(x0, y0, width, height, radius);
+    let capsule_alpha = if translucent { 0.88 * fade } else { fade };
     fill(frame, &capsule, BG, capsule_alpha);
     if translucent {
-        let mut paint = tiny_skia::Paint::default();
-        paint.set_color(color((0xff, 0xff, 0xff), 0.10 * fade));
-        paint.anti_alias = true;
-        frame.pixmap.stroke_path(
-            &capsule,
-            &paint,
-            &tiny_skia::Stroke {
-                width: 1.0,
-                ..tiny_skia::Stroke::default()
-            },
-            tiny_skia::Transform::identity(),
-            None,
-        );
+        let rim = rounded_rect(x0 + 0.5, y0 + 0.5, width - 1.0, height - 1.0, radius - 0.5);
+        stroke(frame, &rim, WHITE, 0.09 * fade, 1.0);
+        // A brighter sliver along the top edge, the way glass catches light.
+        if let Some(highlight) =
+            polyline(&[(x0 + radius, y0 + 0.5), (x0 + width - radius, y0 + 0.5)])
+        {
+            stroke(frame, &highlight, WHITE, 0.08 * fade, 1.0);
+        }
     }
 
+    let (cx, cy) = (x0 + INDICATOR_X, y0 + height / 2.0);
     match state {
-        HudState::Recording | HudState::Failed => {
-            let pulse = if state == HudState::Recording {
-                (elapsed * 4.4).sin() * 0.5 + 0.5
-            } else {
-                1.0
-            };
-            if translucent {
-                let glow = 14.0 + pulse * 5.0;
-                let glow_path =
-                    rounded_rect(22.0 - glow / 2.0, 22.0 - glow / 2.0, glow, glow, glow / 2.0);
-                fill(frame, &glow_path, RED, 0.18 * fade);
-            }
-            let dot = rounded_rect(18.0, 18.0, 8.0, 8.0, 4.0);
-            fill(frame, &dot, RED, (0.55 + 0.45 * pulse) * fade);
-            if state == HudState::Recording {
-                draw_bars(frame, bars, fade);
-            }
+        HudState::Recording => {
+            draw_live_dot(frame, cx, cy, elapsed, fade);
+            draw_bars(frame, x0, cy, bars, 1.0, fade);
         }
-        HudState::Transcribing => draw_shimmer_dots(frame, elapsed, fade),
-        HudState::Done => draw_check(frame, fade),
+        HudState::Transcribing => {
+            draw_spinner(frame, cx, cy, elapsed, fade);
+            draw_bars(frame, x0, cy, bars, 0.38, fade);
+        }
+        HudState::Done => {
+            draw_badge(frame, cx, cy, GREEN, fade);
+            draw_check(frame, cx, cy, fade);
+            draw_bars(frame, x0, cy, bars, 0.38, fade);
+        }
+        HudState::Failed => {
+            draw_badge(frame, cx, cy, RED, fade);
+            draw_cross(frame, cx, cy, fade);
+            draw_bars(frame, x0, cy, bars, 0.38, fade);
+        }
     }
 }
 
-fn draw_bars(frame: &mut FrameBuffer, bars: &[f32], fade: f32) {
-    let center_y = frame.height as f32 / 2.0;
+/// A solid red dot with a ring that expands and dissolves once per cycle,
+/// the "live" idiom: the dot never dims, so the state stays legible mid-pulse.
+fn draw_live_dot(frame: &mut FrameBuffer, cx: f32, cy: f32, elapsed: f32, fade: f32) {
+    let phase = (elapsed / 1.6).rem_euclid(1.0);
+    let eased = 1.0 - (1.0 - phase) * (1.0 - phase);
+    let ring = circle(cx, cy, 4.5 + eased * 5.0);
+    stroke(frame, &ring, RED, 0.55 * (1.0 - phase) * fade, 1.5);
+    fill(frame, &circle(cx, cy, 3.5), RED, fade);
+}
+
+/// Three quarters of a ring turning steadily: work in progress, no level data.
+fn draw_spinner(frame: &mut FrameBuffer, cx: f32, cy: f32, elapsed: f32, fade: f32) {
+    let start = elapsed * 5.0;
+    if let Some(path) = arc(cx, cy, 5.5, start, std::f32::consts::PI * 1.5) {
+        stroke(frame, &path, FG, 0.9 * fade, 2.0);
+    }
+}
+
+fn draw_badge(frame: &mut FrameBuffer, cx: f32, cy: f32, rgb: (u8, u8, u8), fade: f32) {
+    fill(frame, &circle(cx, cy, 7.5), rgb, fade);
+}
+
+fn draw_check(frame: &mut FrameBuffer, cx: f32, cy: f32, fade: f32) {
+    if let Some(path) = polyline(&[
+        (cx - 3.5, cy + 0.25),
+        (cx - 1.0, cy + 2.75),
+        (cx + 3.75, cy - 2.75),
+    ]) {
+        stroke(frame, &path, WHITE, fade, 1.75);
+    }
+}
+
+fn draw_cross(frame: &mut FrameBuffer, cx: f32, cy: f32, fade: f32) {
+    for (x_sign, y_sign) in [(1.0f32, 1.0f32), (1.0, -1.0)] {
+        if let Some(path) = polyline(&[
+            (cx - 2.75 * x_sign, cy - 2.75 * y_sign),
+            (cx + 2.75 * x_sign, cy + 2.75 * y_sign),
+        ]) {
+            stroke(frame, &path, WHITE, fade, 1.75);
+        }
+    }
+}
+
+/// The waveform: newest sample on the right, oldest trailing off on the left.
+/// Older bars dim toward the tail so the eye lands on what is happening now.
+/// `weight` dims the whole strip once recording has stopped.
+fn draw_bars(frame: &mut FrameBuffer, x0: f32, cy: f32, bars: &[f32], weight: f32, fade: f32) {
+    let count = bars.len().max(1) as f32;
+    let strip = count * BAR_PITCH - (BAR_PITCH - BAR_WIDTH);
+    let region = CAPSULE_WIDTH as f32 - BARS_LEFT - BARS_RIGHT_PAD;
+    // Whole-pixel start keeps 3px bars crisp instead of anti-aliased mush.
+    let left = (x0 + BARS_LEFT + (region - strip) / 2.0).round();
     for (index, level) in bars.iter().enumerate() {
         let height = bar_height(*level);
-        let x = 42.0 + index as f32 * 8.0;
-        let bar = rounded_rect(x, center_y - height / 2.0, 4.0, height, 2.0);
-        fill(frame, &bar, GRAY, fade);
+        let x = left + index as f32 * BAR_PITCH;
+        let age = 1.0 - index as f32 / (count - 1.0).max(1.0);
+        let alpha = (1.0 - 0.55 * age) * weight * fade;
+        let bar = rounded_rect(x, cy - height / 2.0, BAR_WIDTH, height, BAR_WIDTH / 2.0);
+        fill(frame, &bar, FG, alpha);
     }
-}
-
-fn draw_shimmer_dots(frame: &mut FrameBuffer, elapsed: f32, fade: f32) {
-    let center_y = frame.height as f32 / 2.0;
-    for index in 0..3 {
-        // A traveling shimmer: each dot brightens in turn, left to right.
-        let phase = (elapsed * 2.2 - index as f32 * 0.33).rem_euclid(1.0);
-        let brightness = 0.35 + 0.65 * (1.0 - (phase * 2.0 - 1.0).abs());
-        let x = frame.width as f32 / 2.0 - 18.0 + index as f32 * 14.0;
-        let dot = rounded_rect(x, center_y - 4.0, 8.0, 8.0, 4.0);
-        fill(frame, &dot, GRAY, brightness * fade);
-    }
-}
-
-fn draw_check(frame: &mut FrameBuffer, fade: f32) {
-    let mut builder = tiny_skia::PathBuilder::new();
-    let center_x = frame.width as f32 / 2.0;
-    let center_y = frame.height as f32 / 2.0;
-    builder.move_to(center_x - 9.0, center_y + 0.5);
-    builder.line_to(center_x - 2.0, center_y + 7.0);
-    builder.line_to(center_x + 10.0, center_y - 7.0);
-    let Some(path) = builder.finish() else {
-        return;
-    };
-    let mut paint = tiny_skia::Paint::default();
-    paint.set_color(color(GRAY, fade));
-    paint.anti_alias = true;
-    frame.pixmap.stroke_path(
-        &path,
-        &paint,
-        &tiny_skia::Stroke {
-            width: 3.0,
-            line_cap: tiny_skia::LineCap::Round,
-            line_join: tiny_skia::LineJoin::Round,
-            ..tiny_skia::Stroke::default()
-        },
-        tiny_skia::Transform::identity(),
-        None,
-    );
 }
 
 struct ArgbVisual {
@@ -446,8 +570,15 @@ impl HudSurface {
             .find(|visual| visual.visual_id == screen.root_visual)
             .map(|visual| (visual.red_mask, visual.green_mask, visual.blue_mask))
             .unwrap_or((0xff0000, 0xff00, 0xff));
-        let x = ((i32::from(screen.width_in_pixels) - WIDTH as i32) / 2) as i16;
-        let y = (i32::from(screen.height_in_pixels) - HEIGHT as i32 - 48) as i16;
+        let (width, height) = window_size(translucent);
+        let (_, capsule_top) = capsule_origin(translucent);
+        let x = ((i32::from(screen.width_in_pixels) - width as i32) / 2) as i16;
+        // Anchor the capsule's bottom edge, not the window's, so the shadow
+        // margin does not push the visible pill up the screen.
+        let y = (i32::from(screen.height_in_pixels)
+            - CAPSULE_HEIGHT as i32
+            - BOTTOM_OFFSET
+            - capsule_top as i32) as i16;
         let window = conn
             .generate_id()
             .map_err(|err| HudError::Display(err.to_string()))?;
@@ -470,8 +601,8 @@ impl HudSurface {
             screen.root,
             x,
             y,
-            WIDTH as u16,
-            HEIGHT as u16,
+            width as u16,
+            height as u16,
             0,
             WindowClass::INPUT_OUTPUT,
             visual_id,
@@ -480,7 +611,7 @@ impl HudSurface {
         .map_err(|err| HudError::Display(err.to_string()))?;
         set_above(&conn, window)?;
         if !translucent {
-            set_capsule_shape(&conn, window, WIDTH as u16, HEIGHT as u16)?;
+            set_capsule_shape(&conn, window, width as u16, height as u16)?;
         }
         set_click_through(&conn, window)?;
         let gc = conn
@@ -532,8 +663,9 @@ fn run(
 ) -> Result<(), HudError> {
     let surface = HudSurface::open()?;
     let translucent = surface.argb.is_some();
+    let (width, height) = window_size(translucent);
     let mut frame =
-        FrameBuffer::new(WIDTH, HEIGHT).ok_or_else(|| HudError::Display("pixmap".into()))?;
+        FrameBuffer::new(width, height).ok_or_else(|| HudError::Display("pixmap".into()))?;
     let mut history: VecDeque<f32> = (0..BAR_COUNT).map(|_| 0.0).collect();
     let mut displayed = 0.0f32;
     let started = Instant::now();
@@ -813,7 +945,6 @@ mod tests {
 
     #[test]
     fn frames_render_in_both_modes_for_every_state() {
-        let mut frame = FrameBuffer::new(WIDTH, HEIGHT).unwrap();
         let bars = [0.4f32; BAR_COUNT];
         for state in [
             HudState::Recording,
@@ -822,6 +953,8 @@ mod tests {
             HudState::Failed,
         ] {
             for translucent in [true, false] {
+                let (width, height) = window_size(translucent);
+                let mut frame = FrameBuffer::new(width, height).unwrap();
                 render_frame(&mut frame, state, &bars, 1.2, 1.0, translucent);
                 assert!(
                     frame.pixmap.data().iter().any(|byte| *byte != 0),
@@ -832,8 +965,107 @@ mod tests {
     }
 
     #[test]
+    fn opaque_frame_fills_the_whole_window_with_the_capsule() {
+        // Without a compositor the SHAPE mask is the only thing rounding the
+        // window, so the capsule must span the full pixmap: the center of
+        // every edge is painted, and nothing is drawn with partial alpha.
+        let (width, height) = window_size(false);
+        let mut frame = FrameBuffer::new(width, height).unwrap();
+        render_frame(
+            &mut frame,
+            HudState::Recording,
+            &[0.0; BAR_COUNT],
+            0.0,
+            1.0,
+            false,
+        );
+        let pixel = |x: u32, y: u32| frame.pixmap.pixel(x, y).unwrap();
+        assert_eq!(pixel(width / 2, 0).alpha(), 255, "top edge");
+        assert_eq!(pixel(width / 2, height - 1).alpha(), 255, "bottom edge");
+        assert_eq!(pixel(0, height / 2).alpha(), 255, "left edge");
+        assert_eq!(pixel(width - 1, height / 2).alpha(), 255, "right edge");
+    }
+
+    #[test]
+    fn translucent_frame_keeps_the_capsule_inside_the_shadow_margin() {
+        let (width, height) = window_size(true);
+        let mut frame = FrameBuffer::new(width, height).unwrap();
+        render_frame(
+            &mut frame,
+            HudState::Recording,
+            &[0.0; BAR_COUNT],
+            0.0,
+            1.0,
+            true,
+        );
+        let pixel = |x: u32, y: u32| frame.pixmap.pixel(x, y).unwrap();
+        let (x0, y0) = capsule_origin(true);
+        let inside = pixel(width / 2, y0 as u32 + CAPSULE_HEIGHT / 2);
+        let above = pixel(width / 2, 1);
+        assert!(inside.alpha() > 200, "capsule body is nearly opaque");
+        assert!(
+            above.alpha() < 40,
+            "shadow thins to almost nothing at the window edge"
+        );
+        assert_eq!(pixel(0, 0).alpha(), 0, "corners stay fully clear");
+        assert_eq!(
+            pixel(width / 2, height - 1).alpha(),
+            0,
+            "shadow clears the bottom window edge"
+        );
+        assert!(x0 >= 1.0 && y0 >= 1.0);
+    }
+
+    #[test]
+    fn dropping_hud_preserves_terminal_state_lifecycle() {
+        for state in [HudState::Done, HudState::Failed] {
+            let running = SyncArc::new(AtomicBool::new(true));
+            let hud = RecordingHud {
+                running: Some(SyncArc::clone(&running)),
+                state: Some(SyncArc::new(AtomicU8::new(state.bits()))),
+                worker: None,
+            };
+            drop(hud);
+            assert!(running.load(Ordering::SeqCst), "{state:?} was cancelled");
+        }
+
+        let running = SyncArc::new(AtomicBool::new(true));
+        let hud = RecordingHud {
+            running: Some(SyncArc::clone(&running)),
+            state: Some(SyncArc::new(AtomicU8::new(HudState::Transcribing.bits()))),
+            worker: None,
+        };
+        drop(hud);
+        assert!(!running.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn bars_stay_inside_the_capsule() {
+        let (width, height) = window_size(false);
+        let mut frame = FrameBuffer::new(width, height).unwrap();
+        render_frame(
+            &mut frame,
+            HudState::Recording,
+            &[1.0; BAR_COUNT],
+            0.0,
+            1.0,
+            false,
+        );
+        // The right-most bar at full scale sits left of the rounded end cap.
+        let strip = BAR_COUNT as f32 * BAR_PITCH - (BAR_PITCH - BAR_WIDTH);
+        let region = CAPSULE_WIDTH as f32 - BARS_LEFT - BARS_RIGHT_PAD;
+        let right_edge = BARS_LEFT + (region - strip) / 2.0 + strip;
+        assert!(right_edge <= CAPSULE_WIDTH as f32 - BARS_RIGHT_PAD + 0.01);
+        assert!(
+            BAR_MAX <= CAPSULE_HEIGHT as f32 - 12.0,
+            "bars keep a margin above and below"
+        );
+    }
+
+    #[test]
     fn fade_to_zero_leaves_an_empty_frame() {
-        let mut frame = FrameBuffer::new(WIDTH, HEIGHT).unwrap();
+        let (width, height) = window_size(true);
+        let mut frame = FrameBuffer::new(width, height).unwrap();
         render_frame(
             &mut frame,
             HudState::Done,
