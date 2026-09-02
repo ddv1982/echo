@@ -2051,6 +2051,75 @@ describe('Echo desktop shell', () => {
     }
   })
 
+  it('rechecks for an attributed activation after an in-flight unmount rejection', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const poll = deferred<ShortcutStatus>()
+    vi.mocked(getShortcutStatus)
+      .mockResolvedValueOnce(activeShortcut())
+      .mockImplementationOnce(() => poll.promise)
+      .mockResolvedValueOnce(activeShortcut('native-toggle:after-unmount-rejection'))
+
+    try {
+      const { unmount } = render(<App />)
+      await screen.findByRole('button', { name: 'Start recording' })
+      fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Test shortcut' }))
+      expect(await screen.findByText('Listening… press your shortcut')).toBeInTheDocument()
+
+      await vi.advanceTimersByTimeAsync(100)
+      await waitFor(() => expect(getShortcutStatus).toHaveBeenCalledTimes(2))
+      unmount()
+
+      poll.reject(new Error('poll failed after unmount'))
+      await act(async () => {
+        await poll.promise.catch(() => undefined)
+        await Promise.resolve()
+        await vi.advanceTimersByTimeAsync(0)
+      })
+
+      expect(getShortcutStatus).toHaveBeenCalledTimes(3)
+      expect(stopRecording).toHaveBeenCalledOnce()
+      expect(stopRecording).toHaveBeenCalledWith('native-toggle:after-unmount-rejection')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('rechecks for an attributed activation after an in-flight timeout rejection', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const poll = deferred<ShortcutStatus>()
+    vi.mocked(getShortcutStatus)
+      .mockResolvedValueOnce(activeShortcut())
+      .mockImplementationOnce(() => poll.promise)
+      .mockResolvedValueOnce(activeShortcut('native-toggle:after-timeout-rejection'))
+
+    try {
+      render(<App />)
+      await screen.findByRole('button', { name: 'Start recording' })
+      fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Test shortcut' }))
+      expect(await screen.findByText('Listening… press your shortcut')).toBeInTheDocument()
+
+      await vi.advanceTimersByTimeAsync(100)
+      await waitFor(() => expect(getShortcutStatus).toHaveBeenCalledTimes(2))
+      await vi.advanceTimersByTimeAsync(9_900)
+      expect(await screen.findByText('No keypress seen — check the binding')).toBeInTheDocument()
+
+      poll.reject(new Error('poll failed after timeout'))
+      await act(async () => {
+        await poll.promise.catch(() => undefined)
+        await Promise.resolve()
+        await vi.advanceTimersByTimeAsync(0)
+      })
+
+      expect(getShortcutStatus).toHaveBeenCalledTimes(3)
+      expect(stopRecording).toHaveBeenCalledOnce()
+      expect(stopRecording).toHaveBeenCalledWith('native-toggle:after-timeout-rejection')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('lists the microphone step when the mic is not ready', async () => {
     seedPreviewStatus({ microphoneReady: false })
     render(<App />)

@@ -130,6 +130,14 @@ export function ShortcutRow({
       verificationContext.current = context
       setPhase('listening')
 
+      const handlePollFailure = (reason: unknown) => {
+        if (attempt.current !== attemptId) {
+          void stopAttributedShortcutRecording(context).catch(() => undefined)
+          return
+        }
+        failVerificationAttempt(attemptId, reason)
+      }
+
       const poll = async () => {
         pollInFlightAttempt.current = attemptId
         try {
@@ -155,7 +163,7 @@ export function ShortcutRow({
             return
           }
           pollTimer.current = window.setTimeout(() => {
-            poll().catch((reason: unknown) => failVerificationAttempt(attemptId, reason))
+            poll().catch(handlePollFailure)
           }, 100)
         } finally {
           if (pollInFlightAttempt.current === attemptId) {
@@ -164,7 +172,7 @@ export function ShortcutRow({
         }
       }
       pollTimer.current = window.setTimeout(() => {
-        poll().catch((reason: unknown) => failVerificationAttempt(attemptId, reason))
+        poll().catch(handlePollFailure)
       }, 100)
       timeoutTimer.current = window.setTimeout(() => {
         if (attempt.current !== attemptId) return
