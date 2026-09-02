@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::engine::WhisperAccelerationPreference;
 use crate::language::LanguageChoice;
-use crate::paths::{config_path, set_aside_corrupt, write_atomic};
+use crate::paths::{config_path, set_aside_corrupt, write_atomic_private};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(
@@ -136,7 +136,7 @@ impl Config {
 
     pub fn save_to(&self, path: impl AsRef<Path>) -> Result<(), String> {
         let raw = serde_json::to_string_pretty(self).map_err(|err| err.to_string())?;
-        write_atomic(path.as_ref(), raw.as_bytes())
+        write_atomic_private(path.as_ref(), raw.as_bytes())
     }
 }
 

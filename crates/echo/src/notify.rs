@@ -53,6 +53,33 @@ pub fn failure_message(reason: FailReason, detail: Option<&str>) -> String {
     }
 }
 
+#[must_use]
+pub fn dictionary_read_failure_message(detail: &str) -> String {
+    format!(
+        "Echo couldn't read the dictionary, so custom replacements were skipped: {}. \
+         Open Echo → Dictionary and check the dictionary file permissions.",
+        persistence_detail(detail)
+    )
+}
+
+#[must_use]
+pub fn history_append_failure_message(detail: &str) -> String {
+    format!(
+        "Echo transcribed but couldn't save the transcript to history: {}. \
+         The transcript is still available in Echo; check the data directory permissions.",
+        persistence_detail(detail)
+    )
+}
+
+fn persistence_detail(detail: &str) -> &str {
+    let detail = detail.trim();
+    if detail.is_empty() {
+        "unknown storage error"
+    } else {
+        detail
+    }
+}
+
 /// Tell the user a shortcut-spawned session failed, on the session bus.
 /// A failed notification logs and is swallowed: it must never fail or change
 /// the session it reports on.
@@ -60,11 +87,21 @@ pub fn notify_session_failure(reason: FailReason, detail: Option<&str>) {
     if !failure_notifications_enabled() {
         return;
     }
-    let message = failure_message(reason, detail);
+    notify_message(&failure_message(reason, detail));
+}
+
+/// Tell the user that a session completed with a local persistence problem.
+/// This is not gated to shortcut sessions because the
+/// status file may be unwritable for the same reason as the failed store.
+pub fn notify_persistence_failure(message: &str) {
+    notify_message(message);
+}
+
+fn notify_message(message: &str) {
     let result = notify_rust::Notification::new()
         .appname("Echo")
         .summary("Echo")
-        .body(&message)
+        .body(message)
         .icon("echo-desktop")
         .show();
     if let Err(err) = result {
@@ -103,5 +140,18 @@ mod tests {
         assert!(!failure_notifications_enabled());
         enable_failure_notifications();
         assert!(failure_notifications_enabled());
+    }
+
+    #[test]
+    fn persistence_failures_name_the_loss_and_an_action() {
+        let dictionary = dictionary_read_failure_message("permission denied");
+        assert!(dictionary.contains("custom replacements were skipped"));
+        assert!(dictionary.contains("Dictionary"));
+        assert!(dictionary.contains("permission denied"));
+
+        let history = history_append_failure_message("read-only file system");
+        assert!(history.contains("couldn't save the transcript to history"));
+        assert!(history.contains("transcript is still available"));
+        assert!(history.contains("permissions"));
     }
 }

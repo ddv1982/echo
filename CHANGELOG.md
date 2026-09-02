@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.14.10
+
+- Echo's private configuration and data storage is now owner-only and symlink-resistant. Atomic file replacement preserves the previous contents if a write is interrupted.
+- Temporary speech WAVs now use unique owner-only files that are removed automatically on success and failure instead of predictable paths that could leak audio or leave stale files behind.
+- X11 text insertion is restricted to the window captured for the session. A failed targeted type or paste no longer falls back to dispatching input globally.
+- Upgrade takeover now proceeds only while recording is idle across local and cross-process session gates. Active or concurrent recordings defer restart, and a failed replacement launch reopens recording.
+- Speech-engine execution is now bounded by a shared deadline and cancellable. Whisper and Parakeet run in isolated process groups so timeout or cancellation terminates descendants and reaps the direct child.
+- Personal Dictionary replacements now match case-insensitively across Unicode text, including accented, Greek, and Cyrillic input, while respecting Unicode word boundaries and combining marks.
+- Settings read failures now block mutations, while Dictionary and History failures produce actionable status without discarding recoverable transcript text or presenting failed writes as durable.
+- History timestamps now record when audio capture starts rather than when transcription finishes, keeping long recordings on their correct time and calendar day.
+
 ## v0.14.9
 
 - Rust cancellation and recording-stop tests now use causal synchronization instead of scheduler-sensitive internal watchdogs.

@@ -97,7 +97,7 @@ pub use whisper_quarantine::{
 };
 pub use whisper_recovery::RecoveringWhisperEngine;
 
-use std::path::PathBuf;
+use std::path::Path;
 
 use echo_core::{EngineChoice, LanguageChoice, Pcm16kMono, SAMPLE_RATE_HZ};
 
@@ -252,28 +252,132 @@ pub fn engine_availability() -> Vec<EngineAvailability> {
     engines
 }
 
-fn write_temp_wav(pcm: &Pcm16kMono) -> Result<PathBuf, String> {
-    let path =
-        std::env::temp_dir().join(format!("echo-stt-{}-{}.wav", std::process::id(), pcm.len()));
+struct TempWav(tempfile::NamedTempFile);
+
+impl TempWav {
+    fn path(&self) -> &Path {
+        self.0.path()
+    }
+}
+
+impl AsRef<Path> for TempWav {
+    fn as_ref(&self) -> &Path {
+        self.path()
+    }
+}
+
+fn write_temp_wav(pcm: &Pcm16kMono) -> Result<TempWav, String> {
+    write_temp_wav_in(pcm, &std::env::temp_dir())
+}
+
+fn write_temp_wav_in(pcm: &Pcm16kMono, directory: &Path) -> Result<TempWav, String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut wav = tempfile::Builder::new()
+        .prefix("echo-stt-")
+        .suffix(".wav")
+        .tempfile_in(directory)
+        .map_err(|err| err.to_string())?;
+    wav.as_file()
+        .set_permissions(std::fs::Permissions::from_mode(0o600))
+        .map_err(|err| err.to_string())?;
     let spec = hound::WavSpec {
         channels: 1,
         sample_rate: SAMPLE_RATE_HZ,
         bits_per_sample: 16,
         sample_format: hound::SampleFormat::Int,
     };
-    let mut writer = hound::WavWriter::create(&path, spec).map_err(|err| err.to_string())?;
+    let mut writer =
+        hound::WavWriter::new(wav.as_file_mut(), spec).map_err(|err| err.to_string())?;
     for sample in pcm.samples() {
         writer
             .write_sample(*sample)
             .map_err(|err| err.to_string())?;
     }
     writer.finalize().map_err(|err| err.to_string())?;
-    Ok(path)
+    Ok(TempWav(wav))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn temp_wav_does_not_follow_the_predictable_legacy_name() {
+        let pcm = Pcm16kMono::from_samples(vec![1; 37]);
+        let predictable =
+            std::env::temp_dir().join(format!("echo-stt-{}-{}.wav", std::process::id(), pcm.len()));
+        let victim = std::env::temp_dir().join(format!(
+            "echo-stt-victim-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&predictable);
+        std::fs::write(&victim, b"do not overwrite").unwrap();
+        std::os::unix::fs::symlink(&victim, &predictable).unwrap();
+
+        let wav = write_temp_wav(&pcm).unwrap();
+        let actual: &std::path::Path = wav.as_ref();
+        assert_ne!(actual, predictable);
+        assert_eq!(std::fs::read(&victim).unwrap(), b"do not overwrite");
+
+        let _ = std::fs::remove_file(predictable);
+        let _ = std::fs::remove_file(victim);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn temp_wav_is_private_unique_valid_and_removed_on_drop() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let pcm = Pcm16kMono::from_samples(vec![1, -2, 3, -4]);
+        let first = write_temp_wav_in(&pcm, directory.path()).unwrap();
+        let second = write_temp_wav_in(&pcm, directory.path()).unwrap();
+        let first_path = first.path().to_path_buf();
+        let second_path = second.path().to_path_buf();
+
+        assert_ne!(first_path, second_path);
+        assert_eq!(
+            std::fs::metadata(&first_path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let mut reader = hound::WavReader::open(&first_path).unwrap();
+        assert_eq!(reader.spec().channels, 1);
+        assert_eq!(reader.spec().sample_rate, SAMPLE_RATE_HZ);
+        assert_eq!(
+            reader
+                .samples::<i16>()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap(),
+            pcm.samples()
+        );
+        drop(reader);
+
+        drop(first);
+        assert!(!first_path.exists());
+        assert!(second_path.exists());
+        drop(second);
+        assert!(!second_path.exists());
+    }
+
+    #[test]
+    fn temp_wav_is_removed_when_later_work_fails() {
+        let directory = tempfile::tempdir().unwrap();
+        let pcm = Pcm16kMono::from_samples(vec![0; 16]);
+        let (result, created): (Result<(), &str>, _) = {
+            let wav = write_temp_wav_in(&pcm, directory.path()).unwrap();
+            let created = wav.path().to_path_buf();
+            (Err("later inference setup failed"), created)
+        };
+
+        assert_eq!(result, Err("later inference setup failed"));
+        assert!(!created.exists());
+    }
 
     #[test]
     fn fake_engine_is_hidden_unless_asked_for() {

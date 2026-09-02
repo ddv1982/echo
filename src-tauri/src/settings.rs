@@ -1,4 +1,5 @@
 use std::env;
+use std::path::Path;
 use std::sync::Mutex;
 
 use echo_desktop::ipc::{
@@ -11,12 +12,49 @@ pub(super) fn update_file_config(
     update: impl FnOnce(&mut echo_core::Config) -> Result<(), String>,
 ) -> Result<(), String> {
     let _write = CONFIG_WRITE_LOCK.lock().expect("config write lock");
-    let mut config = echo_core::Config::load().unwrap_or_default();
-    update(&mut config)?;
-    config.save()?;
+    update_file_config_at(&echo_core::config_path(), update)?;
     echo::settings::reload();
     crate::status::health_invalidate();
     Ok(())
+}
+
+fn update_file_config_at(
+    path: &Path,
+    update: impl FnOnce(&mut echo_core::Config) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut config = load_preferences_for_update(path)?;
+    update(&mut config)?;
+    config.save_to(path)
+}
+
+fn load_preferences_for_update(path: &Path) -> Result<echo_core::Config, String> {
+    let raw = match std::fs::read(path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // A dangling symlink also reports NotFound, but it is an existing
+            // preference entry and must not be replaced as if it were absent.
+            match std::fs::symlink_metadata(path) {
+                Err(metadata_error) if metadata_error.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(echo_core::Config::default());
+                }
+                _ => return Err(preferences_read_error(path, &error)),
+            }
+        }
+        Err(error) => return Err(preferences_read_error(path, &error)),
+    };
+    serde_json::from_slice(&raw).map_err(|error| {
+        format!(
+            "Preferences at {} are invalid and were left unchanged: {error}",
+            path.display()
+        )
+    })
+}
+
+fn preferences_read_error(path: &Path, error: &std::io::Error) -> String {
+    format!(
+        "Could not read existing preferences at {}; changes were not saved: {error}",
+        path.display()
+    )
 }
 
 #[derive(Debug, Default, Clone)]
@@ -30,7 +68,7 @@ struct SettingsEnv {
 }
 
 pub(super) fn snapshot(readiness: Readiness) -> Result<SettingsSnapshot, String> {
-    let file = echo::settings::file_config();
+    let file = load_preferences_for_update(&echo_core::config_path())?;
     let preferences = read_from_file(&file)?;
     Ok(crate::speech::snapshot(preferences, &file, readiness))
 }
@@ -422,6 +460,83 @@ mod tests {
             Some(pinned.as_str())
         );
         assert_eq!(got.whisper_gpu_device.source, SettingSource::File);
+    }
+
+    #[test]
+    fn missing_preferences_can_be_created_by_an_update() {
+        let path = scratch_path("missing-update");
+        assert!(!path.exists());
+
+        update_file_config_at(&path, |config| {
+            config.engine = Some(EngineChoice::Fake);
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(
+            Config::load_from(&path).unwrap().engine,
+            Some(EngineChoice::Fake)
+        );
+    }
+
+    #[test]
+    fn corrupt_preferences_remain_byte_for_byte_unchanged_after_an_update() {
+        let path = scratch_path("corrupt-update");
+        let original = b"{\"engine\":\"Whisper\",\"partial\":\xff}".to_vec();
+        std::fs::write(&path, &original).unwrap();
+        let mut update_called = false;
+
+        let error = update_file_config_at(&path, |_| {
+            update_called = true;
+            Ok(())
+        })
+        .unwrap_err();
+
+        assert!(!update_called);
+        assert!(error.contains("invalid"), "{error}");
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert!(!path.with_file_name("config.json.corrupt").exists());
+    }
+
+    #[test]
+    fn unreadable_preferences_abort_before_the_mutation() {
+        let path = scratch_path("unreadable-update");
+        std::fs::create_dir(&path).unwrap();
+        let mut update_called = false;
+
+        let error = update_file_config_at(&path, |_| {
+            update_called = true;
+            Ok(())
+        })
+        .unwrap_err();
+
+        assert!(!update_called);
+        assert!(error.contains("changes were not saved"), "{error}");
+        assert!(path.is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_preferences_symlink_aborts_without_replacing_the_link() {
+        let path = scratch_path("dangling-symlink-update");
+        let target = path.with_file_name("missing-target.json");
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        let mut update_called = false;
+
+        let error = update_file_config_at(&path, |_| {
+            update_called = true;
+            Ok(())
+        })
+        .unwrap_err();
+
+        assert!(!update_called);
+        assert!(error.contains("changes were not saved"), "{error}");
+        assert!(std::fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read_link(&path).unwrap(), target);
+        assert!(!target.exists());
     }
 
     #[test]

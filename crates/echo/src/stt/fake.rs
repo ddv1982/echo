@@ -48,6 +48,33 @@ impl Engine for FakeEngine {
             detail: RunDetail::default(),
         })
     }
+
+    fn transcribe_bounded(
+        &self,
+        pcm: &Pcm16kMono,
+        options: &DecodeOptions,
+        deadline: Instant,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Transcript, EngineError> {
+        if cancelled() {
+            return Err(EngineError::Infer("transcription canceled".to_string()));
+        }
+        if Instant::now() >= deadline {
+            return Err(EngineError::Infer(
+                "transcription deadline expired".to_string(),
+            ));
+        }
+        let transcript = self.transcribe(pcm, options)?;
+        if cancelled() {
+            return Err(EngineError::Infer("transcription canceled".to_string()));
+        }
+        if Instant::now() >= deadline {
+            return Err(EngineError::Infer(
+                "transcription deadline expired".to_string(),
+            ));
+        }
+        Ok(transcript)
+    }
 }
 
 #[cfg(test)]

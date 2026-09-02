@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use echo_core::{
     Config, DecodeOptions, Dictionary, Engine, EngineChoice, EngineError, EngineId, Language,
@@ -393,6 +394,24 @@ impl PreparedTranscription {
         pcm: &Pcm16kMono,
         purpose: TranscriptionPurpose<'_>,
     ) -> Result<CompletedTranscription, TranscriptionError> {
+        self.transcribe_bounded(
+            pcm,
+            purpose,
+            Instant::now() + Duration::from_secs(15 * 60),
+            &|| false,
+        )
+    }
+
+    /// Runs a prepared engine under one deadline and cancellation signal.
+    /// Recovery attempts inherit the same bound rather than starting a fresh
+    /// timeout after an accelerated attempt fails.
+    pub fn transcribe_bounded(
+        &self,
+        pcm: &Pcm16kMono,
+        purpose: TranscriptionPurpose<'_>,
+        deadline: Instant,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<CompletedTranscription, TranscriptionError> {
         let hints = match (&self.resolved.engine, &purpose) {
             (ResolvedEngine::Whisper { .. }, TranscriptionPurpose::Dictation(dictionary)) => {
                 RecognitionHints::from_dictionary(dictionary)
@@ -415,7 +434,7 @@ impl PreparedTranscription {
         };
         let transcript = self
             .engine
-            .transcribe(pcm, &options)
+            .transcribe_bounded(pcm, &options, deadline, cancelled)
             .map_err(TranscriptionError::Engine)?;
         let text = match purpose {
             TranscriptionPurpose::Dictation(dictionary) => dictionary.rewrite(&transcript.raw),
@@ -781,11 +800,21 @@ mod tests {
             }
         }
 
-        fn transcribe(
+        fn transcribe_bounded(
             &self,
             pcm: &Pcm16kMono,
             options: &DecodeOptions,
+            deadline: Instant,
+            cancelled: &dyn Fn() -> bool,
         ) -> Result<echo_core::Transcript, EngineError> {
+            if cancelled() {
+                return Err(EngineError::Infer("transcription canceled".to_string()));
+            }
+            if Instant::now() >= deadline {
+                return Err(EngineError::Infer(
+                    "transcription deadline expired".to_string(),
+                ));
+            }
             self.hints
                 .lock()
                 .expect("hint capture lock")
@@ -818,14 +847,8 @@ mod tests {
 
     #[test]
     fn dictionary_training_returns_raw_output_without_dictionary_hints() {
-        let path = std::env::temp_dir().join(format!(
-            "echo-transcription-purpose-{}-{}.json",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dictionary.json");
         let mut dictionary = Dictionary::load_from(&path).unwrap();
         dictionary.add("clawed code", "Claude Code").unwrap();
         let hints = Arc::new(Mutex::new(Vec::new()));
@@ -861,7 +884,31 @@ mod tests {
             *hints.lock().expect("hint capture lock"),
             vec![vec!["Claude Code".to_string()], Vec::<String>::new()]
         );
-        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn prepared_transcription_forwards_cancellation_before_engine_work() {
+        let hints = Arc::new(Mutex::new(Vec::new()));
+        let prepared = PreparedTranscription {
+            resolved: ResolvedRun {
+                engine: ResolvedEngine::Fake,
+                language: LanguageChoice::Auto,
+            },
+            engine: Box::new(InspectingEngine {
+                hints: Arc::clone(&hints),
+            }),
+            _managed_paths: Vec::new(),
+        };
+        let error = prepared
+            .transcribe_bounded(
+                &Pcm16kMono::from_samples(vec![8_000; 160]),
+                TranscriptionPurpose::DictionaryTraining,
+                Instant::now() + Duration::from_secs(1),
+                &|| true,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("canceled"));
+        assert!(hints.lock().expect("hint capture lock").is_empty());
     }
 
     #[test]
