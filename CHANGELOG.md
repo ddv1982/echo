@@ -6,6 +6,7 @@
 - Private configuration and data reads now repair owner-only permissions, reject symlinks, and preserve every corrupt-file backup. Runtime configuration errors are reported instead of silently falling back to defaults.
 - Personal Dictionary matching now handles Unicode canonical equivalence and full case folding, including length-changing folds, while preserving the original transcript ranges.
 - Session status now distinguishes application phases and validates process identity across PID reuse. Failed text injection refreshes History reliably, and local-day statistics remain correct across daylight-saving transitions.
+- X11 injection now pins the window focused when audio capture ends, so Home-button recordings can target the application selected while speaking without allowing later focus changes to redirect the transcript.
 
 ## v0.14.10
 

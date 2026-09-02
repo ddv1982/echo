@@ -210,11 +210,7 @@ fn run_record_with_limit(
     // The HUD lives until after injection: the longest wait in the session
     // (transcription) gets an indicator, and the outcome gets a state.
     let _in_process = InProcessSession::start();
-    let injection = (!skip_inject()).then(|| {
-        let injector = LinuxInjector::new();
-        let target = injector.focus();
-        (injector, target)
-    });
+    let injector = (!skip_inject()).then(LinuxInjector::new);
     let meter = audio::process_meter();
     let hud = crate::ui::hud::RecordingHud::start(meter.clone());
     let (capture, started_at) =
@@ -229,6 +225,13 @@ fn run_record_with_limit(
                 return 1;
             }
         };
+    // A Home-button start leaves Echo focused. Pin the target after capture,
+    // once the user has returned to the application that should receive text,
+    // and before transcription creates another opportunity for focus to move.
+    let injection = injector.map(|injector| {
+        let target = injector.focus();
+        (injector, target)
+    });
     stop.clear_stop_request();
     hud.set_state(crate::ui::hud::HudState::Transcribing);
     apply_edge(&mut session, HotkeyEvent::Up);
