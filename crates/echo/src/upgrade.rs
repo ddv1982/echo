@@ -672,9 +672,40 @@ mod tests {
             .map_err(|error| format!("cannot read /proc/self for pidfd integration test: {error}"))?
             .uid();
 
-        let initial = read_process_info(pid).ok_or_else(|| {
-            format!("cannot read controlled child {pid} from /proc after successful spawn")
-        })?;
+        let exec_timeout = std::time::Duration::from_secs(5);
+        let exec_deadline = std::time::Instant::now() + exec_timeout;
+        let mut last_observed_exe = None;
+        let initial = loop {
+            if let Some(info) = read_process_info(pid) {
+                if std::path::Path::new(&info.exe).file_name()
+                    == Some(std::ffi::OsStr::new("echo-desktop"))
+                {
+                    break info;
+                }
+                last_observed_exe = Some(info.exe);
+            }
+
+            match controlled.child.try_wait() {
+                Ok(Some(status)) => {
+                    controlled.reaped = true;
+                    return Err(format!(
+                        "controlled child {pid} exited with {status} before /proc observed echo-desktop"
+                    ));
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "cannot check controlled child {pid} while waiting for /proc to observe echo-desktop: {error}"
+                    ));
+                }
+                Ok(None) if std::time::Instant::now() >= exec_deadline => {
+                    return Err(format!(
+                        "timed out after {exec_timeout:?} waiting for /proc to observe controlled child {pid} as echo-desktop; last observed executable: {}",
+                        last_observed_exe.as_deref().unwrap_or("<unreadable>")
+                    ));
+                }
+                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(10)),
+            }
+        };
         assert_eq!(initial.pid, pid);
         assert_eq!(
             std::path::Path::new(&initial.exe).file_name(),
