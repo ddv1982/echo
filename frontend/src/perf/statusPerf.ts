@@ -84,8 +84,10 @@ async function runStatusPerf(): Promise<void> {
 }
 
 export function startStatusPerf(): void {
-  void runStatusPerf().catch((reason: unknown) => {
+  runStatusPerf().catch((reason: unknown) => {
     const message = reason instanceof Error ? reason.message : String(reason)
-    void invoke('perf_report_failed', { message })
+    invoke('perf_report_failed', { message }).catch((reportingError: unknown) => {
+      console.error('Failed to report status performance failure:', reportingError)
+    })
   })
 }

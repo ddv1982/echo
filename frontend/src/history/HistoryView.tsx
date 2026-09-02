@@ -2,7 +2,7 @@ import { Check, Clock3, Copy, Search, Trash2 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
 import { BarsMotif, ViewHeader } from '../app/chrome'
-import { formatDateTime } from '../app/formatting'
+import { formatDateTime, messageFrom } from '../app/formatting'
 import { groupByDay } from '../stats'
 import { copyText } from '../tauri'
 import type { HistoryItem } from '../generated/ipc'
@@ -11,10 +11,12 @@ export function HistoryView({
   items,
   onDelete,
   onClear,
+  onError,
 }: {
   items: HistoryItem[]
   onDelete: (id: string) => Promise<boolean>
   onClear: () => Promise<number>
+  onError: (message: string) => void
 }) {
   const [query, setQuery] = useState('')
   const [pendingId, setPendingId] = useState<string | null>(null)
@@ -74,6 +76,7 @@ export function HistoryView({
               deleting={pendingId === item.id}
               disabled={busy}
               onDelete={remove}
+              onError={onError}
             />
           ))}
         </section>
@@ -96,17 +99,23 @@ function TranscriptRow({
   deleting,
   disabled,
   onDelete,
+  onError,
 }: {
   item: HistoryItem
   deleting: boolean
   disabled: boolean
   onDelete: (item: HistoryItem) => Promise<void>
+  onError: (message: string) => void
 }) {
   const [copied, setCopied] = useState(false)
   const copy = async () => {
-    await copyText(item.text)
-    setCopied(true)
-    window.setTimeout(() => setCopied(false), 1200)
+    try {
+      await copyText(item.text)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1200)
+    } catch (reason) {
+      onError(messageFrom(reason))
+    }
   }
   return (
     <article className="transcript-row">
@@ -119,7 +128,7 @@ function TranscriptRow({
         </div>
       </div>
       <div className="transcript-actions">
-        <button className="icon-button" type="button" onClick={() => void copy()} aria-label="Copy transcript">
+        <button className="icon-button" type="button" onClick={() => void copy()} aria-label={copied ? 'Copied transcript' : 'Copy transcript'}>
           {copied ? <Check size={17} aria-hidden="true" /> : <Copy size={17} aria-hidden="true" />}
         </button>
         <button

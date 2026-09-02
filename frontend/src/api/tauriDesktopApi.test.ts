@@ -1,3 +1,4 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SettingsChange, SetupEvent } from '../generated/ipc'
 import { createTauriDesktopApi, tauriDesktopApi } from './tauriDesktopApi'
 
@@ -16,6 +17,11 @@ const { invokeMock, listenMock } = vi.hoisted(() => ({
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }))
 vi.mock('@tauri-apps/api/event', () => ({ listen: listenMock }))
+
+function requireFixture<T>(value: T | undefined, description: string): T {
+  if (value === undefined) throw new Error(`missing test fixture: ${description}`)
+  return value
+}
 
 describe('Tauri desktop adapter contract', () => {
   beforeEach(() => {
@@ -110,7 +116,8 @@ describe('Tauri desktop adapter contract', () => {
     await tauriDesktopApi.onSetupEvent(handler)
 
     expect(listenMock).toHaveBeenCalledWith('setup-event', expect.any(Function))
-    const listener = listenMock.mock.calls[0][1]
+    const registration = requireFixture(listenMock.mock.calls[0], 'setup-event registration')
+    const listener = requireFixture(registration[1], 'setup-event listener')
     listener({ payload: event })
     expect(handler).toHaveBeenCalledWith(event)
   })
@@ -129,6 +136,6 @@ describe('Tauri desktop adapter contract', () => {
       return duration
     }).sort((left, right) => left - right)
 
-    expect(durations[25]).toBeLessThan(5)
+    expect(requireFixture(durations[25], 'median desktop API initialization duration')).toBeLessThan(5)
   })
 })

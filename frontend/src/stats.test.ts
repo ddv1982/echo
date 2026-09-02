@@ -1,6 +1,12 @@
+import { describe, expect, it } from 'vitest'
 import { deriveStats, groupByDay } from './stats'
 
 const NOW = new Date('2026-08-22T15:00:00') // a Saturday
+
+function requireFixture<T>(value: T | undefined, description: string): T {
+  if (value === undefined) throw new Error(`missing test fixture: ${description}`)
+  return value
+}
 
 function row(text: string, daysAgo: number, hour = 12) {
   const date = new Date(NOW)
@@ -49,12 +55,15 @@ describe('groupByDay', () => {
   it('groups Today, Yesterday, then dates, preserving order', () => {
     const items = [row('a', 0), row('b', 0, 9), row('c', 1), row('d', 3)]
     const groups = groupByDay(items, NOW)
+    const olderItem = requireFixture(items[3], 'older history item')
     const olderDate = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(
-      new Date(items[3].startedAt * 1000),
+      new Date(olderItem.startedAt * 1000),
     )
     expect(groups.map((group) => group.label)).toEqual(['Today', 'Yesterday', olderDate])
-    expect(groups[0].items.map((item) => item.text)).toEqual(['a', 'b'])
-    expect(groups[1].items.map((item) => item.text)).toEqual(['c'])
+    expect(requireFixture(groups[0], 'Today history group').items.map((item) => item.text))
+      .toEqual(['a', 'b'])
+    expect(requireFixture(groups[1], 'Yesterday history group').items.map((item) => item.text))
+      .toEqual(['c'])
   })
 
   it('is empty for empty input', () => {

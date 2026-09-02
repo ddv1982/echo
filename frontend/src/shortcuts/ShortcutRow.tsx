@@ -4,6 +4,7 @@ import { messageFrom } from '../app/formatting'
 import { presentShortcut } from '../shortcut'
 import { getAppStatus, getShortcutStatus, stopRecording } from '../tauri'
 import type { AppStatus } from '../generated/ipc'
+import { useShortcutVerification } from './useShortcutVerification'
 
 export function ShortcutRow({
   status,
@@ -20,16 +21,21 @@ export function ShortcutRow({
 }) {
   const shortcut = presentShortcut(status.shortcut)
   const currentIdentity = shortcut.verificationIdentity
-  const [verification, setVerification] = useState<{ at: number; identity: string } | null>(() => {
-    const raw = localStorage.getItem('echo-shortcut-verified-at')
-    const identity = localStorage.getItem('echo-shortcut-verified-identity')
-    return raw && identity ? { at: Number(raw), identity } : null
-  })
+  const [rawVerification, setRawVerification] = useState(() => ({
+    rawAt: localStorage.getItem('echo-shortcut-verified-at'),
+    storedIdentity: localStorage.getItem('echo-shortcut-verified-identity'),
+  }))
+  const verification = useShortcutVerification(
+    rawVerification.rawAt,
+    rawVerification.storedIdentity,
+    currentIdentity,
+  )
   const [phase, setPhase] = useState<'idle' | 'arming' | 'listening' | 'timed-out'>('idle')
   const [retrying, setRetrying] = useState(false)
   const attempt = useRef(0)
   const verificationActive = useRef(false)
   const verificationContext = useRef<ShortcutTestContext | null>(null)
+  const pollInFlightAttempt = useRef<number | null>(null)
   const pollTimer = useRef<number | null>(null)
   const timeoutTimer = useRef<number | null>(null)
   const completeVerification = (identity: string) => {
@@ -39,34 +45,56 @@ export function ShortcutRow({
     if (pollTimer.current != null) window.clearTimeout(pollTimer.current)
     if (timeoutTimer.current != null) window.clearTimeout(timeoutTimer.current)
     const now = Math.floor(Date.now() / 1000)
-    localStorage.setItem('echo-shortcut-verified-at', String(now))
+    const rawAt = String(now)
+    localStorage.setItem('echo-shortcut-verified-at', rawAt)
     localStorage.setItem('echo-shortcut-verified-identity', identity)
-    setVerification({ at: now, identity })
+    setRawVerification({ rawAt, storedIdentity: identity })
     setPhase('idle')
+  }
+  const failVerificationAttempt = (attemptId: number, reason: unknown) => {
+    if (attempt.current !== attemptId) return
+    attempt.current += 1
+    verificationActive.current = false
+    verificationContext.current = null
+    if (pollTimer.current != null) window.clearTimeout(pollTimer.current)
+    if (timeoutTimer.current != null) window.clearTimeout(timeoutTimer.current)
+    pollTimer.current = null
+    timeoutTimer.current = null
+    setPhase('timed-out')
+    onError(messageFrom(reason))
   }
 
   useEffect(() => {
     return () => {
+      const attemptId = attempt.current
       attempt.current += 1
       if (pollTimer.current != null) window.clearTimeout(pollTimer.current)
       if (timeoutTimer.current != null) window.clearTimeout(timeoutTimer.current)
       const context = verificationContext.current
-      if (verificationActive.current && context != null) {
-        void stopAttributedShortcutRecording(context)
+      if (
+        verificationActive.current
+        && context != null
+        && pollInFlightAttempt.current !== attemptId
+      ) {
+        stopAttributedShortcutRecording(context).catch(() => undefined)
       }
+      verificationActive.current = false
+      verificationContext.current = null
     }
   }, [])
 
-  const stopVerifiedRecording = async (activation: string) => {
+  const stopVerifiedRecording = async (activation: string, attemptId: number) => {
     try {
       await stopRecording(activation)
       for (let check = 0; check < 20; check += 1) {
         if (!(await getAppStatus()).recording) return true
         await new Promise((resolve) => window.setTimeout(resolve, 25))
       }
-      onError('Echo could not confirm that the shortcut recording stopped.')
+      if (attempt.current === attemptId) {
+        onError('Echo could not confirm that the shortcut recording stopped.')
+      }
     } catch (reason) {
-      onError(messageFrom(reason))
+      if (attempt.current === attemptId) onError(messageFrom(reason))
     }
     return false
   }
@@ -99,24 +127,40 @@ export function ShortcutRow({
       setPhase('listening')
 
       const poll = async () => {
-        const next = presentShortcut(await getShortcutStatus())
-        if (attempt.current !== attemptId) return
-        const activation = attributedShortcutActivation(next, context)
-        if (activation != null) {
-          const stopped = await stopVerifiedRecording(activation)
-          if (attempt.current !== attemptId) return
-          if (!stopped) {
-            verificationActive.current = false
-            verificationContext.current = null
-            setPhase('timed-out')
+        pollInFlightAttempt.current = attemptId
+        try {
+          const next = presentShortcut(await getShortcutStatus())
+          const activation = attributedShortcutActivation(next, context)
+          if (attempt.current !== attemptId) {
+            if (activation != null) {
+              void stopRecording(activation).catch(() => undefined)
+            }
             return
           }
-          completeVerification(baselineIdentity)
-          return
+          if (activation != null) {
+            const stopped = await stopVerifiedRecording(activation, attemptId)
+            if (attempt.current !== attemptId) return
+            if (!stopped) {
+              verificationActive.current = false
+              verificationContext.current = null
+              setPhase('timed-out')
+              return
+            }
+            completeVerification(baselineIdentity)
+            return
+          }
+          pollTimer.current = window.setTimeout(() => {
+            poll().catch((reason: unknown) => failVerificationAttempt(attemptId, reason))
+          }, 100)
+        } finally {
+          if (pollInFlightAttempt.current === attemptId) {
+            pollInFlightAttempt.current = null
+          }
         }
-        pollTimer.current = window.setTimeout(() => void poll(), 100)
       }
-      pollTimer.current = window.setTimeout(() => void poll(), 100)
+      pollTimer.current = window.setTimeout(() => {
+        poll().catch((reason: unknown) => failVerificationAttempt(attemptId, reason))
+      }, 100)
       timeoutTimer.current = window.setTimeout(() => {
         if (attempt.current !== attemptId) return
         attempt.current += 1
@@ -125,28 +169,21 @@ export function ShortcutRow({
         verificationContext.current = null
         if (pollTimer.current != null) window.clearTimeout(pollTimer.current)
         setPhase('timed-out')
-        if (context != null) {
-          void stopAttributedShortcutRecording(context).catch((reason: unknown) =>
+        if (context != null && pollInFlightAttempt.current !== attemptId) {
+          stopAttributedShortcutRecording(context).catch((reason: unknown) =>
             onError(messageFrom(reason)),
           )
         }
       }, 10_000)
     } catch (reason) {
-      if (attempt.current === attemptId) {
-        verificationActive.current = false
-        const context = verificationContext.current
-        verificationContext.current = null
-        setPhase('timed-out')
-        if (context != null) void stopAttributedShortcutRecording(context).catch(() => undefined)
-        onError(messageFrom(reason))
-      }
+      failVerificationAttempt(attemptId, reason)
     }
   }
 
   const repair = () => {
     localStorage.removeItem('echo-shortcut-verified-at')
     localStorage.removeItem('echo-shortcut-verified-identity')
-    setVerification(null)
+    setRawVerification({ rawAt: null, storedIdentity: null })
     onRepair()
   }
   const retry = async () => {
@@ -182,7 +219,14 @@ export function ShortcutRow({
           </button>
         ) : null}
         {shortcut.canRetry ? (
-          <button type="button" className="compact-button" disabled={retrying} onClick={() => void retry()}>
+          <button
+            type="button"
+            className="compact-button"
+            disabled={retrying}
+            onClick={() => {
+              retry().catch(() => undefined)
+            }}
+          >
             {retrying ? 'Retrying…' : 'Retry shortcut'}
           </button>
         ) : null}
@@ -200,7 +244,9 @@ export function ShortcutRow({
             type="button"
             className="compact-button"
             disabled={status.recording || !shortcut.testable}
-            onClick={() => void start()}
+            onClick={() => {
+              start().catch(() => undefined)
+            }}
           >
             Test shortcut
           </button>

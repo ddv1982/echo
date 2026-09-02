@@ -1,5 +1,5 @@
 import { SectionHeading, SettingLine, ViewHeader } from '../app/chrome'
-import { capitalize } from '../app/formatting'
+import { capitalize, messageFrom } from '../app/formatting'
 import { formatSize } from '../format'
 import { ShortcutRow } from '../shortcuts/ShortcutRow'
 import { MicrophoneChooser } from './MicrophoneChooser'
@@ -295,7 +295,9 @@ export function SettingsView({
             snapshot={microphones}
             test={micTest}
             testing={testingMic}
-            onRefresh={refreshMicrophones}
+            onRefresh={() => {
+              refreshMicrophones().catch((reason: unknown) => onError(messageFrom(reason)))
+            }}
             onSelect={selectMicrophone}
             onTest={testMicrophone}
           />
@@ -349,7 +351,11 @@ export function SettingsView({
       <section className="panel settings-section" aria-label="Setup and diagnostics">
         <SectionHeading title="Setup and diagnostics" subtitle="Installed components and evidence from previous recordings." />
         {readiness ? (
-          <SpeechSetupSection readiness={readiness} onRefresh={refreshReadiness} onError={onError} />
+          <SpeechSetupSection
+            readiness={readiness}
+            onRefresh={refreshReadiness}
+            onError={onError}
+          />
         ) : null}
         <SettingLine label="Text insertion" value={status.injectionName} tone={status.injectionReady ? 'ok' : 'attention'} />
         {status.lastError ? (

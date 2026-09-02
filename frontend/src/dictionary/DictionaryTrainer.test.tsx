@@ -1,5 +1,6 @@
 import { createRef } from 'react'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DictionaryItem, DictionaryTrainingSample } from '../generated/ipc'
 import { DictionaryTrainer } from './DictionaryTrainer'
@@ -35,6 +36,11 @@ function sample(take: number, transcript: string): PronunciationSample {
   return { take, transcript, engine: 'whisper-small' }
 }
 
+function requireFixture<T>(value: T | undefined, description: string): T {
+  if (value === undefined) throw new Error(`missing test fixture: ${description}`)
+  return value
+}
+
 async function recordTake(take: number) {
   fireEvent.click(await screen.findByRole('button', { name: `Record take ${take}` }))
   fireEvent.click(await screen.findByRole('button', { name: `Stop take ${take}` }))
@@ -42,7 +48,8 @@ async function recordTake(take: number) {
 
 describe('dictionary voice trainer', () => {
   beforeEach(() => {
-    trainingMocks.cancel.mockClear()
+    trainingMocks.cancel.mockReset()
+    trainingMocks.cancel.mockResolvedValue(true)
     trainingMocks.finish.mockReset()
     trainingMocks.start.mockReset()
     let capture = 0
@@ -65,7 +72,35 @@ describe('dictionary voice trainer', () => {
       'existing',
       'conflict',
     ])
-    expect(reviewed[4].existingWritten).toBe('Existing value')
+    expect(requireFixture(reviewed[4], 'conflicting reviewed sample').existingWritten)
+      .toBe('Existing value')
+  })
+
+  it('wraps focus in both directions within the entering dialog', () => {
+    const triggerRef = createRef<HTMLButtonElement>()
+    render(
+      <>
+        <button ref={triggerRef} type="button">Voice trigger</button>
+        <DictionaryTrainer
+          items={[]}
+          triggerRef={triggerRef}
+          onClose={() => undefined}
+          onSave={() => Promise.reject(new Error('not reached'))}
+        />
+      </>,
+    )
+
+    fireEvent.change(screen.getByLabelText('Exact word or phrase'), { target: { value: 'Canonical' } })
+    const dialog = screen.getByRole('dialog', { name: 'Teach Echo by voice' })
+    const firstControl = screen.getByRole('button', { name: 'Close voice training' })
+    const lastControl = screen.getByRole('button', { name: 'Start five takes' })
+
+    firstControl.focus()
+    fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: true })
+    expect(lastControl).toHaveFocus()
+
+    fireEvent.keyDown(dialog, { key: 'Tab' })
+    expect(firstControl).toHaveFocus()
   })
 
   it('collects five non-empty takes and saves one batch of actionable variants', async () => {
@@ -104,7 +139,8 @@ describe('dictionary voice trainer', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Start five takes' }))
     for (let take = 1; take <= 5; take += 1) {
       await recordTake(take)
-      await screen.findAllByText(heard[take - 1], { selector: 'q' })
+      const transcript = requireFixture(heard[take - 1], `transcript for take ${take}`)
+      await screen.findAllByText(transcript, { selector: 'q' })
     }
 
     expect(screen.getByText('Already correct')).toBeInTheDocument()
@@ -195,6 +231,68 @@ describe('dictionary voice trainer', () => {
     resolveStart?.('late-capture')
 
     await waitFor(() => expect(trainingMocks.cancel).toHaveBeenCalledWith('late-capture'))
+  })
+
+  it('closes after an active-capture cancellation rejects', async () => {
+    const cancellation = Promise.reject(new Error('capture cancellation failed'))
+    cancellation.catch(() => undefined)
+    const catchSpy = vi.spyOn(cancellation, 'catch')
+    trainingMocks.cancel.mockReturnValueOnce(cancellation)
+    const onClose = vi.fn()
+    const triggerRef = createRef<HTMLButtonElement>()
+    const view = render(
+      <>
+        <button ref={triggerRef} type="button">Voice trigger</button>
+        <DictionaryTrainer
+          items={[]}
+          triggerRef={triggerRef}
+          onClose={onClose}
+          onSave={() => Promise.reject(new Error('not reached'))}
+        />
+      </>,
+    )
+
+    fireEvent.change(screen.getByLabelText('Exact word or phrase'), { target: { value: 'Canonical' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Start five takes' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Record take 1' }))
+    await screen.findByRole('button', { name: 'Stop take 1' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close voice training' }))
+    expect(onClose).toHaveBeenCalledOnce()
+    view.unmount()
+
+    expect(trainingMocks.cancel).toHaveBeenCalledOnce()
+    expect(trainingMocks.cancel).toHaveBeenCalledWith('capture-1')
+    expect(catchSpy).toHaveBeenCalledOnce()
+  })
+
+  it('settles an active-capture cancellation rejection during unmount', async () => {
+    const cancellation = Promise.reject(new Error('unmount cancellation failed'))
+    cancellation.catch(() => undefined)
+    const catchSpy = vi.spyOn(cancellation, 'catch')
+    trainingMocks.cancel.mockReturnValueOnce(cancellation)
+    const triggerRef = createRef<HTMLButtonElement>()
+    const view = render(
+      <>
+        <button ref={triggerRef} type="button">Voice trigger</button>
+        <DictionaryTrainer
+          items={[]}
+          triggerRef={triggerRef}
+          onClose={() => undefined}
+          onSave={() => Promise.reject(new Error('not reached'))}
+        />
+      </>,
+    )
+
+    fireEvent.change(screen.getByLabelText('Exact word or phrase'), { target: { value: 'Canonical' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Start five takes' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Record take 1' }))
+    await screen.findByRole('button', { name: 'Stop take 1' })
+
+    view.unmount()
+
+    await waitFor(() => expect(trainingMocks.cancel).toHaveBeenCalledWith('capture-1'))
+    expect(catchSpy).toHaveBeenCalledOnce()
   })
 
   it('keeps the dialog open while a stopped take is transcribing', async () => {

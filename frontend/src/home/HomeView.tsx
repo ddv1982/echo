@@ -127,7 +127,8 @@ export function HomeView({
 const LEVEL_BAR_COUNT = 14
 
 function LevelBars({ live }: { live: boolean }) {
-  const [levels, setLevels] = useState<number[]>(() => Array(LEVEL_BAR_COUNT).fill(0))
+  const [levels, setLevels] = useState<number[]>(() =>
+    Array.from({ length: LEVEL_BAR_COUNT }, () => 0))
   const addLevel = useCallback((level: number) => {
     setLevels((previous) => [...previous.slice(1), level])
   }, [])

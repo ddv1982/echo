@@ -207,7 +207,7 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
   }
 
   let previewDictionary: DictionaryItem[] = defaultPreviewDictionary()
-  const previewTrainingTranscripts = [
+  const previewTrainingTranscripts: readonly [string, ...string[]] = [
     'kuber netties',
     'cooper net ease',
     'Kubernetes',
@@ -375,6 +375,9 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
     }
     activeTrainingCapture = null
     const transcript = previewTrainingTranscripts[previewTrainingIndex % previewTrainingTranscripts.length]
+    if (transcript === undefined) {
+      return Promise.reject(new Error('Preview dictionary training has no sample transcript.'))
+    }
     previewTrainingIndex += 1
     const engine = previewSettings.engine.effective === 'parakeet'
       ? 'parakeet-tdt-0.6b-v3'
@@ -635,7 +638,7 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
   }
 
   function defaultPreviewDevices(): InputDevice[] {
-    const advancedDevices: InputDevice[] = [
+    const advancedDeviceOptions: Array<readonly [id: string, label: string]> = [
       ['alsa:pipewire', 'PipeWire Sound Server'],
       ['alsa:pulse', 'PulseAudio Sound Server'],
       ['alsa:downmix', 'Plugin for channel downmix'],
@@ -644,7 +647,8 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
       ['alsa:speexrate', 'Rate Converter Using Speex'],
       ['alsa:dsnoop:CARD=sofhdadsp,DEV=6', 'sof-hda-dsp,'],
       ['alsa:dsnoop:CARD=sofhdadsp,DEV=7', 'sof-hda-dsp,'],
-    ].map(([id, label]) => ({
+    ]
+    const advancedDevices: InputDevice[] = advancedDeviceOptions.map(([id, label]) => ({
       id,
       label,
       isDefault: false,

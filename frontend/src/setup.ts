@@ -20,6 +20,21 @@ export interface SpeechSetupPresentation {
   alternativePlans: SetupPlan[]
 }
 
+export function classifySetupEvent(event: SetupEvent):
+  | { kind: 'incremental'; event: Extract<SetupEvent, { kind: 'progress' }> }
+  | { kind: 'terminal'; error: string | null } {
+  switch (event.kind) {
+    case 'progress':
+      return { kind: 'incremental', event }
+    case 'finished':
+      return { kind: 'terminal', error: null }
+    case 'cancelled':
+      return { kind: 'terminal', error: null }
+    case 'failed':
+      return { kind: 'terminal', error: event.error }
+  }
+}
+
 export function applySetupProgress(
   readiness: Readiness,
   event: Extract<SetupEvent, { kind: 'progress' }>,

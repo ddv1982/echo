@@ -1,4 +1,11 @@
+import { describe, expect, it, vi } from 'vitest'
+import type { SetupEvent } from '../generated/ipc'
 import { createPreviewDesktopApi } from './previewDesktopApi'
+
+function requireFixture<T>(value: T | null | undefined, description: string): T {
+  if (value == null) throw new Error(`missing test fixture: ${description}`)
+  return value
+}
 
 describe('preview desktop adapter contract', () => {
   it('provides the complete setup and microphone fixtures', async () => {
@@ -85,23 +92,41 @@ describe('preview desktop adapter contract', () => {
     const performance = status.lastRun?.performance
     if (!systemDefault || !performance) throw new Error('rich preview fixtures are incomplete')
 
-    readiness.components[0].external[0].path = '/mutated/runtime'
-    readiness.plans[0].components.push('sherpa-runtime')
+    const component = requireFixture(readiness.components[0], 'first readiness component')
+    const external = requireFixture(component.external[0], 'first external runtime')
+    const plan = requireFixture(readiness.plans[0], 'first setup plan')
+    const microphone = requireFixture(microphones.devices[0], 'first microphone')
+    const model = requireFixture(inventory.whisper[0], 'first Whisper model')
+    requireFixture(status.recordingPolicy.presetsSeconds[0], 'first recording preset')
+
+    external.path = '/mutated/runtime'
+    plan.components.push('sherpa-runtime')
     systemDefault.label = 'Mutated microphone'
-    microphones.devices[0].extended.push('mutated')
-    inventory.whisper[0].name = 'mutated-model'
+    microphone.extended.push('mutated')
+    model.name = 'mutated-model'
     settings.preferences.engine.effective = 'mutated-engine'
     status.recordingPolicy.presetsSeconds[0] = 999
     performance.tuning.threads = 99
 
-    expect((await preview.getReadiness()).components[0].external[0].path)
+    const freshReadiness = await preview.getReadiness()
+    const freshComponent = requireFixture(
+      freshReadiness.components[0],
+      'fresh first readiness component',
+    )
+    expect(requireFixture(freshComponent.external[0], 'fresh first external runtime').path)
       .toBe('/usr/bin/whisper-cli')
-    expect((await preview.getReadiness()).plans[0].components).not.toContain('sherpa-runtime')
+    expect(requireFixture(freshReadiness.plans[0], 'fresh first setup plan').components)
+      .not.toContain('sherpa-runtime')
     expect((await preview.getMicrophones()).systemDefault?.label).toBe('System default')
-    expect((await preview.getMicrophones()).devices[0].extended).toEqual([])
-    expect((await preview.listModels()).whisper[0].name).toBe('base.en-q5_1')
+    const freshMicrophones = await preview.getMicrophones()
+    expect(requireFixture(freshMicrophones.devices[0], 'fresh first microphone').extended).toEqual([])
+    const freshInventory = await preview.listModels()
+    expect(requireFixture(freshInventory.whisper[0], 'fresh first Whisper model').name)
+      .toBe('base.en-q5_1')
     expect((await preview.getSettings()).preferences.engine.effective).toBe('auto')
-    expect((await preview.getAppStatus()).recordingPolicy.presetsSeconds[0]).toBe(30)
+    const freshStatus = await preview.getAppStatus()
+    expect(requireFixture(freshStatus.recordingPolicy.presetsSeconds[0], 'fresh first recording preset'))
+      .toBe(30)
     expect((await preview.getAppStatus()).lastRun?.performance?.tuning.threads).toBe(4)
   })
 
@@ -117,25 +142,39 @@ describe('preview desktop adapter contract', () => {
     const performance = status.lastRun?.performance
     if (!systemDefault || !performance) throw new Error('rich preview fixtures are incomplete')
 
+    const component = requireFixture(readiness.components[0], 'seed first readiness component')
+    const external = requireFixture(component.external[0], 'seed first external runtime')
+    const model = requireFixture(inventory.whisper[0], 'seed first Whisper model')
+    requireFixture(status.recordingPolicy.presetsSeconds[0], 'seed first recording preset')
+
     preview.seedPreviewReadiness(readiness)
     preview.seedPreviewMicrophones(microphones)
     preview.seedPreviewInventory(inventory)
     preview.seedPreviewSettings(settings.preferences)
     preview.seedPreviewStatus(status)
 
-    readiness.components[0].external[0].path = '/mutated/runtime'
+    external.path = '/mutated/runtime'
     systemDefault.label = 'Mutated microphone'
-    inventory.whisper[0].name = 'mutated-model'
+    model.name = 'mutated-model'
     settings.preferences.engine.effective = 'mutated-engine'
     status.recordingPolicy.presetsSeconds[0] = 999
     performance.tuning.threads = 99
 
-    expect((await preview.getReadiness()).components[0].external[0].path)
+    const seededReadiness = await preview.getReadiness()
+    const seededComponent = requireFixture(
+      seededReadiness.components[0],
+      'seeded first readiness component',
+    )
+    expect(requireFixture(seededComponent.external[0], 'seeded first external runtime').path)
       .toBe('/usr/bin/whisper-cli')
     expect((await preview.getMicrophones()).systemDefault?.label).toBe('System default')
-    expect((await preview.listModels()).whisper[0].name).toBe('base.en-q5_1')
+    const seededInventory = await preview.listModels()
+    expect(requireFixture(seededInventory.whisper[0], 'seeded first Whisper model').name)
+      .toBe('base.en-q5_1')
     expect((await preview.getSettings()).preferences.engine.effective).toBe('auto')
-    expect((await preview.getAppStatus()).recordingPolicy.presetsSeconds[0]).toBe(30)
+    const seededStatus = await preview.getAppStatus()
+    expect(requireFixture(seededStatus.recordingPolicy.presetsSeconds[0], 'seeded first recording preset'))
+      .toBe(30)
     expect((await preview.getAppStatus()).lastRun?.performance?.tuning.threads).toBe(4)
   })
 
@@ -143,7 +182,7 @@ describe('preview desktop adapter contract', () => {
     vi.useFakeTimers()
     try {
       const preview = createPreviewDesktopApi()
-      const handler = vi.fn()
+      const handler = vi.fn<(event: SetupEvent) => void>()
       await preview.onSetupEvent(handler)
       await preview.startSetup('recommended')
       preview.resetPreviewSettings()
@@ -160,7 +199,7 @@ describe('preview desktop adapter contract', () => {
     vi.useFakeTimers()
     try {
       const preview = createPreviewDesktopApi()
-      const handler = vi.fn()
+      const handler = vi.fn<(event: SetupEvent) => void>()
       await preview.onSetupEvent(handler)
       const operation = await preview.startSetup('recommended')
       await preview.cancelSetup(operation)
@@ -176,7 +215,7 @@ describe('preview desktop adapter contract', () => {
     vi.useFakeTimers()
     try {
       const preview = createPreviewDesktopApi()
-      const handler = vi.fn()
+      const handler = vi.fn<(event: SetupEvent) => void>()
       await preview.onSetupEvent(handler)
       const operation = await preview.startSetup('parakeet')
 

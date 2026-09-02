@@ -41,9 +41,12 @@ test('task-based Settings controls stay inside their panels at every supported w
     await expect(page.getByRole('group', { name: 'Whisper acceleration' })).toBeVisible()
 
     const geometry = await page.evaluate(() => {
-      const fits = (node: HTMLElement) =>
-        node.scrollWidth <= node.clientWidth &&
-        node.getBoundingClientRect().right <= node.closest('section')!.getBoundingClientRect().right + 0.5
+      const fits = (node: HTMLElement) => {
+        const section = node.closest('section')
+        if (!section) throw new Error('Settings control is not contained in a section')
+        return node.scrollWidth <= node.clientWidth &&
+          node.getBoundingClientRect().right <= section.getBoundingClientRect().right + 0.5
+      }
       const panels = [...document.querySelectorAll<HTMLElement>('.settings-section')]
       return {
         panelsFit: panels.every((panel) => panel.scrollWidth <= panel.clientWidth),
@@ -72,14 +75,18 @@ test('the last-used processing readout holds its longest reason inside Diagnosti
     await expect(page.getByText('Last used processing', { exact: true })).toBeVisible()
 
     const geometry = await page.evaluate((text) => {
-      const panel = document.querySelector<HTMLElement>('section[aria-label="Setup and diagnostics"]')!
+      const panel = document.querySelector<HTMLElement>('section[aria-label="Setup and diagnostics"]')
+      if (!panel) throw new Error('Setup and diagnostics panel is missing')
       const line = [...panel.querySelectorAll<HTMLElement>('.setting-line')].find(
         (node) => node.querySelector('strong')?.textContent === 'Last used processing',
-      )!
-      line.querySelector('span')!.textContent = text
+      )
+      if (!line) throw new Error('Last used processing row is missing')
+      const value = line.querySelector('span')
+      if (!value) throw new Error('Last used processing value is missing')
+      value.textContent = text
       const edge = panel.getBoundingClientRect().right
       return {
-        rendered: line.querySelector('span')!.textContent,
+        rendered: value.textContent,
         panelFits: panel.scrollWidth <= panel.clientWidth,
         lineFits:
           line.scrollWidth <= line.clientWidth &&
