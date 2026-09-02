@@ -11,6 +11,7 @@ use x11rb::protocol::xproto::{
     AtomEnum, ColormapAlloc, ConnectionExt, CreateGCAux, CreateWindowAux, EventMask, PropMode,
     Rectangle, VisualClass, WindowClass,
 };
+use x11rb::rust_connection::RustConnection;
 
 #[derive(Debug)]
 pub enum HudError {
@@ -121,10 +122,8 @@ fn hud_is_disabled(env: Option<&str>, file: &echo_core::Config) -> bool {
 }
 
 fn hud_disabled() -> bool {
-    hud_is_disabled(
-        std::env::var("ECHO_HUD").ok().as_deref(),
-        &crate::settings::file_config(),
-    )
+    let (config, _) = crate::settings::config_for_display();
+    hud_is_disabled(std::env::var("ECHO_HUD").ok().as_deref(), &config)
 }
 
 /// Whether `ECHO_HUD` and the config file leave the capsule enabled. The HUD
@@ -425,84 +424,114 @@ fn shift_into(channel: u8, mask: u32) -> u32 {
     ((u32::from(channel) * max + 127) / 255) << shift
 }
 
-#[allow(clippy::too_many_lines)]
+struct HudSurface {
+    conn: RustConnection,
+    window: u32,
+    gc: u32,
+    argb: Option<ArgbVisual>,
+    root_masks: (u32, u32, u32),
+}
+
+impl HudSurface {
+    fn open() -> Result<Self, HudError> {
+        let (conn, screen_num) =
+            x11rb::connect(None).map_err(|err| HudError::Display(err.to_string()))?;
+        let argb = argb_visual(&conn, screen_num)?;
+        let translucent = argb.is_some();
+        let screen = &conn.setup().roots[screen_num];
+        let root_masks = screen
+            .allowed_depths
+            .iter()
+            .flat_map(|depth| depth.visuals.iter())
+            .find(|visual| visual.visual_id == screen.root_visual)
+            .map(|visual| (visual.red_mask, visual.green_mask, visual.blue_mask))
+            .unwrap_or((0xff0000, 0xff00, 0xff));
+        let x = ((i32::from(screen.width_in_pixels) - WIDTH as i32) / 2) as i16;
+        let y = (i32::from(screen.height_in_pixels) - HEIGHT as i32 - 48) as i16;
+        let window = conn
+            .generate_id()
+            .map_err(|err| HudError::Display(err.to_string()))?;
+        let (depth, visual_id, colormap): (u8, u32, u32) = match &argb {
+            Some(argb) => (32, argb.visual_id, argb.colormap),
+            None => (0, 0, 0),
+        };
+        let mut aux = CreateWindowAux::new()
+            .border_pixel(0)
+            .override_redirect(1)
+            .event_mask(EventMask::EXPOSURE);
+        if translucent {
+            aux = aux.colormap(colormap).background_pixel(0);
+        } else {
+            aux = aux.background_pixel(0x0012_1212);
+        }
+        conn.create_window(
+            depth,
+            window,
+            screen.root,
+            x,
+            y,
+            WIDTH as u16,
+            HEIGHT as u16,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            visual_id,
+            &aux,
+        )
+        .map_err(|err| HudError::Display(err.to_string()))?;
+        set_above(&conn, window)?;
+        if !translucent {
+            set_capsule_shape(&conn, window, WIDTH as u16, HEIGHT as u16)?;
+        }
+        set_click_through(&conn, window)?;
+        let gc = conn
+            .generate_id()
+            .map_err(|err| HudError::Display(err.to_string()))?;
+        conn.create_gc(gc, window, &CreateGCAux::new())
+            .map_err(|err| HudError::Display(err.to_string()))?;
+        conn.map_window(window)
+            .map_err(|err| HudError::Display(err.to_string()))?;
+        conn.flush()
+            .map_err(|err| HudError::Display(err.to_string()))?;
+        Ok(Self {
+            conn,
+            window,
+            gc,
+            argb,
+            root_masks,
+        })
+    }
+
+    fn draw(&self, frame: &FrameBuffer) -> Result<(), HudError> {
+        put_frame(
+            &self.conn,
+            self.window,
+            self.gc,
+            frame,
+            &self.argb,
+            self.root_masks,
+        )?;
+        self.conn
+            .flush()
+            .map_err(|err| HudError::Display(err.to_string()))
+    }
+
+    fn close(self) -> Result<(), HudError> {
+        self.conn
+            .destroy_window(self.window)
+            .map_err(|err| HudError::Display(err.to_string()))?;
+        self.conn
+            .flush()
+            .map_err(|err| HudError::Display(err.to_string()))
+    }
+}
+
 fn run(
     running: &SyncArc<AtomicBool>,
     shared_state: &SyncArc<AtomicU8>,
     meter: &LevelMeter,
 ) -> Result<(), HudError> {
-    let (conn, screen_num) =
-        x11rb::connect(None).map_err(|err| HudError::Display(err.to_string()))?;
-    let argb = argb_visual(&conn, screen_num)?;
-    let translucent = argb.is_some();
-    let screen = &conn.setup().roots[screen_num];
-    let root_masks = {
-        let visual = screen
-            .allowed_depths
-            .iter()
-            .flat_map(|depth| depth.visuals.iter())
-            .find(|visual| visual.visual_id == screen.root_visual);
-        visual
-            .map(|visual| (visual.red_mask, visual.green_mask, visual.blue_mask))
-            .unwrap_or((0xff0000, 0xff00, 0xff))
-    };
-    let x = ((i32::from(screen.width_in_pixels) - WIDTH as i32) / 2) as i16;
-    let y = (i32::from(screen.height_in_pixels) - HEIGHT as i32 - 48) as i16;
-    let win = conn
-        .generate_id()
-        .map_err(|err| HudError::Display(err.to_string()))?;
-    let (depth, visual_id, colormap): (u8, u32, u32) = match &argb {
-        Some(argb) => (32, argb.visual_id, argb.colormap),
-        None => (0, 0, 0),
-    };
-    let mut aux = CreateWindowAux::new()
-        .border_pixel(0)
-        .override_redirect(1)
-        .event_mask(EventMask::EXPOSURE);
-    if translucent {
-        aux = aux.colormap(colormap).background_pixel(0);
-    } else {
-        aux = aux.background_pixel(0x0012_1212);
-    }
-    conn.create_window(
-        depth,
-        win,
-        screen.root,
-        x,
-        y,
-        WIDTH as u16,
-        HEIGHT as u16,
-        0,
-        WindowClass::INPUT_OUTPUT,
-        visual_id,
-        &aux,
-    )
-    .map_err(|err| HudError::Display(err.to_string()))?;
-    set_above(&conn, win)?;
-    if !translucent {
-        set_capsule_shape(&conn, win, WIDTH as u16, HEIGHT as u16)?;
-    }
-    // Click-through: the input shape is an empty region.
-    let _ = shape::rectangles(
-        &conn,
-        SO::SET,
-        SK::INPUT,
-        x11rb::protocol::xproto::ClipOrdering::UNSORTED,
-        win,
-        0,
-        0,
-        &[],
-    );
-    let gc = conn
-        .generate_id()
-        .map_err(|err| HudError::Display(err.to_string()))?;
-    conn.create_gc(gc, win, &CreateGCAux::new())
-        .map_err(|err| HudError::Display(err.to_string()))?;
-    conn.map_window(win)
-        .map_err(|err| HudError::Display(err.to_string()))?;
-    conn.flush()
-        .map_err(|err| HudError::Display(err.to_string()))?;
-
+    let surface = HudSurface::open()?;
+    let translucent = surface.argb.is_some();
     let mut frame =
         FrameBuffer::new(WIDTH, HEIGHT).ok_or_else(|| HudError::Display("pixmap".into()))?;
     let mut history: VecDeque<f32> = (0..BAR_COUNT).map(|_| 0.0).collect();
@@ -555,16 +584,10 @@ fn run(
             fade,
             translucent,
         );
-        put_frame(&conn, win, gc, &frame, &argb, root_masks)?;
-        conn.flush()
-            .map_err(|err| HudError::Display(err.to_string()))?;
+        surface.draw(&frame)?;
         std::thread::sleep(FRAME);
     }
-    conn.destroy_window(win)
-        .map_err(|err| HudError::Display(err.to_string()))?;
-    conn.flush()
-        .map_err(|err| HudError::Display(err.to_string()))?;
-    Ok(())
+    surface.close()
 }
 
 fn put_frame<C: Connection>(
@@ -630,6 +653,21 @@ fn set_capsule_shape<C: Connection>(
     )
     .map_err(|err| HudError::Display(err.to_string()))?;
     Ok(())
+}
+
+fn set_click_through<C: Connection>(conn: &C, window: u32) -> Result<(), HudError> {
+    shape::rectangles(
+        conn,
+        SO::SET,
+        SK::INPUT,
+        x11rb::protocol::xproto::ClipOrdering::UNSORTED,
+        window,
+        0,
+        0,
+        &[],
+    )
+    .map(|_| ())
+    .map_err(|error| HudError::Display(error.to_string()))
 }
 
 fn set_above<C: Connection>(conn: &C, win: u32) -> Result<(), HudError> {

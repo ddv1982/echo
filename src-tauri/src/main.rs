@@ -68,6 +68,14 @@ fn show_main_window(app: &tauri::AppHandle) {
 
 fn main() {
     let args = env::args_os().skip(1).collect::<Vec<_>>();
+    if let Some(result) = echo::upgrade::run_restart_helper(&args) {
+        if let Err(error) = result {
+            eprintln!("echo-desktop: replacement handoff failed: {error}");
+            std::process::exit(1);
+        }
+        run_desktop();
+        return;
+    }
     if args.is_empty() {
         run_desktop();
     } else {
@@ -111,9 +119,8 @@ fn run_desktop() {
             }
             echo::upgrade::SecondLaunch::Restart => {
                 match echo::rec::attempt_upgrade_takeover(|| {
-                    std::process::Command::new(&watch.path)
-                        .spawn()
-                        .map(|_| ())
+                    let args = echo::upgrade::restart_helper_args().map_err(std::io::Error::other)?;
+                    std::process::Command::new(&watch.path).args(args).spawn().map(|_| ())
                 }) {
                     echo::rec::UpgradeTakeover::Spawned => {
                         eprintln!(
@@ -138,13 +145,11 @@ fn run_desktop() {
     let result = builder
         .setup(|app| {
             #[cfg(not(feature = "status-perf-probe"))]
-            match echo::upgrade::startup_cleanup_decision(echo::rec::session_active()) {
+            match echo::upgrade::terminate_old_echo_processes() {
                 echo::upgrade::StartupCleanup::Defer => {
                     eprintln!("echo-desktop: deferring startup takeover while recording is active");
                 }
-                echo::upgrade::StartupCleanup::TerminateStaleGui => {
-                    echo::upgrade::terminate_old_echo_processes();
-                }
+                echo::upgrade::StartupCleanup::TerminateStaleGui => {}
             }
             let open = MenuItem::with_id(app, "open", "Open Echo", true, None::<&str>)?;
             let record =

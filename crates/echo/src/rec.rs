@@ -1,106 +1,33 @@
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use echo_core::{
     Dictionary, FailReason, History, HistoryRow, InjectReport, Injector, Pcm16kMono, PrivateDir,
     RecordingLimit, ResolvedRecordingLimit, Session, SessionState, SAMPLE_RATE_HZ,
 };
+use fs2::FileExt;
 
 use crate::audio::{self, AudioCapture, CancellationToken};
 use crate::hotkey::HotkeyEvent;
 use crate::inject::LinuxInjector;
+use crate::process_identity::{observe as read_process_observation, ProcessObservation};
 use crate::status;
 
 /// Set while this process holds a recording session, so the GUI can tell its
 /// own record button's sessions (live meter) from a compositor shortcut's
 /// (the meter lives in that process).
 static RECORDING_IN_PROCESS: AtomicBool = AtomicBool::new(false);
+static COMMITTED_TAKEOVER: Mutex<Option<ToggleSession>> = Mutex::new(None);
 
-const TAKEOVER_BLOCKED: u64 = 1 << 63;
-static RECORDING_GATE: LazyLock<Arc<TakeoverGate>> =
-    LazyLock::new(|| Arc::new(TakeoverGate::new()));
-
-/// One atomic state serializes local recording acquisition with an upgrade
-/// takeover. Low bits count acquisitions; the high bit permanently blocks new
-/// acquisitions after the replacement process has spawned successfully.
-struct TakeoverGate {
-    state: AtomicU64,
-}
-
-impl TakeoverGate {
-    const fn new() -> Self {
-        Self {
-            state: AtomicU64::new(0),
-        }
-    }
-
-    fn acquire_recording(self: &Arc<Self>) -> Result<RecordingPermit, String> {
-        let mut observed = self.state.load(Ordering::Acquire);
-        loop {
-            if observed & TAKEOVER_BLOCKED != 0 {
-                return Err("Echo is restarting; recording is temporarily unavailable.".to_string());
-            }
-            let next = observed
-                .checked_add(1)
-                .filter(|state| state & TAKEOVER_BLOCKED == 0)
-                .ok_or_else(|| "too many recording acquisitions".to_string())?;
-            match self.state.compare_exchange_weak(
-                observed,
-                next,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => {
-                    return Ok(RecordingPermit {
-                        gate: Arc::clone(self),
-                    });
-                }
-                Err(actual) => observed = actual,
-            }
-        }
-    }
-
-    fn begin_takeover(self: &Arc<Self>) -> Option<TakeoverReservation> {
-        self.state
-            .compare_exchange(0, TAKEOVER_BLOCKED, Ordering::AcqRel, Ordering::Acquire)
-            .ok()
-            .map(|_| TakeoverReservation {
-                gate: Arc::clone(self),
-                reopen_on_drop: true,
-            })
-    }
-}
-
-struct RecordingPermit {
-    gate: Arc<TakeoverGate>,
-}
-
-impl Drop for RecordingPermit {
-    fn drop(&mut self) {
-        let previous = self.gate.state.fetch_sub(1, Ordering::AcqRel);
-        debug_assert!(previous > 0 && previous & TAKEOVER_BLOCKED == 0);
-    }
-}
-
-struct TakeoverReservation {
-    gate: Arc<TakeoverGate>,
-    reopen_on_drop: bool,
-}
+pub struct TakeoverReservation(Option<ToggleSession>);
 
 impl TakeoverReservation {
     fn commit(mut self) {
-        self.reopen_on_drop = false;
-    }
-}
-
-impl Drop for TakeoverReservation {
-    fn drop(&mut self) {
-        if self.reopen_on_drop {
-            self.gate.state.store(0, Ordering::Release);
-        }
+        let session = self.0.take().expect("takeover reservation");
+        *COMMITTED_TAKEOVER.lock().expect("committed takeover lock") = Some(session);
     }
 }
 
@@ -115,26 +42,34 @@ pub enum UpgradeTakeover {
 /// and spawn the replacement. A failed spawn reopens local recording; a
 /// successful spawn leaves it blocked until this process exits.
 pub fn attempt_upgrade_takeover(spawn: impl FnOnce() -> std::io::Result<()>) -> UpgradeTakeover {
-    attempt_upgrade_takeover_with(&RECORDING_GATE, session_active, spawn)
+    attempt_upgrade_takeover_in(&echo_core::data_dir(), spawn)
 }
 
-fn attempt_upgrade_takeover_with(
-    gate: &Arc<TakeoverGate>,
-    recording_busy: impl FnOnce() -> bool,
+fn attempt_upgrade_takeover_in(
+    dir: &Path,
     spawn: impl FnOnce() -> std::io::Result<()>,
 ) -> UpgradeTakeover {
-    let Some(reservation) = gate.begin_takeover() else {
-        return UpgradeTakeover::Deferred;
+    let reservation = match reserve_upgrade_takeover_in(dir) {
+        Ok(reservation) => reservation,
+        Err(_) => return UpgradeTakeover::Deferred,
     };
-    if recording_busy() {
-        return UpgradeTakeover::Deferred;
-    }
     match spawn() {
         Ok(()) => {
             reservation.commit();
             UpgradeTakeover::Spawned
         }
         Err(err) => UpgradeTakeover::SpawnFailed(err),
+    }
+}
+
+pub fn reserve_upgrade_takeover() -> Result<TakeoverReservation, String> {
+    reserve_upgrade_takeover_in(&echo_core::data_dir())
+}
+
+fn reserve_upgrade_takeover_in(dir: &Path) -> Result<TakeoverReservation, String> {
+    match ToggleSession::acquire_in(dir)? {
+        LockAcquisition::Started(session) => Ok(TakeoverReservation(Some(session))),
+        LockAcquisition::Busy(_) => Err("recording is active".to_string()),
     }
 }
 
@@ -160,12 +95,37 @@ impl Drop for InProcessSession {
 }
 
 enum StopWhen {
-    Timer,
+    Timer(Option<ToggleSession>),
     ToggleFile(ToggleSession),
 }
 
+impl StopWhen {
+    fn session(&self) -> Option<&ToggleSession> {
+        match self {
+            Self::Timer(session) => session.as_ref(),
+            Self::ToggleFile(session) => Some(session),
+        }
+    }
+
+    fn clear_stop_request(&self) {
+        if let Some(session) = self.session() {
+            session.clear_stop_request();
+        }
+    }
+
+    fn stop_requested(&self) -> bool {
+        self.session().is_some_and(ToggleSession::stop_requested)
+    }
+}
+
 pub fn run_rec_once() -> i32 {
-    run_record(StopWhen::Timer)
+    match RecordingSession::acquire() {
+        Ok(RecordingSession(session)) => run_record(StopWhen::Timer(Some(session))),
+        Err(err) => {
+            eprintln!("rec: {err}");
+            1
+        }
+    }
 }
 
 pub fn run_rec_toggle() -> i32 {
@@ -219,19 +179,38 @@ pub fn stop_shortcut_recording(activation: &str) -> Result<bool, String> {
 }
 
 fn run_record(stop: StopWhen) -> i32 {
-    let limit = recording_limit_from_process().limit;
-    run_record_with_limit(stop, limit)
+    let config = match crate::settings::runtime_config() {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("{error}");
+            let state = SessionState::Failed {
+                reason: FailReason::EngineError,
+            };
+            let _ = status::write_status(state, None, Some(&error), None);
+            crate::notify::notify_session_failure(FailReason::EngineError, Some(&error));
+            return 1;
+        }
+    };
+    let environment = std::env::var("ECHO_RECORD_SECONDS").ok();
+    let limit =
+        echo_core::resolve_recording_limit(environment.as_deref(), config.record_seconds).limit;
+    run_record_with_limit(stop, limit, &config)
 }
 
-fn run_record_with_limit(mut stop: StopWhen, limit: RecordingLimit) -> i32 {
+fn run_record_with_limit(
+    mut stop: StopWhen,
+    limit: RecordingLimit,
+    config: &echo_core::Config,
+) -> i32 {
     let mut session = Session::new();
     log_state(&session);
-    let _ = status::write_status(session.state(), None, None);
+    let _ = status::write_status(session.state(), None, None, None);
     apply_edge(&mut session, HotkeyEvent::Down);
     let _ = status::write_recording(limit);
     // The HUD lives until after injection: the longest wait in the session
     // (transcription) gets an indicator, and the outcome gets a state.
     let _in_process = InProcessSession::start();
+    let injector = (!skip_inject()).then(LinuxInjector::new);
     let meter = audio::process_meter();
     let hud = crate::ui::hud::RecordingHud::start(meter.clone());
     let (capture, started_at) =
@@ -241,26 +220,34 @@ fn run_record_with_limit(mut stop: StopWhen, limit: RecordingLimit) -> i32 {
                 hud.set_state(crate::ui::hud::HudState::Failed);
                 let _ = session.fail(reason);
                 log_state(&session);
-                let _ = status::write_status(session.state(), None, None);
+                let _ = status::write_status(session.state(), None, None, None);
                 crate::notify::notify_session_failure(reason, None);
                 return 1;
             }
         };
+    // A Home-button start leaves Echo focused. Pin the target after capture,
+    // once the user has returned to the application that should receive text,
+    // and before transcription creates another opportunity for focus to move.
+    let injection = injector.map(|injector| {
+        let target = injector.focus();
+        (injector, target)
+    });
+    stop.clear_stop_request();
     hud.set_state(crate::ui::hud::HudState::Transcribing);
     apply_edge(&mut session, HotkeyEvent::Up);
-    let _ = status::write_status(session.state(), None, None);
+    let _ = status::write_status(session.state(), None, None, None);
 
     let (dict, dictionary_warning) = dictionary_for_transcription(Dictionary::load());
     let mut persistence_warnings = Vec::new();
     if let Some(warning) = dictionary_warning {
         eprintln!("{warning}");
-        let _ = status::write_status(session.state(), None, Some(&warning));
+        let _ = status::write_status(session.state(), None, Some(&warning), None);
         crate::notify::notify_persistence_failure(&warning);
         persistence_warnings.push(warning);
     }
     let prepared = match crate::transcribe::prepare_with_config(
         crate::transcribe::RunOverrides::default(),
-        &crate::settings::file_config(),
+        config,
     ) {
         Ok(prepared) => prepared,
         Err(err) => {
@@ -273,15 +260,17 @@ fn run_record_with_limit(mut stop: StopWhen, limit: RecordingLimit) -> i32 {
             log_state(&session);
             let detail = err.to_string();
             let visible_detail = joined_details(&persistence_warnings, Some(&detail));
-            let _ = status::write_status(session.state(), None, visible_detail.as_deref());
+            let _ = status::write_status(session.state(), None, visible_detail.as_deref(), None);
             eprintln!("{detail}");
             crate::notify::notify_session_failure(reason, Some(&detail));
             return 1;
         }
     };
-    let transcript = match prepared.transcribe(
+    let transcript = match prepared.transcribe_bounded(
         &capture.pcm,
         crate::transcribe::TranscriptionPurpose::Dictation(&dict),
+        Instant::now() + Duration::from_secs(15 * 60),
+        &|| stop.stop_requested(),
     ) {
         Ok(transcript) => transcript,
         Err(err) => {
@@ -297,7 +286,7 @@ fn run_record_with_limit(mut stop: StopWhen, limit: RecordingLimit) -> i32 {
             let _ = session.fail(reason);
             log_state(&session);
             let visible_detail = joined_details(&persistence_warnings, detail);
-            let _ = status::write_status(session.state(), None, visible_detail.as_deref());
+            let _ = status::write_status(session.state(), None, visible_detail.as_deref(), None);
             crate::notify::notify_session_failure(reason, detail);
             return 1;
         }
@@ -307,14 +296,10 @@ fn run_record_with_limit(mut stop: StopWhen, limit: RecordingLimit) -> i32 {
         log_state(&session);
     }
 
-    let inject = if skip_inject() {
-        InjectReport::ClipboardOnly
-    } else {
-        let injector = LinuxInjector::new();
-        match injector.focus() {
-            Ok(target) => injector.inject(&transcript.text, &target),
-            Err(reason) => InjectReport::Failed { reason },
-        }
+    let inject = match injection {
+        None => InjectReport::ClipboardOnly,
+        Some((injector, Ok(target))) => injector.inject(&transcript.text, &target),
+        Some((_, Err(reason))) => InjectReport::Failed { reason },
     };
     let failed = inject.failed();
     if failed {
@@ -331,18 +316,9 @@ fn run_record_with_limit(mut stop: StopWhen, limit: RecordingLimit) -> i32 {
         log_state(&session);
     }
 
-    let completed_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
+    let history_id = new_history_id();
     let history_result = History::append_default(HistoryRow {
-        // Nanoseconds plus pid keep ids unique across processes and after
-        // the store trims to its row cap.
-        id: format!(
-            "{}-{}-{}",
-            completed_at.as_secs(),
-            completed_at.subsec_nanos(),
-            std::process::id()
-        ),
+        id: history_id.clone(),
         text: transcript.text.clone(),
         raw: transcript.raw.clone(),
         engine: transcript.engine.clone(),
@@ -351,6 +327,7 @@ fn run_record_with_limit(mut stop: StopWhen, limit: RecordingLimit) -> i32 {
         inject,
         detail: transcript.detail.clone(),
     });
+    let persisted_history_id = history_result.is_ok().then_some(history_id);
     if let Some(warning) = history_append_warning(history_result) {
         eprintln!("{warning}");
         crate::notify::notify_persistence_failure(&warning);
@@ -363,6 +340,7 @@ fn run_record_with_limit(mut stop: StopWhen, limit: RecordingLimit) -> i32 {
             session.state(),
             Some(&transcript.text),
             persistence_detail.as_deref(),
+            persisted_history_id.as_deref(),
         );
         return 1;
     }
@@ -370,6 +348,7 @@ fn run_record_with_limit(mut stop: StopWhen, limit: RecordingLimit) -> i32 {
         session.state(),
         Some(&transcript.text),
         persistence_detail.as_deref(),
+        persisted_history_id.as_deref(),
     );
     0
 }
@@ -383,6 +362,10 @@ fn capture_with_started_at<T, E>(
         .unwrap_or_default()
         .as_secs();
     capture().map(|capture| (capture, started_at))
+}
+
+fn new_history_id() -> String {
+    uuid::Uuid::new_v4().to_string()
 }
 
 fn dictionary_for_transcription(
@@ -512,7 +495,7 @@ fn spawn_toggle_stop_watcher<'scope>(
     stop: &'scope StopWhen,
     cancel: CancellationToken,
 ) {
-    if let StopWhen::ToggleFile(toggle) = stop {
+    if let Some(toggle) = stop.session() {
         if toggle.stop_requested() {
             cancel.cancel();
             return;
@@ -547,8 +530,8 @@ enum LockAcquisition {
 
 struct ToggleSession {
     directory: PrivateDir,
+    _gate: std::fs::File,
     token: String,
-    _permit: RecordingPermit,
 }
 
 pub struct RecordingSession(ToggleSession);
@@ -568,6 +551,10 @@ impl RecordingSession {
     #[must_use]
     pub fn stop_requested(&self) -> bool {
         self.0.stop_requested()
+    }
+
+    pub fn clear_stop_request(&self) {
+        self.0.clear_stop_request();
     }
 }
 
@@ -629,15 +616,23 @@ impl ToggleSession {
     }
 
     fn acquire_in(dir: &Path) -> Result<LockAcquisition, String> {
-        Self::acquire_in_with_gate(dir, &RECORDING_GATE)
-    }
-
-    fn acquire_in_with_gate(
-        dir: &Path,
-        gate: &Arc<TakeoverGate>,
-    ) -> Result<LockAcquisition, String> {
-        let permit = gate.acquire_recording()?;
         let directory = PrivateDir::open(dir).map_err(|err| err.to_string())?;
+        let gate = directory
+            .open_or_create("recording.gate".as_ref())
+            .map_err(|err| err.to_string())?;
+        match gate.try_lock_exclusive() {
+            Ok(()) => {}
+            Err(err) if err.kind() == ErrorKind::WouldBlock => {
+                for _ in 0..32 {
+                    if let Some(owner) = live_lock_owner(&dir.join("recording.lock")) {
+                        return Ok(LockAcquisition::Busy(owner));
+                    }
+                    std::thread::yield_now();
+                }
+                return Err("another recording is starting".to_string());
+            }
+            Err(err) => return Err(err.to_string()),
+        }
         let process = read_process_observation(std::process::id())
             .ok_or_else(|| "cannot read recording owner process identity".to_string())?;
         if process.state == 'Z' {
@@ -675,8 +670,8 @@ impl ToggleSession {
                     let _ = directory.remove_file(candidate.as_ref());
                     return Ok(LockAcquisition::Started(Self {
                         directory,
+                        _gate: gate,
                         token,
-                        _permit: permit,
                     }));
                 }
                 Err(err) => return Err(err.to_string()),
@@ -690,6 +685,12 @@ impl ToggleSession {
             .read_to_string("recording.stop".as_ref())
             .ok()
             .is_some_and(|token| token.trim() == self.token)
+    }
+
+    fn clear_stop_request(&self) {
+        if self.stop_requested() {
+            let _ = self.directory.remove_file("recording.stop".as_ref());
+        }
     }
 }
 
@@ -766,13 +767,6 @@ fn write_stop_request(path: &Path, owner: &LockOwner) -> Result<(), String> {
     echo_core::write_atomic_private(path, format!("{contents}\n").as_bytes())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ProcessObservation {
-    state: char,
-    start_time_ticks: u64,
-    start_unix_nanos: Option<u128>,
-}
-
 #[cfg(test)]
 fn live_lock_owner_from(
     raw: &str,
@@ -828,89 +822,6 @@ fn legacy_token_timestamp(owner: &LockOwner) -> Option<u128> {
     seconds.checked_mul(1_000_000_000)?.checked_add(nanos)
 }
 
-fn read_process_observation(pid: u32) -> Option<ProcessObservation> {
-    let raw = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let (state, start_time_ticks) = parse_process_stat(&raw)?;
-    Some(ProcessObservation {
-        state,
-        start_time_ticks,
-        start_unix_nanos: process_start_unix_nanos(start_time_ticks),
-    })
-}
-
-/// Parse state (field 3) and starttime (field 22). The command field can
-/// contain spaces and parentheses, so only its final `) ` is structural.
-fn parse_process_stat(raw: &str) -> Option<(char, u64)> {
-    let close = raw.rfind(") ")?;
-    let mut fields = raw.get(close + 2..)?.split_whitespace();
-    let state_text = fields.next()?;
-    let mut state_chars = state_text.chars();
-    let state = state_chars.next()?;
-    if state_chars.next().is_some() {
-        return None;
-    }
-    let start_time_ticks = fields.nth(18)?.parse().ok()?;
-    Some((state, start_time_ticks))
-}
-
-fn process_start_unix_nanos(start_time_ticks: u64) -> Option<u128> {
-    let ticks_per_second = clock_ticks_per_second()? as u128;
-    if ticks_per_second == 0 {
-        return None;
-    }
-    let uptime = std::fs::read_to_string("/proc/uptime").ok()?;
-    let uptime_nanos = decimal_seconds_to_nanos(uptime.split_whitespace().next()?)?;
-    let now_nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()?
-        .as_nanos();
-    let started_since_boot = (start_time_ticks as u128)
-        .checked_mul(1_000_000_000)?
-        .checked_div(ticks_per_second)?;
-    now_nanos
-        .checked_sub(uptime_nanos)?
-        .checked_add(started_since_boot)
-}
-
-fn decimal_seconds_to_nanos(raw: &str) -> Option<u128> {
-    let (seconds, fraction) = raw.split_once('.').unwrap_or((raw, ""));
-    let seconds = seconds.parse::<u128>().ok()?;
-    let mut nanos = fraction.bytes().take(9).try_fold(0_u128, |value, digit| {
-        digit
-            .is_ascii_digit()
-            .then_some(value * 10 + u128::from(digit - b'0'))
-    })?;
-    for _ in fraction.len().min(9)..9 {
-        nanos *= 10;
-    }
-    seconds.checked_mul(1_000_000_000)?.checked_add(nanos)
-}
-
-fn clock_ticks_per_second() -> Option<u64> {
-    const AT_CLKTCK: u64 = 17;
-    let raw = std::fs::read("/proc/self/auxv").ok()?;
-    let word_bytes = std::mem::size_of::<usize>();
-    for entry in raw.chunks_exact(word_bytes.checked_mul(2)?) {
-        let key = native_word(entry.get(..word_bytes)?)?;
-        let value = native_word(entry.get(word_bytes..)?)?;
-        if key == AT_CLKTCK {
-            return (value != 0).then_some(value);
-        }
-        if key == 0 {
-            break;
-        }
-    }
-    None
-}
-
-fn native_word(raw: &[u8]) -> Option<u64> {
-    match raw.len() {
-        8 => Some(u64::from_ne_bytes(raw.try_into().ok()?)),
-        4 => Some(u32::from_ne_bytes(raw.try_into().ok()?).into()),
-        _ => None,
-    }
-}
-
 /// True while any process holds an active recording session.
 #[must_use]
 pub fn session_active() -> bool {
@@ -924,10 +835,8 @@ pub(crate) fn session_active_at(path: &Path) -> bool {
 #[must_use]
 pub fn recording_limit_from_process() -> ResolvedRecordingLimit {
     let environment = std::env::var("ECHO_RECORD_SECONDS").ok();
-    echo_core::resolve_recording_limit(
-        environment.as_deref(),
-        crate::settings::file_config().record_seconds,
-    )
+    let (config, _) = crate::settings::config_for_display();
+    echo_core::resolve_recording_limit(environment.as_deref(), config.record_seconds)
 }
 
 fn fixture_path() -> Option<PathBuf> {
@@ -953,10 +862,11 @@ mod tests {
     use super::*;
     use std::cell::Cell;
     use std::fs;
-    use std::sync::mpsc;
+    use std::sync::{mpsc, Arc, Barrier};
 
     fn observed(state: char, start_time_ticks: u64, start_unix_nanos: u128) -> ProcessObservation {
         ProcessObservation {
+            pid: 41,
             state,
             start_time_ticks,
             start_unix_nanos: Some(start_unix_nanos),
@@ -971,7 +881,7 @@ mod tests {
         assert!(dictionary.entries().is_empty());
 
         let transcript = "Keep résumé text";
-        let body = status::render(SessionState::Idle, Some(transcript), Some(&warning));
+        let body = status::render(SessionState::Idle, Some(transcript), Some(&warning), None);
         assert!(body.contains("state=Idle\n"), "{body}");
         assert!(body.contains("last=Keep résumé text\n"), "{body}");
         assert!(body.contains("custom replacements were skipped"), "{body}");
@@ -1015,6 +925,7 @@ mod tests {
             SessionState::Idle,
             Some("still recoverable"),
             Some(&warning),
+            None,
         );
 
         assert!(body.contains("last=still recoverable\n"), "{body}");
@@ -1072,11 +983,25 @@ mod tests {
     }
 
     #[test]
+    fn history_ids_are_uuid_v4_and_unique() {
+        let ids = (0..1_000)
+            .map(|_| new_history_id())
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(ids.len(), 1_000);
+        assert!(ids
+            .iter()
+            .all(|id| { uuid::Uuid::parse_str(id).is_ok_and(|uuid| uuid.get_version_num() == 4) }));
+    }
+
+    #[test]
     fn process_stat_parser_handles_spaces_and_parentheses_in_comm() {
         let mut trailing = vec!["0"; 18];
         trailing.push("424242");
         let raw = format!("77 (echo worker (old)) S {}", trailing.join(" "));
-        assert_eq!(parse_process_stat(&raw), Some(('S', 424242)));
+        assert_eq!(
+            crate::process_identity::parse_stat(&raw),
+            Some(('S', 424242))
+        );
     }
 
     #[test]
@@ -1114,6 +1039,7 @@ mod tests {
         );
         assert!(
             live_lock_owner_from(raw, |_| Some(ProcessObservation {
+                pid: 41,
                 state: 'S',
                 start_time_ticks: 9001,
                 start_unix_nanos: None,
@@ -1130,44 +1056,29 @@ mod tests {
             std::process::id(),
             new_session_token()
         ));
-        let gate = Arc::new(TakeoverGate::new());
-        let outcome = attempt_upgrade_takeover_with(
-            &gate,
-            || false,
-            || {
-                assert!(ToggleSession::acquire_in_with_gate(&dir, &gate).is_err());
-                Err(std::io::Error::new(
-                    ErrorKind::NotFound,
-                    "replacement missing",
-                ))
-            },
-        );
+        let outcome = attempt_upgrade_takeover_in(&dir, || {
+            assert!(ToggleSession::try_start_in(&dir).unwrap().is_none());
+            Err(std::io::Error::new(
+                ErrorKind::NotFound,
+                "replacement missing",
+            ))
+        });
         assert!(matches!(outcome, UpgradeTakeover::SpawnFailed(_)));
-        assert!(matches!(
-            ToggleSession::acquire_in_with_gate(&dir, &gate).unwrap(),
-            LockAcquisition::Started(_)
-        ));
+        assert!(ToggleSession::try_start_in(&dir).unwrap().is_some());
         let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn successful_takeover_keeps_recording_blocked_through_exit_boundary() {
+    fn takeover_reservation_blocks_recording_until_released() {
         let dir = std::env::temp_dir().join(format!(
             "echo-takeover-success-{}-{}",
             std::process::id(),
             new_session_token()
         ));
-        let gate = Arc::new(TakeoverGate::new());
-        let outcome = attempt_upgrade_takeover_with(
-            &gate,
-            || false,
-            || {
-                assert!(ToggleSession::acquire_in_with_gate(&dir, &gate).is_err());
-                Ok(())
-            },
-        );
-        assert!(matches!(outcome, UpgradeTakeover::Spawned));
-        assert!(ToggleSession::acquire_in_with_gate(&dir, &gate).is_err());
+        let reservation = reserve_upgrade_takeover_in(&dir).unwrap();
+        assert!(ToggleSession::try_start_in(&dir).unwrap().is_none());
+        drop(reservation);
+        assert!(ToggleSession::try_start_in(&dir).unwrap().is_some());
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -1178,23 +1089,52 @@ mod tests {
             std::process::id(),
             new_session_token()
         ));
-        let gate = Arc::new(TakeoverGate::new());
-        let session = match ToggleSession::acquire_in_with_gate(&dir, &gate).unwrap() {
+        let session = match ToggleSession::acquire_in(&dir).unwrap() {
             LockAcquisition::Started(session) => session,
             LockAcquisition::Busy(_) => panic!("test directory should be idle"),
         };
         let mut spawned = false;
-        let outcome = attempt_upgrade_takeover_with(
-            &gate,
-            || false,
-            || {
-                spawned = true;
-                Ok(())
-            },
-        );
+        let outcome = attempt_upgrade_takeover_in(&dir, || {
+            spawned = true;
+            Ok(())
+        });
         assert!(matches!(outcome, UpgradeTakeover::Deferred));
         assert!(!spawned);
         drop(session);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stale_reclaim_admits_exactly_one_concurrent_recording() {
+        let dir = std::env::temp_dir().join(format!(
+            "echo-stale-reclaim-{}-{}",
+            std::process::id(),
+            new_session_token()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("recording.lock"), "99999999\nstale\n1\n").unwrap();
+        let barrier = Arc::new(Barrier::new(3));
+        let contenders = (0..2)
+            .map(|_| {
+                let dir = dir.clone();
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    ToggleSession::try_start_in(&dir)
+                })
+            })
+            .collect::<Vec<_>>();
+        barrier.wait();
+        let sessions = contenders
+            .into_iter()
+            .map(|contender| contender.join().unwrap().unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            sessions.iter().filter(|session| session.is_some()).count(),
+            1
+        );
+        drop(sessions);
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -1289,9 +1229,29 @@ mod tests {
     }
 
     #[test]
+    fn a_new_stop_request_can_cancel_transcription_after_capture_stop_is_cleared() {
+        let dir = std::env::temp_dir().join(format!(
+            "echo-transcription-stop-{}-{}",
+            std::process::id(),
+            new_session_token()
+        ));
+        let session = ToggleSession::try_start_in(&dir).unwrap().unwrap();
+
+        assert!(ToggleSession::request_stop_if_active_in(&dir).unwrap());
+        assert!(session.stop_requested());
+        session.clear_stop_request();
+        assert!(!session.stop_requested());
+        assert!(ToggleSession::request_stop_if_active_in(&dir).unwrap());
+        assert!(session.stop_requested());
+
+        drop(session);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn fixture_returns_wav_without_opening_host() {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude_code.wav");
-        let mut stop = StopWhen::Timer;
+        let mut stop = StopWhen::Timer(None);
         let capture = capture_from(
             Some(path),
             &mut stop,
@@ -1306,7 +1266,7 @@ mod tests {
     #[test]
     fn fixture_publishes_its_loudness_to_the_meter() {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude_code.wav");
-        let mut stop = StopWhen::Timer;
+        let mut stop = StopWhen::Timer(None);
         let meter = audio::LevelMeter::new();
         let probe = meter.clone();
         let peak = std::thread::spawn(move || {
@@ -1329,7 +1289,7 @@ mod tests {
         let capture = audio::CaptureResult::from_pcm(pcm);
         let result = play_fixture_capture(
             capture,
-            &StopWhen::Timer,
+            &StopWhen::Timer(None),
             RecordingLimit::MIN,
             &audio::LevelMeter::new(),
         )

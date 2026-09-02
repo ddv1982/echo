@@ -37,9 +37,9 @@ export function BarsMotif() {
 }
 
 export function StatusPill({ status }: { status: AppStatus }) {
-  const tone = status.recording
+  const tone = status.phase === 'Recording'
     ? 'recording'
-    : status.phase.startsWith('Failed')
+    : status.phase === 'Failed'
       ? 'error'
       : status.phase === 'Idle'
         ? 'ready'

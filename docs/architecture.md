@@ -41,8 +41,14 @@ mutation, but an active same-account writer is outside the boundary.
    its managed local runtime.
 4. Echo applies personal Dictionary replacements to the engine transcript.
 5. The injector types or pastes the result into the active application.
-6. The desktop projects status and refreshes History and Dictionary after the
-   session returns to Idle.
+6. The desktop projects status. A persisted History row ID prompts the
+   frontend to refresh History, including after insertion failure.
+
+One cross-process lease covers capture, transcription, injection, and history
+persistence. Normal CLI recording, toggle recording, voice training, and
+upgrade takeover all use that lease. A fixed gate file supplies kernel-backed
+exclusion. The token-bearing lock file remains a compatibility and diagnostic
+record for older Echo processes.
 
 ## Desktop boundary
 
@@ -60,6 +66,11 @@ explicit Whisper GPU transition, then returns a new snapshot.
 Shortcut policy is one subsystem behind a small facade. It owns portal and X11
 listeners, the older-GNOME fallback, retry state, and shutdown cleanup. Desktop
 startup reconciles one listener; shutdown cancels and joins it.
+
+Active status records include the writer PID and Linux process start time.
+Readers reject zombies and reused PIDs. A successful History append publishes
+the row ID through status, so the frontend refreshes History after both a
+successful insertion and a failed insertion with recoverable text.
 
 ## IPC contract
 

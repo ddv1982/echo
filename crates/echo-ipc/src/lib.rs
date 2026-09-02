@@ -6,9 +6,9 @@ use ts_rs::{Config, TS};
 #[derive(Debug, Clone, PartialEq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct AppStatus {
-    pub phase: String,
+    pub phase: AppPhase,
     pub last_transcript: Option<String>,
-    pub recording: bool,
+    pub last_history_id: Option<String>,
     pub microphone_ready: bool,
     pub engine_name: String,
     pub engine_ready: bool,
@@ -27,6 +27,15 @@ pub struct AppStatus {
     pub current_exe: String,
     pub first_path_hit: Option<String>,
     pub stale_installs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+pub enum AppPhase {
+    Idle,
+    Recording,
+    Transcribing,
+    Injecting,
+    Failed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
@@ -811,6 +820,7 @@ fn contract_parts() -> (String, BTreeSet<String>) {
         &config,
         AccelerationSkipReason,
         ActiveComponentOrigin,
+        AppPhase,
         AppStatus,
         AudioHost,
         ComponentId,

@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 fn fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../crates/echo/tests/fixtures/claude_code.wav")
@@ -25,6 +26,40 @@ fn rec_once_drives_recording_then_transcribing() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(stdout.contains("session Transcribing"), "stdout={stdout:?}");
+}
+
+#[test]
+fn rec_once_uses_the_global_recording_lease() {
+    let root = std::env::temp_dir().join(format!("echo-rec-lease-{}", std::process::id()));
+    let data = root.join("data");
+    let config = root.join("config");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::create_dir_all(&config).unwrap();
+    let bin = env!("CARGO_BIN_EXE_echo-desktop");
+    let command = || {
+        let mut command = Command::new(bin);
+        command
+            .args(["rec", "--once"])
+            .env("ECHO_AUDIO_FIXTURE", fixture())
+            .env("ECHO_ENGINE", "fake")
+            .env("ECHO_SKIP_INJECT", "1")
+            .env("ECHO_DATA_DIR", &data)
+            .env("ECHO_CONFIG_DIR", &config);
+        command
+    };
+    let mut first = command().spawn().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !data.join("recording.lock").exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(data.join("recording.lock").exists());
+
+    let second = command().output().unwrap();
+
+    assert_eq!(second.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&second.stderr).contains("Another recording"));
+    assert!(first.wait().unwrap().success());
 }
 
 #[test]
@@ -63,6 +98,29 @@ fn rec_once_uses_config_file_engine_when_env_unset() {
         text.to_ascii_lowercase().contains("claude code"),
         "history={text:?}"
     );
+}
+
+#[test]
+fn rec_once_rejects_corrupt_config_before_capture() {
+    let root = std::env::temp_dir().join(format!("echo-corrupt-config-{}", std::process::id()));
+    let config_dir = root.join("config");
+    let data = root.join("data");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::write(config_dir.join("config.json"), "not json").unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_echo-desktop"))
+        .args(["rec", "--once"])
+        .env("ECHO_AUDIO_FIXTURE", fixture())
+        .env("ECHO_DATA_DIR", &data)
+        .env("ECHO_CONFIG_DIR", &config_dir)
+        .output()
+        .unwrap();
+
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("invalid JSON"));
+    assert!(!data.join("history.json").exists());
 }
 
 #[test]

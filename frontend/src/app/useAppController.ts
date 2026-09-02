@@ -12,7 +12,7 @@ import { useElapsedSeconds } from './useElapsedSeconds'
 const initialStatus: AppStatus = {
   phase: 'Idle',
   lastTranscript: null,
-  recording: false,
+  lastHistoryId: null,
   microphoneReady: false,
   engineName: 'Checking speech engine…',
   engineReady: false,
@@ -48,6 +48,7 @@ export function useAppController() {
   const [error, setError] = useState<string | null>(null)
   const [recordingStartedAt, setRecordingStartedAt] = useState<number | null>(null)
   const previousPhase = useRef('Idle')
+  const previousHistoryId = useRef<string | null>(null)
   const recordingSeconds = useElapsedSeconds(recordingStartedAt)
   const reportError = useCallback((reason: unknown) => setError(messageFrom(reason)), [])
   const {
@@ -67,9 +68,14 @@ export function useAppController() {
   const applyStatus = useCallback((next: AppStatus) => {
     setStatus(next)
     const observedAt = Date.now()
-    setRecordingStartedAt((current) => (next.recording ? (current ?? observedAt) : null))
-    if (previousPhase.current !== 'Idle' && next.phase === 'Idle') {
-      void Promise.all([refreshHistory(), refreshDictionary()]).catch(reportError)
+    setRecordingStartedAt((current) =>
+      next.phase === 'Recording' ? (current ?? observedAt) : null)
+    if (next.lastHistoryId !== null && next.lastHistoryId !== previousHistoryId.current) {
+      previousHistoryId.current = next.lastHistoryId
+      void refreshHistory().catch(reportError)
+    }
+    if (previousPhase.current !== 'Idle' && ['Idle', 'Failed'].includes(next.phase)) {
+      void refreshDictionary().catch(reportError)
     }
     previousPhase.current = next.phase
   }, [refreshDictionary, refreshHistory, reportError])

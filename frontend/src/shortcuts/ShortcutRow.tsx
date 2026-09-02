@@ -93,7 +93,7 @@ export function ShortcutRow({
     try {
       await stopRecording(activation)
       for (let check = 0; check < 20; check += 1) {
-        if (!(await getAppStatus()).recording) return true
+        if ((await getAppStatus()).phase !== 'Recording') return true
         await new Promise((resolve) => window.setTimeout(resolve, 25))
       }
       if (attempt.current === attemptId) {
@@ -262,7 +262,7 @@ export function ShortcutRow({
           <button
             type="button"
             className="compact-button"
-            disabled={status.recording || !shortcut.testable}
+            disabled={status.phase === 'Recording' || !shortcut.testable}
             onClick={() => {
               start().catch(() => undefined)
             }}

@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use echo::audio::{AudioCapture, CancellationToken, CaptureResult};
 use echo::transcribe::{RunOverrides, TranscriptionPurpose};
@@ -19,7 +19,7 @@ struct ActiveCapture {
 
 struct TrainingCapture {
     audio: CaptureResult,
-    _session: echo::rec::RecordingSession,
+    session: echo::rec::RecordingSession,
 }
 
 #[derive(Default)]
@@ -92,10 +92,7 @@ pub(crate) fn start_dictionary_training_sample(
                 capture.cancel.cancel();
                 audio
             })?;
-            Ok(TrainingCapture {
-                audio,
-                _session: session,
-            })
+            Ok(TrainingCapture { audio, session })
         })
         .map_err(|error| error.to_string())?;
     *active = Some(ActiveCapture {
@@ -121,15 +118,16 @@ pub(crate) async fn finish_dictionary_training_sample(
             .join()
             .map_err(|_| "Voice training capture stopped unexpectedly.".to_string())?
             .map_err(|error| error.to_string())?;
-        let prepared = echo::transcribe::prepare_with_config(
-            RunOverrides::default(),
-            &echo::settings::file_config(),
-        )
-        .map_err(|error| error.to_string())?;
+        let config = echo::settings::runtime_config()?;
+        let prepared = echo::transcribe::prepare_with_config(RunOverrides::default(), &config)
+            .map_err(|error| error.to_string())?;
+        captured.session.clear_stop_request();
         let transcript = prepared
-            .transcribe(
+            .transcribe_bounded(
                 &captured.audio.pcm,
                 TranscriptionPurpose::DictionaryTraining,
+                Instant::now() + Duration::from_secs(15 * 60),
+                &|| captured.session.stop_requested(),
             )
             .map_err(|error| error.to_string())?;
         Ok(DictionaryTrainingSample {

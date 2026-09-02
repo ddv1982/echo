@@ -1,32 +1,37 @@
 use echo_core::Config;
 
-#[must_use]
-pub fn file_config() -> Config {
+pub fn runtime_config() -> Result<Config, String> {
     #[cfg(test)]
     {
-        Config::load().unwrap_or_default()
+        Config::load()
     }
     #[cfg(not(test))]
     {
         let mut guard = snapshot().lock().expect("config snapshot lock");
         if guard.is_none() {
-            *guard = Some(Config::load().unwrap_or_default());
+            *guard = Some(Config::load());
         }
         guard.as_ref().expect("config snapshot").clone()
     }
 }
 
-/// Replace the in-process snapshot so later `file_config()` calls see disk.
+#[must_use]
+pub fn config_for_display() -> (Config, Option<String>) {
+    match runtime_config() {
+        Ok(config) => (config, None),
+        Err(error) => (Config::default(), Some(error)),
+    }
+}
+
 pub fn reload() {
     #[cfg(not(test))]
     {
-        *snapshot().lock().expect("config snapshot lock") =
-            Some(Config::load().unwrap_or_default());
+        *snapshot().lock().expect("config snapshot lock") = Some(Config::load());
     }
 }
 
 #[cfg(not(test))]
-fn snapshot() -> &'static std::sync::Mutex<Option<Config>> {
-    static FILE: std::sync::Mutex<Option<Config>> = std::sync::Mutex::new(None);
+fn snapshot() -> &'static std::sync::Mutex<Option<Result<Config, String>>> {
+    static FILE: std::sync::Mutex<Option<Result<Config, String>>> = std::sync::Mutex::new(None);
     &FILE
 }

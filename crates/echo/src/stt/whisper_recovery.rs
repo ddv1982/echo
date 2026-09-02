@@ -632,15 +632,15 @@ mod tests {
             &root,
             "gpu",
             &gpu_marker,
-            "sleep 0.2\n",
+            "sleep 0.05\n",
             &json("GPU"),
             "decoder crashed",
             false,
         );
-        // The second marker is reached with a reset 600 ms budget, but not
-        // with the roughly 400 ms left on the caller's original deadline.
+        // A fresh four-second attempt reaches the marker. The caller's
+        // original two-second deadline cannot.
         let cpu_after_marker = format!(
-            "sleep 0.5\nprintf '%s\\n' reset-budget >> '{}'\nsleep 5\n",
+            "sleep 2.5\nprintf '%s\\n' reset-budget >> '{}'\nsleep 5\n",
             cpu_marker.display()
         );
         let cpu = staged_script(
@@ -653,20 +653,20 @@ mod tests {
             true,
         );
         let (engine, identity_key, quarantine_path) =
-            bounded_engine(&root, gpu, cpu, expected, Duration::from_secs(2));
+            bounded_engine(&root, gpu, cpu, expected, Duration::from_secs(4));
 
         let started = Instant::now();
         let error = engine
             .transcribe_bounded(
                 &Pcm16kMono::from_samples(vec![0; 160]),
                 &options(),
-                Instant::now() + Duration::from_millis(600),
+                Instant::now() + Duration::from_secs(2),
                 &|| false,
             )
             .unwrap_err();
 
         assert!(error.as_str().contains("timed out"), "{error}");
-        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(started.elapsed() < Duration::from_secs(3));
         assert_eq!(fs::read_to_string(&gpu_marker).unwrap(), "run\n");
         assert_eq!(fs::read_to_string(&cpu_marker).unwrap(), "run\n");
         assert!(engine.process_quarantined(&identity_key, NOW).unwrap());

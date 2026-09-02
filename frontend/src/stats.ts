@@ -23,7 +23,11 @@ function weekStart(date: Date): number {
   return start.getTime()
 }
 
-const DAY_MS = 86_400_000
+function previousDay(day: number): number {
+  const previous = new Date(day)
+  previous.setDate(previous.getDate() - 1)
+  return dayStart(previous)
+}
 
 export function deriveStats(rows: StatsRow[], now: Date): UsageStats {
   const words = rows.reduce((total, row) => {
@@ -37,11 +41,11 @@ export function deriveStats(rows: StatsRow[], now: Date): UsageStats {
   const today = dayStart(now)
   // A streak counts back from today, or from yesterday when today has no
   // session yet; the day is not lost for being early.
-  let cursor = days.has(today) ? today : today - DAY_MS
+  let cursor = days.has(today) ? today : previousDay(today)
   let dayStreak = 0
   while (days.has(cursor)) {
     dayStreak += 1
-    cursor -= DAY_MS
+    cursor = previousDay(cursor)
   }
   return { words, sessionsThisWeek, dayStreak }
 }
@@ -53,7 +57,7 @@ export interface DayGroup<T> {
 
 export function groupByDay<T extends { startedAt: number }>(items: T[], now: Date): DayGroup<T>[] {
   const today = dayStart(now)
-  const yesterday = today - DAY_MS
+  const yesterday = previousDay(today)
   const groups: DayGroup<T>[] = []
   for (const item of items) {
     const day = dayStart(new Date(item.startedAt * 1000))

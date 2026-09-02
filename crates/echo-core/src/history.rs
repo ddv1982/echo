@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::engine::RunDetail;
 use crate::inject::InjectReport;
-use crate::paths::{history_path, set_aside_corrupt, write_atomic_private, PrivateDir};
+use crate::paths::{
+    history_path, read_private, set_aside_corrupt, write_atomic_private, PrivateDir,
+};
 use crate::types::EngineId;
 
 const HISTORY_CAP: usize = 2000;
@@ -46,17 +48,16 @@ impl History {
 
     pub fn load_from(path: impl AsRef<Path>) -> Result<Self, String> {
         let path = path.as_ref().to_path_buf();
-        if !path.exists() {
+        let Some(raw) = read_private(&path)? else {
             return Ok(Self {
                 rows: Vec::new(),
                 path,
             });
-        }
-        let raw = fs::read_to_string(&path).map_err(|err| err.to_string())?;
-        let rows = match serde_json::from_str::<HistoryFile>(&raw) {
+        };
+        let rows = match serde_json::from_slice::<HistoryFile>(&raw) {
             Ok(file) => file.rows,
             Err(error) => {
-                set_aside_corrupt(&path);
+                set_aside_corrupt(&path)?;
                 return Err(format!(
                     "History file {} contains invalid JSON and was not loaded: {error}",
                     path.display()
@@ -72,14 +73,13 @@ impl History {
 
     pub fn load_from_read_only(path: impl AsRef<Path>) -> Result<Self, String> {
         let path = path.as_ref().to_path_buf();
-        if !path.exists() {
+        let Some(raw) = read_private(&path)? else {
             return Ok(Self {
                 rows: Vec::new(),
                 path,
             });
-        }
-        let raw = fs::read_to_string(&path).map_err(|err| err.to_string())?;
-        let rows = serde_json::from_str::<HistoryFile>(&raw)
+        };
+        let rows = serde_json::from_slice::<HistoryFile>(&raw)
             .map(|file| file.rows)
             .map_err(|error| {
                 format!(
@@ -277,6 +277,30 @@ mod tests {
         assert_eq!(
             fs::read_to_string(dir.join("history.json.corrupt")).unwrap(),
             original
+        );
+    }
+
+    #[test]
+    fn repeated_corruption_preserves_every_backup() {
+        let dir = std::env::temp_dir().join(format!(
+            "echo-hist-repeated-corruption-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.json");
+        fs::write(&path, "first corrupt value").unwrap();
+        History::load_from(&path).unwrap_err();
+        fs::write(&path, "second corrupt value").unwrap();
+        History::load_from(&path).unwrap_err();
+
+        assert_eq!(
+            fs::read_to_string(dir.join("history.json.corrupt")).unwrap(),
+            "first corrupt value"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("history.json.corrupt-1")).unwrap(),
+            "second corrupt value"
         );
     }
 

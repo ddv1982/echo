@@ -100,4 +100,24 @@ describe('groupByDay', () => {
     expect(groups).toHaveLength(1)
     expect(requireFixture(groups[0], 'cross-midnight history group').label).toBe('Yesterday')
   })
+
+  it('uses local calendar days across the spring DST boundary', () => {
+    const previousTimezone = process.env.TZ
+    process.env.TZ = 'Europe/Amsterdam'
+    try {
+      const monday = new Date(2026, 2, 30, 12)
+      const sunday = new Date(2026, 2, 29, 12)
+      const saturday = new Date(2026, 2, 28, 12)
+      const rows = [
+        { text: 'sunday', startedAt: Math.floor(sunday.getTime() / 1000) },
+        { text: 'saturday', startedAt: Math.floor(saturday.getTime() / 1000) },
+      ]
+
+      expect(deriveStats(rows, monday).dayStreak).toBe(2)
+      expect(requireFixture(groupByDay(rows, monday)[0], 'DST group').label).toBe('Yesterday')
+    } finally {
+      if (previousTimezone === undefined) delete process.env.TZ
+      else process.env.TZ = previousTimezone
+    }
+  })
 })

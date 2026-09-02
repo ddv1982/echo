@@ -1,11 +1,10 @@
-use std::fs;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
 use crate::engine::WhisperAccelerationPreference;
 use crate::language::LanguageChoice;
-use crate::paths::{config_path, set_aside_corrupt, write_atomic_private};
+use crate::paths::{config_path, read_private, write_atomic_private};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(
@@ -104,30 +103,16 @@ impl Config {
 
     pub fn load_from(path: impl AsRef<Path>) -> Result<Self, String> {
         let path = path.as_ref();
-        if !path.exists() {
+        let Some(raw) = read_private(path)? else {
             return Ok(Self::default());
-        }
-        let raw = fs::read(path).map_err(|err| err.to_string())?;
+        };
         match serde_json::from_slice::<Self>(&raw) {
             Ok(config) => Ok(config),
-            Err(_) => {
-                set_aside_corrupt(path);
-                Ok(Self::default())
-            }
+            Err(error) => Err(format!(
+                "Preferences file {} contains invalid JSON and was not loaded: {error}",
+                path.display()
+            )),
         }
-    }
-
-    pub fn load_read_only() -> Result<Self, String> {
-        Self::load_from_read_only(config_path())
-    }
-
-    pub fn load_from_read_only(path: impl AsRef<Path>) -> Result<Self, String> {
-        let path = path.as_ref();
-        if !path.exists() {
-            return Ok(Self::default());
-        }
-        let raw = fs::read(path).map_err(|err| err.to_string())?;
-        Ok(serde_json::from_slice::<Self>(&raw).unwrap_or_default())
     }
 
     pub fn save(&self) -> Result<(), String> {
@@ -152,6 +137,7 @@ pub fn resolve<T>(env: Option<T>, file: Option<T>, default: T) -> T {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     fn scratch_path(label: &str) -> std::path::PathBuf {
@@ -287,23 +273,23 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_file_yields_defaults_and_sibling() {
+    fn corrupt_file_is_reported_without_modification() {
         let path = scratch_path("corrupt");
         fs::write(&path, "not json at all").unwrap();
-        let loaded = Config::load_from(&path).unwrap();
-        assert_eq!(loaded, Config::default());
-        assert!(!path.exists(), "corrupt file should be moved aside");
-        assert!(path.with_file_name("config.json.corrupt").exists());
+        let error = Config::load_from(&path).unwrap_err();
+        assert!(error.contains("invalid JSON"), "{error}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "not json at all");
+        assert!(!path.with_file_name("config.json.corrupt").exists());
     }
 
     #[test]
-    fn invalid_utf8_file_yields_defaults_and_sibling() {
+    fn invalid_utf8_file_is_reported_without_modification() {
         let path = scratch_path("invalid-utf8");
         fs::write(&path, [0xff, 0xfe, b'{']).unwrap();
-        let loaded = Config::load_from(&path).unwrap();
-        assert_eq!(loaded, Config::default());
-        assert!(!path.exists(), "corrupt file should be moved aside");
-        assert!(path.with_file_name("config.json.corrupt").exists());
+        let error = Config::load_from(&path).unwrap_err();
+        assert!(error.contains("invalid JSON"), "{error}");
+        assert_eq!(fs::read(&path).unwrap(), [0xff, 0xfe, b'{']);
+        assert!(!path.with_file_name("config.json.corrupt").exists());
     }
 
     #[test]
@@ -314,24 +300,75 @@ mod tests {
     }
 
     #[test]
-    fn invalid_engine_yields_defaults_and_sibling() {
+    fn invalid_engine_is_reported_without_modification() {
         let path = scratch_path("invalid-engine");
         fs::write(&path, r#"{"engine":"Whisper"}"#).unwrap();
-        let loaded = Config::load_from(&path).unwrap();
-        assert_eq!(loaded, Config::default());
-        assert!(!path.exists(), "invalid engine should be moved aside");
-        assert!(path.with_file_name("config.json.corrupt").exists());
+        let error = Config::load_from(&path).unwrap_err();
+        assert!(error.contains("unknown variant"), "{error}");
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            r#"{"engine":"Whisper"}"#
+        );
+        assert!(!path.with_file_name("config.json.corrupt").exists());
     }
 
     #[test]
     fn read_only_corrupt_config_does_not_move_or_rewrite_it() {
         let path = scratch_path("read-only-corrupt");
         fs::write(&path, "not json").unwrap();
-        assert_eq!(
-            Config::load_from_read_only(&path).unwrap(),
-            Config::default()
-        );
+        let error = Config::load_from(&path).unwrap_err();
+        assert!(error.contains("invalid JSON"), "{error}");
         assert_eq!(fs::read_to_string(&path).unwrap(), "not json");
         assert!(!path.with_file_name("config.json.corrupt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_migrates_existing_directory_and_file_modes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = scratch_path("permission-migration");
+        fs::write(&path, "{}").unwrap();
+        fs::set_permissions(path.parent().unwrap(), fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        Config::load_from(&path).unwrap();
+
+        assert_eq!(
+            fs::metadata(path.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_does_not_follow_a_final_store_symlink() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = scratch_path("read-symlink");
+        let target = path
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("external-config.json");
+        fs::write(&target, r#"{"engine":"fake"}"#).unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+
+        assert!(Config::load_from(&path).is_err());
+        assert_eq!(fs::read(&target).unwrap(), br#"{"engine":"fake"}"#);
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
     }
 }

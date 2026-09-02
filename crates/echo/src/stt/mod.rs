@@ -101,8 +101,6 @@ use std::path::Path;
 
 use echo_core::{EngineChoice, LanguageChoice, Pcm16kMono, SAMPLE_RATE_HZ};
 
-use crate::settings::file_config;
-
 /// What the resolved engine can do about language, for the picker. With no
 /// engine installed the full Whisper list shows, since that is the engine a
 /// user is about to set up.
@@ -115,7 +113,8 @@ pub enum LanguageSupport {
 
 #[must_use]
 pub fn language_support() -> LanguageSupport {
-    let catalog = crate::transcribe::language_catalog(None, &file_config());
+    let (file, _) = crate::settings::config_for_display();
+    let catalog = crate::transcribe::language_catalog(None, &file);
     match catalog.selection {
         crate::transcribe::LanguageSelection::AutoOrPinned => LanguageSupport::WhisperMultilingual,
         crate::transcribe::LanguageSelection::EnglishOnly => LanguageSupport::WhisperEnglishOnly {
@@ -130,10 +129,13 @@ pub fn language_support() -> LanguageSupport {
 /// the same combination; this message names the model and the fix first.
 #[must_use]
 pub fn language_warning() -> Option<String> {
+    let (file, config_error) = crate::settings::config_for_display();
+    if let Some(error) = config_error {
+        return Some(error);
+    }
     let LanguageSupport::WhisperEnglishOnly { model } = language_support() else {
         return None;
     };
-    let file = file_config();
     let wants = match crate::transcribe::requested_language_for_process(&file)
         .unwrap_or(LanguageChoice::Pinned(echo_core::Language::ENGLISH))
     {
@@ -149,7 +151,10 @@ pub fn language_warning() -> Option<String> {
 
 #[must_use]
 pub fn engine_summary() -> (String, bool) {
-    let file = file_config();
+    let (file, config_error) = crate::settings::config_for_display();
+    if config_error.is_some() {
+        return ("Engine settings need attention".to_string(), false);
+    }
     match crate::transcribe::prepare_with_config(crate::transcribe::RunOverrides::default(), &file)
     {
         Ok(prepared) => match &prepared.resolved().engine {
