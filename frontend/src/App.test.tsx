@@ -1829,12 +1829,13 @@ describe('Echo desktop shell', () => {
     }
   })
 
-  it('reports a scheduled shortcut status poll failure and ends the verification attempt', async () => {
+  it('reports a scheduled shortcut poll failure and cleans up an attributed activation', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     const pollError = new Error('scheduled shortcut status failed')
     vi.mocked(getShortcutStatus)
       .mockResolvedValueOnce(activeShortcut())
-      .mockRejectedValue(pollError)
+      .mockRejectedValueOnce(pollError)
+      .mockResolvedValueOnce(activeShortcut('native-toggle:poll-failure-cleanup'))
     try {
       render(<App />)
       await screen.findByRole('button', { name: 'Start recording' })
@@ -1842,18 +1843,26 @@ describe('Echo desktop shell', () => {
       fireEvent.click(await screen.findByRole('button', { name: 'Test shortcut' }))
       expect(await screen.findByText('Listening… press your shortcut')).toBeInTheDocument()
 
-      await vi.advanceTimersByTimeAsync(101)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(101)
+        await Promise.resolve()
+        await Promise.resolve()
+      })
 
+      await vi.waitFor(() => {
+        expect(getShortcutStatus).toHaveBeenCalledTimes(3)
+        expect(stopRecording).toHaveBeenCalledOnce()
+        expect(stopRecording).toHaveBeenCalledWith('native-toggle:poll-failure-cleanup')
+      })
       expect(await screen.findByRole('alert')).toHaveTextContent('scheduled shortcut status failed')
       expect(await screen.findByText('No keypress seen — check the binding')).toBeInTheDocument()
       expect(localStorage.getItem('echo-shortcut-verified-at')).toBeNull()
       expect(localStorage.getItem('echo-shortcut-verified-identity')).toBeNull()
-      expect(getShortcutStatus).toHaveBeenCalledTimes(2)
 
       fireEvent.click(screen.getByRole('button', { name: 'Dismiss error' }))
       await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
       await vi.advanceTimersByTimeAsync(1_000)
-      expect(getShortcutStatus).toHaveBeenCalledTimes(2)
+      expect(getShortcutStatus).toHaveBeenCalledTimes(3)
       expect(screen.queryByRole('alert')).not.toBeInTheDocument()
     } finally {
       vi.useRealTimers()

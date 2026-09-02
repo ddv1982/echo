@@ -53,6 +53,7 @@ export function ShortcutRow({
   }
   const failVerificationAttempt = (attemptId: number, reason: unknown) => {
     if (attempt.current !== attemptId) return
+    const context = verificationContext.current
     attempt.current += 1
     verificationActive.current = false
     verificationContext.current = null
@@ -60,6 +61,9 @@ export function ShortcutRow({
     if (timeoutTimer.current != null) window.clearTimeout(timeoutTimer.current)
     pollTimer.current = null
     timeoutTimer.current = null
+    if (context != null) {
+      void stopAttributedShortcutRecording(context).catch(() => undefined)
+    }
     setPhase('timed-out')
     onError(messageFrom(reason))
   }
