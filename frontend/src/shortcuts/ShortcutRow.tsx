@@ -54,6 +54,7 @@ export function ShortcutRow({
   const failVerificationAttempt = (attemptId: number, reason: unknown) => {
     if (attempt.current !== attemptId) return
     const context = verificationContext.current
+    if (context != null) context.verificationEndedAt = wallClockNow()
     attempt.current += 1
     verificationActive.current = false
     verificationContext.current = null
@@ -71,10 +72,11 @@ export function ShortcutRow({
   useEffect(() => {
     return () => {
       const attemptId = attempt.current
+      const context = verificationContext.current
+      if (context != null) context.verificationEndedAt = wallClockNow()
       attempt.current += 1
       if (pollTimer.current != null) window.clearTimeout(pollTimer.current)
       if (timeoutTimer.current != null) window.clearTimeout(timeoutTimer.current)
-      const context = verificationContext.current
       if (
         verificationActive.current
         && context != null
@@ -105,6 +107,7 @@ export function ShortcutRow({
 
   const start = async () => {
     const attemptId = attempt.current + 1
+    const verificationStartedAt = wallClockNow()
     attempt.current = attemptId
     if (pollTimer.current != null) window.clearTimeout(pollTimer.current)
     if (timeoutTimer.current != null) window.clearTimeout(timeoutTimer.current)
@@ -125,6 +128,8 @@ export function ShortcutRow({
       const context = {
         baselineActivation: baseline.activation,
         expectedActivationSource,
+        verificationStartedAt,
+        verificationEndedAt: null,
         verificationIdentity: baselineIdentity,
       }
       verificationContext.current = context
@@ -176,9 +181,10 @@ export function ShortcutRow({
       }, 100)
       timeoutTimer.current = window.setTimeout(() => {
         if (attempt.current !== attemptId) return
+        const context = verificationContext.current
+        if (context != null) context.verificationEndedAt = wallClockNow()
         attempt.current += 1
         verificationActive.current = false
-        const context = verificationContext.current
         verificationContext.current = null
         if (pollTimer.current != null) window.clearTimeout(pollTimer.current)
         setPhase('timed-out')
@@ -284,6 +290,8 @@ export function ShortcutRow({
 interface ShortcutTestContext {
   baselineActivation: string | null
   expectedActivationSource: string
+  verificationStartedAt: number
+  verificationEndedAt: number | null
   verificationIdentity: string
 }
 
@@ -292,11 +300,51 @@ function attributedShortcutActivation(
   context: ShortcutTestContext,
 ) {
   const activation = shortcut.activation
-  return activation !== context.baselineActivation &&
-    activation?.startsWith(`${context.expectedActivationSource}:`) === true &&
-    shortcut.verificationIdentity === context.verificationIdentity
+  if (
+    activation === context.baselineActivation ||
+    activation?.startsWith(`${context.expectedActivationSource}:`) !== true ||
+    shortcut.verificationIdentity !== context.verificationIdentity
+  ) {
+    return null
+  }
+  if (context.verificationEndedAt == null) return activation
+
+  const activationAt = shortcutActivationTime(activation, context.expectedActivationSource)
+  return activationAt != null &&
+    activationAt >= context.verificationStartedAt &&
+    activationAt <= context.verificationEndedAt
     ? activation
     : null
+}
+
+function shortcutActivationTime(activation: string, expectedSource: string) {
+  // Backend activation tokens begin with source:unix-seconds:nanoseconds.
+  const parts = activation.slice(expectedSource.length + 1).split(':')
+  if (parts.length !== 5) return null
+  const [secondsRaw, nanosecondsRaw, pidRaw, sequenceRaw, recordingRaw] = parts
+  if (
+    !/^\d+$/.test(secondsRaw ?? '') ||
+    !/^\d+$/.test(nanosecondsRaw ?? '') ||
+    !/^\d+$/.test(pidRaw ?? '') ||
+    !/^\d+$/.test(sequenceRaw ?? '') ||
+    recordingRaw?.startsWith('recording=') !== true ||
+    recordingRaw.length === 'recording='.length
+  ) {
+    return null
+  }
+
+  const seconds = Number(secondsRaw)
+  const nanoseconds = Number(nanosecondsRaw)
+  return Number.isSafeInteger(seconds) &&
+    Number.isSafeInteger(nanoseconds) &&
+    nanoseconds >= 0 &&
+    nanoseconds < 1_000_000_000
+    ? seconds * 1_000 + nanoseconds / 1_000_000
+    : null
+}
+
+function wallClockNow() {
+  return performance.timeOrigin + performance.now()
 }
 
 async function stopAttributedShortcutRecording(

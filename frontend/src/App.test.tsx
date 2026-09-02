@@ -146,6 +146,16 @@ function activeShortcut(
   }
 }
 
+function shortcutActivation(recordingToken: string, at = wallClockNow()) {
+  const seconds = Math.floor(at / 1_000)
+  const nanoseconds = Math.floor((at - seconds * 1_000) * 1_000_000)
+  return `native-toggle:${seconds}:${nanoseconds}:123:1:recording=${recordingToken}`
+}
+
+function wallClockNow() {
+  return performance.timeOrigin + performance.now()
+}
+
 const nextRunEngineCases: Record<ResolvedSpeechEngine['kind'], {
   engine: ResolvedSpeechEngine
   label: string
@@ -1835,13 +1845,14 @@ describe('Echo desktop shell', () => {
     vi.mocked(getShortcutStatus)
       .mockResolvedValueOnce(activeShortcut())
       .mockRejectedValueOnce(pollError)
-      .mockResolvedValueOnce(activeShortcut('native-toggle:poll-failure-cleanup'))
     try {
       render(<App />)
       await screen.findByRole('button', { name: 'Start recording' })
       fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
       fireEvent.click(await screen.findByRole('button', { name: 'Test shortcut' }))
       expect(await screen.findByText('Listening… press your shortcut')).toBeInTheDocument()
+      const activation = shortcutActivation('poll-failure-cleanup')
+      vi.mocked(getShortcutStatus).mockResolvedValueOnce(activeShortcut(activation))
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(101)
@@ -1852,7 +1863,7 @@ describe('Echo desktop shell', () => {
       await vi.waitFor(() => {
         expect(getShortcutStatus).toHaveBeenCalledTimes(3)
         expect(stopRecording).toHaveBeenCalledOnce()
-        expect(stopRecording).toHaveBeenCalledWith('native-toggle:poll-failure-cleanup')
+        expect(stopRecording).toHaveBeenCalledWith(activation)
       })
       expect(await screen.findByRole('alert')).toHaveTextContent('scheduled shortcut status failed')
       expect(await screen.findByText('No keypress seen — check the binding')).toBeInTheDocument()
@@ -1889,16 +1900,15 @@ describe('Echo desktop shell', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Test shortcut' }))
     expect(await screen.findByText('Listening… press your shortcut')).toBeInTheDocument()
+    const activation = shortcutActivation('unmount')
     seedPreviewStatus({
       phase: 'Recording',
       recording: true,
-      shortcut: activeShortcut('native-toggle:unmount'),
+      shortcut: activeShortcut(activation),
     })
 
     unmount()
-    await waitFor(() =>
-      expect(stopRecording).toHaveBeenCalledWith('native-toggle:unmount'),
-    )
+    await waitFor(() => expect(stopRecording).toHaveBeenCalledWith(activation))
   })
 
   it('handles an attributed shortcut cleanup rejection during unmount', async () => {
@@ -1908,9 +1918,7 @@ describe('Echo desktop shell', () => {
       unhandledRejections.push(reason)
     }
     process.on('unhandledRejection', observeUnhandledRejection)
-    vi.mocked(getShortcutStatus)
-      .mockResolvedValueOnce(activeShortcut())
-      .mockResolvedValueOnce(activeShortcut('native-toggle:cleanup-rejection'))
+    vi.mocked(getShortcutStatus).mockResolvedValueOnce(activeShortcut())
     vi.mocked(stopRecording).mockRejectedValueOnce(cleanupError)
 
     try {
@@ -1919,11 +1927,11 @@ describe('Echo desktop shell', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
       fireEvent.click(await screen.findByRole('button', { name: 'Test shortcut' }))
       expect(await screen.findByText('Listening… press your shortcut')).toBeInTheDocument()
+      const activation = shortcutActivation('cleanup-rejection')
+      vi.mocked(getShortcutStatus).mockResolvedValueOnce(activeShortcut(activation))
 
       unmount()
-      await waitFor(() =>
-        expect(stopRecording).toHaveBeenCalledWith('native-toggle:cleanup-rejection'),
-      )
+      await waitFor(() => expect(stopRecording).toHaveBeenCalledWith(activation))
       await act(async () => {
         await Promise.resolve()
         await new Promise<void>((resolve) => window.setTimeout(resolve, 0))
@@ -1960,11 +1968,12 @@ describe('Echo desktop shell', () => {
       await vi.advanceTimersByTimeAsync(100)
       await waitFor(() => expect(getShortcutStatus).toHaveBeenCalledTimes(2))
 
+      const activation = shortcutActivation('late-poll')
       unmount()
       expect(getShortcutStatus).toHaveBeenCalledTimes(2)
       expect(stopRecording).not.toHaveBeenCalled()
 
-      poll.resolve(activeShortcut('native-toggle:late-poll'))
+      poll.resolve(activeShortcut(activation))
       await act(async () => {
         await poll.promise
         await Promise.resolve()
@@ -1974,7 +1983,7 @@ describe('Echo desktop shell', () => {
       })
 
       expect(stopRecording).toHaveBeenCalledOnce()
-      expect(stopRecording).toHaveBeenCalledWith('native-toggle:late-poll')
+      expect(stopRecording).toHaveBeenCalledWith(activation)
       expect(unhandledRejections).toEqual([])
     } finally {
       process.off('unhandledRejection', observeUnhandledRejection)
@@ -1988,7 +1997,6 @@ describe('Echo desktop shell', () => {
     vi.mocked(getShortcutStatus)
       .mockResolvedValueOnce(activeShortcut())
       .mockImplementationOnce(() => poll.promise)
-      .mockResolvedValueOnce(activeShortcut('native-toggle:after-snapshot'))
 
     try {
       const { unmount } = render(<App />)
@@ -1999,6 +2007,8 @@ describe('Echo desktop shell', () => {
 
       await vi.advanceTimersByTimeAsync(100)
       await waitFor(() => expect(getShortcutStatus).toHaveBeenCalledTimes(2))
+      const activation = shortcutActivation('after-snapshot')
+      vi.mocked(getShortcutStatus).mockResolvedValueOnce(activeShortcut(activation))
       unmount()
 
       poll.resolve(activeShortcut())
@@ -2010,7 +2020,7 @@ describe('Echo desktop shell', () => {
 
       expect(getShortcutStatus).toHaveBeenCalledTimes(3)
       expect(stopRecording).toHaveBeenCalledOnce()
-      expect(stopRecording).toHaveBeenCalledWith('native-toggle:after-snapshot')
+      expect(stopRecording).toHaveBeenCalledWith(activation)
     } finally {
       vi.useRealTimers()
     }
@@ -2022,7 +2032,6 @@ describe('Echo desktop shell', () => {
     vi.mocked(getShortcutStatus)
       .mockResolvedValueOnce(activeShortcut())
       .mockImplementationOnce(() => poll.promise)
-      .mockResolvedValueOnce(activeShortcut('native-toggle:after-timeout-snapshot'))
 
     try {
       render(<App />)
@@ -2033,6 +2042,8 @@ describe('Echo desktop shell', () => {
 
       await vi.advanceTimersByTimeAsync(100)
       await waitFor(() => expect(getShortcutStatus).toHaveBeenCalledTimes(2))
+      const activation = shortcutActivation('after-timeout-snapshot')
+      vi.mocked(getShortcutStatus).mockResolvedValueOnce(activeShortcut(activation))
       await vi.advanceTimersByTimeAsync(9_900)
       expect(await screen.findByText('No keypress seen — check the binding')).toBeInTheDocument()
 
@@ -2045,7 +2056,7 @@ describe('Echo desktop shell', () => {
 
       expect(getShortcutStatus).toHaveBeenCalledTimes(3)
       expect(stopRecording).toHaveBeenCalledOnce()
-      expect(stopRecording).toHaveBeenCalledWith('native-toggle:after-timeout-snapshot')
+      expect(stopRecording).toHaveBeenCalledWith(activation)
     } finally {
       vi.useRealTimers()
     }
@@ -2057,7 +2068,6 @@ describe('Echo desktop shell', () => {
     vi.mocked(getShortcutStatus)
       .mockResolvedValueOnce(activeShortcut())
       .mockImplementationOnce(() => poll.promise)
-      .mockResolvedValueOnce(activeShortcut('native-toggle:after-unmount-rejection'))
 
     try {
       const { unmount } = render(<App />)
@@ -2068,6 +2078,8 @@ describe('Echo desktop shell', () => {
 
       await vi.advanceTimersByTimeAsync(100)
       await waitFor(() => expect(getShortcutStatus).toHaveBeenCalledTimes(2))
+      const activation = shortcutActivation('after-unmount-rejection')
+      vi.mocked(getShortcutStatus).mockResolvedValueOnce(activeShortcut(activation))
       unmount()
 
       poll.reject(new Error('poll failed after unmount'))
@@ -2079,7 +2091,7 @@ describe('Echo desktop shell', () => {
 
       expect(getShortcutStatus).toHaveBeenCalledTimes(3)
       expect(stopRecording).toHaveBeenCalledOnce()
-      expect(stopRecording).toHaveBeenCalledWith('native-toggle:after-unmount-rejection')
+      expect(stopRecording).toHaveBeenCalledWith(activation)
     } finally {
       vi.useRealTimers()
     }
@@ -2091,7 +2103,6 @@ describe('Echo desktop shell', () => {
     vi.mocked(getShortcutStatus)
       .mockResolvedValueOnce(activeShortcut())
       .mockImplementationOnce(() => poll.promise)
-      .mockResolvedValueOnce(activeShortcut('native-toggle:after-timeout-rejection'))
 
     try {
       render(<App />)
@@ -2102,6 +2113,8 @@ describe('Echo desktop shell', () => {
 
       await vi.advanceTimersByTimeAsync(100)
       await waitFor(() => expect(getShortcutStatus).toHaveBeenCalledTimes(2))
+      const activation = shortcutActivation('after-timeout-rejection')
+      vi.mocked(getShortcutStatus).mockResolvedValueOnce(activeShortcut(activation))
       await vi.advanceTimersByTimeAsync(9_900)
       expect(await screen.findByText('No keypress seen — check the binding')).toBeInTheDocument()
 
@@ -2114,7 +2127,119 @@ describe('Echo desktop shell', () => {
 
       expect(getShortcutStatus).toHaveBeenCalledTimes(3)
       expect(stopRecording).toHaveBeenCalledOnce()
-      expect(stopRecording).toHaveBeenCalledWith('native-toggle:after-timeout-rejection')
+      expect(stopRecording).toHaveBeenCalledWith(activation)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not stop a late poll activation that starts after verification times out', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const poll = deferred<ShortcutStatus>()
+    let activation = ''
+    vi.mocked(getShortcutStatus)
+      .mockResolvedValueOnce(activeShortcut())
+      .mockImplementationOnce(() => poll.promise)
+      .mockImplementationOnce(() =>
+        Promise.resolve(activeShortcut(activation)),
+      )
+
+    try {
+      render(<App />)
+      await screen.findByRole('button', { name: 'Start recording' })
+      fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Test shortcut' }))
+      expect(await screen.findByText('Listening… press your shortcut')).toBeInTheDocument()
+
+      await vi.advanceTimersByTimeAsync(100)
+      await waitFor(() => expect(getShortcutStatus).toHaveBeenCalledTimes(2))
+      await vi.advanceTimersByTimeAsync(9_900)
+      expect(await screen.findByText('No keypress seen — check the binding')).toBeInTheDocument()
+
+      activation = shortcutActivation('legitimate-after-timeout', wallClockNow() + 1)
+      poll.resolve(activeShortcut(activation))
+      await act(async () => {
+        await poll.promise
+        await Promise.resolve()
+        await vi.advanceTimersByTimeAsync(0)
+      })
+
+      expect(getShortcutStatus).toHaveBeenCalledTimes(3)
+      expect(stopRecording).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not stop a late poll activation that starts after Settings unmounts', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const poll = deferred<ShortcutStatus>()
+    let activation = ''
+    vi.mocked(getShortcutStatus)
+      .mockResolvedValueOnce(activeShortcut())
+      .mockImplementationOnce(() => poll.promise)
+      .mockImplementationOnce(() => Promise.resolve(activeShortcut(activation)))
+
+    try {
+      const { unmount } = render(<App />)
+      await screen.findByRole('button', { name: 'Start recording' })
+      fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Test shortcut' }))
+      expect(await screen.findByText('Listening… press your shortcut')).toBeInTheDocument()
+
+      await vi.advanceTimersByTimeAsync(100)
+      await waitFor(() => expect(getShortcutStatus).toHaveBeenCalledTimes(2))
+      unmount()
+
+      activation = shortcutActivation('legitimate-after-unmount', wallClockNow() + 1)
+      poll.resolve(activeShortcut(activation))
+      await act(async () => {
+        await poll.promise
+        await Promise.resolve()
+        await vi.advanceTimersByTimeAsync(0)
+      })
+
+      expect(getShortcutStatus).toHaveBeenCalledTimes(3)
+      expect(stopRecording).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not stop a malformed activation returned after verification times out', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const poll = deferred<ShortcutStatus>()
+    vi.mocked(getShortcutStatus)
+      .mockResolvedValueOnce(activeShortcut())
+      .mockImplementationOnce(() => poll.promise)
+      .mockResolvedValueOnce(activeShortcut())
+
+    try {
+      render(<App />)
+      await screen.findByRole('button', { name: 'Start recording' })
+      fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Test shortcut' }))
+      expect(await screen.findByText('Listening… press your shortcut')).toBeInTheDocument()
+
+      const activationAt = wallClockNow()
+      const seconds = Math.floor(activationAt / 1_000)
+      const nanoseconds = Math.floor((activationAt - seconds * 1_000) * 1_000_000)
+      const malformedActivation = `native-toggle:${seconds}:${nanoseconds}`
+
+      await vi.advanceTimersByTimeAsync(100)
+      await waitFor(() => expect(getShortcutStatus).toHaveBeenCalledTimes(2))
+      await vi.advanceTimersByTimeAsync(9_900)
+      expect(await screen.findByText('No keypress seen — check the binding')).toBeInTheDocument()
+
+      poll.resolve(activeShortcut(malformedActivation))
+      await act(async () => {
+        await poll.promise
+        await Promise.resolve()
+        await vi.advanceTimersByTimeAsync(0)
+      })
+
+      expect(getShortcutStatus).toHaveBeenCalledTimes(3)
+      expect(stopRecording).not.toHaveBeenCalled()
     } finally {
       vi.useRealTimers()
     }
