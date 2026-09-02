@@ -404,17 +404,30 @@ function NextRunSummary({
       </div>
     )
   }
-  const engine = nextRun.engine.kind === 'whisper'
-    ? `Whisper · ${nextRun.engine.model}`
-    : nextRun.engine.kind === 'parakeet'
-      ? `Parakeet · ${nextRun.engine.model}`
-      : 'Fake test engine'
+  const nextEngine = nextRun.engine
+  let engine: string
+  let processing: string
+  switch (nextEngine.kind) {
+    case 'whisper':
+      engine = `Whisper · ${nextEngine.model}`
+      processing = settings.whisperAcceleration.effective === 'gpu' ? 'GPU preferred' : 'CPU'
+      break
+    case 'parakeet':
+      engine = `Parakeet · ${nextEngine.model}`
+      processing = 'Engine-managed processing'
+      break
+    case 'fake':
+      engine = 'Fake test engine'
+      processing = 'Engine-managed processing'
+      break
+    default: {
+      const unhandledEngine: never = nextEngine
+      throw new Error(`Unsupported speech engine: ${JSON.stringify(unhandledEngine)}`)
+    }
+  }
   const language = nextRun.language === 'auto'
     ? 'Automatic language'
     : nextRun.language.toUpperCase()
-  const processing = nextRun.engine.kind === 'whisper'
-    ? settings.whisperAcceleration.effective === 'gpu' ? 'GPU preferred' : 'CPU'
-    : 'Engine-managed processing'
   return (
     <div className="speech-summary next-run-summary" data-state="ready">
       <div className="speech-summary-copy">

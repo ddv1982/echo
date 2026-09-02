@@ -36,6 +36,7 @@ import type {
   ComponentId,
   ComponentStatus,
   LanguageOptions,
+  ResolvedSpeechEngine,
   SettingsChange,
   SetupEvent,
   ShortcutStatus,
@@ -143,6 +144,28 @@ function activeShortcut(
     activation,
     verificationIdentity: `portal:${effective}`,
   }
+}
+
+const nextRunEngineCases: Record<ResolvedSpeechEngine['kind'], {
+  engine: ResolvedSpeechEngine
+  label: string
+  processing: string
+}> = {
+  whisper: {
+    engine: { kind: 'whisper', model: 'small', multilingual: true },
+    label: 'Whisper · small · EN',
+    processing: 'CPU',
+  },
+  parakeet: {
+    engine: { kind: 'parakeet', model: 'tdt-0.6b-v3' },
+    label: 'Parakeet · tdt-0.6b-v3 · EN',
+    processing: 'Engine-managed processing',
+  },
+  fake: {
+    engine: { kind: 'fake' },
+    label: 'Fake test engine · EN',
+    processing: 'Engine-managed processing',
+  },
 }
 
 describe('Echo desktop shell', () => {
@@ -1080,6 +1103,37 @@ describe('Echo desktop shell', () => {
     expect(screen.getByText('Previous transcription')).toBeInTheDocument()
   })
 
+  it.each(Object.values(nextRunEngineCases))(
+    'renders the $engine.kind next-transcription summary explicitly',
+    async ({ engine, label, processing }) => {
+      const snapshot = await getSettings()
+      vi.mocked(getSettings).mockResolvedValue({
+        ...snapshot,
+        preferences: {
+          ...snapshot.preferences,
+          whisperAcceleration: {
+            ...snapshot.preferences.whisperAcceleration,
+            effective: 'cpu',
+          },
+        },
+        transcription: {
+          ...snapshot.transcription,
+          nextRun: { kind: 'ready', engine, language: 'en' },
+        },
+      })
+
+      render(<App />)
+      await screen.findByRole('button', { name: 'Start recording' })
+      fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+
+      const summary = (await screen.findByText(label)).closest('.next-run-summary')
+      if (!(summary instanceof HTMLElement)) {
+        throw new Error('missing next-transcription summary')
+      }
+      expect(within(summary).getByText(processing)).toBeInTheDocument()
+    },
+  )
+
   it('marks an unavailable engine with its reason', async () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
@@ -1915,6 +1969,75 @@ describe('Echo desktop shell', () => {
       expect(unhandledRejections).toEqual([])
     } finally {
       process.off('unhandledRejection', observeUnhandledRejection)
+      vi.useRealTimers()
+    }
+  })
+
+  it('rechecks for an attributed activation after an in-flight unmount snapshot', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const poll = deferred<ShortcutStatus>()
+    vi.mocked(getShortcutStatus)
+      .mockResolvedValueOnce(activeShortcut())
+      .mockImplementationOnce(() => poll.promise)
+      .mockResolvedValueOnce(activeShortcut('native-toggle:after-snapshot'))
+
+    try {
+      const { unmount } = render(<App />)
+      await screen.findByRole('button', { name: 'Start recording' })
+      fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Test shortcut' }))
+      expect(await screen.findByText('Listening… press your shortcut')).toBeInTheDocument()
+
+      await vi.advanceTimersByTimeAsync(100)
+      await waitFor(() => expect(getShortcutStatus).toHaveBeenCalledTimes(2))
+      unmount()
+
+      poll.resolve(activeShortcut())
+      await act(async () => {
+        await poll.promise
+        await Promise.resolve()
+        await vi.advanceTimersByTimeAsync(0)
+      })
+
+      expect(getShortcutStatus).toHaveBeenCalledTimes(3)
+      expect(stopRecording).toHaveBeenCalledOnce()
+      expect(stopRecording).toHaveBeenCalledWith('native-toggle:after-snapshot')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('rechecks for an attributed activation after an in-flight timeout snapshot', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const poll = deferred<ShortcutStatus>()
+    vi.mocked(getShortcutStatus)
+      .mockResolvedValueOnce(activeShortcut())
+      .mockImplementationOnce(() => poll.promise)
+      .mockResolvedValueOnce(activeShortcut('native-toggle:after-timeout-snapshot'))
+
+    try {
+      render(<App />)
+      await screen.findByRole('button', { name: 'Start recording' })
+      fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Test shortcut' }))
+      expect(await screen.findByText('Listening… press your shortcut')).toBeInTheDocument()
+
+      await vi.advanceTimersByTimeAsync(100)
+      await waitFor(() => expect(getShortcutStatus).toHaveBeenCalledTimes(2))
+      await vi.advanceTimersByTimeAsync(9_900)
+      expect(await screen.findByText('No keypress seen — check the binding')).toBeInTheDocument()
+
+      poll.resolve(activeShortcut())
+      await act(async () => {
+        await poll.promise
+        await Promise.resolve()
+        await vi.advanceTimersByTimeAsync(0)
+      })
+
+      expect(getShortcutStatus).toHaveBeenCalledTimes(3)
+      expect(stopRecording).toHaveBeenCalledOnce()
+      expect(stopRecording).toHaveBeenCalledWith('native-toggle:after-timeout-snapshot')
+    } finally {
       vi.useRealTimers()
     }
   })

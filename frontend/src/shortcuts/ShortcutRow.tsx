@@ -132,9 +132,10 @@ export function ShortcutRow({
           const next = presentShortcut(await getShortcutStatus())
           const activation = attributedShortcutActivation(next, context)
           if (attempt.current !== attemptId) {
-            if (activation != null) {
-              void stopRecording(activation).catch(() => undefined)
-            }
+            const cleanup = activation == null
+              ? stopAttributedShortcutRecording(context)
+              : stopAttributedShortcutRecording(context, activation)
+            void cleanup.catch(() => undefined)
             return
           }
           if (activation != null) {
