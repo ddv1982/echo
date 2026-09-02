@@ -69,10 +69,10 @@ export function useAppController() {
     const observedAt = Date.now()
     setRecordingStartedAt((current) => (next.recording ? (current ?? observedAt) : null))
     if (previousPhase.current !== 'Idle' && next.phase === 'Idle') {
-      void Promise.all([refreshHistory(), refreshDictionary()])
+      void Promise.all([refreshHistory(), refreshDictionary()]).catch(reportError)
     }
     previousPhase.current = next.phase
-  }, [refreshDictionary, refreshHistory])
+  }, [refreshDictionary, refreshHistory, reportError])
 
   const pollWhileVisible = useCallback(() => !document.hidden, [])
   const refreshStatus = useSerialPoll({

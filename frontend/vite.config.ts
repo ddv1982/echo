@@ -1,10 +1,11 @@
 import { readFileSync } from 'node:fs'
+import { env } from 'node:process'
 import { fileURLToPath } from 'node:url'
-import { defineConfig } from 'vite'
+import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import { workspaceVersionFromManifest } from './src/workspaceVersion.ts'
 
-const statusPerfProbe = process.env.VITE_STATUS_PERF_PROBE === '1'
+const statusPerfProbe = env.VITE_STATUS_PERF_PROBE === '1'
 
 // The workspace Cargo.toml is the single version source. The frontend reads
 // it at build time; nothing in the frontend may hardcode a version.

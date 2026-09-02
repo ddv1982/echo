@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 
-type Commit = () => void
+type Commit = () => void | Promise<void>
 
 interface AsyncSubscriptionOptions<T> {
   subscribe: (handler: (event: T) => void) => Promise<() => void>
@@ -19,19 +19,18 @@ export function useAsyncSubscription<T>({
     let active = true
     let unlisten: (() => void) | null = null
     let inFlight: Promise<void> | null = null
-    let queued: (() => Promise<Commit>) | null = null
+    const queued: Array<() => Promise<Commit>> = []
 
     const runRefresh = (refresh: () => Promise<Commit>) => {
       inFlight = Promise.resolve().then(refresh).then((commit) => {
-        if (active) commit()
+        if (active) return commit()
       }).catch((reason: unknown) => {
         if (active) onError?.(reason)
       }).finally(() => {
         inFlight = null
-        if (!active || !queued) return
-        const next = queued
-        queued = null
-        runRefresh(next)
+        if (!active) return
+        const next = queued.shift()
+        if (next) runRefresh(next)
       })
     }
 
@@ -42,7 +41,7 @@ export function useAsyncSubscription<T>({
         const refresh = getRefresh(event)
         if (!refresh) return
         if (inFlight) {
-          queued = refresh
+          queued.push(refresh)
         } else {
           runRefresh(refresh)
         }
@@ -63,6 +62,7 @@ export function useAsyncSubscription<T>({
 
     return () => {
       active = false
+      queued.length = 0
       unlisten?.()
     }
   }, [getRefresh, onError, onEvent, subscribe])

@@ -1,13 +1,18 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import process from 'node:process'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import { createPreviewDesktopApi } from './api/previewDesktopApi'
 import { useSerialPoll } from './hooks/useSerialPoll'
 import {
+  addDictionaryEntry,
   configureDesktopApi,
   clearHistory,
+  copyText,
   deleteHistoryItem,
   getAppStatus,
   getRecordingLevel,
+  getShortcutStatus,
   getSettings,
   getMicrophones,
   getReadiness,
@@ -28,8 +33,11 @@ import {
 } from './tauri'
 import type {
   AppStatus,
+  ComponentId,
   ComponentStatus,
   LanguageOptions,
+  ResolvedSpeechEngine,
+  SettingsChange,
   SetupEvent,
   ShortcutStatus,
 } from './generated/ipc'
@@ -54,30 +62,39 @@ async function getPreferences() {
   return (await getSettings()).preferences
 }
 
+function requireFixture<T>(value: T | null | undefined, description: string): T {
+  if (value == null) throw new Error(`missing test fixture: ${description}`)
+  return value
+}
+
 vi.mock('./tauri', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./tauri')>()
   return {
     ...actual,
+    addDictionaryEntry: vi.fn((spoken: string, written: string) =>
+      actual.addDictionaryEntry(spoken, written)),
     clearHistory: vi.fn(() => Promise.resolve(0)),
+    copyText: vi.fn((text: string) => actual.copyText(text)),
     deleteHistoryItem: vi.fn(() => Promise.resolve(false)),
     getAppStatus: vi.fn(() => actual.getAppStatus()),
     getRecordingLevel: vi.fn(() => actual.getRecordingLevel()),
+    getShortcutStatus: vi.fn(() => actual.getShortcutStatus()),
     getSettings: vi.fn(() => actual.getSettings()),
     getMicrophones: vi.fn(() => actual.getMicrophones()),
     getReadiness: vi.fn(() => actual.getReadiness()),
-    listGpuDevices: vi.fn((refresh) => actual.listGpuDevices(refresh)),
+    listGpuDevices: vi.fn((refresh?: boolean) => actual.listGpuDevices(refresh)),
     listLanguages: vi.fn(() => actual.listLanguages()),
     listModels: vi.fn(() => actual.listModels()),
     quitApp: vi.fn(() => actual.quitApp()),
-    setSettings: vi.fn((settings) => actual.setSettings(settings)),
-    setMicrophone: vi.fn((id) => actual.setMicrophone(id)),
+    setSettings: vi.fn((settings: SettingsChange) => actual.setSettings(settings)),
+    setMicrophone: vi.fn((id: string | null) => actual.setMicrophone(id)),
     removeStaleInstalls: vi.fn(() => actual.removeStaleInstalls()),
     repairLegacyShortcut: vi.fn(() => actual.repairLegacyShortcut()),
-    repairManaged: vi.fn((component) => actual.repairManaged(component)),
-    onSetupEvent: vi.fn((handler) => actual.onSetupEvent(handler)),
+    repairManaged: vi.fn((component: ComponentId) => actual.repairManaged(component)),
+    onSetupEvent: vi.fn((handler: (event: SetupEvent) => void) => actual.onSetupEvent(handler)),
     retryShortcut: vi.fn(() => actual.retryShortcut()),
-    stopRecording: vi.fn((activation) => actual.stopRecording(activation)),
-    testInputDevice: vi.fn((id) => actual.testInputDevice(id)),
+    stopRecording: vi.fn((activation: string) => actual.stopRecording(activation)),
+    testInputDevice: vi.fn((id: string | null) => actual.testInputDevice(id)),
     testMicrophoneFallback: vi.fn(() => actual.testMicrophoneFallback()),
   }
 })
@@ -129,6 +146,38 @@ function activeShortcut(
   }
 }
 
+function shortcutActivation(recordingToken: string, at = wallClockNow()) {
+  const seconds = Math.floor(at / 1_000)
+  const nanoseconds = Math.floor((at - seconds * 1_000) * 1_000_000)
+  return `native-toggle:${seconds}:${nanoseconds}:123:1:recording=${recordingToken}`
+}
+
+function wallClockNow() {
+  return performance.timeOrigin + performance.now()
+}
+
+const nextRunEngineCases: Record<ResolvedSpeechEngine['kind'], {
+  engine: ResolvedSpeechEngine
+  label: string
+  processing: string
+}> = {
+  whisper: {
+    engine: { kind: 'whisper', model: 'small', multilingual: true },
+    label: 'Whisper · small · EN',
+    processing: 'CPU',
+  },
+  parakeet: {
+    engine: { kind: 'parakeet', model: 'tdt-0.6b-v3' },
+    label: 'Parakeet · tdt-0.6b-v3 · EN',
+    processing: 'Engine-managed processing',
+  },
+  fake: {
+    engine: { kind: 'fake' },
+    label: 'Fake test engine · EN',
+    processing: 'Engine-managed processing',
+  },
+}
+
 describe('Echo desktop shell', () => {
   beforeEach(async () => {
     vi.restoreAllMocks()
@@ -137,14 +186,21 @@ describe('Echo desktop shell', () => {
     localStorage.removeItem('echo-shortcut-verified-at')
     localStorage.removeItem('echo-shortcut-verified-identity')
     const actual = await vi.importActual<typeof import('./tauri')>('./tauri')
+    vi.mocked(addDictionaryEntry).mockReset()
+    vi.mocked(addDictionaryEntry).mockImplementation((spoken, written) =>
+      actual.addDictionaryEntry(spoken, written))
     vi.mocked(clearHistory).mockReset()
     vi.mocked(clearHistory).mockResolvedValue(3)
+    vi.mocked(copyText).mockReset()
+    vi.mocked(copyText).mockImplementation((text) => actual.copyText(text))
     vi.mocked(deleteHistoryItem).mockReset()
     vi.mocked(deleteHistoryItem).mockResolvedValue(true)
     vi.mocked(getAppStatus).mockReset()
     vi.mocked(getAppStatus).mockImplementation(() => actual.getAppStatus())
     vi.mocked(getRecordingLevel).mockReset()
     vi.mocked(getRecordingLevel).mockImplementation(() => actual.getRecordingLevel())
+    vi.mocked(getShortcutStatus).mockReset()
+    vi.mocked(getShortcutStatus).mockImplementation(() => actual.getShortcutStatus())
     vi.mocked(setSettings).mockReset()
     vi.mocked(setSettings).mockImplementation((settings) => actual.setSettings(settings))
     vi.mocked(repairLegacyShortcut).mockReset()
@@ -331,6 +387,38 @@ describe('Echo desktop shell', () => {
     await act(async () => second.promise)
   })
 
+  it('refreshes SetupChecklist only when setup progress becomes terminal', async () => {
+    const listener: { current: ((event: SetupEvent) => void) | null } = { current: null }
+    vi.mocked(onSetupEvent).mockImplementation((handler) => {
+      listener.current = handler
+      return Promise.resolve(vi.fn())
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    await waitFor(() => expect(listener.current).not.toBeNull())
+    vi.mocked(getReadiness).mockClear()
+    const handle = listener.current
+    if (!handle) throw new Error('setup listener was not registered')
+
+    act(() => {
+      handle({
+        kind: 'progress',
+        progress: {
+          operationId: 'install-1',
+          component: 'whisper-runtime',
+          phase: 'downloading',
+          receivedBytes: 25,
+          totalBytes: 100,
+          resumedFromBytes: 0,
+        },
+      })
+    })
+    expect(getReadiness).not.toHaveBeenCalled()
+
+    act(() => handle({ kind: 'cancelled', operationId: 'install-1' }))
+    await waitFor(() => expect(getReadiness).toHaveBeenCalledOnce())
+  })
+
   it('ignores Settings loader failures that settle after navigation', async () => {
     const settings = deferred<Awaited<ReturnType<typeof getSettings>>>()
     vi.mocked(getSettings).mockImplementation(() => settings.promise)
@@ -497,6 +585,25 @@ describe('Echo desktop shell', () => {
     fireEvent.click(screen.getByRole('button', { name: 'History' }))
     expect(screen.getByRole('heading', { name: 'History' })).toBeInTheDocument()
     expect(screen.getByPlaceholderText('Search transcripts…')).toBeInTheDocument()
+  })
+
+  it('reports a rejected dictionary entry without clearing the form or leaving it busy', async () => {
+    vi.mocked(addDictionaryEntry).mockRejectedValueOnce(new Error('could not add dictionary entry'))
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Dictionary' }))
+    const spoken = screen.getByLabelText('What Echo hears')
+    const written = screen.getByLabelText('What Echo should write')
+    fireEvent.change(spoken, { target: { value: 'ray cast' } })
+    fireEvent.change(written, { target: { value: 'Raycast' } })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('could not add dictionary entry')
+    expect(addDictionaryEntry).toHaveBeenCalledWith('ray cast', 'Raycast')
+    expect(spoken).toHaveValue('ray cast')
+    expect(written).toHaveValue('Raycast')
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Add' })).toBeEnabled())
   })
 
   it('writes a settings change and renders the stored value', async () => {
@@ -685,7 +792,7 @@ describe('Echo desktop shell', () => {
     expect(choices).toHaveLength(2)
     expect(screen.getByText('USB · Microphone · Focusrite')).toBeInTheDocument()
     expect(screen.getByText('USB · Headset · Logitech')).toBeInTheDocument()
-    fireEvent.click(choices[1])
+    fireEvent.click(requireFixture(choices[1], 'second USB microphone choice'))
     await waitFor(async () => {
       const snapshot = await getMicrophones()
       expect(snapshot.selection).toMatchObject({
@@ -704,7 +811,10 @@ describe('Echo desktop shell', () => {
     expect(screen.getByText('Bluetooth · Headset · Jabra')).toBeVisible()
     expect(screen.getByText('Follows the current Linux input automatically')).toBeVisible()
     expect(screen.queryByText('pipewire:input_default')).not.toBeInTheDocument()
-    const advanced = screen.getByText('Advanced audio endpoints').closest('details')!
+    const advanced = requireFixture(
+      screen.getByText('Advanced audio endpoints').closest('details'),
+      'Advanced audio endpoints disclosure',
+    )
     expect(advanced).not.toHaveAttribute('open')
     expect(screen.getByText('PipeWire Sound Server')).not.toBeVisible()
     fireEvent.click(screen.getByText('Advanced audio endpoints'))
@@ -714,7 +824,7 @@ describe('Echo desktop shell', () => {
 
   it('names the active input when Linux has no declared default', async () => {
     const snapshot = await getMicrophones()
-    const active = snapshot.devices[0]
+    const active = requireFixture(snapshot.devices[0], 'active microphone device')
     seedPreviewMicrophones({
       ...snapshot,
       systemDefault: null,
@@ -736,7 +846,7 @@ describe('Echo desktop shell', () => {
         kind: 'missing-with-fallback',
         requestedId: 'alsa:travel',
         requestedLabel: 'Travel Mic',
-        fallback: snapshot.systemDefault!,
+        fallback: requireFixture(snapshot.systemDefault, 'system default microphone'),
       },
     })
     render(<App />)
@@ -757,7 +867,8 @@ describe('Echo desktop shell', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Test selected' }))
     expect(await screen.findByRole('status')).toHaveTextContent('Input heard')
-    fireEvent.click((await screen.findAllByRole('radio', { name: /USB Microphone/ }))[0])
+    const choices = await screen.findAllByRole('radio', { name: /USB Microphone/ })
+    fireEvent.click(requireFixture(choices[0], 'first USB microphone choice'))
     await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument())
   })
 
@@ -1002,6 +1113,37 @@ describe('Echo desktop shell', () => {
     expect(screen.getByText('Previous transcription')).toBeInTheDocument()
   })
 
+  it.each(Object.values(nextRunEngineCases))(
+    'renders the $engine.kind next-transcription summary explicitly',
+    async ({ engine, label, processing }) => {
+      const snapshot = await getSettings()
+      vi.mocked(getSettings).mockResolvedValue({
+        ...snapshot,
+        preferences: {
+          ...snapshot.preferences,
+          whisperAcceleration: {
+            ...snapshot.preferences.whisperAcceleration,
+            effective: 'cpu',
+          },
+        },
+        transcription: {
+          ...snapshot.transcription,
+          nextRun: { kind: 'ready', engine, language: 'en' },
+        },
+      })
+
+      render(<App />)
+      await screen.findByRole('button', { name: 'Start recording' })
+      fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+
+      const summary = (await screen.findByText(label)).closest('.next-run-summary')
+      if (!(summary instanceof HTMLElement)) {
+        throw new Error('missing next-transcription summary')
+      }
+      expect(within(summary).getByText(processing)).toBeInTheDocument()
+    },
+  )
+
   it('marks an unavailable engine with its reason', async () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
@@ -1198,11 +1340,13 @@ describe('Echo desktop shell', () => {
     ['recoveredToCpu', 'GPU ran and failed, retried on CPU'],
   ] as const)('says why a requested GPU did not run: %s', async (reason, copy) => {
     const status = richPreviewStatus()
+    const lastRun = requireFixture(status.lastRun, 'rich preview last run')
+    const performance = requireFixture(lastRun.performance, 'rich preview performance')
     seedPreviewStatus({
       lastRun: {
-        ...status.lastRun!,
+        ...lastRun,
         performance: {
-          ...status.lastRun!.performance!,
+          ...performance,
           backend: 'cpu',
           device: null,
           accelerationSkip: reason,
@@ -1249,8 +1393,10 @@ describe('Echo desktop shell', () => {
       'French',
     ])
     const all = within(screen.getByRole('group', { name: 'All languages' }))
-    const names = all.getAllByRole('option').map((o) => o.textContent)
-    expect(names).toEqual([...names].sort((a, b) => a!.localeCompare(b!)))
+    const names = all.getAllByRole('option').map((option, index) =>
+      requireFixture(option.textContent, `language option text at index ${index}`),
+    )
+    expect(names).toEqual([...names].sort((a, b) => a.localeCompare(b)))
 
     fireEvent.change(picker, { target: { value: 'de' } })
     await waitFor(async () => {
@@ -1429,7 +1575,10 @@ describe('Echo desktop shell', () => {
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     expect(await screen.findByText('Ready to dictate')).toBeInTheDocument()
-    const components = screen.getByText('Installed components').closest('details')!
+    const components = requireFixture(
+      screen.getByText('Installed components').closest('details'),
+      'Installed components disclosure',
+    )
     expect(components).not.toHaveAttribute('open')
     expect(screen.getByText(/System · \/usr\/bin\/whisper-cli/)).not.toBeVisible()
     fireEvent.click(screen.getByText('Installed components'))
@@ -1500,8 +1649,14 @@ describe('Echo desktop shell', () => {
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     fireEvent.click(await screen.findByText('Advanced speech options'))
-    const advanced = screen.getByText('Advanced speech options').closest('details')!
-    const parakeetRow = within(advanced).getByText('Parakeet').closest<HTMLElement>('.setting-row')!
+    const advanced = requireFixture(
+      screen.getByText('Advanced speech options').closest('details'),
+      'Advanced speech options disclosure',
+    )
+    const parakeetRow = requireFixture(
+      within(advanced).getByText('Parakeet').closest<HTMLElement>('.setting-row'),
+      'Parakeet settings row',
+    )
     expect(within(parakeetRow).getByRole('button', { name: 'Use' })).toBeEnabled()
     expect(within(advanced).queryByText('Whisper small')).not.toBeInTheDocument()
   })
@@ -1684,6 +1839,47 @@ describe('Echo desktop shell', () => {
     }
   })
 
+  it('reports a scheduled shortcut poll failure and cleans up an attributed activation', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const pollError = new Error('scheduled shortcut status failed')
+    vi.mocked(getShortcutStatus)
+      .mockResolvedValueOnce(activeShortcut())
+      .mockRejectedValueOnce(pollError)
+    try {
+      render(<App />)
+      await screen.findByRole('button', { name: 'Start recording' })
+      fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Test shortcut' }))
+      expect(await screen.findByText('Listening… press your shortcut')).toBeInTheDocument()
+      const activation = shortcutActivation('poll-failure-cleanup')
+      vi.mocked(getShortcutStatus).mockResolvedValueOnce(activeShortcut(activation))
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(101)
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+
+      await vi.waitFor(() => {
+        expect(getShortcutStatus).toHaveBeenCalledTimes(3)
+        expect(stopRecording).toHaveBeenCalledOnce()
+        expect(stopRecording).toHaveBeenCalledWith(activation)
+      })
+      expect(await screen.findByRole('alert')).toHaveTextContent('scheduled shortcut status failed')
+      expect(await screen.findByText('No keypress seen — check the binding')).toBeInTheDocument()
+      expect(localStorage.getItem('echo-shortcut-verified-at')).toBeNull()
+      expect(localStorage.getItem('echo-shortcut-verified-identity')).toBeNull()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Dismiss error' }))
+      await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(getShortcutStatus).toHaveBeenCalledTimes(3)
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('does not verify a shortcut when stopping the recording fails', async () => {
     vi.mocked(stopRecording).mockRejectedValueOnce(new Error('cannot stop recording'))
     render(<App />)
@@ -1704,16 +1900,349 @@ describe('Echo desktop shell', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Test shortcut' }))
     expect(await screen.findByText('Listening… press your shortcut')).toBeInTheDocument()
+    const activation = shortcutActivation('unmount')
     seedPreviewStatus({
       phase: 'Recording',
       recording: true,
-      shortcut: activeShortcut('native-toggle:unmount'),
+      shortcut: activeShortcut(activation),
     })
 
     unmount()
-    await waitFor(() =>
-      expect(stopRecording).toHaveBeenCalledWith('native-toggle:unmount'),
-    )
+    await waitFor(() => expect(stopRecording).toHaveBeenCalledWith(activation))
+  })
+
+  it('handles an attributed shortcut cleanup rejection during unmount', async () => {
+    const cleanupError = new Error('cleanup could not stop recording')
+    const unhandledRejections: unknown[] = []
+    const observeUnhandledRejection = (reason: unknown) => {
+      unhandledRejections.push(reason)
+    }
+    process.on('unhandledRejection', observeUnhandledRejection)
+    vi.mocked(getShortcutStatus).mockResolvedValueOnce(activeShortcut())
+    vi.mocked(stopRecording).mockRejectedValueOnce(cleanupError)
+
+    try {
+      const { unmount } = render(<App />)
+      await screen.findByRole('button', { name: 'Start recording' })
+      fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Test shortcut' }))
+      expect(await screen.findByText('Listening… press your shortcut')).toBeInTheDocument()
+      const activation = shortcutActivation('cleanup-rejection')
+      vi.mocked(getShortcutStatus).mockResolvedValueOnce(activeShortcut(activation))
+
+      unmount()
+      await waitFor(() => expect(stopRecording).toHaveBeenCalledWith(activation))
+      await act(async () => {
+        await Promise.resolve()
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 0))
+        await Promise.resolve()
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 0))
+      })
+
+      expect(unhandledRejections).toEqual([])
+    } finally {
+      process.off('unhandledRejection', observeUnhandledRejection)
+    }
+  })
+
+  it('stops an attributed activation returned by an in-flight poll after unmount', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const poll = deferred<ShortcutStatus>()
+    const unhandledRejections: unknown[] = []
+    const observeUnhandledRejection = (reason: unknown) => {
+      unhandledRejections.push(reason)
+    }
+    process.on('unhandledRejection', observeUnhandledRejection)
+    vi.mocked(getShortcutStatus)
+      .mockResolvedValueOnce(activeShortcut())
+      .mockImplementationOnce(() => poll.promise)
+    vi.mocked(stopRecording).mockRejectedValueOnce(new Error('late activation stop failed'))
+
+    try {
+      const { unmount } = render(<App />)
+      await screen.findByRole('button', { name: 'Start recording' })
+      fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Test shortcut' }))
+      expect(await screen.findByText('Listening… press your shortcut')).toBeInTheDocument()
+
+      await vi.advanceTimersByTimeAsync(100)
+      await waitFor(() => expect(getShortcutStatus).toHaveBeenCalledTimes(2))
+
+      const activation = shortcutActivation('late-poll')
+      unmount()
+      expect(getShortcutStatus).toHaveBeenCalledTimes(2)
+      expect(stopRecording).not.toHaveBeenCalled()
+
+      poll.resolve(activeShortcut(activation))
+      await act(async () => {
+        await poll.promise
+        await Promise.resolve()
+        await vi.advanceTimersByTimeAsync(0)
+        await Promise.resolve()
+        await vi.advanceTimersByTimeAsync(0)
+      })
+
+      expect(stopRecording).toHaveBeenCalledOnce()
+      expect(stopRecording).toHaveBeenCalledWith(activation)
+      expect(unhandledRejections).toEqual([])
+    } finally {
+      process.off('unhandledRejection', observeUnhandledRejection)
+      vi.useRealTimers()
+    }
+  })
+
+  it('rechecks for an attributed activation after an in-flight unmount snapshot', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const poll = deferred<ShortcutStatus>()
+    vi.mocked(getShortcutStatus)
+      .mockResolvedValueOnce(activeShortcut())
+      .mockImplementationOnce(() => poll.promise)
+
+    try {
+      const { unmount } = render(<App />)
+      await screen.findByRole('button', { name: 'Start recording' })
+      fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Test shortcut' }))
+      expect(await screen.findByText('Listening… press your shortcut')).toBeInTheDocument()
+
+      await vi.advanceTimersByTimeAsync(100)
+      await waitFor(() => expect(getShortcutStatus).toHaveBeenCalledTimes(2))
+      const activation = shortcutActivation('after-snapshot')
+      vi.mocked(getShortcutStatus).mockResolvedValueOnce(activeShortcut(activation))
+      unmount()
+
+      poll.resolve(activeShortcut())
+      await act(async () => {
+        await poll.promise
+        await Promise.resolve()
+        await vi.advanceTimersByTimeAsync(0)
+      })
+
+      expect(getShortcutStatus).toHaveBeenCalledTimes(3)
+      expect(stopRecording).toHaveBeenCalledOnce()
+      expect(stopRecording).toHaveBeenCalledWith(activation)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('rechecks for an attributed activation after an in-flight timeout snapshot', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const poll = deferred<ShortcutStatus>()
+    vi.mocked(getShortcutStatus)
+      .mockResolvedValueOnce(activeShortcut())
+      .mockImplementationOnce(() => poll.promise)
+
+    try {
+      render(<App />)
+      await screen.findByRole('button', { name: 'Start recording' })
+      fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Test shortcut' }))
+      expect(await screen.findByText('Listening… press your shortcut')).toBeInTheDocument()
+
+      await vi.advanceTimersByTimeAsync(100)
+      await waitFor(() => expect(getShortcutStatus).toHaveBeenCalledTimes(2))
+      const activation = shortcutActivation('after-timeout-snapshot')
+      vi.mocked(getShortcutStatus).mockResolvedValueOnce(activeShortcut(activation))
+      await vi.advanceTimersByTimeAsync(9_900)
+      expect(await screen.findByText('No keypress seen — check the binding')).toBeInTheDocument()
+
+      poll.resolve(activeShortcut())
+      await act(async () => {
+        await poll.promise
+        await Promise.resolve()
+        await vi.advanceTimersByTimeAsync(0)
+      })
+
+      expect(getShortcutStatus).toHaveBeenCalledTimes(3)
+      expect(stopRecording).toHaveBeenCalledOnce()
+      expect(stopRecording).toHaveBeenCalledWith(activation)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('rechecks for an attributed activation after an in-flight unmount rejection', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const poll = deferred<ShortcutStatus>()
+    vi.mocked(getShortcutStatus)
+      .mockResolvedValueOnce(activeShortcut())
+      .mockImplementationOnce(() => poll.promise)
+
+    try {
+      const { unmount } = render(<App />)
+      await screen.findByRole('button', { name: 'Start recording' })
+      fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Test shortcut' }))
+      expect(await screen.findByText('Listening… press your shortcut')).toBeInTheDocument()
+
+      await vi.advanceTimersByTimeAsync(100)
+      await waitFor(() => expect(getShortcutStatus).toHaveBeenCalledTimes(2))
+      const activation = shortcutActivation('after-unmount-rejection')
+      vi.mocked(getShortcutStatus).mockResolvedValueOnce(activeShortcut(activation))
+      unmount()
+
+      poll.reject(new Error('poll failed after unmount'))
+      await act(async () => {
+        await poll.promise.catch(() => undefined)
+        await Promise.resolve()
+        await vi.advanceTimersByTimeAsync(0)
+      })
+
+      expect(getShortcutStatus).toHaveBeenCalledTimes(3)
+      expect(stopRecording).toHaveBeenCalledOnce()
+      expect(stopRecording).toHaveBeenCalledWith(activation)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('rechecks for an attributed activation after an in-flight timeout rejection', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const poll = deferred<ShortcutStatus>()
+    vi.mocked(getShortcutStatus)
+      .mockResolvedValueOnce(activeShortcut())
+      .mockImplementationOnce(() => poll.promise)
+
+    try {
+      render(<App />)
+      await screen.findByRole('button', { name: 'Start recording' })
+      fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Test shortcut' }))
+      expect(await screen.findByText('Listening… press your shortcut')).toBeInTheDocument()
+
+      await vi.advanceTimersByTimeAsync(100)
+      await waitFor(() => expect(getShortcutStatus).toHaveBeenCalledTimes(2))
+      const activation = shortcutActivation('after-timeout-rejection')
+      vi.mocked(getShortcutStatus).mockResolvedValueOnce(activeShortcut(activation))
+      await vi.advanceTimersByTimeAsync(9_900)
+      expect(await screen.findByText('No keypress seen — check the binding')).toBeInTheDocument()
+
+      poll.reject(new Error('poll failed after timeout'))
+      await act(async () => {
+        await poll.promise.catch(() => undefined)
+        await Promise.resolve()
+        await vi.advanceTimersByTimeAsync(0)
+      })
+
+      expect(getShortcutStatus).toHaveBeenCalledTimes(3)
+      expect(stopRecording).toHaveBeenCalledOnce()
+      expect(stopRecording).toHaveBeenCalledWith(activation)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not stop a late poll activation that starts after verification times out', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const poll = deferred<ShortcutStatus>()
+    let activation = ''
+    vi.mocked(getShortcutStatus)
+      .mockResolvedValueOnce(activeShortcut())
+      .mockImplementationOnce(() => poll.promise)
+      .mockImplementationOnce(() =>
+        Promise.resolve(activeShortcut(activation)),
+      )
+
+    try {
+      render(<App />)
+      await screen.findByRole('button', { name: 'Start recording' })
+      fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Test shortcut' }))
+      expect(await screen.findByText('Listening… press your shortcut')).toBeInTheDocument()
+
+      await vi.advanceTimersByTimeAsync(100)
+      await waitFor(() => expect(getShortcutStatus).toHaveBeenCalledTimes(2))
+      await vi.advanceTimersByTimeAsync(9_900)
+      expect(await screen.findByText('No keypress seen — check the binding')).toBeInTheDocument()
+
+      activation = shortcutActivation('legitimate-after-timeout', wallClockNow() + 1)
+      poll.resolve(activeShortcut(activation))
+      await act(async () => {
+        await poll.promise
+        await Promise.resolve()
+        await vi.advanceTimersByTimeAsync(0)
+      })
+
+      expect(getShortcutStatus).toHaveBeenCalledTimes(3)
+      expect(stopRecording).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not stop a late poll activation that starts after Settings unmounts', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const poll = deferred<ShortcutStatus>()
+    let activation = ''
+    vi.mocked(getShortcutStatus)
+      .mockResolvedValueOnce(activeShortcut())
+      .mockImplementationOnce(() => poll.promise)
+      .mockImplementationOnce(() => Promise.resolve(activeShortcut(activation)))
+
+    try {
+      const { unmount } = render(<App />)
+      await screen.findByRole('button', { name: 'Start recording' })
+      fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Test shortcut' }))
+      expect(await screen.findByText('Listening… press your shortcut')).toBeInTheDocument()
+
+      await vi.advanceTimersByTimeAsync(100)
+      await waitFor(() => expect(getShortcutStatus).toHaveBeenCalledTimes(2))
+      unmount()
+
+      activation = shortcutActivation('legitimate-after-unmount', wallClockNow() + 1)
+      poll.resolve(activeShortcut(activation))
+      await act(async () => {
+        await poll.promise
+        await Promise.resolve()
+        await vi.advanceTimersByTimeAsync(0)
+      })
+
+      expect(getShortcutStatus).toHaveBeenCalledTimes(3)
+      expect(stopRecording).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not stop a malformed activation returned after verification times out', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const poll = deferred<ShortcutStatus>()
+    vi.mocked(getShortcutStatus)
+      .mockResolvedValueOnce(activeShortcut())
+      .mockImplementationOnce(() => poll.promise)
+      .mockResolvedValueOnce(activeShortcut())
+
+    try {
+      render(<App />)
+      await screen.findByRole('button', { name: 'Start recording' })
+      fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Test shortcut' }))
+      expect(await screen.findByText('Listening… press your shortcut')).toBeInTheDocument()
+
+      const activationAt = wallClockNow()
+      const seconds = Math.floor(activationAt / 1_000)
+      const nanoseconds = Math.floor((activationAt - seconds * 1_000) * 1_000_000)
+      const malformedActivation = `native-toggle:${seconds}:${nanoseconds}`
+
+      await vi.advanceTimersByTimeAsync(100)
+      await waitFor(() => expect(getShortcutStatus).toHaveBeenCalledTimes(2))
+      await vi.advanceTimersByTimeAsync(9_900)
+      expect(await screen.findByText('No keypress seen — check the binding')).toBeInTheDocument()
+
+      poll.resolve(activeShortcut(malformedActivation))
+      await act(async () => {
+        await poll.promise
+        await Promise.resolve()
+        await vi.advanceTimersByTimeAsync(0)
+      })
+
+      expect(getShortcutStatus).toHaveBeenCalledTimes(3)
+      expect(stopRecording).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('lists the microphone step when the mic is not ready', async () => {
@@ -1740,9 +2269,10 @@ describe('Echo desktop shell', () => {
     })
     // Live bars get inline heights from the meter.
     await waitFor(() => {
-      const heights = [...document.querySelectorAll('.level-bar')].map((bar) =>
-        (bar as HTMLElement).style.height,
-      )
+      const heights = [...document.querySelectorAll('.level-bar')].map((bar) => {
+        if (!(bar instanceof HTMLElement)) throw new Error('level bar is not an HTML element')
+        return bar.style.height
+      })
       expect(heights.some((height) => height && height !== '15%')).toBe(true)
     })
   })
@@ -1851,6 +2381,70 @@ describe('Echo desktop shell', () => {
 
     expect(screen.queryByText(/^Verified /)).not.toBeInTheDocument()
     expect(screen.queryByText('Shortcut verified')).not.toBeInTheDocument()
+  })
+
+  it('shows stored verification when the shortcut identity resolves after Settings mounts', async () => {
+    const nowSeconds = 2_000_000_000
+    const dateNow = vi.spyOn(Date, 'now').mockReturnValue(nowSeconds * 1000)
+    const status = deferred<AppStatus>()
+    vi.mocked(getAppStatus).mockImplementationOnce(() => status.promise)
+    localStorage.setItem('echo-shortcut-verified-at', String(nowSeconds))
+    localStorage.setItem('echo-shortcut-verified-identity', 'portal:Super+Alt+Space')
+
+    try {
+      render(<App />)
+      fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+      await waitFor(() => expect(getAppStatus).toHaveBeenCalledOnce())
+      expect(screen.queryByText(/^Verified /)).not.toBeInTheDocument()
+
+      status.resolve(richPreviewStatus())
+      await act(async () => status.promise)
+
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Test shortcut' })).toBeEnabled())
+      expect(screen.getByText(/^Verified /)).toBeInTheDocument()
+    } finally {
+      dateNow.mockRestore()
+    }
+  })
+
+  it.each([
+    ['malformed', 'not-a-timestamp', false],
+    ['future', '2000000001', false],
+    ['stale', '1997407999', false],
+    ['current valid', '2000000000', true],
+  ] as const)('shares %s shortcut verification validity across Home and Settings', async (
+    _case,
+    rawAt,
+    expectedVerified,
+  ) => {
+    const dateNow = vi.spyOn(Date, 'now').mockReturnValue(2_000_000_000 * 1000)
+    try {
+      const currentReadiness = await getReadiness()
+      seedPreviewReadiness({ ...currentReadiness, firstRunComplete: false })
+      localStorage.setItem('echo-shortcut-verified-at', rawAt)
+      localStorage.setItem('echo-shortcut-verified-identity', 'portal:Super+Alt+Space')
+
+      render(<App />)
+      await screen.findByRole('button', { name: 'Start recording' })
+      const checklist = await screen.findByLabelText('Finish setup')
+      if (expectedVerified) {
+        expect(within(checklist).getByText('Shortcut verified')).toBeInTheDocument()
+        expect(within(checklist).queryByText('Shortcut bound')).not.toBeInTheDocument()
+      } else {
+        expect(within(checklist).getByText('Shortcut bound')).toBeInTheDocument()
+        expect(within(checklist).queryByText('Shortcut verified')).not.toBeInTheDocument()
+      }
+
+      fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+      await screen.findByRole('button', { name: 'Test shortcut' })
+      if (expectedVerified) {
+        expect(screen.getByText(/^Verified /)).toBeInTheDocument()
+      } else {
+        expect(screen.queryByText(/^Verified /)).not.toBeInTheDocument()
+      }
+    } finally {
+      dateNow.mockRestore()
+    }
   })
 
   it('refuses to overwrite a conflicting GNOME shortcut', async () => {
@@ -2004,6 +2598,26 @@ describe('Echo desktop shell', () => {
     }
   })
 
+  it('reports a rejected transcript copy without showing a copied state', async () => {
+    vi.mocked(copyText).mockRejectedValueOnce(new Error('clipboard unavailable'))
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'History' }))
+    const text = 'Open the project settings and update the release notes.'
+    const row = requireFixture(
+      (await screen.findByText(text)).closest('article'),
+      'history row for the copied transcript',
+    )
+    const copyAction = within(row).getByRole('button', { name: 'Copy transcript' })
+
+    fireEvent.click(copyAction)
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('clipboard unavailable')
+    expect(copyText).toHaveBeenCalledWith(text)
+    expect(within(row).getByRole('button', { name: 'Copy transcript' })).toBe(copyAction)
+    expect(within(row).queryByRole('button', { name: 'Copied transcript' })).not.toBeInTheDocument()
+  })
+
   it('keeps a transcript when its deletion confirmation is canceled', async () => {
     vi.spyOn(window, 'confirm').mockReturnValue(false)
     render(<App />)
@@ -2058,7 +2672,10 @@ describe('Echo desktop shell', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Home' }))
     expect(await screen.findByText('2 saved transcripts')).toBeInTheDocument()
-    const recent = screen.getByText('Recent').closest('section')!
+    const recent = requireFixture(
+      screen.getByText('Recent').closest('section'),
+      'Recent history section',
+    )
     expect(within(recent).queryByText(removed)).not.toBeInTheDocument()
     kept.forEach((text) => expect(within(recent).getByText(text)).toBeInTheDocument())
   })
@@ -2108,7 +2725,10 @@ describe('Echo desktop shell', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Home' }))
     expect(await screen.findByText('3 saved transcripts')).toBeInTheDocument()
-    const recent = screen.getByText('Recent').closest('section')!
+    const recent = requireFixture(
+      screen.getByText('Recent').closest('section'),
+      'Recent history section',
+    )
     rows.forEach((text) => expect(within(recent).getByText(text)).toBeInTheDocument())
   })
 })

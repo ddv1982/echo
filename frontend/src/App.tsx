@@ -123,6 +123,7 @@ function App() {
               items={history}
               onDelete={deleteHistoryItem}
               onClear={clearHistory}
+              onError={setError}
             />
           ) : null}
           {view === 'dictionary' ? (
@@ -131,6 +132,7 @@ function App() {
               onAdd={addDictionaryEntry}
               onAddBatch={addDictionaryEntriesBatch}
               onRemove={removeDictionaryEntry}
+              onError={setError}
             />
           ) : null}
           {view === 'settings' ? (

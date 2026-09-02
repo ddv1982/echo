@@ -6,8 +6,9 @@ import { messageFrom } from '../app/formatting'
 import { useAsyncSubscription } from '../hooks/useAsyncSubscription'
 import { MicrophoneChooser } from '../settings/MicrophoneChooser'
 import { SpeechSetupSection } from '../settings/SpeechSetupSection'
-import { applySetupProgress } from '../setup'
+import { applySetupProgress, classifySetupEvent } from '../setup'
 import { presentShortcut } from '../shortcut'
+import { useShortcutVerification } from '../shortcuts/useShortcutVerification'
 import {
   getMicrophones,
   getReadiness,
@@ -60,13 +61,16 @@ export function SetupChecklist({
   }, [reportSetupError])
 
   const handleSetupEvent = useCallback((event: SetupEvent) => {
-    if (event.kind === 'progress') {
-      setReadiness((current) => current && applySetupProgress(current, event))
+    const classified = classifySetupEvent(event)
+    if (classified.kind === 'incremental') {
+      setReadiness((current) => current && applySetupProgress(current, classified.event))
     }
-    if (event.kind === 'failed') setSetupError(event.error)
+    if (classified.kind === 'terminal' && classified.error != null) {
+      setSetupError(classified.error)
+    }
   }, [])
   const getSetupRefresh = useCallback((event: SetupEvent) => {
-    if (event.kind === 'progress') return null
+    if (classifySetupEvent(event).kind === 'incremental') return null
     return () => getReadiness().then((next) => () => setReadiness(next))
   }, [])
   useAsyncSubscription({
@@ -77,9 +81,12 @@ export function SetupChecklist({
   })
 
   const identity = presentShortcut(status.shortcut).verificationIdentity
-  const verified = identity != null
-    && localStorage.getItem('echo-shortcut-verified-at') !== null
-    && localStorage.getItem('echo-shortcut-verified-identity') === identity
+  const verification = useShortcutVerification(
+    localStorage.getItem('echo-shortcut-verified-at'),
+    localStorage.getItem('echo-shortcut-verified-identity'),
+    identity,
+  )
+  const verified = verification != null
   const items = [
     { key: 'mic', done: readiness?.microphoneReady ?? status.microphoneReady, label: 'Microphone ready' },
     { key: 'engine', done: readiness?.speechReady ?? status.engineReady, label: 'Speech engine and model installed' },

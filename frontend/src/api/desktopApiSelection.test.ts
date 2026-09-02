@@ -1,3 +1,4 @@
+import { describe, expect, it } from 'vitest'
 import { selectDesktopApi } from './selectDesktopApi'
 
 describe('desktop adapter selection', () => {

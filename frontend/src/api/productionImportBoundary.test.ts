@@ -1,3 +1,5 @@
+import { expect, it } from 'vitest'
+
 const sources = import.meta.glob<string>('/src/**/*.{ts,tsx}', {
   query: '?raw',
   import: 'default',
@@ -31,6 +33,7 @@ function productionModules(): Map<string, string> {
     modules.set(path, source)
     for (const match of source.matchAll(relativeImports)) {
       const imported = match[1]
+      if (imported == null) throw new Error(`relative import capture is missing in ${path}`)
       if (imported.endsWith('.css')) continue
       const next = resolveImport(path, imported)
       if (!modules.has(next)) visit(next)

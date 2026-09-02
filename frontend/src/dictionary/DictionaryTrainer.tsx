@@ -1,12 +1,12 @@
 import { Check, Mic, RotateCcw, Square, X } from 'lucide-react'
 import {
-  KeyboardEvent,
-  RefObject,
+  useCallback,
   useEffect,
   useMemo,
   useReducer,
   useRef,
 } from 'react'
+import type { KeyboardEvent, RefObject } from 'react'
 
 import type {
   DictionaryBatchResult,
@@ -66,8 +66,14 @@ export function DictionaryTrainer({
   const stateRef = useRef(state)
   const mountedRef = useRef(true)
   const startPendingRef = useRef(false)
+  const cancellationsStartedRef = useRef(new Set<string>())
   const dialogRef = useRef<HTMLDivElement>(null)
   const canonicalRef = useRef<HTMLInputElement>(null)
+  const cancelCapture = useCallback((captureId: string) => {
+    if (cancellationsStartedRef.current.has(captureId)) return
+    cancellationsStartedRef.current.add(captureId)
+    void cancelDictionaryTrainingSample(captureId).catch(() => undefined)
+  }, [])
 
   useEffect(() => {
     stateRef.current = state
@@ -80,10 +86,10 @@ export function DictionaryTrainer({
     return () => {
       mountedRef.current = false
       const capture = activeCapture(stateRef.current)
-      if (capture) void cancelDictionaryTrainingSample(capture.captureId)
+      if (capture) cancelCapture(capture.captureId)
       trigger?.focus()
     }
-  }, [triggerRef])
+  }, [cancelCapture, triggerRef])
 
   useEffect(() => {
     if (state.kind === 'saved') onClose()
@@ -102,7 +108,7 @@ export function DictionaryTrainer({
   const close = () => {
     if (closeBlocked) return
     const capture = activeCapture(state)
-    if (capture) void cancelDictionaryTrainingSample(capture.captureId)
+    if (capture) cancelCapture(capture.captureId)
     onClose()
   }
 
@@ -113,7 +119,7 @@ export function DictionaryTrainer({
     try {
       const captureId = await startDictionaryTrainingSample()
       if (!mountedRef.current) {
-        await cancelDictionaryTrainingSample(captureId)
+        cancelCapture(captureId)
         return
       }
       dispatch({ type: 'capture-started', target, captureId })
@@ -128,7 +134,7 @@ export function DictionaryTrainer({
 
   const retrySample = (target: number) => {
     if (state.kind !== 'collecting') dispatch({ type: 'collection-resumed' })
-    void startSample(target)
+    void startSample(target).catch(() => undefined)
   }
 
   const stopSample = async (captureId: string, target: number) => {
@@ -174,6 +180,7 @@ export function DictionaryTrainer({
     if (focusable.length === 0) return
     const first = focusable[0]
     const last = focusable[focusable.length - 1]
+    if (!first || !last) return
     if (event.shiftKey && document.activeElement === first) {
       event.preventDefault()
       last.focus()

@@ -31,8 +31,8 @@ export function useHistory(onError: (reason: unknown) => void) {
   }), [enqueue, onError])
 
   useEffect(() => {
-    void refresh()
-  }, [refresh])
+    void refresh().catch(onError)
+  }, [onError, refresh])
 
   const remove = useCallback((id: string) => enqueue(async () => {
     try {

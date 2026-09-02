@@ -2,14 +2,19 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import App from './App'
 import { tauriDesktopApi } from './api/tauriDesktopApi'
+import { startStatusPerfProbe } from './perf/startStatusPerfProbe'
 import './styles/index.css'
 import { configureDesktopApi } from './tauri'
 
 if (import.meta.env.VITE_STATUS_PERF_PROBE === '1') {
-  void import('./perf/statusPerf').then(({ startStatusPerf }) => startStatusPerf())
+  startStatusPerfProbe()
 } else {
   configureDesktopApi(tauriDesktopApi)
-  createRoot(document.getElementById('root')!).render(
+  const rootElement = document.getElementById('root')
+  if (!rootElement) {
+    throw new Error('Cannot start Echo: root element #root was not found.')
+  }
+  createRoot(rootElement).render(
     <StrictMode>
       <App />
     </StrictMode>,

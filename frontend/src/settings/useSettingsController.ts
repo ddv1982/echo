@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { messageFrom } from '../app/formatting'
 import { useAsyncSubscription } from '../hooks/useAsyncSubscription'
 import { useSerialPoll } from '../hooks/useSerialPoll'
-import { applySetupProgress } from '../setup'
+import { applySetupProgress, classifySetupEvent } from '../setup'
 import {
   getMicrophones,
   getSettings,
@@ -117,22 +117,25 @@ export function useSettingsController({
   }, [refreshMicrophones])
 
   const handleSettingsSetupEvent = useCallback((event: SetupEvent) => {
-    if (event.kind === 'progress') {
+    const classified = classifySetupEvent(event)
+    if (classified.kind === 'incremental') {
       setSnapshot((current) => current && {
         ...current,
-        readiness: applySetupProgress(current.readiness, event),
+        readiness: applySetupProgress(current.readiness, classified.event),
       })
     }
-    if (event.kind === 'failed') onError(event.error)
+    if (classified.kind === 'terminal' && classified.error != null) {
+      onError(classified.error)
+    }
   }, [onError])
   const getSettingsSetupRefresh = useCallback((event: SetupEvent) => {
-    if (event.kind === 'progress') return null
+    if (classifySetupEvent(event).kind === 'incremental') return null
     const version = settingsMutationVersion.current
-    return () => getSettings().then((next) => () => {
+    return () => getSettings().then((next) => async () => {
       if (settingsMutationVersion.current === version) {
         setSnapshot(next)
       }
-      void onStatusChange()
+      await onStatusChange()
     })
   }, [onStatusChange])
   useAsyncSubscription({

@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.14.9
+
+- Rust cancellation and recording-stop tests now use causal synchronization instead of scheduler-sensitive internal watchdogs.
+- GitHub Actions, Cargo, and frontend dependencies were refreshed, including notify-rust 4.18, Lucide 1.x, and TypeScript 7.
+- Builds now require Rust 1.89. The frontend uses TypeScript 7 for strict full-project typechecking and Oxlint's native type-aware rules, replacing the legacy ESLint and TypeScript 6 compatibility bridge.
+- Setup completion refreshes are exhaustive and processed in order, while failed frontend operations are handled without unowned rejections or duplicate error reports.
+- Shortcut verification now expires after 30 days, reacts when the active shortcut identity becomes available, and reliably stops attributed recordings after a timeout or unmount.
+
 ## v0.14.8
 
 - Rust cancellation and recording-stop tests are now deterministic.

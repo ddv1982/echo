@@ -1,3 +1,4 @@
+import { describe, expect, it } from 'vitest'
 import { presentShortcut } from './shortcut'
 import type { GnomeShortcutSetup } from './generated/ipc'
 

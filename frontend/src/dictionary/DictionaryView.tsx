@@ -1,7 +1,9 @@
 import { Mic, Plus, Trash2 } from 'lucide-react'
-import { FormEvent, useRef, useState } from 'react'
+import { useRef, useState } from 'react'
+import type { SubmitEvent } from 'react'
 
 import { BarsMotif, ViewHeader } from '../app/chrome'
+import { messageFrom } from '../app/formatting'
 import type { DictionaryBatchResult, DictionaryItem } from '../generated/ipc'
 import { DictionaryTrainer } from './DictionaryTrainer'
 
@@ -10,18 +12,20 @@ export function DictionaryView({
   onAdd,
   onAddBatch,
   onRemove,
+  onError,
 }: {
   items: DictionaryItem[]
   onAdd: (spoken: string, written: string) => Promise<void>
   onAddBatch: (written: string, spoken: string[]) => Promise<DictionaryBatchResult>
   onRemove: (item: DictionaryItem) => Promise<void>
+  onError: (message: string) => void
 }) {
   const [spoken, setSpoken] = useState('')
   const [written, setWritten] = useState('')
   const [saving, setSaving] = useState(false)
   const [trainerOpen, setTrainerOpen] = useState(false)
   const trainerTriggerRef = useRef<HTMLButtonElement>(null)
-  const submit = async (event: FormEvent) => {
+  const submit = async (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (!spoken.trim() || !written.trim()) return
     setSaving(true)
@@ -29,6 +33,8 @@ export function DictionaryView({
       await onAdd(spoken, written)
       setSpoken('')
       setWritten('')
+    } catch (reason) {
+      onError(messageFrom(reason))
     } finally {
       setSaving(false)
     }

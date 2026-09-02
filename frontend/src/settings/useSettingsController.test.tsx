@@ -1,7 +1,8 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createPreviewDesktopApi } from '../api/previewDesktopApi'
-import type { SetupEvent } from '../generated/ipc'
+import type { SettingsChange, SetupEvent } from '../generated/ipc'
 import {
   configureDesktopApi,
   getSettings,
@@ -17,8 +18,8 @@ vi.mock('../tauri', async (importOriginal) => {
   return {
     ...actual,
     getSettings: vi.fn(() => actual.getSettings()),
-    onSetupEvent: vi.fn((handler) => actual.onSetupEvent(handler)),
-    setSettings: vi.fn((change) => actual.setSettings(change)),
+    onSetupEvent: vi.fn((handler: (event: SetupEvent) => void) => actual.onSetupEvent(handler)),
+    setSettings: vi.fn((change: SettingsChange) => actual.setSettings(change)),
   }
 })
 
@@ -115,5 +116,60 @@ describe('useSettingsController', () => {
     staleRefresh.resolve(staleSettings)
     await act(async () => staleRefresh.promise)
     await waitFor(() => expect(result.current.settings?.hud.value).toBe(false))
+  })
+
+  it('waits for setup status propagation before starting a later terminal refresh', async () => {
+    let setupEvent: ((event: SetupEvent) => void) | null = null
+    vi.mocked(onSetupEvent).mockImplementation((handler) => {
+      setupEvent = handler
+      return Promise.resolve(vi.fn())
+    })
+    const statusSettlement = deferred<void>()
+    const onStatusChange = vi.fn(() => statusSettlement.promise)
+    const onError = vi.fn()
+    const { result } = renderHook(() => useSettingsController({
+      onStatusChange,
+      onError,
+    }))
+    await waitFor(() => {
+      expect(result.current.settings).not.toBeNull()
+      expect(setupEvent).not.toBeNull()
+    })
+
+    act(() => setupEvent?.({ kind: 'finished', operationId: 'first' }))
+    await waitFor(() => expect(onStatusChange).toHaveBeenCalledOnce())
+
+    await act(async () => {
+      setupEvent?.({ kind: 'finished', operationId: 'second' })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(getSettings).toHaveBeenCalledTimes(2)
+
+    await act(async () => statusSettlement.resolve())
+    await waitFor(() => expect(getSettings).toHaveBeenCalledTimes(3))
+  })
+
+  it('reports a rejected setup status propagation through the settings error path', async () => {
+    let setupEvent: ((event: SetupEvent) => void) | null = null
+    vi.mocked(onSetupEvent).mockImplementation((handler) => {
+      setupEvent = handler
+      return Promise.resolve(vi.fn())
+    })
+    const onStatusChange = vi.fn().mockRejectedValue(new Error('status refresh failed'))
+    const onError = vi.fn()
+    const { result } = renderHook(() => useSettingsController({
+      onStatusChange,
+      onError,
+    }))
+    await waitFor(() => {
+      expect(result.current.settings).not.toBeNull()
+      expect(setupEvent).not.toBeNull()
+    })
+
+    act(() => setupEvent?.({ kind: 'finished', operationId: 'setup' }))
+
+    await waitFor(() => expect(onError).toHaveBeenCalledWith('status refresh failed'))
   })
 })

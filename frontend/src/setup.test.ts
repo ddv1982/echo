@@ -1,5 +1,6 @@
-import { presentSpeechSetup } from './setup'
-import type { ComponentStatus, Readiness, SetupPlan } from './generated/ipc'
+import { describe, expect, it } from 'vitest'
+import { classifySetupEvent, presentSpeechSetup } from './setup'
+import type { ComponentStatus, Readiness, SetupEvent, SetupPlan } from './generated/ipc'
 
 function component(
   id: ComponentStatus['id'],
@@ -54,6 +55,40 @@ function readiness(overrides: Partial<Readiness> = {}): Readiness {
     ...overrides,
   }
 }
+
+describe('setup event classification', () => {
+  it('classifies every generated setup event discriminant', () => {
+    const progress: Extract<SetupEvent, { kind: 'progress' }> = {
+      kind: 'progress',
+      progress: {
+        operationId: 'install-1',
+        component: 'whisper-runtime',
+        phase: 'downloading',
+        receivedBytes: 25,
+        totalBytes: 100,
+        resumedFromBytes: 0,
+      },
+    }
+
+    expect(classifySetupEvent(progress)).toEqual({ kind: 'incremental', event: progress })
+    expect(classifySetupEvent({ kind: 'finished', operationId: 'install-1' })).toEqual({
+      kind: 'terminal',
+      error: null,
+    })
+    expect(classifySetupEvent({ kind: 'cancelled', operationId: 'install-1' })).toEqual({
+      kind: 'terminal',
+      error: null,
+    })
+    expect(classifySetupEvent({
+      kind: 'failed',
+      operationId: 'install-1',
+      error: 'checksum mismatch',
+    })).toEqual({
+      kind: 'terminal',
+      error: 'checksum mismatch',
+    })
+  })
+})
 
 describe('speech setup presentation', () => {
   it('reduces a ready inventory to one useful summary', () => {

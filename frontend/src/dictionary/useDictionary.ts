@@ -41,14 +41,9 @@ export function useDictionary(onError: (reason: unknown) => void) {
   }, [onError])
 
   const add = useCallback(async (spoken: string, written: string) => {
-    try {
-      await addDictionaryEntry(spoken, written)
-      await refresh()
-    } catch (reason) {
-      if (active.current) onError(reason)
-      throw reason
-    }
-  }, [onError, refresh])
+    await addDictionaryEntry(spoken, written)
+    await refresh()
+  }, [refresh])
 
   const remove = useCallback(async (entry: DictionaryItem) => {
     try {
@@ -61,15 +56,10 @@ export function useDictionary(onError: (reason: unknown) => void) {
   }, [onError, refresh])
 
   const addBatch = useCallback(async (written: string, spoken: string[]) => {
-    try {
-      const result = await addDictionaryEntriesBatch(written, spoken)
-      if (active.current) setItems(result.entries)
-      return result
-    } catch (reason) {
-      if (active.current) onError(reason)
-      throw reason
-    }
-  }, [onError])
+    const result = await addDictionaryEntriesBatch(written, spoken)
+    if (active.current) setItems(result.entries)
+    return result
+  }, [])
 
   return { items, add, addBatch, remove, refresh }
 }

@@ -8,10 +8,10 @@
     "build": "npm run typecheck && vite build",
     "ipc:check": "cargo run -p echo-ipc-gen -- --check",
     "ipc:generate": "cargo run -p echo-ipc-gen",
-    "typecheck": "node ./node_modules/typescript-native/bin/tsc --noEmit",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:responsive": "playwright test --config playwright.config.ts",
-    "lint": "eslint ."
+    "lint": "oxlint --deny-warnings ."
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.3.0",
@@ -21,21 +21,17 @@
     "react-dom": "^19.2.0"
   },
   "devDependencies": {
-    "@eslint/js": "^10.0.1",
     "@playwright/test": "1.62.1",
     "@testing-library/jest-dom": "^7.0.0",
     "@testing-library/react": "^16.3.3",
+    "@types/node": "^22.0.0",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.5",
     "@vitejs/plugin-react": "^6.1.1",
-    "eslint": "^10.8.0",
-    "eslint-plugin-react-hooks": "^7.0.1",
-    "eslint-plugin-react-refresh": "^0.5.3",
-    "globals": "^17.8.0",
     "jsdom": "^29.1.1",
-    "typescript": "npm:typescript@6.0.3",
-    "typescript-eslint": "^8.65.0",
-    "typescript-native": "npm:typescript@7.0.2",
+    "oxlint": "1.81.0",
+    "oxlint-tsgolint": "7.0.2001",
+    "typescript": "7.0.2",
     "vite": "^8.1.5",
     "vitest": "^4.1.10"
   }
