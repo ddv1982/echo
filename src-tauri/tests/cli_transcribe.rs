@@ -125,7 +125,7 @@ fn text_applies_dictionary_while_raw_preserves_engine_output() {
 }
 
 #[test]
-fn file_transcription_is_read_only_and_has_no_recorder_side_effects() {
+fn corrupt_dictionary_is_a_read_only_runtime_failure() {
     let root = scratch("side-effects");
     let config_dir = root.join("config");
     let data_dir = root.join("data");
@@ -138,14 +138,15 @@ fn file_transcription_is_read_only_and_has_no_recorder_side_effects() {
 
     let wav = fixture();
     let output = run(&root, &["transcribe", wav.to_str().unwrap()]);
-    assert!(output.status.success());
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("invalid JSON"), "{stderr}");
+    assert!(stderr.contains(dictionary.to_str().unwrap()), "{stderr}");
+    assert_eq!(std::fs::read(&config).unwrap(), b"corrupt config sentinel");
     assert_eq!(
-        std::fs::read_to_string(config).unwrap(),
-        "corrupt config sentinel"
-    );
-    assert_eq!(
-        std::fs::read_to_string(dictionary).unwrap(),
-        "corrupt dictionary sentinel"
+        std::fs::read(&dictionary).unwrap(),
+        b"corrupt dictionary sentinel"
     );
     for name in [
         "history.json",

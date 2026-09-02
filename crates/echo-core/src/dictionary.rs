@@ -177,7 +177,12 @@ impl Dictionary {
         let raw = fs::read_to_string(&path).map_err(|err| err.to_string())?;
         let entries = serde_json::from_str::<DictFile>(&raw)
             .map(|file| file.entries)
-            .unwrap_or_default();
+            .map_err(|error| {
+                format!(
+                    "Dictionary file {} contains invalid JSON and was not loaded: {error}",
+                    path.display()
+                )
+            })?;
         Ok(Self { entries, path })
     }
 
@@ -922,15 +927,19 @@ mod tests {
     }
 
     #[test]
-    fn read_only_corrupt_dictionary_does_not_move_or_rewrite_it() {
+    fn read_only_corrupt_dictionary_is_reported_without_modifying_it() {
         let path = std::env::temp_dir().join(format!(
             "echo-dict-read-only-corrupt-{}.json",
             std::process::id()
         ));
-        fs::write(&path, "not json").unwrap();
-        let loaded = Dictionary::load_from_read_only(&path).unwrap();
-        assert!(loaded.entries().is_empty());
-        assert_eq!(fs::read_to_string(&path).unwrap(), "not json");
+        let original = b"{\"entries\":[";
+        fs::write(&path, original).unwrap();
+
+        let error = Dictionary::load_from_read_only(&path).unwrap_err();
+
+        assert!(error.contains("invalid JSON"), "{error}");
+        assert!(error.contains(path.to_str().unwrap()), "{error}");
+        assert_eq!(fs::read(&path).unwrap(), original);
         assert!(!path.with_extension("json.corrupt").exists());
         let _ = fs::remove_file(path);
     }
