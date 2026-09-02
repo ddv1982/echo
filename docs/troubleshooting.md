@@ -61,7 +61,7 @@ echo-desktop --version
 - history, dictionary, and session status: `$XDG_DATA_HOME/echo` or
   `~/.local/share/echo`.
 
-The status file records the active session PID and recording limit. A recording
+The status file records the active session PID, process start time, and recording limit. A recording
 whose writer process died reads as Idle. A Failed state remains visible until
 the next session begins.
 

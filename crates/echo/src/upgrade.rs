@@ -1,5 +1,87 @@
+use std::ffi::{OsStr, OsString};
 use std::io;
 use std::path::Path;
+use std::time::{Duration, Instant};
+
+use crate::process_identity::{self, ProcessIdentity, ProcessObservation};
+
+pub const RESTART_AFTER_FLAG: &str = "--echo-restart-after";
+
+pub fn restart_helper_args() -> Result<Vec<OsString>, String> {
+    let parent = process_identity::current()
+        .ok_or_else(|| "cannot read the current process identity".to_string())?
+        .identity();
+    Ok(vec![
+        OsString::from(RESTART_AFTER_FLAG),
+        OsString::from(parent.pid.to_string()),
+        OsString::from(parent.start_time_ticks.to_string()),
+    ])
+}
+
+pub fn run_restart_helper(args: &[OsString]) -> Option<Result<(), String>> {
+    let parent = match parse_restart_helper(args) {
+        Ok(Some(parent)) => parent,
+        Ok(None) => return None,
+        Err(error) => return Some(Err(error)),
+    };
+    if !wait_for_process_exit(parent, Duration::from_secs(30)) {
+        return Some(Err(
+            "timed out waiting for the previous desktop process to exit".to_string(),
+        ));
+    }
+    Some(Ok(()))
+}
+
+fn parse_restart_helper(args: &[OsString]) -> Result<Option<ProcessIdentity>, String> {
+    if args.first().map(OsString::as_os_str) != Some(OsStr::new(RESTART_AFTER_FLAG)) {
+        return Ok(None);
+    }
+    if args.len() != 3 {
+        return Err("invalid replacement helper arguments".to_string());
+    }
+    let pid = args[1]
+        .to_str()
+        .and_then(|value| value.parse().ok())
+        .ok_or_else(|| "invalid replacement parent pid".to_string())?;
+    let start_time_ticks = args[2]
+        .to_str()
+        .and_then(|value| value.parse().ok())
+        .ok_or_else(|| "invalid replacement parent start time".to_string())?;
+    Ok(Some(ProcessIdentity {
+        pid,
+        start_time_ticks,
+    }))
+}
+
+fn wait_for_process_exit(parent: ProcessIdentity, timeout: Duration) -> bool {
+    wait_for_process_exit_with(
+        parent,
+        timeout,
+        process_identity::observe,
+        std::thread::sleep,
+    )
+}
+
+fn wait_for_process_exit_with(
+    parent: ProcessIdentity,
+    timeout: Duration,
+    mut observe: impl FnMut(u32) -> Option<ProcessObservation>,
+    mut sleep: impl FnMut(Duration),
+) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let still_parent = observe(parent.pid).is_some_and(|process| {
+            process.state != 'Z' && process.start_time_ticks == parent.start_time_ticks
+        });
+        if !still_parent {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        sleep(Duration::from_millis(10));
+    }
+}
 
 /// Device plus inode: the identity of the file a running process was loaded
 /// from. A package upgrade replaces the file, which changes the identity even
@@ -30,16 +112,6 @@ pub enum SecondLaunch {
 pub enum StartupCleanup {
     Defer,
     TerminateStaleGui,
-}
-
-/// Startup takeover must not interrupt work owned by an existing GUI process.
-#[must_use]
-pub fn startup_cleanup_decision(recording_active: bool) -> StartupCleanup {
-    if recording_active {
-        StartupCleanup::Defer
-    } else {
-        StartupCleanup::TerminateStaleGui
-    }
 }
 
 /// What a second launch should do. Same identity: the binary on disk is the
@@ -119,7 +191,7 @@ pub enum ProcessDisposition {
 /// otherwise coexist with them: two trays, and the upgrade looking like it
 /// never happened. Classify a candidate for takeover at startup. Never touch
 /// ourselves, other users' processes, anything whose executable is not named
-/// echo-desktop, or explicit work (`rec`, `transcribe`, or `--hud-demo`).
+/// echo-desktop, or a process running any explicit command.
 #[must_use]
 pub fn classify_process(
     candidate: &ProcessInfo,
@@ -147,10 +219,7 @@ pub fn classify_process(
         return ProcessDisposition::Keep;
     }
     let args = candidate.cmdline.get(1..).unwrap_or(&[]);
-    if args
-        .iter()
-        .any(|arg| arg == "rec" || arg == "transcribe" || arg == "--hud-demo")
-    {
+    if !args.is_empty() {
         return ProcessDisposition::Keep;
     }
     ProcessDisposition::Terminate
@@ -189,7 +258,7 @@ fn read_process_info(pid: u32) -> Option<ProcessInfo> {
     let exe = std::fs::read_link(dir.join("exe")).ok()?;
     let uid = std::fs::metadata(&dir).ok()?.uid();
     let stat = std::fs::read_to_string(dir.join("stat")).ok()?;
-    let (state, start_time_ticks) = parse_process_stat(&stat)?;
+    let (state, start_time_ticks) = process_identity::parse_stat(&stat)?;
     if state == 'Z' {
         return None;
     }
@@ -222,18 +291,6 @@ fn parse_process_cmdline(raw: &[u8]) -> Option<Vec<String>> {
         .map(|token| String::from_utf8(token.to_vec()))
         .collect::<Result<Vec<_>, _>>()
         .ok()
-}
-
-fn parse_process_stat(raw: &str) -> Option<(char, u64)> {
-    let close = raw.rfind(") ")?;
-    let mut fields = raw.get(close + 2..)?.split_whitespace();
-    let state_text = fields.next()?;
-    let mut state_chars = state_text.chars();
-    let state = state_chars.next()?;
-    if state_chars.next().is_some() {
-        return None;
-    }
-    Some((state, fields.nth(18)?.parse().ok()?))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -326,21 +383,25 @@ fn terminate_processes_with<T>(
 
 /// Terminate old Echo GUI processes: SIGTERM, a brief grace, then SIGKILL.
 /// Runs once at desktop startup, before the tray is built.
-pub fn terminate_old_echo_processes() {
+pub fn terminate_old_echo_processes() -> StartupCleanup {
     use std::os::unix::fs::MetadataExt;
 
+    let Ok(_reservation) = crate::rec::reserve_upgrade_takeover() else {
+        return StartupCleanup::Defer;
+    };
     let Ok(self_uid) = std::fs::metadata("/proc/self").map(|meta| meta.uid()) else {
-        return;
+        return StartupCleanup::TerminateStaleGui;
     };
     terminate_processes_with(
         old_echo_processes(),
         std::process::id(),
         self_uid,
         observe_signal_target,
-        crate::rec::session_active,
+        || false,
         signal_process,
         std::thread::sleep,
     );
+    StartupCleanup::TerminateStaleGui
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -558,15 +619,6 @@ mod tests {
     }
 
     #[test]
-    fn startup_cleanup_preserves_active_gui_work_and_terminates_idle_stale_gui() {
-        assert_eq!(startup_cleanup_decision(true), StartupCleanup::Defer);
-        assert_eq!(
-            startup_cleanup_decision(false),
-            StartupCleanup::TerminateStaleGui
-        );
-    }
-
-    #[test]
     fn changed_binary_restart_is_deferred_only_while_recording() {
         assert_eq!(
             second_launch_decision(id(1, 2), Some(id(1, 3)), true),
@@ -639,7 +691,7 @@ mod tests {
         let mut trailing = vec!["0"; 18];
         trailing.push("998877");
         let raw = format!("22 (old echo (desktop)) S {}", trailing.join(" "));
-        assert_eq!(parse_process_stat(&raw), Some(('S', 998877)));
+        assert_eq!(process_identity::parse_stat(&raw), Some(('S', 998877)));
     }
 
     #[test]
@@ -663,14 +715,10 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn real_pidfd_signal_reaches_the_pinned_controlled_child() -> Result<(), String> {
-        use std::os::unix::fs::MetadataExt;
         use std::os::unix::process::ExitStatusExt;
 
         let mut controlled = PidfdTestChild::spawn()?;
         let pid = controlled.child.id();
-        let self_uid = std::fs::metadata("/proc/self")
-            .map_err(|error| format!("cannot read /proc/self for pidfd integration test: {error}"))?
-            .uid();
 
         let exec_timeout = std::time::Duration::from_secs(5);
         let exec_deadline = std::time::Instant::now() + exec_timeout;
@@ -712,12 +760,6 @@ mod tests {
             Some(std::ffi::OsStr::new("echo-desktop"))
         );
         assert!(!initial.cmdline.is_empty());
-        assert_eq!(
-            classify_process(&initial, std::process::id(), self_uid),
-            ProcessDisposition::Terminate,
-            "the controlled child must have an idle, non-protected command line"
-        );
-
         let (observed, target) = observe_signal_target(pid).ok_or_else(|| {
             format!(
                 "cannot open and observe a real pidfd for controlled child {pid}; Linux pidfd support is required"
@@ -876,7 +918,7 @@ mod tests {
     }
 
     #[test]
-    fn classifier_keeps_recorders_transcriptions_and_demos() {
+    fn classifier_keeps_every_explicit_command() {
         let recorder = process(
             100,
             1000,
@@ -906,6 +948,61 @@ mod tests {
             &["echo-desktop", "--hud-demo"],
         );
         assert_eq!(classify_process(&demo, 200, 1000), ProcessDisposition::Keep);
+        let languages = process(
+            100,
+            1000,
+            "/usr/bin/echo-desktop",
+            &["echo-desktop", "languages"],
+        );
+        assert_eq!(
+            classify_process(&languages, 200, 1000),
+            ProcessDisposition::Keep
+        );
+    }
+
+    #[test]
+    fn replacement_helper_requires_an_exact_parent_identity() {
+        let args = [
+            OsString::from(RESTART_AFTER_FLAG),
+            OsString::from("41"),
+            OsString::from("9001"),
+        ];
+        assert_eq!(
+            parse_restart_helper(&args).unwrap(),
+            Some(ProcessIdentity {
+                pid: 41,
+                start_time_ticks: 9001,
+            })
+        );
+        assert!(parse_restart_helper(&[OsString::from(RESTART_AFTER_FLAG)]).is_err());
+        assert_eq!(
+            parse_restart_helper(&[OsString::from("languages")]).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn replacement_helper_waits_only_for_the_original_process_lifetime() {
+        let parent = ProcessIdentity {
+            pid: 41,
+            start_time_ticks: 9001,
+        };
+        let mut observations = 0;
+        assert!(wait_for_process_exit_with(
+            parent,
+            Duration::from_secs(1),
+            |_| {
+                observations += 1;
+                Some(ProcessObservation {
+                    pid: 41,
+                    state: 'S',
+                    start_time_ticks: if observations == 1 { 9001 } else { 9002 },
+                    start_unix_nanos: None,
+                })
+            },
+            |_| {},
+        ));
+        assert_eq!(observations, 2);
     }
 
     #[test]

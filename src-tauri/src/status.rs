@@ -5,8 +5,18 @@ use std::time::{Duration, Instant};
 use echo::audio::AudioCapture;
 use echo_core::{History, RunDetail, WhisperAccelerationSkip};
 use echo_desktop::ipc::{
-    AccelerationSkipReason, AppStatus, LastRun, LastRunPerformance, RecordingPolicy,
+    AccelerationSkipReason, AppPhase, AppStatus, LastRun, LastRunPerformance, RecordingPolicy,
 };
+
+fn app_phase(state: &str) -> AppPhase {
+    match state {
+        "Idle" => AppPhase::Idle,
+        "Recording" => AppPhase::Recording,
+        "Transcribing" => AppPhase::Transcribing,
+        "Injecting" => AppPhase::Injecting,
+        _ => AppPhase::Failed,
+    }
+}
 
 fn recording_policy_dto() -> RecordingPolicy {
     RecordingPolicy {
@@ -174,9 +184,9 @@ pub(super) fn app_status() -> AppStatus {
     #[cfg(feature = "status-perf-probe")]
     timer.mark(crate::perf::StatusStage::Presentation);
     let app_status = AppStatus {
-        recording: status.state == "Recording",
-        phase: status.state,
+        phase: app_phase(&status.state),
         last_transcript: status.last,
+        last_history_id: status.last_history_id,
         microphone_ready: health.microphone_ready,
         engine_name: health.engine_name,
         engine_ready: health.engine_ready,
@@ -248,6 +258,7 @@ mod tests {
         let active = echo::status::Status {
             state: "Recording".to_string(),
             last: None,
+            last_history_id: None,
             error: None,
             recording_limit: echo_core::RecordingLimit::new(120),
         };

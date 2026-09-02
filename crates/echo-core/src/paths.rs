@@ -75,9 +75,33 @@ pub fn status_path() -> PathBuf {
 
 /// Move an unparseable store aside so the app can start fresh without
 /// destroying the evidence.
-pub(crate) fn set_aside_corrupt(path: &Path) {
-    if let (Some(parent), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) {
-        let _ = fs::rename(path, parent.join(format!("{name}.corrupt")));
+pub(crate) fn set_aside_corrupt(path: &Path) -> Result<PathBuf, String> {
+    let parent = path
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .ok_or_else(|| format!("{} has no private parent directory", path.display()))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| format!("{} has no file name", path.display()))?;
+    PrivateDir::open(parent)
+        .and_then(|directory| directory.set_aside_corrupt(name))
+        .map(|backup| parent.join(backup))
+        .map_err(|error| error.to_string())
+}
+
+pub(crate) fn read_private(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    let parent = path
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .ok_or_else(|| format!("{} has no private parent directory", path.display()))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| format!("{} has no file name", path.display()))?;
+    let directory = PrivateDir::open(parent).map_err(|error| error.to_string())?;
+    match directory.read(name) {
+        Ok(contents) => Ok(Some(contents)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.to_string()),
     }
 }
 
@@ -220,6 +244,11 @@ impl PrivateDir {
     }
 
     pub fn read_to_string(&self, name: &std::ffi::OsStr) -> io::Result<String> {
+        let bytes = self.read(name)?;
+        String::from_utf8(bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    }
+
+    pub fn read(&self, name: &std::ffi::OsStr) -> io::Result<Vec<u8>> {
         let name = private_file_name(name)?;
         let fd = rustix::fs::openat(
             &self.handle,
@@ -228,8 +257,10 @@ impl PrivateDir {
             Mode::empty(),
         )
         .map_err(io::Error::from)?;
-        let mut contents = String::new();
-        fs::File::from(fd).read_to_string(&mut contents)?;
+        let mut file = fs::File::from(fd);
+        rustix::fs::fchmod(&file, Mode::RUSR | Mode::WUSR).map_err(io::Error::from)?;
+        let mut contents = Vec::new();
+        file.read_to_end(&mut contents)?;
         Ok(contents)
     }
 
@@ -281,6 +312,63 @@ impl PrivateDir {
             let _ = self.remove_file(&tmp);
         }
         result
+    }
+
+    fn set_aside_corrupt(&self, name: &std::ffi::OsStr) -> io::Result<PathBuf> {
+        use std::os::unix::fs::MetadataExt;
+
+        let name = private_file_name(name)?;
+        let source = rustix::fs::openat(
+            &self.handle,
+            name,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map(fs::File::from)
+        .map_err(io::Error::from)?;
+        let source_metadata = source.metadata()?;
+        if !source_metadata.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "corrupt store is not a regular file",
+            ));
+        }
+
+        for attempt in 0_u32..1_000 {
+            let mut candidate = name.to_os_string();
+            candidate.push(if attempt == 0 {
+                ".corrupt".to_string()
+            } else {
+                format!(".corrupt-{attempt}")
+            });
+            match self.hard_link(name, &candidate) {
+                Ok(()) => {
+                    let linked = rustix::fs::openat(
+                        &self.handle,
+                        &candidate,
+                        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                        Mode::empty(),
+                    )
+                    .map(fs::File::from)
+                    .map_err(io::Error::from)?;
+                    let linked_metadata = linked.metadata()?;
+                    if linked_metadata.dev() != source_metadata.dev()
+                        || linked_metadata.ino() != source_metadata.ino()
+                    {
+                        let _ = self.remove_file(&candidate);
+                        return Err(io::Error::other("corrupt store changed during backup"));
+                    }
+                    self.remove_file(name)?;
+                    return Ok(PathBuf::from(candidate));
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "could not allocate a corrupt backup name",
+        ))
     }
 }
 

@@ -5,6 +5,7 @@ pub mod inject;
 pub mod install;
 pub mod microphone;
 pub mod notify;
+pub mod process_identity;
 pub mod rec;
 pub mod settings;
 pub mod status;

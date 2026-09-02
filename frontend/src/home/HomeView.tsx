@@ -24,12 +24,13 @@ export function HomeView({
   onOpenSettings: () => void
 }) {
   const shortcut = presentShortcut(status.shortcut)
-  const heroState = status.recording
+  const recording = status.phase === 'Recording'
+  const heroState = recording
     ? 'recording'
     : status.phase === 'Transcribing'
       ? 'transcribing'
       : 'idle'
-  const stateCopy = status.recording
+  const stateCopy = recording
     ? ['Listening…', 'Speak naturally, then press the shortcut again.']
     : status.phase === 'Transcribing'
       ? ['Transcribing locally…', `${status.engineName} is turning your recording into text.`]
@@ -43,15 +44,15 @@ export function HomeView({
             className="record-orb"
             type="button"
             onClick={() => void onToggleRecording()}
-            aria-label={status.recording ? 'Stop and transcribe' : 'Start recording'}
+            aria-label={recording ? 'Stop and transcribe' : 'Start recording'}
           >
             <span className="record-ring" aria-hidden="true" />
-            {status.recording ? <Waves size={26} /> : <Mic size={26} />}
+            {recording ? <Waves size={26} /> : <Mic size={26} />}
           </button>
           <div className="hero-copy">
             <div className="readout">
-              <span>{status.recording ? 'Listening' : status.phase === 'Transcribing' ? 'Transcribing' : 'Ready'}</span>
-              {status.recording ? (
+              <span>{recording ? 'Listening' : status.phase === 'Transcribing' ? 'Transcribing' : 'Ready'}</span>
+              {recording ? (
                 <span className="readout-timer">
                   {status.recordingLimitSeconds == null
                     ? formatDuration(recordingSeconds)
@@ -61,7 +62,7 @@ export function HomeView({
             </div>
             <h2>{stateCopy[0]}</h2>
             <p>{stateCopy[1]}</p>
-            {status.recording ? <LevelBars live={status.recordingInProcess} /> : null}
+            {recording ? <LevelBars live={status.recordingInProcess} /> : null}
             <div className="record-actions">
               <div className="shortcut-hint">
                 <kbd>{shortcut.display}</kbd>
@@ -92,7 +93,7 @@ export function HomeView({
 
       <div className="home-grid">
         <section className="panel last-transcript">
-          <SectionHeading title="Last transcript" subtitle="Most recently inserted text" />
+          <SectionHeading title="Last transcript" subtitle="Most recently transcribed text" />
           {status.lastTranscript ? (
             <blockquote>{status.lastTranscript}</blockquote>
           ) : (

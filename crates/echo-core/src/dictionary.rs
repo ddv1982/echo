@@ -1,12 +1,14 @@
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use caseless::Caseless;
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
+use unicode_normalization::UnicodeNormalization;
+use unicode_segmentation::UnicodeSegmentation;
 
-use crate::paths::{dictionary_path, set_aside_corrupt, write_atomic_private};
+use crate::paths::{dictionary_path, read_private, set_aside_corrupt, write_atomic_private};
 
 const MATCH_CHUNK_ENTRIES: usize = 64;
 const MATCH_CHUNK_PATTERN_BYTES: usize = 16 * 1024;
@@ -29,9 +31,39 @@ enum PhraseMatcher {
     },
     Literal {
         entry_index: usize,
-        lowercase: String,
-        uppercase: String,
+        needle: String,
     },
+}
+
+struct FoldedText {
+    text: String,
+    original_boundaries: Vec<Option<usize>>,
+}
+
+impl FoldedText {
+    fn new(original: &str) -> Self {
+        let mut text = String::new();
+        let mut original_boundaries = vec![Some(0)];
+        for (start, grapheme) in original.grapheme_indices(true) {
+            let folded = canonical_fold(grapheme);
+            let folded_start = text.len();
+            text.push_str(&folded);
+            original_boundaries.resize(text.len() + 1, None);
+            original_boundaries[folded_start] = Some(start);
+            original_boundaries[text.len()] = Some(start + grapheme.len());
+        }
+        Self {
+            text,
+            original_boundaries,
+        }
+    }
+
+    fn original_range(&self, start: usize, end: usize) -> Option<(usize, usize)> {
+        Some((
+            self.original_boundaries.get(start).copied().flatten()?,
+            self.original_boundaries.get(end).copied().flatten()?,
+        ))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -68,7 +100,7 @@ impl RecognitionHints {
             if term.is_empty() || term.len() > Self::MAX_PROMPT_BYTES {
                 continue;
             }
-            let key = term.to_lowercase();
+            let key = canonical_fold(&term);
             if !keys.insert(key) {
                 continue;
             }
@@ -142,17 +174,16 @@ impl Dictionary {
 
     pub fn load_from(path: impl AsRef<Path>) -> Result<Self, String> {
         let path = path.as_ref().to_path_buf();
-        if !path.exists() {
+        let Some(raw) = read_private(&path)? else {
             return Ok(Self {
                 entries: Vec::new(),
                 path,
             });
-        }
-        let raw = fs::read_to_string(&path).map_err(|err| err.to_string())?;
-        let entries = match serde_json::from_str::<DictFile>(&raw) {
+        };
+        let entries = match serde_json::from_slice::<DictFile>(&raw) {
             Ok(file) => file.entries,
             Err(error) => {
-                set_aside_corrupt(&path);
+                set_aside_corrupt(&path)?;
                 return Err(format!(
                     "Dictionary file {} contains invalid JSON and was not loaded: {error}",
                     path.display()
@@ -168,14 +199,13 @@ impl Dictionary {
 
     pub fn load_from_read_only(path: impl AsRef<Path>) -> Result<Self, String> {
         let path = path.as_ref().to_path_buf();
-        if !path.exists() {
+        let Some(raw) = read_private(&path)? else {
             return Ok(Self {
                 entries: Vec::new(),
                 path,
             });
-        }
-        let raw = fs::read_to_string(&path).map_err(|err| err.to_string())?;
-        let entries = serde_json::from_str::<DictFile>(&raw)
+        };
+        let entries = serde_json::from_slice::<DictFile>(&raw)
             .map(|file| file.entries)
             .map_err(|error| {
                 format!(
@@ -337,6 +367,7 @@ impl Dictionary {
         }
         let mut taken = vec![false; text.len()];
         let mut hits: Vec<(usize, usize, &str)> = Vec::new();
+        let folded_text = FoldedText::new(text);
         let mut ranked: Vec<(usize, &DictEntry)> = self.entries.iter().enumerate().collect();
         ranked.sort_by(|(left_index, left), (right_index, right)| {
             right
@@ -354,9 +385,13 @@ impl Dictionary {
         let matchers = compile_phrase_matchers(&self.entries, &ranked_indices, limits);
 
         for matcher in matchers {
-            let mut candidates = matcher_candidates(&matcher, text);
+            let mut candidates = matcher_candidates(&matcher, &folded_text.text);
             candidates.sort_by_key(|(priority, start, _)| (*priority, *start));
-            for (priority, start, end) in candidates {
+            for (priority, folded_start, folded_end) in candidates {
+                let Some((start, end)) = folded_text.original_range(folded_start, folded_end)
+                else {
+                    continue;
+                };
                 if taken[start..end].iter().any(|flag| *flag) {
                     continue;
                 }
@@ -388,7 +423,8 @@ fn compile_phrase_matchers(
         let mut chunk_end = chunk_start;
         let mut pattern_bytes = 0usize;
         while chunk_end < ranked_indices.len() && chunk_end - chunk_start < max_entries {
-            let escaped_bytes = regex::escape(&entries[ranked_indices[chunk_end]].spoken).len();
+            let escaped_bytes =
+                regex::escape(&canonical_fold(&entries[ranked_indices[chunk_end]].spoken)).len();
             if chunk_end > chunk_start
                 && pattern_bytes.saturating_add(escaped_bytes) > max_pattern_bytes
             {
@@ -420,7 +456,9 @@ fn compile_matcher_chunk(
             pattern.push('|');
         }
         pattern.push('(');
-        pattern.push_str(&regex::escape(&entries[*entry_index].spoken));
+        pattern.push_str(&regex::escape(&canonical_fold(
+            &entries[*entry_index].spoken,
+        )));
         pattern.push_str(r")(?:$|[^\w'])");
     }
     pattern.push(')');
@@ -446,14 +484,13 @@ fn compile_matcher_chunk(
         );
     } else {
         let entry_index = entry_indices[0];
-        let spoken = &entries[entry_index].spoken;
-        if let Ok(regex) = compile_phrase_regex(&regex::escape(spoken), None) {
+        let spoken = canonical_fold(&entries[entry_index].spoken);
+        if let Ok(regex) = compile_phrase_regex(&regex::escape(&spoken), None) {
             matchers.push(PhraseMatcher::SingleRegex { regex, entry_index });
         } else {
             matchers.push(PhraseMatcher::Literal {
                 entry_index,
-                lowercase: spoken.chars().flat_map(char::to_lowercase).collect(),
-                uppercase: spoken.chars().flat_map(char::to_uppercase).collect(),
+                needle: spoken,
             });
         }
     }
@@ -461,7 +498,6 @@ fn compile_matcher_chunk(
 
 fn compile_phrase_regex(pattern: &str, size_limit: Option<usize>) -> Result<Regex, regex::Error> {
     let mut builder = RegexBuilder::new(pattern);
-    builder.case_insensitive(true);
     if let Some(size_limit) = size_limit {
         builder.size_limit(size_limit);
     }
@@ -487,17 +523,9 @@ fn matcher_candidates(matcher: &PhraseMatcher, text: &str) -> Vec<(usize, usize,
             .find_iter(text)
             .map(|matched| (0, matched.start(), matched.end()))
             .collect(),
-        PhraseMatcher::Literal {
-            lowercase,
-            uppercase,
-            ..
-        } => text
-            .char_indices()
-            .filter_map(|(start, _)| {
-                folded_literal_end(text, start, lowercase, char::to_lowercase)
-                    .or_else(|| folded_literal_end(text, start, uppercase, char::to_uppercase))
-                    .map(|end| (0, start, end))
-            })
+        PhraseMatcher::Literal { needle, .. } => text
+            .match_indices(needle)
+            .map(|(start, matched)| (0, start, start + matched.len()))
             .collect(),
     }
 }
@@ -508,28 +536,6 @@ fn matcher_entry_index(matcher: &PhraseMatcher, priority: usize) -> usize {
         PhraseMatcher::SingleRegex { entry_index, .. }
         | PhraseMatcher::Literal { entry_index, .. } => *entry_index,
     }
-}
-
-fn folded_literal_end<I>(
-    text: &str,
-    start: usize,
-    folded_needle: &str,
-    fold: impl Fn(char) -> I,
-) -> Option<usize>
-where
-    I: Iterator<Item = char>,
-{
-    let mut folded = String::new();
-    for (offset, character) in text[start..].char_indices() {
-        folded.extend(fold(character));
-        if folded == folded_needle {
-            return Some(start + offset + character.len_utf8());
-        }
-        if !folded_needle.starts_with(&folded) {
-            return None;
-        }
-    }
-    None
 }
 
 fn apply_hits(text: &str, hits: &[(usize, usize, &str)]) -> String {
@@ -570,7 +576,11 @@ fn clean_phrase(value: &str) -> String {
 }
 
 fn phrase_key(value: &str) -> String {
-    clean_phrase(value).to_lowercase()
+    canonical_fold(&clean_phrase(value))
+}
+
+fn canonical_fold(value: &str) -> String {
+    value.chars().nfd().default_case_fold().nfd().collect()
 }
 
 fn now_secs() -> u64 {
@@ -583,6 +593,7 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     fn dict(entries: &[(&str, &str)]) -> Dictionary {
         Dictionary {
@@ -646,6 +657,24 @@ mod tests {
     fn rewrites_accented_text_with_unicode_case_folding() {
         let d = dict(&[("école", "school")]);
         assert_eq!(d.rewrite("ÉCOLE et école"), "school et school");
+    }
+
+    #[test]
+    fn canonical_equivalents_match_in_both_directions() {
+        let composed = dict(&[("école", "school")]);
+        assert_eq!(composed.rewrite("e\u{301}cole"), "school");
+
+        let decomposed = dict(&[("e\u{301}cole", "school")]);
+        assert_eq!(decomposed.rewrite("ÉCOLE"), "school");
+    }
+
+    #[test]
+    fn full_case_folds_match_only_at_original_grapheme_boundaries() {
+        let word = dict(&[("straße", "street")]);
+        assert_eq!(word.rewrite("STRASSE und Straße"), "street und street");
+
+        let letter = dict(&[("s", "S")]);
+        assert_eq!(letter.rewrite("ß s"), "ß S");
     }
 
     #[test]
@@ -928,10 +957,13 @@ mod tests {
 
     #[test]
     fn read_only_corrupt_dictionary_is_reported_without_modifying_it() {
-        let path = std::env::temp_dir().join(format!(
-            "echo-dict-read-only-corrupt-{}.json",
+        let dir = std::env::temp_dir().join(format!(
+            "echo-dict-read-only-corrupt-{}",
             std::process::id()
         ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("dictionary.json");
         let original = b"{\"entries\":[";
         fs::write(&path, original).unwrap();
 
@@ -941,7 +973,7 @@ mod tests {
         assert!(error.contains(path.to_str().unwrap()), "{error}");
         assert_eq!(fs::read(&path).unwrap(), original);
         assert!(!path.with_extension("json.corrupt").exists());
-        let _ = fs::remove_file(path);
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

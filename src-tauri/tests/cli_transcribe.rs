@@ -133,7 +133,7 @@ fn corrupt_dictionary_is_a_read_only_runtime_failure() {
     std::fs::create_dir_all(&data_dir).unwrap();
     let config = config_dir.join("config.json");
     let dictionary = data_dir.join("dictionary.json");
-    std::fs::write(&config, "corrupt config sentinel").unwrap();
+    std::fs::write(&config, "{}").unwrap();
     std::fs::write(&dictionary, "corrupt dictionary sentinel").unwrap();
 
     let wav = fixture();
@@ -143,7 +143,7 @@ fn corrupt_dictionary_is_a_read_only_runtime_failure() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("invalid JSON"), "{stderr}");
     assert!(stderr.contains(dictionary.to_str().unwrap()), "{stderr}");
-    assert_eq!(std::fs::read(&config).unwrap(), b"corrupt config sentinel");
+    assert_eq!(std::fs::read(&config).unwrap(), b"{}");
     assert_eq!(
         std::fs::read(&dictionary).unwrap(),
         b"corrupt dictionary sentinel"

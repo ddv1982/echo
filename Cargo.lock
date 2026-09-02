@@ -559,6 +559,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "caseless"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b6fd507454086c8edfd769ca6ada439193cdb209c7681712ef6275cccbfe5d8"
+dependencies = [
+ "unicode-normalization",
+]
+
+[[package]]
 name = "cc"
 version = "1.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1157,7 +1166,7 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "echo"
-version = "0.14.10"
+version = "0.14.11"
 dependencies = [
  "bzip2",
  "cpal",
@@ -1175,23 +1184,27 @@ dependencies = [
  "tempfile",
  "tiny-skia",
  "ureq",
+ "uuid",
  "x11rb 0.14.0",
 ]
 
 [[package]]
 name = "echo-core"
-version = "0.14.10"
+version = "0.14.11"
 dependencies = [
+ "caseless",
  "fs2",
  "regex",
  "rustix",
  "serde",
  "serde_json",
+ "unicode-normalization",
+ "unicode-segmentation",
 ]
 
 [[package]]
 name = "echo-desktop"
-version = "0.14.10"
+version = "0.14.11"
 dependencies = [
  "ashpd",
  "clap",
@@ -1210,7 +1223,7 @@ dependencies = [
 
 [[package]]
 name = "echo-ipc"
-version = "0.14.10"
+version = "0.14.11"
 dependencies = [
  "echo",
  "echo-core",
@@ -1221,7 +1234,7 @@ dependencies = [
 
 [[package]]
 name = "echo-ipc-gen"
-version = "0.14.10"
+version = "0.14.11"
 dependencies = [
  "echo-ipc",
 ]
@@ -5046,6 +5059,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
 
 [[package]]
+name = "unicode-normalization"
+version = "0.1.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5fd4f6878c9cb28d874b009da9e8d183b5abc80117c40bbd187a1fde336be6e8"
+dependencies = [
+ "tinyvec",
+]
+
+[[package]]
 name = "unicode-segmentation"
 version = "1.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6065,7 +6087,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "xtask"
-version = "0.14.10"
+version = "0.14.11"
 dependencies = [
  "png 0.18.1",
  "resvg",

@@ -1,15 +1,17 @@
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use echo_core::{status_path, write_atomic_private, RecordingLimit, SessionState};
+use echo_core::{status_path, write_atomic_private, PrivateDir, RecordingLimit, SessionState};
+
+use crate::process_identity::{self, ProcessIdentity};
 
 /// Status file contents after staleness handling.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Status {
     pub state: String,
     pub last: Option<String>,
+    pub last_history_id: Option<String>,
     /// Actionable failure detail from the session, including engine and local
     /// persistence errors, so the desktop app can expose the actual problem.
     pub error: Option<String>,
@@ -22,6 +24,7 @@ impl Status {
         Self {
             state: "Idle".to_string(),
             last: None,
+            last_history_id: None,
             error: None,
             recording_limit: None,
         }
@@ -45,8 +48,12 @@ pub fn write_status(
     state: SessionState,
     last: Option<&str>,
     error: Option<&str>,
+    last_history_id: Option<&str>,
 ) -> Result<(), String> {
-    write_atomic_private(&status_path(), render(state, last, error).as_bytes())
+    write_atomic_private(
+        &status_path(),
+        render(state, last, error, last_history_id).as_bytes(),
+    )
 }
 
 pub fn write_recording(limit: RecordingLimit) -> Result<(), String> {
@@ -54,13 +61,18 @@ pub fn write_recording(limit: RecordingLimit) -> Result<(), String> {
 }
 
 fn render_recording(limit: RecordingLimit) -> String {
-    let mut body = format!("state=Recording\npid={}\n", std::process::id());
+    let mut body = render_writer("Recording");
     body.push_str(&format!("recording_limit_seconds={}\n", limit.seconds()));
     body
 }
 
-pub(crate) fn render(state: SessionState, last: Option<&str>, error: Option<&str>) -> String {
-    let mut body = format!("state={}\npid={}\n", state_name(state), std::process::id());
+pub(crate) fn render(
+    state: SessionState,
+    last: Option<&str>,
+    error: Option<&str>,
+    last_history_id: Option<&str>,
+) -> String {
+    let mut body = render_writer(&state_name(state));
     if let Some(text) = last {
         // The file is line-oriented; collapse newlines so a multiline
         // transcript cannot leave stray lines behind the last= field.
@@ -75,6 +87,19 @@ pub(crate) fn render(state: SessionState, last: Option<&str>, error: Option<&str
         body.push_str(detail.trim());
         body.push('\n');
     }
+    if let Some(id) = last_history_id {
+        body.push_str("last_history_id=");
+        body.push_str(id.trim());
+        body.push('\n');
+    }
+    body
+}
+
+fn render_writer(state: &str) -> String {
+    let mut body = format!("state={state}\npid={}\n", std::process::id());
+    if let Some(process) = process_identity::current() {
+        body.push_str(&format!("pid_start_ticks={}\n", process.start_time_ticks));
+    }
     body
 }
 
@@ -83,10 +108,14 @@ pub(crate) fn render(state: SessionState, last: Option<&str>, error: Option<&str
 /// next session overwrites them.
 #[must_use]
 pub fn read() -> Status {
-    match fs::read_to_string(status_path()) {
-        Ok(raw) => parse(&raw, pid_alive),
-        Err(_) => Status::idle(),
-    }
+    let path = status_path();
+    let Some(parent) = path.parent() else {
+        return Status::idle();
+    };
+    PrivateDir::open(parent)
+        .and_then(|directory| directory.read_to_string(path.file_name().unwrap_or_default()))
+        .map(|raw| parse(&raw, process_identity::alive))
+        .unwrap_or_else(|_| Status::idle())
 }
 
 #[must_use]
@@ -101,7 +130,10 @@ fn shortcut_activation_path() -> PathBuf {
 /// Return the opaque token written by the last fixed shortcut action.
 #[must_use]
 pub fn shortcut_activation() -> Option<String> {
-    fs::read_to_string(shortcut_activation_path())
+    let path = shortcut_activation_path();
+    let name = path.file_name()?;
+    PrivateDir::open(path.parent()?)
+        .and_then(|directory| directory.read_to_string(name))
         .ok()
         .filter(|token| !token.trim().is_empty())
 }
@@ -143,7 +175,7 @@ pub fn shortcut_recording_token(activation: &str) -> Option<&str> {
         .filter(|token| !token.is_empty())
 }
 
-fn parse(raw: &str, alive: impl Fn(&str) -> bool) -> Status {
+fn parse(raw: &str, alive: impl Fn(ProcessIdentity) -> bool) -> Status {
     let field = |key: &str| raw.lines().find_map(|line| line.strip_prefix(key));
     let state = field("state=").unwrap_or("Idle").to_string();
     let last = field("last=")
@@ -151,6 +183,9 @@ fn parse(raw: &str, alive: impl Fn(&str) -> bool) -> Status {
         .map(str::to_string);
     let error = field("error=")
         .filter(|text| !text.trim().is_empty())
+        .map(str::to_string);
+    let last_history_id = field("last_history_id=")
+        .filter(|id| !id.trim().is_empty())
         .map(str::to_string);
     let recording_limit = (state == "Recording")
         .then(|| {
@@ -160,10 +195,18 @@ fn parse(raw: &str, alive: impl Fn(&str) -> bool) -> Status {
         })
         .flatten();
     let active = state != "Idle" && !state.starts_with("Failed");
-    if active && !field("pid=").map(alive).unwrap_or(false) {
+    let writer = field("pid=")
+        .and_then(|pid| pid.parse().ok())
+        .zip(field("pid_start_ticks=").and_then(|ticks| ticks.parse().ok()))
+        .map(|(pid, start_time_ticks)| ProcessIdentity {
+            pid,
+            start_time_ticks,
+        });
+    if active && !writer.is_some_and(&alive) {
         return Status {
             state: "Idle".to_string(),
             last,
+            last_history_id,
             error,
             recording_limit: None,
         };
@@ -171,25 +214,20 @@ fn parse(raw: &str, alive: impl Fn(&str) -> bool) -> Status {
     Status {
         state,
         last,
+        last_history_id,
         error,
         recording_limit,
     }
 }
 
-fn pid_alive(pid: &str) -> bool {
-    pid.trim()
-        .parse::<u32>()
-        .map(|pid| Path::new("/proc").join(pid.to_string()).exists())
-        .unwrap_or(false)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn live_recording_is_reported() {
-        let status = parse("state=Recording\npid=42\n", |_| true);
+        let status = parse("state=Recording\npid=42\npid_start_ticks=7\n", |_| true);
         assert_eq!(status.state, "Recording");
     }
 
@@ -206,11 +244,14 @@ mod tests {
     #[test]
     fn old_and_malformed_recording_limits_are_ignored() {
         let old = parse("state=Recording\npid=42\n", |_| true);
+        assert_eq!(old.state, "Idle");
         assert_eq!(old.recording_limit, None);
 
         for raw in ["0", "601", "invalid", "4294967295"] {
             let status = parse(
-                &format!("state=Recording\npid=42\nrecording_limit_seconds={raw}\n"),
+                &format!(
+                    "state=Recording\npid=42\npid_start_ticks=7\nrecording_limit_seconds={raw}\n"
+                ),
                 |_| true,
             );
             assert_eq!(status.recording_limit, None);
@@ -252,12 +293,13 @@ mod tests {
             SessionState::Idle,
             Some("first line.\r\nsecond line."),
             None,
+            None,
         );
         let status = parse(&body, |_| false);
         assert_eq!(status.state, "Idle");
         assert_eq!(status.last.as_deref(), Some("first line.  second line."));
         // No unparsed stray lines besides state, pid, and last.
-        assert_eq!(body.lines().count(), 3);
+        assert_eq!(body.lines().count(), 4);
     }
 
     #[test]
@@ -268,6 +310,7 @@ mod tests {
             },
             None,
             Some("whisper-cli: failed to load model\nggml_init failed"),
+            None,
         );
         let status = parse(&body, |_| false);
         assert_eq!(status.state, "Failed speech engine failed");
@@ -283,14 +326,23 @@ mod tests {
             SessionState::Idle,
             Some("recoverable transcript"),
             Some("Transcript was not saved to history. Check data directory permissions."),
+            Some("history-42"),
         );
         let status = parse(&body, |_| false);
         assert_eq!(status.state, "Idle");
         assert_eq!(status.last.as_deref(), Some("recoverable transcript"));
+        assert_eq!(status.last_history_id.as_deref(), Some("history-42"));
         assert_eq!(
             status.error.as_deref(),
             Some("Transcript was not saved to history. Check data directory permissions.")
         );
+    }
+
+    #[test]
+    fn reused_pid_does_not_keep_an_active_status_alive() {
+        let raw = "state=Transcribing\npid=42\npid_start_ticks=7\n";
+        let status = parse(raw, |writer| writer.start_time_ticks == 8);
+        assert_eq!(status.state, "Idle");
     }
 
     #[test]

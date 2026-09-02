@@ -11,6 +11,7 @@ import {
   copyText,
   deleteHistoryItem,
   getAppStatus,
+  getHistory,
   getRecordingLevel,
   getShortcutStatus,
   getSettings,
@@ -77,6 +78,7 @@ vi.mock('./tauri', async (importOriginal) => {
     copyText: vi.fn((text: string) => actual.copyText(text)),
     deleteHistoryItem: vi.fn(() => Promise.resolve(false)),
     getAppStatus: vi.fn(() => actual.getAppStatus()),
+    getHistory: vi.fn(() => actual.getHistory()),
     getRecordingLevel: vi.fn(() => actual.getRecordingLevel()),
     getShortcutStatus: vi.fn(() => actual.getShortcutStatus()),
     getSettings: vi.fn(() => actual.getSettings()),
@@ -197,6 +199,8 @@ describe('Echo desktop shell', () => {
     vi.mocked(deleteHistoryItem).mockResolvedValue(true)
     vi.mocked(getAppStatus).mockReset()
     vi.mocked(getAppStatus).mockImplementation(() => actual.getAppStatus())
+    vi.mocked(getHistory).mockReset()
+    vi.mocked(getHistory).mockImplementation(() => actual.getHistory())
     vi.mocked(getRecordingLevel).mockReset()
     vi.mocked(getRecordingLevel).mockImplementation(() => actual.getRecordingLevel())
     vi.mocked(getShortcutStatus).mockReset()
@@ -253,7 +257,7 @@ describe('Echo desktop shell', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     const pending = deferred<number>()
     vi.mocked(getRecordingLevel).mockImplementation(() => pending.promise)
-    seedPreviewStatus({ recording: true, recordingInProcess: true, phase: 'Recording' })
+    seedPreviewStatus({ recordingInProcess: true, phase: 'Recording' })
     try {
       render(<App />)
       await waitFor(() => expect(getRecordingLevel).toHaveBeenCalledOnce())
@@ -678,7 +682,6 @@ describe('Echo desktop shell', () => {
   it('uses the snapped recording limit on Home', async () => {
     seedPreviewStatus({
       phase: 'Recording',
-      recording: true,
       recordingInProcess: false,
       recordingLimitSeconds: 120,
     })
@@ -689,7 +692,6 @@ describe('Echo desktop shell', () => {
   it('does not invent a limit for a legacy active status', async () => {
     seedPreviewStatus({
       phase: 'Recording',
-      recording: true,
       recordingInProcess: false,
       recordingLimitSeconds: null,
     })
@@ -1368,13 +1370,27 @@ describe('Echo desktop shell', () => {
 
   it('surfaces engine stderr on failure', async () => {
     seedPreviewStatus({
-      phase: 'Failed speech engine failed',
+      phase: 'Failed',
       lastError: 'whisper-cli: ggml_init failed',
     })
     render(<App />)
-    await screen.findByText('Failed speech engine failed')
+    await screen.findByText('Failed')
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
     expect(await screen.findByText('whisper-cli: ggml_init failed')).toBeInTheDocument()
+  })
+
+  it('refreshes persisted history when injection ends in failure', async () => {
+    seedPreviewStatus({
+      phase: 'Failed',
+      lastTranscript: 'recoverable transcript',
+      lastHistoryId: 'history-failed-injection',
+    })
+
+    render(<App />)
+
+    await waitFor(() => expect(getHistory).toHaveBeenCalledTimes(2))
+    expect(await screen.findByText('recoverable transcript')).toBeInTheDocument()
+    expect(screen.getByText('Most recently transcribed text')).toBeInTheDocument()
   })
 
   it('offers Auto first, then a common group, then the alphabetical list', async () => {
@@ -1794,7 +1810,7 @@ describe('Echo desktop shell', () => {
     expect(localStorage.getItem('echo-shortcut-verified-at')).toBeNull()
 
     // An unrelated GUI, tray, or CLI recording phase cannot satisfy the check.
-    seedPreviewStatus({ phase: 'Recording', recording: true, recordingInProcess: false })
+    seedPreviewStatus({ phase: 'Recording', recordingInProcess: false })
     await new Promise((resolve) => window.setTimeout(resolve, 30))
     expect(localStorage.getItem('echo-shortcut-verified-at')).toBeNull()
 
@@ -1812,7 +1828,7 @@ describe('Echo desktop shell', () => {
     expect(localStorage.getItem('echo-shortcut-verified-identity')).toBe('portal:Super+Alt+Space')
     expect(await screen.findByText(/Verified/)).toBeInTheDocument()
 
-    seedPreviewStatus({ phase: 'Idle', recording: false, recordingInProcess: false })
+    seedPreviewStatus({ phase: 'Idle', recordingInProcess: false })
     fireEvent.click(screen.getByRole('button', { name: 'Home' }))
     // Everything is green, so the checklist has done its job and is gone.
     await waitFor(() => expect(screen.queryByLabelText('Finish setup')).not.toBeInTheDocument())
@@ -1829,7 +1845,7 @@ describe('Echo desktop shell', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
       fireEvent.click(await screen.findByRole('button', { name: 'Test shortcut' }))
       expect(await screen.findByText('Listening… press your shortcut')).toBeInTheDocument()
-      seedPreviewStatus({ phase: 'Recording', recording: true, recordingInProcess: true })
+      seedPreviewStatus({ phase: 'Recording', recordingInProcess: true })
       await vi.advanceTimersByTimeAsync(10_100)
       expect(await screen.findByText('No keypress seen — check the binding')).toBeInTheDocument()
       expect(localStorage.getItem('echo-shortcut-verified-at')).toBeNull()
@@ -1903,7 +1919,6 @@ describe('Echo desktop shell', () => {
     const activation = shortcutActivation('unmount')
     seedPreviewStatus({
       phase: 'Recording',
-      recording: true,
       shortcut: activeShortcut(activation),
     })
 
@@ -2255,14 +2270,14 @@ describe('Echo desktop shell', () => {
   })
 
   it('parks the level bars for out-of-process sessions and drives them live in-process', async () => {
-    seedPreviewStatus({ recording: true, recordingInProcess: false, phase: 'Recording' })
+    seedPreviewStatus({ recordingInProcess: false, phase: 'Recording' })
     const { rerender } = render(<App />)
     const parked = await screen.findByText('Listening…')
     expect(parked).toBeInTheDocument()
     const bars = document.querySelector('.level-bars')
     expect(bars).toHaveAttribute('data-live', 'false')
 
-    seedPreviewStatus({ recording: true, recordingInProcess: true, phase: 'Recording' })
+    seedPreviewStatus({ recordingInProcess: true, phase: 'Recording' })
     rerender(<App />)
     await waitFor(() => {
       expect(document.querySelector('.level-bars')).toHaveAttribute('data-live', 'true')

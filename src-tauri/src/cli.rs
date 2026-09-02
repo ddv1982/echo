@@ -263,7 +263,7 @@ fn run_transcribe(args: TranscribeArgs) -> Result<(), CliFailure> {
         ));
     }
 
-    let config = Config::load_read_only().map_err(CliFailure::runtime)?;
+    let config = Config::load().map_err(CliFailure::runtime)?;
     let dictionary = Dictionary::load_read_only().map_err(CliFailure::runtime)?;
     let whisper_tuning = (args.whisper_threads.is_some()
         || args.whisper_beam_size.is_some()
@@ -443,7 +443,7 @@ struct LanguageJsonV1<'a> {
 }
 
 fn run_languages(args: LanguagesArgs) -> Result<(), String> {
-    let config = Config::load_read_only()?;
+    let config = Config::load()?;
     let catalog = echo::transcribe::language_catalog(args.engine.map(Into::into), &config);
     let payload = match args.format {
         OutputFormat::Text => render_languages_text(&catalog),

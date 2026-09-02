@@ -56,7 +56,7 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
     return {
       phase: 'Idle',
       lastTranscript: 'This is a test. This is a test.',
-      recording: false,
+      lastHistoryId: null,
       microphoneReady: true,
       engineName: 'Whisper · small · VAD on',
       engineReady: true,
@@ -396,13 +396,12 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
   }
 
   function toggleRecording(): Promise<void> {
-    if (previewStatus.recording) {
+    if (previewStatus.phase === 'Recording') {
       stopPreviewRecording()
     } else {
       const limit = previewSettings.recordSeconds.effective
       previewStatus = {
         ...previewStatus,
-        recording: true,
         recordingInProcess: true,
         phase: 'Recording',
         recordingLimitSeconds: limit,
@@ -427,10 +426,9 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
       clearPreviewTimer(previewRecordingDeadline)
       previewRecordingDeadline = null
     }
-    if (!previewStatus.recording) return false
+    if (previewStatus.phase !== 'Recording') return false
     previewStatus = {
       ...previewStatus,
-      recording: false,
       recordingInProcess: false,
       phase: 'Transcribing',
     }
@@ -441,7 +439,7 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
   }
 
   function getRecordingLevel(): Promise<number> {
-    if (previewStatus.recording && previewStatus.recordingInProcess) {
+    if (previewStatus.phase === 'Recording' && previewStatus.recordingInProcess) {
       const t = Date.now() / 1000
       const level = Math.max(0, 0.06 + 0.22 * Math.abs(Math.sin(t * 2.1) * Math.sin(t * 0.7)))
       return Promise.resolve(level)
@@ -1130,7 +1128,7 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
       engineName: engineNames[settings.engine.effective] ?? settings.engine.effective,
       engineReady: settings.engine.effective !== 'auto',
       hudEnabled: settings.hud.effective,
-      recordingLimitSeconds: previewStatus.recording
+      recordingLimitSeconds: previewStatus.phase === 'Recording'
         ? previewStatus.recordingLimitSeconds
         : settings.recordSeconds.effective,
     }

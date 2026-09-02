@@ -361,7 +361,7 @@ fn process_snapshot_from(discovery: &InputDiscovery) -> MicrophoneSnapshot {
     let system_default = discovered.iter().find(|device| device.is_default).cloned();
     let system_default_is_proxy = system_default.as_ref().is_some_and(is_system_default_proxy);
     let devices = selectable_inputs(&discovered);
-    let file = crate::settings::file_config();
+    let (file, config_error) = crate::settings::config_for_display();
     let environment = std::env::var("ECHO_MICROPHONE").ok();
     let (selection, source) =
         selection_from_sources(environment.as_deref(), file.microphone.as_ref(), &devices);
@@ -390,7 +390,7 @@ fn process_snapshot_from(discovery: &InputDiscovery) -> MicrophoneSnapshot {
         system_default_is_proxy,
         selection,
         devices,
-        enumeration_warning: discovery.warning.clone(),
+        enumeration_warning: config_error.or_else(|| discovery.warning.clone()),
     }
 }
 

@@ -1,5 +1,3 @@
-#![allow(clippy::ptr_arg, clippy::too_many_arguments)]
-
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
@@ -131,6 +129,10 @@ impl Shortcuts {
         Ok(request)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "zbus parameters mirror the GlobalShortcuts portal wire method"
+    )]
     async fn bind_shortcuts(
         &self,
         session_handle: OwnedObjectPath,
@@ -212,7 +214,7 @@ impl Shortcuts {
     async fn shortcuts_changed(
         emitter: &SignalEmitter<'_>,
         session_handle: &ObjectPath<'_>,
-        shortcuts: &Vec<WireShortcut>,
+        shortcuts: &[WireShortcut],
     ) -> zbus::Result<()>;
 }
 

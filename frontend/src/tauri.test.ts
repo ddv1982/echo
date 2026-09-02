@@ -64,10 +64,10 @@ describe('settings preview wrappers', () => {
     try {
       await setSettings({ kind: 'recordSeconds', value: 1 })
       await toggleRecording()
-      expect((await getAppStatus()).recording).toBe(true)
+      expect((await getAppStatus()).phase).toBe('Recording')
 
       await vi.advanceTimersByTimeAsync(1_001)
-      expect((await getAppStatus()).recording).toBe(false)
+      expect((await getAppStatus()).phase).not.toBe('Recording')
       expect((await getAppStatus()).phase).toBe('Transcribing')
       await vi.advanceTimersByTimeAsync(900)
       expect((await getAppStatus()).phase).toBe('Idle')
