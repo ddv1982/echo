@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.14.12
+
+- The X11 recording HUD now uses a compact waveform capsule with distinct recording, transcribing, success, and failure indicators, plus compositor-aware translucency, highlighting, and shadow treatment.
+- Success and failure indicators now remain visible for their intended terminal-state duration, and composited shadows no longer clip at the window edge.
+
 ## v0.14.11
 
 - Recording, toggle, voice-training, and upgrade takeover sessions now share one cross-process lease. Upgrade replacement waits for the existing desktop process to exit, closing races that could start overlapping sessions or lose the replacement window.
