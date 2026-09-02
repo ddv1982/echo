@@ -134,7 +134,7 @@ pub(super) fn health_invalidate() {
 
 #[must_use]
 pub(super) fn last_run() -> Option<LastRun> {
-    History::load().ok().and_then(|history| {
+    History::load_read_only().ok().and_then(|history| {
         history.rows().last().map(|row| LastRun {
             engine: row.engine.to_string(),
             binary: row.detail.binary.clone(),

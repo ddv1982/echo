@@ -1,11 +1,11 @@
-use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use echo_core::{
-    Dictionary, FailReason, History, HistoryRow, InjectReport, Injector, Pcm16kMono,
+    Dictionary, FailReason, History, HistoryRow, InjectReport, Injector, Pcm16kMono, PrivateDir,
     RecordingLimit, ResolvedRecordingLimit, Session, SessionState, SAMPLE_RATE_HZ,
 };
 
@@ -18,6 +18,125 @@ use crate::status;
 /// own record button's sessions (live meter) from a compositor shortcut's
 /// (the meter lives in that process).
 static RECORDING_IN_PROCESS: AtomicBool = AtomicBool::new(false);
+
+const TAKEOVER_BLOCKED: u64 = 1 << 63;
+static RECORDING_GATE: LazyLock<Arc<TakeoverGate>> =
+    LazyLock::new(|| Arc::new(TakeoverGate::new()));
+
+/// One atomic state serializes local recording acquisition with an upgrade
+/// takeover. Low bits count acquisitions; the high bit permanently blocks new
+/// acquisitions after the replacement process has spawned successfully.
+struct TakeoverGate {
+    state: AtomicU64,
+}
+
+impl TakeoverGate {
+    const fn new() -> Self {
+        Self {
+            state: AtomicU64::new(0),
+        }
+    }
+
+    fn acquire_recording(self: &Arc<Self>) -> Result<RecordingPermit, String> {
+        let mut observed = self.state.load(Ordering::Acquire);
+        loop {
+            if observed & TAKEOVER_BLOCKED != 0 {
+                return Err("Echo is restarting; recording is temporarily unavailable.".to_string());
+            }
+            let next = observed
+                .checked_add(1)
+                .filter(|state| state & TAKEOVER_BLOCKED == 0)
+                .ok_or_else(|| "too many recording acquisitions".to_string())?;
+            match self.state.compare_exchange_weak(
+                observed,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    return Ok(RecordingPermit {
+                        gate: Arc::clone(self),
+                    });
+                }
+                Err(actual) => observed = actual,
+            }
+        }
+    }
+
+    fn begin_takeover(self: &Arc<Self>) -> Option<TakeoverReservation> {
+        self.state
+            .compare_exchange(0, TAKEOVER_BLOCKED, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| TakeoverReservation {
+                gate: Arc::clone(self),
+                reopen_on_drop: true,
+            })
+    }
+}
+
+struct RecordingPermit {
+    gate: Arc<TakeoverGate>,
+}
+
+impl Drop for RecordingPermit {
+    fn drop(&mut self) {
+        let previous = self.gate.state.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous > 0 && previous & TAKEOVER_BLOCKED == 0);
+    }
+}
+
+struct TakeoverReservation {
+    gate: Arc<TakeoverGate>,
+    reopen_on_drop: bool,
+}
+
+impl TakeoverReservation {
+    fn commit(mut self) {
+        self.reopen_on_drop = false;
+    }
+}
+
+impl Drop for TakeoverReservation {
+    fn drop(&mut self) {
+        if self.reopen_on_drop {
+            self.gate.state.store(0, Ordering::Release);
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum UpgradeTakeover {
+    Deferred,
+    Spawned,
+    SpawnFailed(std::io::Error),
+}
+
+/// Reserve the final idle decision, check the cross-process recording lock,
+/// and spawn the replacement. A failed spawn reopens local recording; a
+/// successful spawn leaves it blocked until this process exits.
+pub fn attempt_upgrade_takeover(spawn: impl FnOnce() -> std::io::Result<()>) -> UpgradeTakeover {
+    attempt_upgrade_takeover_with(&RECORDING_GATE, session_active, spawn)
+}
+
+fn attempt_upgrade_takeover_with(
+    gate: &Arc<TakeoverGate>,
+    recording_busy: impl FnOnce() -> bool,
+    spawn: impl FnOnce() -> std::io::Result<()>,
+) -> UpgradeTakeover {
+    let Some(reservation) = gate.begin_takeover() else {
+        return UpgradeTakeover::Deferred;
+    };
+    if recording_busy() {
+        return UpgradeTakeover::Deferred;
+    }
+    match spawn() {
+        Ok(()) => {
+            reservation.commit();
+            UpgradeTakeover::Spawned
+        }
+        Err(err) => UpgradeTakeover::SpawnFailed(err),
+    }
+}
 
 #[must_use]
 pub fn recording_in_process() -> bool {
@@ -115,22 +234,30 @@ fn run_record_with_limit(mut stop: StopWhen, limit: RecordingLimit) -> i32 {
     let _in_process = InProcessSession::start();
     let meter = audio::process_meter();
     let hud = crate::ui::hud::RecordingHud::start(meter.clone());
-    let capture = match capture_pcm(&mut stop, limit, &meter) {
-        Ok(capture) => capture,
-        Err(reason) => {
-            hud.set_state(crate::ui::hud::HudState::Failed);
-            let _ = session.fail(reason);
-            log_state(&session);
-            let _ = status::write_status(session.state(), None, None);
-            crate::notify::notify_session_failure(reason, None);
-            return 1;
-        }
-    };
+    let (capture, started_at) =
+        match capture_with_started_at(SystemTime::now, || capture_pcm(&mut stop, limit, &meter)) {
+            Ok(capture) => capture,
+            Err(reason) => {
+                hud.set_state(crate::ui::hud::HudState::Failed);
+                let _ = session.fail(reason);
+                log_state(&session);
+                let _ = status::write_status(session.state(), None, None);
+                crate::notify::notify_session_failure(reason, None);
+                return 1;
+            }
+        };
     hud.set_state(crate::ui::hud::HudState::Transcribing);
     apply_edge(&mut session, HotkeyEvent::Up);
     let _ = status::write_status(session.state(), None, None);
 
-    let dict = Dictionary::load().unwrap_or_else(|_| Dictionary::empty());
+    let (dict, dictionary_warning) = dictionary_for_transcription(Dictionary::load());
+    let mut persistence_warnings = Vec::new();
+    if let Some(warning) = dictionary_warning {
+        eprintln!("{warning}");
+        let _ = status::write_status(session.state(), None, Some(&warning));
+        crate::notify::notify_persistence_failure(&warning);
+        persistence_warnings.push(warning);
+    }
     let prepared = match crate::transcribe::prepare_with_config(
         crate::transcribe::RunOverrides::default(),
         &crate::settings::file_config(),
@@ -145,7 +272,8 @@ fn run_record_with_limit(mut stop: StopWhen, limit: RecordingLimit) -> i32 {
             let _ = session.fail(reason);
             log_state(&session);
             let detail = err.to_string();
-            let _ = status::write_status(session.state(), None, Some(&detail));
+            let visible_detail = joined_details(&persistence_warnings, Some(&detail));
+            let _ = status::write_status(session.state(), None, visible_detail.as_deref());
             eprintln!("{detail}");
             crate::notify::notify_session_failure(reason, Some(&detail));
             return 1;
@@ -168,7 +296,8 @@ fn run_record_with_limit(mut stop: StopWhen, limit: RecordingLimit) -> i32 {
             let detail = detail.or(Some(message.as_str()));
             let _ = session.fail(reason);
             log_state(&session);
-            let _ = status::write_status(session.state(), None, detail);
+            let visible_detail = joined_details(&persistence_warnings, detail);
+            let _ = status::write_status(session.state(), None, visible_detail.as_deref());
             crate::notify::notify_session_failure(reason, detail);
             return 1;
         }
@@ -202,14 +331,18 @@ fn run_record_with_limit(mut stop: StopWhen, limit: RecordingLimit) -> i32 {
         log_state(&session);
     }
 
-    let now = SystemTime::now()
+    let completed_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
-    let started_at = now.as_secs();
-    let _ = History::append_default(HistoryRow {
+    let history_result = History::append_default(HistoryRow {
         // Nanoseconds plus pid keep ids unique across processes and after
         // the store trims to its row cap.
-        id: format!("{started_at}-{}-{}", now.subsec_nanos(), std::process::id()),
+        id: format!(
+            "{}-{}-{}",
+            completed_at.as_secs(),
+            completed_at.subsec_nanos(),
+            std::process::id()
+        ),
         text: transcript.text.clone(),
         raw: transcript.raw.clone(),
         engine: transcript.engine.clone(),
@@ -218,13 +351,64 @@ fn run_record_with_limit(mut stop: StopWhen, limit: RecordingLimit) -> i32 {
         inject,
         detail: transcript.detail.clone(),
     });
+    if let Some(warning) = history_append_warning(history_result) {
+        eprintln!("{warning}");
+        crate::notify::notify_persistence_failure(&warning);
+        persistence_warnings.push(warning);
+    }
+    let persistence_detail = joined_details(&persistence_warnings, None);
     if failed {
         // Leave the Failed state visible; the next session overwrites it.
-        let _ = status::write_status(session.state(), None, None);
+        let _ = status::write_status(
+            session.state(),
+            Some(&transcript.text),
+            persistence_detail.as_deref(),
+        );
         return 1;
     }
-    let _ = status::write_status(session.state(), Some(&transcript.text), None);
+    let _ = status::write_status(
+        session.state(),
+        Some(&transcript.text),
+        persistence_detail.as_deref(),
+    );
     0
+}
+
+fn capture_with_started_at<T, E>(
+    now: impl FnOnce() -> SystemTime,
+    capture: impl FnOnce() -> Result<T, E>,
+) -> Result<(T, u64), E> {
+    let started_at = now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    capture().map(|capture| (capture, started_at))
+}
+
+fn dictionary_for_transcription(
+    result: Result<Dictionary, String>,
+) -> (Dictionary, Option<String>) {
+    match result {
+        Ok(dictionary) => (dictionary, None),
+        Err(error) => (
+            Dictionary::empty(),
+            Some(crate::notify::dictionary_read_failure_message(&error)),
+        ),
+    }
+}
+
+fn history_append_warning(result: Result<(), String>) -> Option<String> {
+    result
+        .err()
+        .map(|error| crate::notify::history_append_failure_message(&error))
+}
+
+fn joined_details(warnings: &[String], detail: Option<&str>) -> Option<String> {
+    let mut details = warnings.to_vec();
+    if let Some(detail) = detail.filter(|detail| !detail.trim().is_empty()) {
+        details.push(detail.to_string());
+    }
+    (!details.is_empty()).then(|| details.join(" "))
 }
 
 fn skip_inject() -> bool {
@@ -362,9 +546,9 @@ enum LockAcquisition {
 }
 
 struct ToggleSession {
-    lock_path: PathBuf,
-    stop_path: PathBuf,
+    directory: PrivateDir,
     token: String,
+    _permit: RecordingPermit,
 }
 
 pub struct RecordingSession(ToggleSession);
@@ -391,6 +575,7 @@ impl RecordingSession {
 struct LockOwner {
     pid: u32,
     token: Option<String>,
+    start_time_ticks: Option<u64>,
 }
 
 impl ToggleSession {
@@ -413,8 +598,10 @@ impl ToggleSession {
         let lock_path = dir.join("recording.lock");
         let stop_path = dir.join("recording.stop");
         let Some(owner) = live_lock_owner(&lock_path) else {
-            let _ = fs::remove_file(lock_path);
-            let _ = fs::remove_file(stop_path);
+            if let Ok(directory) = PrivateDir::open(dir) {
+                let _ = directory.remove_file("recording.lock".as_ref());
+                let _ = directory.remove_file("recording.stop".as_ref());
+            }
             return Ok(false);
         };
         write_stop_request(&stop_path, &owner)?;
@@ -442,42 +629,54 @@ impl ToggleSession {
     }
 
     fn acquire_in(dir: &Path) -> Result<LockAcquisition, String> {
-        fs::create_dir_all(dir).map_err(|err| err.to_string())?;
-        let lock_path = dir.join("recording.lock");
-        let stop_path = dir.join("recording.stop");
+        Self::acquire_in_with_gate(dir, &RECORDING_GATE)
+    }
+
+    fn acquire_in_with_gate(
+        dir: &Path,
+        gate: &Arc<TakeoverGate>,
+    ) -> Result<LockAcquisition, String> {
+        let permit = gate.acquire_recording()?;
+        let directory = PrivateDir::open(dir).map_err(|err| err.to_string())?;
+        let process = read_process_observation(std::process::id())
+            .ok_or_else(|| "cannot read recording owner process identity".to_string())?;
+        if process.state == 'Z' {
+            return Err("recording owner process is a zombie".to_string());
+        }
         for _ in 0..2 {
             let token = new_session_token();
-            let candidate = dir.join(format!(".recording.lock.{token}"));
-            match OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&candidate)
-            {
+            let candidate = format!(".recording.lock.{token}");
+            match directory.create_new(candidate.as_ref()) {
                 Ok(mut lock) => {
-                    writeln!(lock, "{}\n{token}", std::process::id())
-                        .map_err(|err| err.to_string())?;
+                    writeln!(
+                        lock,
+                        "{}\n{token}\n{}",
+                        std::process::id(),
+                        process.start_time_ticks
+                    )
+                    .map_err(|err| err.to_string())?;
                     drop(lock);
-                    match fs::hard_link(&candidate, &lock_path) {
+                    match directory.hard_link(candidate.as_ref(), "recording.lock".as_ref()) {
                         Ok(()) => {}
                         Err(err) if err.kind() == ErrorKind::AlreadyExists => {
-                            let _ = fs::remove_file(&candidate);
-                            if let Some(owner) = live_lock_owner(&lock_path) {
+                            let _ = directory.remove_file(candidate.as_ref());
+                            if let Some(owner) = live_lock_owner(&dir.join("recording.lock")) {
                                 return Ok(LockAcquisition::Busy(owner));
                             }
-                            let _ = fs::remove_file(&lock_path);
-                            let _ = fs::remove_file(&stop_path);
+                            let _ = directory.remove_file("recording.lock".as_ref());
+                            let _ = directory.remove_file("recording.stop".as_ref());
                             continue;
                         }
                         Err(err) => {
-                            let _ = fs::remove_file(&candidate);
+                            let _ = directory.remove_file(candidate.as_ref());
                             return Err(err.to_string());
                         }
                     }
-                    let _ = fs::remove_file(&candidate);
+                    let _ = directory.remove_file(candidate.as_ref());
                     return Ok(LockAcquisition::Started(Self {
-                        lock_path,
-                        stop_path,
+                        directory,
                         token,
+                        _permit: permit,
                     }));
                 }
                 Err(err) => return Err(err.to_string()),
@@ -487,7 +686,8 @@ impl ToggleSession {
     }
 
     fn stop_requested(&self) -> bool {
-        fs::read_to_string(&self.stop_path)
+        self.directory
+            .read_to_string("recording.stop".as_ref())
             .ok()
             .is_some_and(|token| token.trim() == self.token)
     }
@@ -495,8 +695,16 @@ impl ToggleSession {
 
 impl Drop for ToggleSession {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.stop_path);
-        let _ = fs::remove_file(&self.lock_path);
+        let still_owned = self
+            .directory
+            .read_to_string("recording.lock".as_ref())
+            .ok()
+            .and_then(|raw| parse_lock_owner(&raw))
+            .is_some_and(|owner| owner.token.as_deref() == Some(self.token.as_str()));
+        if still_owned {
+            let _ = self.directory.remove_file("recording.stop".as_ref());
+            let _ = self.directory.remove_file("recording.lock".as_ref());
+        }
     }
 }
 
@@ -514,8 +722,14 @@ fn new_session_token() -> String {
     )
 }
 
+#[cfg(test)]
 fn lock_owner(path: &Path) -> Option<LockOwner> {
-    let raw = fs::read_to_string(path).ok()?;
+    let directory = PrivateDir::open(path.parent()?).ok()?;
+    let raw = directory.read_to_string(path.file_name()?).ok()?;
+    parse_lock_owner(&raw)
+}
+
+fn parse_lock_owner(raw: &str) -> Option<LockOwner> {
     let mut lines = raw.lines();
     let pid = lines.next()?.trim().parse().ok()?;
     let token = lines
@@ -523,11 +737,24 @@ fn lock_owner(path: &Path) -> Option<LockOwner> {
         .map(str::trim)
         .filter(|token| !token.is_empty())
         .map(str::to_string);
-    Some(LockOwner { pid, token })
+    let start_time_ticks = lines
+        .next()
+        .map(str::trim)
+        .filter(|identity| !identity.is_empty())
+        .map(str::parse)
+        .transpose()
+        .ok()?;
+    Some(LockOwner {
+        pid,
+        token,
+        start_time_ticks,
+    })
 }
 
 fn live_lock_owner(path: &Path) -> Option<LockOwner> {
-    lock_owner(path).filter(|owner| process_is_alive(owner.pid))
+    let directory = PrivateDir::open(path.parent()?).ok()?;
+    let raw = directory.read_to_string(path.file_name()?).ok()?;
+    live_lock_owner_from_at(&raw, lock_timestamp(path), read_process_observation)
 }
 
 fn lock_owner_is_alive(path: &Path) -> bool {
@@ -536,23 +763,152 @@ fn lock_owner_is_alive(path: &Path) -> bool {
 
 fn write_stop_request(path: &Path, owner: &LockOwner) -> Result<(), String> {
     let contents = owner.token.as_deref().unwrap_or("stop");
-    echo_core::write_atomic(path, format!("{contents}\n").as_bytes())
+    echo_core::write_atomic_private(path, format!("{contents}\n").as_bytes())
 }
 
-#[cfg(unix)]
-fn process_is_alive(pid: u32) -> bool {
-    let Some(pid) = rustix::process::Pid::from_raw(pid as rustix::process::RawPid) else {
-        return false;
-    };
-    matches!(
-        rustix::process::test_kill_process(pid),
-        Ok(()) | Err(rustix::io::Errno::PERM)
-    )
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProcessObservation {
+    state: char,
+    start_time_ticks: u64,
+    start_unix_nanos: Option<u128>,
 }
 
-#[cfg(not(unix))]
-fn process_is_alive(pid: u32) -> bool {
-    PathBuf::from("/proc").join(pid.to_string()).exists()
+#[cfg(test)]
+fn live_lock_owner_from(
+    raw: &str,
+    observe: impl FnOnce(u32) -> Option<ProcessObservation>,
+) -> Option<LockOwner> {
+    live_lock_owner_from_at(raw, None, observe)
+}
+
+fn live_lock_owner_from_at(
+    raw: &str,
+    fallback_acquired_at: Option<u128>,
+    observe: impl FnOnce(u32) -> Option<ProcessObservation>,
+) -> Option<LockOwner> {
+    let owner = parse_lock_owner(raw)?;
+    let process = observe(owner.pid)?;
+    if process.state == 'Z' {
+        return None;
+    }
+    match owner.start_time_ticks {
+        Some(recorded) if recorded == process.start_time_ticks => Some(owner),
+        Some(_) => None,
+        None => {
+            let acquired_at = legacy_token_timestamp(&owner).or(fallback_acquired_at)?;
+            let started_at = process.start_unix_nanos?;
+            (started_at <= acquired_at).then_some(owner)
+        }
+    }
+}
+
+fn lock_timestamp(path: &Path) -> Option<u128> {
+    let metadata = std::fs::symlink_metadata(path).ok()?;
+    if !metadata.file_type().is_file() {
+        return None;
+    }
+    metadata
+        .modified()
+        .ok()?
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|time| time.as_nanos())
+}
+
+fn legacy_token_timestamp(owner: &LockOwner) -> Option<u128> {
+    let token = owner.token.as_deref()?;
+    let mut fields = token.split('-');
+    let token_pid = fields.next()?.parse::<u32>().ok()?;
+    let seconds = fields.next()?.parse::<u128>().ok()?;
+    let nanos = fields.next()?.parse::<u128>().ok()?;
+    let _sequence = fields.next()?.parse::<u64>().ok()?;
+    if token_pid != owner.pid || nanos >= 1_000_000_000 || fields.next().is_some() {
+        return None;
+    }
+    seconds.checked_mul(1_000_000_000)?.checked_add(nanos)
+}
+
+fn read_process_observation(pid: u32) -> Option<ProcessObservation> {
+    let raw = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let (state, start_time_ticks) = parse_process_stat(&raw)?;
+    Some(ProcessObservation {
+        state,
+        start_time_ticks,
+        start_unix_nanos: process_start_unix_nanos(start_time_ticks),
+    })
+}
+
+/// Parse state (field 3) and starttime (field 22). The command field can
+/// contain spaces and parentheses, so only its final `) ` is structural.
+fn parse_process_stat(raw: &str) -> Option<(char, u64)> {
+    let close = raw.rfind(") ")?;
+    let mut fields = raw.get(close + 2..)?.split_whitespace();
+    let state_text = fields.next()?;
+    let mut state_chars = state_text.chars();
+    let state = state_chars.next()?;
+    if state_chars.next().is_some() {
+        return None;
+    }
+    let start_time_ticks = fields.nth(18)?.parse().ok()?;
+    Some((state, start_time_ticks))
+}
+
+fn process_start_unix_nanos(start_time_ticks: u64) -> Option<u128> {
+    let ticks_per_second = clock_ticks_per_second()? as u128;
+    if ticks_per_second == 0 {
+        return None;
+    }
+    let uptime = std::fs::read_to_string("/proc/uptime").ok()?;
+    let uptime_nanos = decimal_seconds_to_nanos(uptime.split_whitespace().next()?)?;
+    let now_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    let started_since_boot = (start_time_ticks as u128)
+        .checked_mul(1_000_000_000)?
+        .checked_div(ticks_per_second)?;
+    now_nanos
+        .checked_sub(uptime_nanos)?
+        .checked_add(started_since_boot)
+}
+
+fn decimal_seconds_to_nanos(raw: &str) -> Option<u128> {
+    let (seconds, fraction) = raw.split_once('.').unwrap_or((raw, ""));
+    let seconds = seconds.parse::<u128>().ok()?;
+    let mut nanos = fraction.bytes().take(9).try_fold(0_u128, |value, digit| {
+        digit
+            .is_ascii_digit()
+            .then_some(value * 10 + u128::from(digit - b'0'))
+    })?;
+    for _ in fraction.len().min(9)..9 {
+        nanos *= 10;
+    }
+    seconds.checked_mul(1_000_000_000)?.checked_add(nanos)
+}
+
+fn clock_ticks_per_second() -> Option<u64> {
+    const AT_CLKTCK: u64 = 17;
+    let raw = std::fs::read("/proc/self/auxv").ok()?;
+    let word_bytes = std::mem::size_of::<usize>();
+    for entry in raw.chunks_exact(word_bytes.checked_mul(2)?) {
+        let key = native_word(entry.get(..word_bytes)?)?;
+        let value = native_word(entry.get(word_bytes..)?)?;
+        if key == AT_CLKTCK {
+            return (value != 0).then_some(value);
+        }
+        if key == 0 {
+            break;
+        }
+    }
+    None
+}
+
+fn native_word(raw: &[u8]) -> Option<u64> {
+    match raw.len() {
+        8 => Some(u64::from_ne_bytes(raw.try_into().ok()?)),
+        4 => Some(u32::from_ne_bytes(raw.try_into().ok()?).into()),
+        _ => None,
+    }
 }
 
 /// True while any process holds an active recording session.
@@ -595,7 +951,252 @@ fn log_state(session: &Session) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+    use std::fs;
     use std::sync::mpsc;
+
+    fn observed(state: char, start_time_ticks: u64, start_unix_nanos: u128) -> ProcessObservation {
+        ProcessObservation {
+            state,
+            start_time_ticks,
+            start_unix_nanos: Some(start_unix_nanos),
+        }
+    }
+
+    #[test]
+    fn dictionary_read_failure_is_visible_without_discarding_the_transcript() {
+        let (dictionary, warning) =
+            dictionary_for_transcription(Err("dictionary permission denied".to_string()));
+        let warning = warning.expect("dictionary failure should be reported");
+        assert!(dictionary.entries().is_empty());
+
+        let transcript = "Keep résumé text";
+        let body = status::render(SessionState::Idle, Some(transcript), Some(&warning));
+        assert!(body.contains("state=Idle\n"), "{body}");
+        assert!(body.contains("last=Keep résumé text\n"), "{body}");
+        assert!(body.contains("custom replacements were skipped"), "{body}");
+        assert!(body.contains("Echo → Dictionary"), "{body}");
+    }
+
+    #[test]
+    fn malformed_dictionary_reaches_the_visible_warning_path() {
+        let dir = std::env::temp_dir().join(format!(
+            "echo-rec-malformed-dictionary-{}-{}",
+            std::process::id(),
+            new_session_token()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("dictionary.json");
+        fs::write(&path, "{\"entries\": [").unwrap();
+
+        let (dictionary, warning) = dictionary_for_transcription(Dictionary::load_from(&path));
+        let warning = warning.expect("malformed dictionary should be reported");
+
+        assert!(dictionary.entries().is_empty());
+        assert!(
+            warning.contains("custom replacements were skipped"),
+            "{warning}"
+        );
+        assert!(warning.contains("invalid JSON"), "{warning}");
+        assert!(warning.contains(path.to_str().unwrap()), "{warning}");
+        assert_eq!(
+            fs::read_to_string(dir.join("dictionary.json.corrupt")).unwrap(),
+            "{\"entries\": ["
+        );
+        assert!(!path.exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn history_append_failure_is_visible_and_not_described_as_persisted() {
+        let warning = history_append_warning(Err("read-only file system".to_string()))
+            .expect("history failure should be reported");
+        let body = status::render(
+            SessionState::Idle,
+            Some("still recoverable"),
+            Some(&warning),
+        );
+
+        assert!(body.contains("last=still recoverable\n"), "{body}");
+        assert!(
+            body.contains("couldn't save the transcript to history"),
+            "{body}"
+        );
+        assert!(body.contains("read-only file system"), "{body}");
+        assert!(
+            body.contains("check the data directory permissions"),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn history_started_at_persists_capture_time_across_calendar_boundary() {
+        const BEFORE_MIDNIGHT: u64 = 86_399;
+        const AFTER_MIDNIGHT: u64 = 86_401;
+        let clock = Cell::new(BEFORE_MIDNIGHT);
+        let (_, started_at) = capture_with_started_at(
+            || UNIX_EPOCH + Duration::from_secs(clock.get()),
+            || {
+                clock.set(AFTER_MIDNIGHT);
+                Ok::<(), ()>(())
+            },
+        )
+        .unwrap();
+
+        let dir = std::env::temp_dir().join(format!(
+            "echo-rec-started-at-{}-{}",
+            std::process::id(),
+            new_session_token()
+        ));
+        let path = dir.join("history.json");
+        let mut history = History::load_from(&path).unwrap();
+        history
+            .append(HistoryRow {
+                id: "cross-midnight".to_string(),
+                text: "captured before midnight".to_string(),
+                raw: "captured before midnight".to_string(),
+                engine: echo_core::EngineId::Whisper {
+                    model: "test".to_string(),
+                },
+                started_at,
+                infer_ms: 1,
+                inject: InjectReport::ClipboardOnly,
+                detail: echo_core::RunDetail::default(),
+            })
+            .unwrap();
+
+        let reloaded = History::load_from(&path).unwrap();
+        assert_eq!(clock.get(), AFTER_MIDNIGHT);
+        assert_eq!(reloaded.rows()[0].started_at, BEFORE_MIDNIGHT);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn process_stat_parser_handles_spaces_and_parentheses_in_comm() {
+        let mut trailing = vec!["0"; 18];
+        trailing.push("424242");
+        let raw = format!("77 (echo worker (old)) S {}", trailing.join(" "));
+        assert_eq!(parse_process_stat(&raw), Some(('S', 424242)));
+    }
+
+    #[test]
+    fn new_lock_accepts_a_live_matching_process_identity() {
+        let raw = "41\n41-200-123-0\n9001\n";
+        assert!(live_lock_owner_from(raw, |_| Some(observed('S', 9001, 100))).is_some());
+    }
+
+    #[test]
+    fn new_lock_rejects_a_zombie_owner() {
+        let raw = "41\n41-200-123-0\n9001\n";
+        assert!(live_lock_owner_from(raw, |_| Some(observed('Z', 9001, 100))).is_none());
+    }
+
+    #[test]
+    fn new_lock_rejects_a_reused_pid_with_a_different_start_identity() {
+        let raw = "41\n41-200-123-0\n9001\n";
+        assert!(
+            live_lock_owner_from(raw, |_| Some(observed('S', 9002, 300_000_000_000))).is_none(),
+            "a reused pid has a different field-22 start identity"
+        );
+    }
+
+    #[test]
+    fn legacy_two_line_lock_requires_process_to_predate_token() {
+        let raw = "41\n41-200-123-0\n";
+        let acquired = 200_000_000_123_u128;
+        assert!(
+            live_lock_owner_from(raw, |_| Some(observed('S', 9001, acquired - 1))).is_some(),
+            "a currently-running legacy owner remains protected"
+        );
+        assert!(
+            live_lock_owner_from(raw, |_| Some(observed('S', 9002, acquired + 1))).is_none(),
+            "a process started after the token cannot inherit a legacy lock"
+        );
+        assert!(
+            live_lock_owner_from(raw, |_| Some(ProcessObservation {
+                state: 'S',
+                start_time_ticks: 9001,
+                start_unix_nanos: None,
+            }))
+            .is_none(),
+            "legacy validation fails closed when start time cannot be resolved"
+        );
+    }
+
+    #[test]
+    fn takeover_boundary_blocks_acquisition_and_spawn_failure_reopens_it() {
+        let dir = std::env::temp_dir().join(format!(
+            "echo-takeover-failure-{}-{}",
+            std::process::id(),
+            new_session_token()
+        ));
+        let gate = Arc::new(TakeoverGate::new());
+        let outcome = attempt_upgrade_takeover_with(
+            &gate,
+            || false,
+            || {
+                assert!(ToggleSession::acquire_in_with_gate(&dir, &gate).is_err());
+                Err(std::io::Error::new(
+                    ErrorKind::NotFound,
+                    "replacement missing",
+                ))
+            },
+        );
+        assert!(matches!(outcome, UpgradeTakeover::SpawnFailed(_)));
+        assert!(matches!(
+            ToggleSession::acquire_in_with_gate(&dir, &gate).unwrap(),
+            LockAcquisition::Started(_)
+        ));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn successful_takeover_keeps_recording_blocked_through_exit_boundary() {
+        let dir = std::env::temp_dir().join(format!(
+            "echo-takeover-success-{}-{}",
+            std::process::id(),
+            new_session_token()
+        ));
+        let gate = Arc::new(TakeoverGate::new());
+        let outcome = attempt_upgrade_takeover_with(
+            &gate,
+            || false,
+            || {
+                assert!(ToggleSession::acquire_in_with_gate(&dir, &gate).is_err());
+                Ok(())
+            },
+        );
+        assert!(matches!(outcome, UpgradeTakeover::Spawned));
+        assert!(ToggleSession::acquire_in_with_gate(&dir, &gate).is_err());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn active_acquisition_defers_takeover_without_spawning() {
+        let dir = std::env::temp_dir().join(format!(
+            "echo-takeover-busy-{}-{}",
+            std::process::id(),
+            new_session_token()
+        ));
+        let gate = Arc::new(TakeoverGate::new());
+        let session = match ToggleSession::acquire_in_with_gate(&dir, &gate).unwrap() {
+            LockAcquisition::Started(session) => session,
+            LockAcquisition::Busy(_) => panic!("test directory should be idle"),
+        };
+        let mut spawned = false;
+        let outcome = attempt_upgrade_takeover_with(
+            &gate,
+            || false,
+            || {
+                spawned = true;
+                Ok(())
+            },
+        );
+        assert!(matches!(outcome, UpgradeTakeover::Deferred));
+        assert!(!spawned);
+        drop(session);
+        let _ = fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn stop_only_never_starts_a_recording() {
@@ -618,6 +1219,48 @@ mod tests {
         assert!(!dir.join("recording.stop").exists());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn recording_lock_secures_its_directory_and_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "echo-recording-private-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let session = ToggleSession::try_start_in(&dir).unwrap().unwrap();
+
+        assert_eq!(
+            fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(dir.join("recording.lock"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        let owner = lock_owner(&dir.join("recording.lock")).unwrap();
+        assert_eq!(
+            owner.start_time_ticks,
+            Some(
+                read_process_observation(std::process::id())
+                    .unwrap()
+                    .start_time_ticks
+            ),
+            "new on-disk locks include the owner's /proc start identity"
+        );
+
+        drop(session);
+        let _ = fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn token_scoped_stop_ignores_an_unrelated_session() {
         let dir = std::env::temp_dir().join(format!("echo-scoped-stop-{}", std::process::id()));
@@ -625,7 +1268,7 @@ mod tests {
         let session = ToggleSession::try_start_in(&dir).unwrap().unwrap();
 
         assert!(!ToggleSession::request_stop_for_token_in(&dir, "another-session").unwrap());
-        assert!(!session.stop_path.exists());
+        assert!(!dir.join("recording.stop").exists());
         assert!(ToggleSession::request_stop_for_token_in(&dir, &session.token).unwrap());
         assert!(session.stop_requested());
     }
@@ -636,11 +1279,11 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
 
         let first = ToggleSession::try_start_in(&dir).unwrap().unwrap();
-        let first_owner = lock_owner(&first.lock_path).unwrap();
+        let first_owner = lock_owner(&dir.join("recording.lock")).unwrap();
         drop(first);
         let second = ToggleSession::try_start_in(&dir).unwrap().unwrap();
 
-        write_stop_request(&second.stop_path, &first_owner).unwrap();
+        write_stop_request(&dir.join("recording.stop"), &first_owner).unwrap();
         assert!(!second.stop_requested());
         assert_ne!(first_owner.token.as_deref(), Some(second.token.as_str()));
     }
@@ -767,12 +1410,12 @@ mod tests {
             ToggleAction::Start(session) => session,
             ToggleAction::Stop(_) => panic!("first toggle should start"),
         };
-        assert!(first.lock_path.is_file());
+        assert!(dir.join("recording.lock").is_file());
         assert!(matches!(
             ToggleSession::start_or_stop_in(&dir).unwrap(),
             ToggleAction::Stop(_)
         ));
-        assert!(first.stop_path.is_file());
+        assert!(dir.join("recording.stop").is_file());
 
         drop(first);
         assert!(!dir.join("recording.lock").exists());

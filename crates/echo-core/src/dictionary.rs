@@ -1,10 +1,38 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 
-use crate::paths::{dictionary_path, set_aside_corrupt, write_atomic};
+use crate::paths::{dictionary_path, set_aside_corrupt, write_atomic_private};
+
+const MATCH_CHUNK_ENTRIES: usize = 64;
+const MATCH_CHUNK_PATTERN_BYTES: usize = 16 * 1024;
+
+#[derive(Clone, Copy)]
+struct MatchLimits {
+    entries: usize,
+    pattern_bytes: usize,
+    regex_size_limit: Option<usize>,
+}
+
+enum PhraseMatcher {
+    Regex {
+        regex: Regex,
+        entry_indices: Vec<usize>,
+    },
+    SingleRegex {
+        regex: Regex,
+        entry_index: usize,
+    },
+    Literal {
+        entry_index: usize,
+        lowercase: String,
+        uppercase: String,
+    },
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RecognitionHints {
@@ -123,9 +151,12 @@ impl Dictionary {
         let raw = fs::read_to_string(&path).map_err(|err| err.to_string())?;
         let entries = match serde_json::from_str::<DictFile>(&raw) {
             Ok(file) => file.entries,
-            Err(_) => {
+            Err(error) => {
                 set_aside_corrupt(&path);
-                Vec::new()
+                return Err(format!(
+                    "Dictionary file {} contains invalid JSON and was not loaded: {error}",
+                    path.display()
+                ));
             }
         };
         Ok(Self { entries, path })
@@ -280,52 +311,220 @@ impl Dictionary {
             entries: self.entries.clone(),
         };
         let raw = serde_json::to_string_pretty(&file).map_err(|err| err.to_string())?;
-        write_atomic(&self.path, raw.as_bytes())
+        write_atomic_private(&self.path, raw.as_bytes())
     }
 
     #[must_use]
     pub fn rewrite(&self, text: &str) -> String {
+        self.rewrite_with_limits(
+            text,
+            MatchLimits {
+                entries: MATCH_CHUNK_ENTRIES,
+                pattern_bytes: MATCH_CHUNK_PATTERN_BYTES,
+                regex_size_limit: None,
+            },
+        )
+    }
+
+    fn rewrite_with_limits(&self, text: &str, limits: MatchLimits) -> String {
         if text.is_empty() {
             return String::new();
         }
-        let hay = text.to_ascii_lowercase();
         let mut taken = vec![false; text.len()];
         let mut hits: Vec<(usize, usize, &str)> = Vec::new();
-        let mut ranked: Vec<&DictEntry> = self.entries.iter().collect();
-        ranked.sort_by(|a, b| {
-            b.spoken
+        let mut ranked: Vec<(usize, &DictEntry)> = self.entries.iter().enumerate().collect();
+        ranked.sort_by(|(left_index, left), (right_index, right)| {
+            right
+                .spoken
                 .chars()
                 .count()
-                .cmp(&a.spoken.chars().count())
-                .then_with(|| a.created_at.cmp(&b.created_at))
+                .cmp(&left.spoken.chars().count())
+                .then_with(|| left_index.cmp(right_index))
         });
-        for entry in ranked {
-            if entry.spoken.is_empty() {
-                continue;
-            }
-            let needle = entry.spoken.to_ascii_lowercase();
-            let mut from = 0;
-            while let Some(rel) = hay.get(from..).and_then(|rest| rest.find(&needle)) {
-                let start = from + rel;
-                let end = start + needle.len();
-                if end > text.len() || taken[start..end].iter().any(|flag| *flag) {
-                    from = start + 1;
+
+        let ranked_indices = ranked
+            .into_iter()
+            .filter_map(|(index, entry)| (!entry.spoken.is_empty()).then_some(index))
+            .collect::<Vec<_>>();
+        let matchers = compile_phrase_matchers(&self.entries, &ranked_indices, limits);
+
+        for matcher in matchers {
+            let mut candidates = matcher_candidates(&matcher, text);
+            candidates.sort_by_key(|(priority, start, _)| (*priority, *start));
+            for (priority, start, end) in candidates {
+                if taken[start..end].iter().any(|flag| *flag) {
                     continue;
                 }
                 if !whole_phrase(text, start, end) {
-                    from = start + 1;
                     continue;
                 }
                 for flag in &mut taken[start..end] {
                     *flag = true;
                 }
-                hits.push((start, end, entry.written.as_str()));
-                from = end;
+                let entry_index = matcher_entry_index(&matcher, priority);
+                hits.push((start, end, self.entries[entry_index].written.as_str()));
             }
         }
         hits.sort_by_key(|hit| hit.0);
         apply_hits(text, &hits)
     }
+}
+
+fn compile_phrase_matchers(
+    entries: &[DictEntry],
+    ranked_indices: &[usize],
+    limits: MatchLimits,
+) -> Vec<PhraseMatcher> {
+    let max_entries = limits.entries.max(1);
+    let max_pattern_bytes = limits.pattern_bytes.max(1);
+    let mut matchers = Vec::new();
+    let mut chunk_start = 0;
+    while chunk_start < ranked_indices.len() {
+        let mut chunk_end = chunk_start;
+        let mut pattern_bytes = 0usize;
+        while chunk_end < ranked_indices.len() && chunk_end - chunk_start < max_entries {
+            let escaped_bytes = regex::escape(&entries[ranked_indices[chunk_end]].spoken).len();
+            if chunk_end > chunk_start
+                && pattern_bytes.saturating_add(escaped_bytes) > max_pattern_bytes
+            {
+                break;
+            }
+            pattern_bytes = pattern_bytes.saturating_add(escaped_bytes);
+            chunk_end += 1;
+        }
+        compile_matcher_chunk(
+            entries,
+            &ranked_indices[chunk_start..chunk_end],
+            limits.regex_size_limit,
+            &mut matchers,
+        );
+        chunk_start = chunk_end;
+    }
+    matchers
+}
+
+fn compile_matcher_chunk(
+    entries: &[DictEntry],
+    entry_indices: &[usize],
+    regex_size_limit: Option<usize>,
+    matchers: &mut Vec<PhraseMatcher>,
+) {
+    let mut pattern = String::from(r"\A(?:");
+    for (position, entry_index) in entry_indices.iter().enumerate() {
+        if position > 0 {
+            pattern.push('|');
+        }
+        pattern.push('(');
+        pattern.push_str(&regex::escape(&entries[*entry_index].spoken));
+        pattern.push_str(r")(?:$|[^\w'])");
+    }
+    pattern.push(')');
+
+    if let Ok(regex) = compile_phrase_regex(&pattern, regex_size_limit) {
+        matchers.push(PhraseMatcher::Regex {
+            regex,
+            entry_indices: entry_indices.to_vec(),
+        });
+    } else if entry_indices.len() > 1 {
+        let middle = entry_indices.len() / 2;
+        compile_matcher_chunk(
+            entries,
+            &entry_indices[..middle],
+            regex_size_limit,
+            matchers,
+        );
+        compile_matcher_chunk(
+            entries,
+            &entry_indices[middle..],
+            regex_size_limit,
+            matchers,
+        );
+    } else {
+        let entry_index = entry_indices[0];
+        let spoken = &entries[entry_index].spoken;
+        if let Ok(regex) = compile_phrase_regex(&regex::escape(spoken), None) {
+            matchers.push(PhraseMatcher::SingleRegex { regex, entry_index });
+        } else {
+            matchers.push(PhraseMatcher::Literal {
+                entry_index,
+                lowercase: spoken.chars().flat_map(char::to_lowercase).collect(),
+                uppercase: spoken.chars().flat_map(char::to_uppercase).collect(),
+            });
+        }
+    }
+}
+
+fn compile_phrase_regex(pattern: &str, size_limit: Option<usize>) -> Result<Regex, regex::Error> {
+    let mut builder = RegexBuilder::new(pattern);
+    builder.case_insensitive(true);
+    if let Some(size_limit) = size_limit {
+        builder.size_limit(size_limit);
+    }
+    builder.build()
+}
+
+fn matcher_candidates(matcher: &PhraseMatcher, text: &str) -> Vec<(usize, usize, usize)> {
+    match matcher {
+        PhraseMatcher::Regex { regex, .. } => text
+            .char_indices()
+            .filter_map(|(start, _)| {
+                let captures = regex.captures(&text[start..])?;
+                let (priority, matched) = captures
+                    .iter()
+                    .skip(1)
+                    .enumerate()
+                    .find_map(|(priority, capture)| capture.map(|matched| (priority, matched)))?;
+                let end = start + matched.end();
+                Some((priority, start, end))
+            })
+            .collect(),
+        PhraseMatcher::SingleRegex { regex, .. } => regex
+            .find_iter(text)
+            .map(|matched| (0, matched.start(), matched.end()))
+            .collect(),
+        PhraseMatcher::Literal {
+            lowercase,
+            uppercase,
+            ..
+        } => text
+            .char_indices()
+            .filter_map(|(start, _)| {
+                folded_literal_end(text, start, lowercase, char::to_lowercase)
+                    .or_else(|| folded_literal_end(text, start, uppercase, char::to_uppercase))
+                    .map(|end| (0, start, end))
+            })
+            .collect(),
+    }
+}
+
+fn matcher_entry_index(matcher: &PhraseMatcher, priority: usize) -> usize {
+    match matcher {
+        PhraseMatcher::Regex { entry_indices, .. } => entry_indices[priority],
+        PhraseMatcher::SingleRegex { entry_index, .. }
+        | PhraseMatcher::Literal { entry_index, .. } => *entry_index,
+    }
+}
+
+fn folded_literal_end<I>(
+    text: &str,
+    start: usize,
+    folded_needle: &str,
+    fold: impl Fn(char) -> I,
+) -> Option<usize>
+where
+    I: Iterator<Item = char>,
+{
+    let mut folded = String::new();
+    for (offset, character) in text[start..].char_indices() {
+        folded.extend(fold(character));
+        if folded == folded_needle {
+            return Some(start + offset + character.len_utf8());
+        }
+        if !folded_needle.starts_with(&folded) {
+            return None;
+        }
+    }
+    None
 }
 
 fn apply_hits(text: &str, hits: &[(usize, usize, &str)]) -> String {
@@ -350,7 +549,15 @@ fn whole_phrase(text: &str, start: usize, end: usize) -> bool {
 }
 
 fn is_word_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || c == '\''
+    static WORD_CHAR: OnceLock<Regex> = OnceLock::new();
+
+    if c == '\'' {
+        return true;
+    }
+    let mut encoded = [0; 4];
+    WORD_CHAR
+        .get_or_init(|| Regex::new(r"^\w$").expect("Unicode word regex must compile"))
+        .is_match(c.encode_utf8(&mut encoded))
 }
 
 fn clean_phrase(value: &str) -> String {
@@ -388,8 +595,8 @@ mod tests {
     }
 
     fn persisted_dict(entries: &[(&str, &str)]) -> Dictionary {
-        let path = std::env::temp_dir().join(format!(
-            "echo-dictionary-batch-{}-{}.json",
+        let root = std::env::temp_dir().join(format!(
+            "echo-dictionary-batch-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -397,7 +604,7 @@ mod tests {
                 .as_nanos()
         ));
         let mut dictionary = dict(entries);
-        dictionary.path = path;
+        dictionary.path = root.join("dictionary.json");
         dictionary.save().unwrap();
         dictionary
     }
@@ -428,6 +635,123 @@ mod tests {
         let d = dict(&[("code", "CODE")]);
         let rewrite = d.rewrite("codebase uses code");
         assert_eq!(rewrite, "codebase uses CODE");
+    }
+
+    #[test]
+    fn rewrites_accented_text_with_unicode_case_folding() {
+        let d = dict(&[("école", "school")]);
+        assert_eq!(d.rewrite("ÉCOLE et école"), "school et school");
+    }
+
+    #[test]
+    fn rewrites_greek_and_cyrillic_with_unicode_case_folding() {
+        let d = dict(&[("αθήνα", "Athens"), ("москва", "Moscow")]);
+        assert_eq!(d.rewrite("ΑΘΉΝΑ и МОСКВА"), "Athens и Moscow");
+    }
+
+    #[test]
+    fn rewrites_another_non_latin_script_as_a_whole_phrase() {
+        let d = dict(&[("東京", "Tokyo")]);
+        assert_eq!(d.rewrite("東京、東京都"), "Tokyo、東京都");
+    }
+
+    #[test]
+    fn combining_marks_are_matched_and_are_unicode_word_characters() {
+        let decomposed = dict(&[("cafe\u{301}", "CAFÉ")]);
+        assert_eq!(decomposed.rewrite("CAFE\u{301}"), "CAFÉ");
+
+        let base = dict(&[("cafe", "CAFE")]);
+        assert_eq!(base.rewrite("cafe\u{301} cafe"), "cafe\u{301} CAFE");
+    }
+
+    #[test]
+    fn does_not_match_inside_unicode_words() {
+        let d = dict(&[("code", "CODE"), ("京", "capital")]);
+        assert_eq!(d.rewrite("πcodeδ code 東京 京"), "πcodeδ CODE 東京 capital");
+    }
+
+    #[test]
+    fn apostrophes_keep_the_existing_word_boundary_semantics() {
+        let base = dict(&[("can", "CAN"), ("rock", "ROCK")]);
+        assert_eq!(
+            base.rewrite("can't can rock'n'roll rock"),
+            "can't CAN rock'n'roll ROCK"
+        );
+
+        let apostrophe_phrase = dict(&[("can't", "cannot")]);
+        assert_eq!(apostrophe_phrase.rewrite("CAN'T stop"), "cannot stop");
+    }
+
+    #[test]
+    fn rejected_multibyte_candidates_do_not_break_later_byte_offsets() {
+        let d = dict(&[("clair", "CLEAR")]);
+        assert_eq!(
+            d.rewrite("éclair, 🙂 CLAIR après"),
+            "éclair, 🙂 CLEAR après"
+        );
+    }
+
+    #[test]
+    fn regex_metacharacters_in_phrases_are_literals() {
+        let d = dict(&[("c++", "C Plus Plus"), ("a.b", "dot"), ("[tag]", "label")]);
+        assert_eq!(
+            d.rewrite("c++ a.b [tag] acb xa.by"),
+            "C Plus Plus dot label acb xa.by"
+        );
+    }
+
+    #[test]
+    fn longer_overlapping_phrase_wins_independent_of_entry_order() {
+        let text = "alpha beta gamma delta";
+        let expected = "alpha LONG";
+        assert_eq!(
+            dict(&[("alpha beta", "SHORT"), ("beta gamma delta", "LONG")]).rewrite(text),
+            expected
+        );
+        assert_eq!(
+            dict(&[("beta gamma delta", "LONG"), ("alpha beta", "SHORT")]).rewrite(text),
+            expected
+        );
+    }
+
+    #[test]
+    fn equal_length_overlaps_follow_dictionary_order_deterministically() {
+        let text = "東京 alpha βγ";
+        let mut first_before_second = dict(&[("東京 alpha", "FIRST"), ("alpha βγ", "SECOND")]);
+        first_before_second.entries[0].created_at = 100;
+        first_before_second.entries[1].created_at = 1;
+        assert_eq!(first_before_second.rewrite(text), "FIRST βγ");
+
+        let mut second_before_first = dict(&[("alpha βγ", "SECOND"), ("東京 alpha", "FIRST")]);
+        second_before_first.entries[0].created_at = 200;
+        second_before_first.entries[1].created_at = 2;
+        assert_eq!(second_before_first.rewrite(text), "東京 SECOND");
+    }
+
+    #[test]
+    fn compilation_fallback_preserves_all_matches_and_global_ranking() {
+        let d = dict(&[
+            ("beta gamma", "FIRST"),
+            ("alpha beta", "SECOND"),
+            ("beta gamma delta", "LONG"),
+        ]);
+
+        let rewritten = d.rewrite_with_limits(
+            "alpha beta gamma delta | alpha beta gamma | beta gamma | alpha beta",
+            MatchLimits {
+                entries: 2,
+                pattern_bytes: usize::MAX,
+                regex_size_limit: Some(0),
+            },
+        );
+
+        assert_eq!(rewritten, "alpha LONG | alpha FIRST | FIRST | SECOND");
+    }
+
+    #[test]
+    fn invalid_longer_boundary_does_not_hide_a_valid_shorter_alternative() {
+        let d = dict(&[("alpha.", "LONG"), ("alpha", "SHORT")]);
+        assert_eq!(d.rewrite("alpha.beta"), "SHORT.beta");
     }
 
     #[test]
@@ -463,6 +787,7 @@ mod tests {
             2
         );
         let _ = fs::remove_file(&dictionary.path);
+        let _ = fs::remove_dir(dictionary.path.parent().unwrap());
     }
 
     #[test]
@@ -487,6 +812,7 @@ mod tests {
         assert_eq!(dictionary.entries().len(), 1);
         assert_eq!(fs::read_to_string(&dictionary.path).unwrap(), before);
         let _ = fs::remove_file(&dictionary.path);
+        let _ = fs::remove_dir(dictionary.path.parent().unwrap());
     }
 
     #[test]
@@ -610,19 +936,21 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_file_is_set_aside_not_fatal() {
+    fn corrupt_file_is_set_aside_and_reported() {
         let dir = std::env::temp_dir().join(format!("echo-dict-corrupt-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("dictionary.json");
-        fs::write(&path, "not json at all").unwrap();
+        let original = "not json at all";
+        fs::write(&path, original).unwrap();
 
-        let mut store = Dictionary::load_from(&path).unwrap();
-        assert!(store.entries().is_empty());
+        let error = Dictionary::load_from(&path).unwrap_err();
+        assert!(error.contains("invalid JSON"), "{error}");
+        assert!(error.contains(path.to_str().unwrap()), "{error}");
         assert!(!path.exists(), "corrupt file should be moved aside");
-        assert!(dir.join("dictionary.json.corrupt").exists());
-
-        store.add("clawed code", "Claude Code").unwrap();
-        assert_eq!(Dictionary::load_from(&path).unwrap().entries().len(), 1);
+        assert_eq!(
+            fs::read_to_string(dir.join("dictionary.json.corrupt")).unwrap(),
+            original
+        );
     }
 }

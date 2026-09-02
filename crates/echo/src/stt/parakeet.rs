@@ -1,7 +1,6 @@
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use echo_core::{
     strip_nonspeech, DecodeOptions, Engine, EngineError, EngineId, LanguageChoice, Pcm16kMono,
@@ -10,6 +9,7 @@ use echo_core::{
 use serde::Deserialize;
 
 use super::cache::ModelCache;
+use super::whisper::{run_process_group, ProcessRunError};
 use super::write_temp_wav;
 use crate::which::path_of;
 
@@ -87,6 +87,29 @@ impl Engine for ParakeetEngine {
         pcm: &Pcm16kMono,
         options: &DecodeOptions,
     ) -> Result<Transcript, EngineError> {
+        self.transcribe_bounded(
+            pcm,
+            options,
+            Instant::now() + Duration::from_secs(15 * 60),
+            &|| false,
+        )
+    }
+
+    fn transcribe_bounded(
+        &self,
+        pcm: &Pcm16kMono,
+        options: &DecodeOptions,
+        deadline: Instant,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Transcript, EngineError> {
+        if cancelled() {
+            return Err(EngineError::Infer("Parakeet runtime canceled".to_string()));
+        }
+        if Instant::now() >= deadline {
+            return Err(EngineError::Infer(
+                "Parakeet runtime timed out before starting".to_string(),
+            ));
+        }
         if !matches!(options.language, LanguageChoice::Auto) {
             return Err(EngineError::Infer(
                 "Parakeet supports automatic language selection only".to_string(),
@@ -103,16 +126,25 @@ impl Engine for ParakeetEngine {
         let joiner = first_existing(&root, &["joiner.int8.onnx", "joiner.onnx"])
             .ok_or(EngineError::Missing)?;
         let tokens = root.join("tokens.txt");
-        let status = Command::new(&bin)
+        let mut command = Command::new(&bin);
+        command
             .arg(format!("--encoder={}", encoder.display()))
             .arg(format!("--decoder={}", decoder.display()))
             .arg(format!("--joiner={}", joiner.display()))
             .arg(format!("--tokens={}", tokens.display()))
             .arg("--model-type=nemo_transducer")
-            .arg(wav.as_os_str())
-            .output()
-            .map_err(|err| EngineError::Infer(err.to_string()))?;
-        let _ = fs::remove_file(&wav);
+            .arg(wav.path());
+        let status = run_process_group(command, deadline, cancelled)
+            .map_err(|error| match error {
+                ProcessRunError::Cancelled => {
+                    EngineError::Infer("Parakeet runtime canceled".to_string())
+                }
+                ProcessRunError::TimedOut => {
+                    EngineError::Infer("Parakeet runtime timed out".to_string())
+                }
+                ProcessRunError::Io(message) => EngineError::Infer(message),
+            })?
+            .output;
         let raw = finish_output(status.status.success(), &status.stdout, &status.stderr)?;
         Ok(Transcript {
             raw: raw_text(&raw),
@@ -193,11 +225,84 @@ fn first_existing(dir: &Path, names: &[&str]) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use echo_core::{Language, RecognitionHints};
+    use std::fs;
+
+    #[cfg(target_os = "linux")]
+    use std::os::unix::fs::PermissionsExt;
+    #[cfg(target_os = "linux")]
+    use std::sync::atomic::{AtomicBool, Ordering};
+    #[cfg(target_os = "linux")]
+    use std::sync::Arc;
 
     fn options(language: LanguageChoice) -> DecodeOptions {
         DecodeOptions {
             language,
             hints: RecognitionHints::default(),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn hung_fixture() -> (tempfile::TempDir, ParakeetEngine, PathBuf, PathBuf) {
+        let root = tempfile::tempdir().unwrap();
+        let model = root.path().join("model");
+        fs::create_dir(&model).unwrap();
+        for name in [
+            "encoder.int8.onnx",
+            "decoder.int8.onnx",
+            "joiner.int8.onnx",
+            "tokens.txt",
+        ] {
+            fs::write(model.join(name), []).unwrap();
+        }
+        let child_pid = root.path().join("child.pid");
+        let descendant_pid = root.path().join("descendant.pid");
+        let binary = root.path().join("sherpa-onnx-offline");
+        fs::write(
+            &binary,
+            format!(
+                "#!/bin/sh\nprintf '%s' \"$$\" > '{}'\nsleep 30 &\nprintf '%s' \"$!\" > '{}'\nwait\n",
+                child_pid.display(),
+                descendant_pid.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+        let engine = ParakeetEngine::with_paths(binary, model);
+        (root, engine, child_pid, descendant_pid)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn pid(path: &Path) -> u32 {
+        fs::read_to_string(path).unwrap().parse().unwrap()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn assert_process_reaped(pid: u32) {
+        let process = PathBuf::from(format!("/proc/{pid}"));
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while process.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!process.exists(), "direct child {pid} was not reaped");
+    }
+
+    #[cfg(target_os = "linux")]
+    fn assert_process_dead(pid: u32) {
+        let stat = PathBuf::from(format!("/proc/{pid}/stat"));
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let state = fs::read_to_string(&stat).ok().and_then(|value| {
+                value
+                    .rsplit_once(") ")
+                    .and_then(|(_, suffix)| suffix.chars().next())
+            });
+            if state.is_none() || state == Some('Z') {
+                return;
+            }
+            if Instant::now() >= deadline {
+                panic!("descendant {pid} survived bounded execution in state {state:?}");
+            }
+            std::thread::sleep(Duration::from_millis(10));
         }
     }
 
@@ -279,5 +384,50 @@ mod tests {
             finish_output(false, b"partial result\n", b"decoder failed\n"),
             Err(EngineError::Infer("decoder failed".to_string()))
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn timeout_kills_descendant_and_reaps_direct_child_promptly() {
+        let (_root, engine, child_pid, descendant_pid) = hung_fixture();
+        let started = Instant::now();
+        let error = engine
+            .transcribe_bounded(
+                &Pcm16kMono::from_samples(vec![0; 160]),
+                &options(LanguageChoice::Auto),
+                Instant::now() + Duration::from_millis(75),
+                &|| false,
+            )
+            .unwrap_err();
+        assert!(error.as_str().contains("timed out"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_process_reaped(pid(&child_pid));
+        assert_process_dead(pid(&descendant_pid));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cancellation_kills_descendant_and_reaps_direct_child_promptly() {
+        let (_root, engine, child_pid, descendant_pid) = hung_fixture();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let trigger = Arc::clone(&cancel);
+        let trigger = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(75));
+            trigger.store(true, Ordering::SeqCst);
+        });
+        let started = Instant::now();
+        let error = engine
+            .transcribe_bounded(
+                &Pcm16kMono::from_samples(vec![0; 160]),
+                &options(LanguageChoice::Auto),
+                Instant::now() + Duration::from_secs(5),
+                &|| cancel.load(Ordering::SeqCst),
+            )
+            .unwrap_err();
+        trigger.join().unwrap();
+        assert!(error.as_str().contains("canceled"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_process_reaped(pid(&child_pid));
+        assert_process_dead(pid(&descendant_pid));
     }
 }

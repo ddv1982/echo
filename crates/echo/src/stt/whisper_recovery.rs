@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use echo_core::{
     DecodeOptions, Engine, EngineError, EngineId, Pcm16kMono, Transcript, WhisperRecoveryReason,
@@ -71,12 +71,34 @@ impl Engine for RecoveringWhisperEngine {
         pcm: &Pcm16kMono,
         options: &DecodeOptions,
     ) -> Result<Transcript, EngineError> {
+        self.transcribe_bounded(
+            pcm,
+            options,
+            Instant::now() + std::time::Duration::from_secs(15 * 60),
+            &|| false,
+        )
+    }
+
+    fn transcribe_bounded(
+        &self,
+        pcm: &Pcm16kMono,
+        options: &DecodeOptions,
+        deadline: Instant,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Transcript, EngineError> {
+        if cancelled() {
+            return Err(EngineError::Infer("Whisper runtime canceled".to_string()));
+        }
+        if Instant::now() >= deadline {
+            return Err(EngineError::Infer(
+                "Whisper runtime timed out before starting".to_string(),
+            ));
+        }
         match &self.decision {
-            WhisperPlanDecision::ManagedCpu { plan } => {
-                WhisperEngine::with_plan((**plan).clone()).transcribe(pcm, options)
-            }
+            WhisperPlanDecision::ManagedCpu { plan } => WhisperEngine::with_plan((**plan).clone())
+                .transcribe_bounded(pcm, options, deadline, cancelled),
             WhisperPlanDecision::QualifiedAccelerator(plan) => {
-                self.transcribe_qualified(plan, pcm, options)
+                self.transcribe_qualified(plan, pcm, options, deadline, cancelled)
             }
         }
     }
@@ -88,52 +110,63 @@ impl RecoveringWhisperEngine {
         plan: &QualifiedWhisperPlan,
         pcm: &Pcm16kMono,
         options: &DecodeOptions,
+        deadline: Instant,
+        cancelled: &dyn Fn() -> bool,
     ) -> Result<Transcript, EngineError> {
         let now = (self.now)();
         match self.process_quarantined(&plan.identity_key, now) {
             Ok(true) => {
-                return self.run_fallback(
+                return Self::run_fallback(
                     plan,
                     pcm,
                     options,
                     false,
                     WhisperRecoveryReason::Quarantined,
+                    deadline,
+                    cancelled,
                 );
             }
             Err(()) => {
-                return self.run_fallback(
+                return Self::run_fallback(
                     plan,
                     pcm,
                     options,
                     false,
                     WhisperRecoveryReason::QuarantineUnreadable,
+                    deadline,
+                    cancelled,
                 );
             }
             Ok(false) => {}
         }
         match self.quarantine.is_active(&plan.identity_key, now) {
             Ok(true) => {
-                return self.run_fallback(
+                return Self::run_fallback(
                     plan,
                     pcm,
                     options,
                     false,
                     WhisperRecoveryReason::Quarantined,
+                    deadline,
+                    cancelled,
                 );
             }
             Err(_) => {
-                return self.run_fallback(
+                return Self::run_fallback(
                     plan,
                     pcm,
                     options,
                     false,
                     WhisperRecoveryReason::QuarantineUnreadable,
+                    deadline,
+                    cancelled,
                 );
             }
             Ok(false) => {}
         }
 
-        let accelerated = WhisperEngine::with_plan(plan.primary.clone()).transcribe(pcm, options);
+        let accelerated = WhisperEngine::with_plan(plan.primary.clone())
+            .transcribe_bounded(pcm, options, deadline, cancelled);
         let failure = match accelerated {
             Ok(mut transcript) => match validate_accelerated(plan, &transcript) {
                 Ok(()) => {
@@ -142,7 +175,15 @@ impl RecoveringWhisperEngine {
                 }
                 Err(reason) => reason,
             },
-            Err(error) => classify_error(&error),
+            Err(error) => {
+                // User cancellation and an exhausted caller deadline are not
+                // accelerator failures. Do not quarantine the device or start
+                // a fallback that inherits the same already-expired bound.
+                if cancelled() || Instant::now() >= deadline {
+                    return Err(error);
+                }
+                classify_error(&error)
+            }
         };
         if let Ok(mut keys) = self.process_quarantine.lock() {
             keys.insert(
@@ -153,7 +194,7 @@ impl RecoveringWhisperEngine {
         let _ = self
             .quarantine
             .record_failure(&plan.identity_key, quarantine_reason(failure), now);
-        self.run_fallback(plan, pcm, options, true, failure)
+        Self::run_fallback(plan, pcm, options, true, failure, deadline, cancelled)
     }
 
     fn process_quarantined(&self, key: &AcceleratorKey, now: u64) -> Result<bool, ()> {
@@ -167,15 +208,16 @@ impl RecoveringWhisperEngine {
     }
 
     fn run_fallback(
-        &self,
         plan: &QualifiedWhisperPlan,
         pcm: &Pcm16kMono,
         options: &DecodeOptions,
         accelerated_attempted: bool,
         reason: WhisperRecoveryReason,
+        deadline: Instant,
+        cancelled: &dyn Fn() -> bool,
     ) -> Result<Transcript, EngineError> {
-        let mut transcript =
-            WhisperEngine::with_plan(plan.fallback.clone()).transcribe(pcm, options)?;
+        let mut transcript = WhisperEngine::with_plan(plan.fallback.clone())
+            .transcribe_bounded(pcm, options, deadline, cancelled)?;
         attach_recovery(
             &mut transcript,
             &plan.identity_key,
@@ -350,6 +392,30 @@ mod tests {
         path
     }
 
+    #[cfg(target_os = "linux")]
+    fn staged_script(
+        root: &Path,
+        name: &str,
+        marker: &Path,
+        after_marker: &str,
+        stdout: &str,
+        stderr: &str,
+        success: bool,
+    ) -> PathBuf {
+        let path = root.join(name);
+        let body = format!(
+            "#!/bin/sh\nprintf '%s\\n' run >> '{}'\n{}printf '%s' '{}'\nprintf '%s\\n' '{}' >&2\nexit {}\n",
+            marker.display(),
+            after_marker,
+            stdout,
+            stderr,
+            if success { 0 } else { 1 }
+        );
+        fs::write(&path, body).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
     fn vad_rejecting_script(
         root: &Path,
         marker: &Path,
@@ -409,6 +475,204 @@ mod tests {
             language: LanguageChoice::Pinned(Language::ENGLISH),
             hints: RecognitionHints::default(),
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn bounded_engine(
+        root: &Path,
+        gpu: PathBuf,
+        cpu: PathBuf,
+        expected: WhisperVulkanReceipt,
+        timeout: Duration,
+    ) -> (RecoveringWhisperEngine, AcceleratorKey, PathBuf) {
+        let model = root.join("ggml-base.en.bin");
+        fs::write(&model, []).unwrap();
+        let mut primary = plan(
+            gpu,
+            WhisperRuntimeSource::System,
+            WhisperRuntimeBackend::Vulkan,
+            &model,
+            false,
+        );
+        primary.timeout = timeout;
+        let mut fallback = plan(
+            cpu,
+            WhisperRuntimeSource::Managed,
+            WhisperRuntimeBackend::Cpu,
+            &model,
+            true,
+        );
+        fallback.timeout = timeout;
+        let identity_key = key();
+        let decision =
+            WhisperPlanDecision::qualified(identity_key.clone(), primary, fallback, expected)
+                .unwrap();
+        let quarantine_path = root.join("quarantine.json");
+        (
+            RecoveringWhisperEngine::with_clock(
+                decision,
+                QuarantineStore::at(quarantine_path.clone()),
+                now,
+            ),
+            identity_key,
+            quarantine_path,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn caller_cancellation_does_not_fallback_or_quarantine() {
+        let root = scratch("bounded-cancel");
+        let gpu_marker = root.join("gpu.marker");
+        let cpu_marker = root.join("cpu.marker");
+        let expected = receipt(0x46a6);
+        let gpu_log = format!(
+            "ggml_vulkan: 0 = Intel Graphics | uma: 1\nwhisper_backend_init_gpu: using Vulkan0 backend\n{}",
+            receipt_line(&expected)
+        );
+        let gpu = script(
+            &root,
+            "gpu",
+            &gpu_marker,
+            &json("GPU"),
+            &gpu_log,
+            true,
+            true,
+        );
+        let cpu = script(
+            &root,
+            "cpu",
+            &cpu_marker,
+            &json("CPU"),
+            "whisper_model_load: CPU total size = 1 MB",
+            false,
+            true,
+        );
+        let (engine, identity_key, quarantine_path) =
+            bounded_engine(&root, gpu, cpu, expected, Duration::from_secs(2));
+
+        let started = Instant::now();
+        let error = engine
+            .transcribe_bounded(
+                &Pcm16kMono::from_samples(vec![0; 160]),
+                &options(),
+                Instant::now() + Duration::from_secs(2),
+                &|| gpu_marker.exists(),
+            )
+            .unwrap_err();
+
+        assert!(error.as_str().contains("canceled"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(fs::read_to_string(&gpu_marker).unwrap(), "run\n");
+        assert!(!cpu_marker.exists());
+        assert!(!engine.process_quarantined(&identity_key, NOW).unwrap());
+        assert!(!quarantine_path.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn exhausted_global_deadline_does_not_fallback_or_quarantine() {
+        let root = scratch("bounded-deadline");
+        let gpu_marker = root.join("gpu.marker");
+        let cpu_marker = root.join("cpu.marker");
+        let expected = receipt(0x46a6);
+        let gpu_log = format!(
+            "ggml_vulkan: 0 = Intel Graphics | uma: 1\nwhisper_backend_init_gpu: using Vulkan0 backend\n{}",
+            receipt_line(&expected)
+        );
+        let gpu = script(
+            &root,
+            "gpu",
+            &gpu_marker,
+            &json("GPU"),
+            &gpu_log,
+            true,
+            true,
+        );
+        let cpu = script(
+            &root,
+            "cpu",
+            &cpu_marker,
+            &json("CPU"),
+            "whisper_model_load: CPU total size = 1 MB",
+            false,
+            true,
+        );
+        let (engine, identity_key, quarantine_path) =
+            bounded_engine(&root, gpu, cpu, expected, Duration::from_secs(2));
+
+        let started = Instant::now();
+        let error = engine
+            .transcribe_bounded(
+                &Pcm16kMono::from_samples(vec![0; 160]),
+                &options(),
+                Instant::now() + Duration::from_millis(250),
+                &|| false,
+            )
+            .unwrap_err();
+
+        assert!(error.as_str().contains("timed out"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(fs::read_to_string(&gpu_marker).unwrap(), "run\n");
+        assert!(!cpu_marker.exists());
+        assert!(!engine.process_quarantined(&identity_key, NOW).unwrap());
+        assert!(!quarantine_path.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn fallback_inherits_the_original_global_deadline() {
+        let root = scratch("bounded-fallback-deadline");
+        let gpu_marker = root.join("gpu.marker");
+        let cpu_marker = root.join("cpu.marker");
+        let expected = receipt(0x46a6);
+        let gpu = staged_script(
+            &root,
+            "gpu",
+            &gpu_marker,
+            "sleep 0.2\n",
+            &json("GPU"),
+            "decoder crashed",
+            false,
+        );
+        // The second marker is reached with a reset 600 ms budget, but not
+        // with the roughly 400 ms left on the caller's original deadline.
+        let cpu_after_marker = format!(
+            "sleep 0.5\nprintf '%s\\n' reset-budget >> '{}'\nsleep 5\n",
+            cpu_marker.display()
+        );
+        let cpu = staged_script(
+            &root,
+            "cpu",
+            &cpu_marker,
+            &cpu_after_marker,
+            &json("CPU"),
+            "whisper_model_load: CPU total size = 1 MB",
+            true,
+        );
+        let (engine, identity_key, quarantine_path) =
+            bounded_engine(&root, gpu, cpu, expected, Duration::from_secs(2));
+
+        let started = Instant::now();
+        let error = engine
+            .transcribe_bounded(
+                &Pcm16kMono::from_samples(vec![0; 160]),
+                &options(),
+                Instant::now() + Duration::from_millis(600),
+                &|| false,
+            )
+            .unwrap_err();
+
+        assert!(error.as_str().contains("timed out"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(fs::read_to_string(&gpu_marker).unwrap(), "run\n");
+        assert_eq!(fs::read_to_string(&cpu_marker).unwrap(), "run\n");
+        assert!(engine.process_quarantined(&identity_key, NOW).unwrap());
+        assert!(engine.quarantine_is_active(NOW).unwrap());
+        assert!(quarantine_path.exists());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

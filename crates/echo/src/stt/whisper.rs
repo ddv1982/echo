@@ -1,10 +1,9 @@
-use std::fs;
 use std::num::NonZeroUsize;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
-use std::sync::mpsc;
+use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
+use std::{io::Read, thread::JoinHandle};
 
 use echo_core::{
     strip_nonspeech, DecodeOptions, Engine, EngineError, EngineId, Language, LanguageChoice,
@@ -16,8 +15,7 @@ use serde::Deserialize;
 
 use super::cache::{parse_whisper_filename, ModelCache};
 use super::whisper_behavior::{
-    CHILD_REAP_TIMEOUT_SECS, CLEARED_ENVIRONMENT_KEYS, CLEARED_ENVIRONMENT_PREFIXES,
-    ONE_SHOT_TIMEOUT_SECS,
+    CLEARED_ENVIRONMENT_KEYS, CLEARED_ENVIRONMENT_PREFIXES, ONE_SHOT_TIMEOUT_SECS,
 };
 use super::whisper_probe::{
     observe_runtime, parse_vulkan_devices, parse_vulkan_runtime_receipt,
@@ -301,6 +299,24 @@ impl Engine for WhisperEngine {
         pcm: &Pcm16kMono,
         options: &DecodeOptions,
     ) -> Result<Transcript, EngineError> {
+        self.transcribe_bounded(pcm, options, Instant::now() + self.timeout(), &|| false)
+    }
+
+    fn transcribe_bounded(
+        &self,
+        pcm: &Pcm16kMono,
+        options: &DecodeOptions,
+        deadline: Instant,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Transcript, EngineError> {
+        if cancelled() {
+            return Err(EngineError::Infer("Whisper runtime canceled".to_string()));
+        }
+        if Instant::now() >= deadline {
+            return Err(EngineError::Infer(
+                "Whisper runtime timed out before starting".to_string(),
+            ));
+        }
         if !matches!(self.protocol(), WhisperProtocol::OneShotCli) {
             return Err(EngineError::Infer(
                 "resident Whisper execution is not available".to_string(),
@@ -312,7 +328,7 @@ impl Engine for WhisperEngine {
         let launch = self.effective_runtime_launch(&bin);
         let started = Instant::now();
         let encode_started = Instant::now();
-        let wav = TempWav::new(write_temp_wav(pcm).map_err(EngineError::Infer)?);
+        let wav = write_temp_wav(pcm).map_err(EngineError::Infer)?;
         let audio_encode_ms = elapsed_ms(encode_started);
         let vad = self.vad_model();
         let tuning = self.tuning();
@@ -330,6 +346,8 @@ impl Engine for WhisperEngine {
             ),
             vad.is_some(),
             timeout,
+            deadline,
+            cancelled,
         )?;
         let retry_without_vad = self.allow_vad_retry()
             && !first.status.success()
@@ -350,6 +368,8 @@ impl Engine for WhisperEngine {
                 ),
                 false,
                 timeout,
+                deadline,
+                cancelled,
             )?;
             (
                 retry,
@@ -365,7 +385,6 @@ impl Engine for WhisperEngine {
                 vec![first_telemetry],
             )
         };
-        let _ = fs::remove_file(wav.path());
         let parse_started = Instant::now();
         let stderr = String::from_utf8_lossy(&status.stderr);
         let parsed = finish_whisper(status.status.success(), &status.stdout, &stderr)?;
@@ -408,24 +427,6 @@ impl Engine for WhisperEngine {
     }
 }
 
-struct TempWav(PathBuf);
-
-impl TempWav {
-    fn new(path: PathBuf) -> Self {
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for TempWav {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
-    }
-}
-
 fn elapsed_ms(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
@@ -436,60 +437,37 @@ fn run_attempt(
     args: Vec<String>,
     vad: bool,
     timeout: Duration,
+    execution_deadline: Instant,
+    cancelled: &dyn Fn() -> bool,
 ) -> Result<(Output, WhisperAttemptTelemetry), EngineError> {
     let wall_started = Instant::now();
-    let spawn_started = Instant::now();
     let mut command = command_for_runtime(binary, launch);
-    command.process_group(0);
-    let child = command
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| EngineError::Infer(error.to_string()))?;
-    let process_start_ms = elapsed_ms(spawn_started);
-    let pid =
-        rustix::process::Pid::from_raw(i32::try_from(child.id()).map_err(|_| {
-            EngineError::Infer("Whisper child process ID is out of range".to_string())
-        })?)
-        .ok_or_else(|| EngineError::Infer("Whisper child process ID is zero".to_string()))?;
-    let (sender, receiver) = mpsc::sync_channel(1);
-    std::thread::spawn(move || {
-        let _ = sender.send(child.wait_with_output());
-    });
-    let deadline = Instant::now() + timeout;
+    command.args(args);
+    let deadline = (Instant::now() + timeout).min(execution_deadline);
     let recording_lock = launch.and_then(|launch| launch.cancel_on_recording.as_deref());
-    let output = loop {
-        if recording_lock.is_some_and(crate::rec::session_active_at) {
-            kill_and_reap(pid, &receiver);
-            return Err(EngineError::Infer(
-                "Whisper calibration canceled because recording started".to_string(),
-            ));
-        }
-        let now = Instant::now();
-        if now >= deadline {
-            kill_and_reap(pid, &receiver);
-            return Err(EngineError::Infer(format!(
+    let should_cancel = || cancelled() || recording_lock.is_some_and(crate::rec::session_active_at);
+    let bounded =
+        run_process_group(command, deadline, &should_cancel).map_err(|error| match error {
+            ProcessRunError::Cancelled
+                if recording_lock.is_some_and(crate::rec::session_active_at) =>
+            {
+                EngineError::Infer(
+                    "Whisper calibration canceled because recording started".to_string(),
+                )
+            }
+            ProcessRunError::Cancelled => {
+                EngineError::Infer("Whisper runtime canceled".to_string())
+            }
+            ProcessRunError::TimedOut => EngineError::Infer(format!(
                 "Whisper runtime timed out after {} ms",
                 timeout.as_millis()
-            )));
-        }
-        let wait = (deadline - now).min(Duration::from_millis(50));
-        match receiver.recv_timeout(wait) {
-            Ok(output) => {
-                break output.map_err(|error| EngineError::Infer(error.to_string()))?;
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return Err(EngineError::Infer(
-                    "Whisper runtime wait thread stopped unexpectedly".to_string(),
-                ));
-            }
-        }
-    };
+            )),
+            ProcessRunError::Io(message) => EngineError::Infer(message),
+        })?;
+    let output = bounded.output;
     let telemetry = WhisperAttemptTelemetry {
         vad,
-        process_start_ms,
+        process_start_ms: bounded.process_start_ms,
         child_wall_ms: elapsed_ms(wall_started),
         success: output.status.success(),
         exit_code: output.status.code(),
@@ -498,11 +476,159 @@ fn run_attempt(
     Ok((output, telemetry))
 }
 
-fn kill_and_reap(pid: rustix::process::Pid, receiver: &mpsc::Receiver<std::io::Result<Output>>) {
-    if rustix::process::kill_process_group(pid, rustix::process::Signal::KILL).is_err() {
-        let _ = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
+pub(super) struct BoundedProcessOutput {
+    pub(super) output: Output,
+    pub(super) process_start_ms: u64,
+}
+
+pub(super) enum ProcessRunError {
+    Cancelled,
+    TimedOut,
+    Io(String),
+}
+
+/// Spawn one isolated process group, drain both output pipes, and keep direct
+/// ownership of `Child` so every post-spawn error can explicitly wait it.
+pub(super) fn run_process_group(
+    mut command: Command,
+    deadline: Instant,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<BoundedProcessOutput, ProcessRunError> {
+    if cancelled() {
+        return Err(ProcessRunError::Cancelled);
     }
-    let _ = receiver.recv_timeout(Duration::from_secs(CHILD_REAP_TIMEOUT_SECS));
+    if Instant::now() >= deadline {
+        return Err(ProcessRunError::TimedOut);
+    }
+    command
+        .process_group(0)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let spawn_started = Instant::now();
+    let mut child = command
+        .spawn()
+        .map_err(|error| ProcessRunError::Io(error.to_string()))?;
+    let process_start_ms = elapsed_ms(spawn_started);
+    let raw_pid = match i32::try_from(child.id()) {
+        Ok(raw_pid) => raw_pid,
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(ProcessRunError::Io(
+                "child process ID is out of range".to_string(),
+            ));
+        }
+    };
+    let Some(pid) = rustix::process::Pid::from_raw(raw_pid) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(ProcessRunError::Io("child process ID is zero".to_string()));
+    };
+    let Some(stdout) = child.stdout.take() else {
+        kill_group_and_reap(pid, &mut child, false);
+        return Err(ProcessRunError::Io(
+            "bounded child stdout pipe is missing".to_string(),
+        ));
+    };
+    let Some(stderr) = child.stderr.take() else {
+        kill_group_and_reap(pid, &mut child, false);
+        return Err(ProcessRunError::Io(
+            "bounded child stderr pipe is missing".to_string(),
+        ));
+    };
+    let stdout = match spawn_pipe_reader(stdout) {
+        Ok(reader) => reader,
+        Err(error) => {
+            kill_group_and_reap(pid, &mut child, false);
+            return Err(ProcessRunError::Io(error.to_string()));
+        }
+    };
+    let stderr = match spawn_pipe_reader(stderr) {
+        Ok(reader) => reader,
+        Err(error) => {
+            kill_group_and_reap(pid, &mut child, false);
+            let _ = stdout.join();
+            return Err(ProcessRunError::Io(error.to_string()));
+        }
+    };
+    let mut status = None;
+    loop {
+        let stop = if cancelled() {
+            Some(ProcessRunError::Cancelled)
+        } else if Instant::now() >= deadline {
+            Some(ProcessRunError::TimedOut)
+        } else {
+            None
+        };
+        if let Some(stop) = stop {
+            kill_group_and_reap(pid, &mut child, status.is_some());
+            // Joining after SIGKILL guarantees no descendant still holds an
+            // inherited output pipe when this call returns.
+            let _ = stdout.join();
+            let _ = stderr.join();
+            return Err(stop);
+        }
+        if status.is_none() {
+            match child.try_wait() {
+                Ok(exit) => status = exit,
+                Err(error) => {
+                    kill_group_and_reap(pid, &mut child, false);
+                    let _ = stdout.join();
+                    let _ = stderr.join();
+                    return Err(ProcessRunError::Io(error.to_string()));
+                }
+            }
+        }
+        if let Some(status) = status.filter(|_| stdout.is_finished() && stderr.is_finished()) {
+            let stdout = join_pipe_reader(stdout)?;
+            let stderr = join_pipe_reader(stderr)?;
+            return Ok(BoundedProcessOutput {
+                output: Output {
+                    status,
+                    stdout,
+                    stderr,
+                },
+                process_start_ms,
+            });
+        }
+        std::thread::sleep(
+            deadline
+                .saturating_duration_since(Instant::now())
+                .min(Duration::from_millis(25)),
+        );
+    }
+}
+
+fn spawn_pipe_reader(
+    mut pipe: impl Read + Send + 'static,
+) -> std::io::Result<JoinHandle<std::io::Result<Vec<u8>>>> {
+    std::thread::Builder::new()
+        .name("echo-stt-output".to_string())
+        .spawn(move || {
+            let mut bytes = Vec::new();
+            pipe.read_to_end(&mut bytes)?;
+            Ok(bytes)
+        })
+}
+
+fn join_pipe_reader(
+    reader: JoinHandle<std::io::Result<Vec<u8>>>,
+) -> Result<Vec<u8>, ProcessRunError> {
+    reader
+        .join()
+        .map_err(|_| ProcessRunError::Io("child output thread panicked".to_string()))?
+        .map_err(|error| ProcessRunError::Io(error.to_string()))
+}
+
+fn kill_group_and_reap(pid: rustix::process::Pid, child: &mut Child, already_reaped: bool) {
+    if rustix::process::kill_process_group(pid, rustix::process::Signal::KILL).is_err()
+        && !already_reaped
+    {
+        let _ = child.kill();
+    }
+    if !already_reaped {
+        let _ = child.wait();
+    }
 }
 
 pub(crate) fn probe_vulkan_runtime_receipt(
@@ -516,6 +642,8 @@ pub(crate) fn probe_vulkan_runtime_receipt(
         vec!["--ready-vulkan".to_string()],
         false,
         timeout,
+        Instant::now() + timeout,
+        &|| false,
     )
     .map_err(|error| error.to_string())?;
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -536,6 +664,8 @@ pub(crate) fn enumerate_vulkan_runtime_receipts(
         vec!["--list-vulkan-json".to_string()],
         false,
         timeout,
+        Instant::now() + timeout,
+        &|| false,
     )
     .map_err(|error| error.to_string())?;
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
@@ -796,6 +926,7 @@ mod tests {
     use super::*;
     use crate::stt::VulkanRuntimeSelector;
     use echo_core::{Dictionary, RecognitionHints};
+    use std::fs;
 
     fn options(language: LanguageChoice) -> DecodeOptions {
         DecodeOptions {
@@ -1337,6 +1468,8 @@ mod tests {
             vec!["-c".to_string(), "sleep 5".to_string()],
             false,
             std::time::Duration::from_millis(30),
+            Instant::now() + std::time::Duration::from_millis(30),
+            &|| false,
         )
         .unwrap_err();
         assert!(error.as_str().contains("timed out"), "{error}");

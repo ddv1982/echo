@@ -273,6 +273,24 @@ pub trait Engine {
         &self,
         pcm: &Pcm16kMono,
         options: &DecodeOptions,
+    ) -> Result<Transcript, EngineError> {
+        self.transcribe_bounded(
+            pcm,
+            options,
+            std::time::Instant::now() + std::time::Duration::from_secs(15 * 60),
+            &|| false,
+        )
+    }
+
+    /// Transcribe within a caller-owned execution bound. External-process
+    /// engines stop and reap their process tree before returning. In-process
+    /// engines must also check the bound at safe interruption points.
+    fn transcribe_bounded(
+        &self,
+        pcm: &Pcm16kMono,
+        options: &DecodeOptions,
+        deadline: std::time::Instant,
+        cancelled: &dyn Fn() -> bool,
     ) -> Result<Transcript, EngineError>;
 }
 

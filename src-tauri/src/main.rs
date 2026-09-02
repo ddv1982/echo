@@ -94,20 +94,40 @@ fn run_desktop() {
             return;
         };
         let current = echo::upgrade::file_identity(&watch.path).ok();
-        match echo::upgrade::second_launch_decision(watch.identity, current) {
+        match echo::upgrade::second_launch_decision(
+            watch.identity,
+            current,
+            echo::rec::session_active(),
+        ) {
             echo::upgrade::SecondLaunch::Focus => {
                 eprintln!("echo-desktop: second launch; focusing the running window");
                 show_main_window(app);
             }
+            echo::upgrade::SecondLaunch::DeferRestart => {
+                eprintln!(
+                    "echo-desktop: binary changed on disk; deferring restart while recording"
+                );
+                show_main_window(app);
+            }
             echo::upgrade::SecondLaunch::Restart => {
-                match std::process::Command::new(&watch.path).spawn() {
-                    Ok(_) => {
+                match echo::rec::attempt_upgrade_takeover(|| {
+                    std::process::Command::new(&watch.path)
+                        .spawn()
+                        .map(|_| ())
+                }) {
+                    echo::rec::UpgradeTakeover::Spawned => {
                         eprintln!(
                             "echo-desktop: binary changed on disk; restarting into the new build"
                         );
                         app.exit(0);
                     }
-                    Err(err) => {
+                    echo::rec::UpgradeTakeover::Deferred => {
+                        eprintln!(
+                            "echo-desktop: binary changed on disk; deferring restart while recording"
+                        );
+                        show_main_window(app);
+                    }
+                    echo::rec::UpgradeTakeover::SpawnFailed(err) => {
                         eprintln!("echo-desktop: restart spawn failed: {err}");
                         show_main_window(app);
                     }
@@ -118,7 +138,14 @@ fn run_desktop() {
     let result = builder
         .setup(|app| {
             #[cfg(not(feature = "status-perf-probe"))]
-            echo::upgrade::terminate_old_echo_processes();
+            match echo::upgrade::startup_cleanup_decision(echo::rec::session_active()) {
+                echo::upgrade::StartupCleanup::Defer => {
+                    eprintln!("echo-desktop: deferring startup takeover while recording is active");
+                }
+                echo::upgrade::StartupCleanup::TerminateStaleGui => {
+                    echo::upgrade::terminate_old_echo_processes();
+                }
+            }
             let open = MenuItem::with_id(app, "open", "Open Echo", true, None::<&str>)?;
             let record =
                 MenuItem::with_id(app, "record", "Start / stop recording", true, None::<&str>)?;

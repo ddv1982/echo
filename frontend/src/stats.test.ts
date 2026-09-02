@@ -49,6 +49,24 @@ describe('deriveStats', () => {
     const stats = deriveStats([row('this week', 5, 9), row('last week', 6, 9)], NOW)
     expect(stats.sessionsThisWeek).toBe(1)
   })
+
+  it('attributes a cross-midnight session to its capture start for week and streak', () => {
+    const monday = new Date('2026-08-17T15:00:00')
+    const session = {
+      text: 'crossing session',
+      startedAt: Math.floor(new Date('2026-08-16T23:59:00').getTime() / 1000),
+      completedAt: Math.floor(new Date('2026-08-17T00:01:00').getTime() / 1000),
+    }
+    const saturday = {
+      text: 'prior session',
+      startedAt: Math.floor(new Date('2026-08-15T12:00:00').getTime() / 1000),
+    }
+
+    const stats = deriveStats([session, saturday], monday)
+
+    expect(stats.sessionsThisWeek).toBe(0)
+    expect(stats.dayStreak).toBe(2)
+  })
 })
 
 describe('groupByDay', () => {
@@ -68,5 +86,18 @@ describe('groupByDay', () => {
 
   it('is empty for empty input', () => {
     expect(groupByDay([], NOW)).toEqual([])
+  })
+
+  it('groups a cross-midnight session by its capture start', () => {
+    const session = {
+      text: 'crossing session',
+      startedAt: Math.floor(new Date('2026-08-21T23:59:00').getTime() / 1000),
+      completedAt: Math.floor(new Date('2026-08-22T00:01:00').getTime() / 1000),
+    }
+
+    const groups = groupByDay([session], NOW)
+
+    expect(groups).toHaveLength(1)
+    expect(requireFixture(groups[0], 'cross-midnight history group').label).toBe('Yesterday')
   })
 })

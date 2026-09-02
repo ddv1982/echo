@@ -3,15 +3,15 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use echo_core::{status_path, write_atomic, RecordingLimit, SessionState};
+use echo_core::{status_path, write_atomic_private, RecordingLimit, SessionState};
 
 /// Status file contents after staleness handling.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Status {
     pub state: String,
     pub last: Option<String>,
-    /// Engine stderr from a failed session, so the desktop app can show what
-    /// the engine actually said instead of "speech engine failed".
+    /// Actionable failure detail from the session, including engine and local
+    /// persistence errors, so the desktop app can expose the actual problem.
     pub error: Option<String>,
     pub recording_limit: Option<RecordingLimit>,
 }
@@ -46,11 +46,11 @@ pub fn write_status(
     last: Option<&str>,
     error: Option<&str>,
 ) -> Result<(), String> {
-    write_atomic(&status_path(), render(state, last, error).as_bytes())
+    write_atomic_private(&status_path(), render(state, last, error).as_bytes())
 }
 
 pub fn write_recording(limit: RecordingLimit) -> Result<(), String> {
-    write_atomic(&status_path(), render_recording(limit).as_bytes())
+    write_atomic_private(&status_path(), render_recording(limit).as_bytes())
 }
 
 fn render_recording(limit: RecordingLimit) -> String {
@@ -59,7 +59,7 @@ fn render_recording(limit: RecordingLimit) -> String {
     body
 }
 
-fn render(state: SessionState, last: Option<&str>, error: Option<&str>) -> String {
+pub(crate) fn render(state: SessionState, last: Option<&str>, error: Option<&str>) -> String {
     let mut body = format!("state={}\npid={}\n", state_name(state), std::process::id());
     if let Some(text) = last {
         // The file is line-oriented; collapse newlines so a multiline
@@ -132,7 +132,7 @@ fn write_shortcut_activation(
         token.push_str(":recording=");
         token.push_str(recording_token);
     }
-    write_atomic(path, token.as_bytes())
+    write_atomic_private(path, token.as_bytes())
 }
 
 #[must_use]
@@ -274,6 +274,22 @@ mod tests {
         assert_eq!(
             status.error.as_deref(),
             Some("whisper-cli: failed to load model ggml_init failed")
+        );
+    }
+
+    #[test]
+    fn persistence_error_can_coexist_with_a_recoverable_transcript() {
+        let body = render(
+            SessionState::Idle,
+            Some("recoverable transcript"),
+            Some("Transcript was not saved to history. Check data directory permissions."),
+        );
+        let status = parse(&body, |_| false);
+        assert_eq!(status.state, "Idle");
+        assert_eq!(status.last.as_deref(), Some("recoverable transcript"));
+        assert_eq!(
+            status.error.as_deref(),
+            Some("Transcript was not saved to history. Check data directory permissions.")
         );
     }
 

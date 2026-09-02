@@ -284,12 +284,15 @@ impl SetupService {
             .collect();
         let microphone_ready = echo::audio::AudioCapture::default_input_ready().is_ok();
         let speech_ready = echo::stt::engine_summary().1;
-        let has_successful_dictation = echo_core::History::load().ok().is_some_and(|history| {
-            history
-                .rows()
-                .iter()
-                .any(|row| !row.text.trim().is_empty() && !row.inject.failed())
-        });
+        let has_successful_dictation =
+            echo_core::History::load_read_only()
+                .ok()
+                .is_some_and(|history| {
+                    history
+                        .rows()
+                        .iter()
+                        .any(|row| !row.text.trim().is_empty() && !row.inject.failed())
+                });
         Readiness {
             managed_supported: managed_platform_supported(),
             unsupported_reason: (!managed_platform_supported()).then(|| {

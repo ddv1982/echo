@@ -9,6 +9,19 @@ pub trait Pasteboard {
     fn set(&self, text: &str) -> Result<(), String>;
 }
 
+trait CommandRunner: Send + Sync {
+    fn run(&self, bin: &str, args: &[&str]) -> bool;
+}
+
+#[derive(Debug, Default)]
+struct SystemCommandRunner;
+
+impl CommandRunner for SystemCommandRunner {
+    fn run(&self, bin: &str, args: &[&str]) -> bool {
+        run_simple(bin, args)
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct FakePasteboard {
     inner: Arc<Mutex<String>>,
@@ -78,6 +91,7 @@ fn pipe_in(bin: &str, args: &[&str], text: &str) -> Result<(), String> {
 
 pub struct LinuxInjector<C> {
     clipboard: C,
+    runner: Arc<dyn CommandRunner>,
 }
 
 impl Default for LinuxInjector<SysClipboard> {
@@ -91,6 +105,7 @@ impl LinuxInjector<SysClipboard> {
     pub fn new() -> Self {
         Self {
             clipboard: SysClipboard,
+            runner: Arc::new(SystemCommandRunner),
         }
     }
 }
@@ -98,7 +113,15 @@ impl LinuxInjector<SysClipboard> {
 impl<C: Pasteboard> LinuxInjector<C> {
     #[must_use]
     pub fn with_clipboard(clipboard: C) -> Self {
-        Self { clipboard }
+        Self {
+            clipboard,
+            runner: Arc::new(SystemCommandRunner),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_runner(clipboard: C, runner: Arc<dyn CommandRunner>) -> Self {
+        Self { clipboard, runner }
     }
 
     fn current_focus() -> Result<FocusTarget, FailReason> {
@@ -125,33 +148,37 @@ impl<C: Pasteboard> LinuxInjector<C> {
         }
     }
 
-    fn type_text(text: &str, window: Option<&str>) -> Option<InjectBackend> {
+    fn type_text(&self, text: &str, window: Option<&str>) -> Option<InjectBackend> {
+        if let Some(id) = window {
+            let _ = self.runner.run("xdotool", &["windowfocus", "--sync", id]);
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            return (run_xdotool_type(self.runner.as_ref(), text, Some(id), true)
+                || run_xdotool_type(self.runner.as_ref(), text, Some(id), false))
+            .then_some(InjectBackend::Xdotool);
+        }
+
         if is_wayland_session() && window.is_none() {
-            if run_simple("ydotool", &["type", text]) {
+            if self.runner.run("ydotool", &["type", text]) {
                 return Some(InjectBackend::Ydotool);
             }
-            if run_simple("wtype", &[text]) {
+            if self.runner.run("wtype", &[text]) {
                 return Some(InjectBackend::Wtype);
             }
         }
-        if let Some(id) = window {
-            let _ = Command::new("xdotool")
-                .args(["windowfocus", "--sync", id])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-            std::thread::sleep(std::time::Duration::from_millis(30));
-        }
-        if run_xdotool_type(text, None, true) || run_xdotool_type(text, None, false) {
+        if run_xdotool_type(self.runner.as_ref(), text, None, true)
+            || run_xdotool_type(self.runner.as_ref(), text, None, false)
+        {
             return Some(InjectBackend::Xdotool);
         }
-        if run_xdotool_type(text, window, true) || run_xdotool_type(text, window, false) {
+        if run_xdotool_type(self.runner.as_ref(), text, window, true)
+            || run_xdotool_type(self.runner.as_ref(), text, window, false)
+        {
             return Some(InjectBackend::Xdotool);
         }
-        if run_simple("ydotool", &["type", text]) {
+        if self.runner.run("ydotool", &["type", text]) {
             return Some(InjectBackend::Ydotool);
         }
-        if run_simple("wtype", &[text]) {
+        if self.runner.run("wtype", &[text]) {
             return Some(InjectBackend::Wtype);
         }
         None
@@ -159,14 +186,18 @@ impl<C: Pasteboard> LinuxInjector<C> {
 
     fn paste_text(&self, text: &str, window: Option<&str>) -> InjectReport {
         self.paste_with(text, || {
-            if is_wayland_session() && window.is_none() && run_simple("ydotool", &["key", "ctrl+v"])
-            {
+            if window.is_some() {
+                return paste_key(self.runner.as_ref(), window).then_some(InjectBackend::Xdotool);
+            }
+            if is_wayland_session() && self.runner.run("ydotool", &["key", "ctrl+v"]) {
                 return Some(InjectBackend::Ydotool);
             }
-            if paste_key(window) {
+            if paste_key(self.runner.as_ref(), window) {
                 return Some(InjectBackend::Xdotool);
             }
-            run_simple("ydotool", &["key", "ctrl+v"]).then_some(InjectBackend::Ydotool)
+            self.runner
+                .run("ydotool", &["key", "ctrl+v"])
+                .then_some(InjectBackend::Ydotool)
         })
     }
 
@@ -228,42 +259,37 @@ impl<C: Pasteboard> Injector for LinuxInjector<C> {
             };
         }
         let window = target.window_id.as_deref();
-        if let Some(backend) = Self::type_text(text, window) {
+        if let Some(backend) = self.type_text(text, window) {
             return InjectReport::Typed { backend };
         }
         self.paste_text(text, window)
     }
 }
 
-fn run_xdotool_type(text: &str, window: Option<&str>, clear: bool) -> bool {
-    let mut cmd = Command::new("xdotool");
-    cmd.arg("type");
+fn run_xdotool_type(
+    runner: &dyn CommandRunner,
+    text: &str,
+    window: Option<&str>,
+    clear: bool,
+) -> bool {
+    let mut args = vec!["type"];
     if clear {
-        cmd.arg("--clearmodifiers");
+        args.push("--clearmodifiers");
     }
     if let Some(id) = window {
-        cmd.arg("--window").arg(id);
+        args.extend(["--window", id]);
     }
-    cmd.arg("--").arg(text);
-    cmd.stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+    args.extend(["--", text]);
+    runner.run("xdotool", &args)
 }
 
-fn paste_key(window: Option<&str>) -> bool {
-    let mut cmd = Command::new("xdotool");
-    cmd.args(["key", "--clearmodifiers"]);
+fn paste_key(runner: &dyn CommandRunner, window: Option<&str>) -> bool {
+    let mut args = vec!["key", "--clearmodifiers"];
     if let Some(id) = window {
-        cmd.arg("--window").arg(id);
+        args.extend(["--window", id]);
     }
-    cmd.arg("ctrl+v");
-    cmd.stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+    args.push("ctrl+v");
+    runner.run("xdotool", &args)
 }
 
 fn run_simple(bin: &str, args: &[&str]) -> bool {
@@ -287,6 +313,68 @@ fn command_stdout(bin: &str, args: &[&str]) -> Result<String, ()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    type Call = (String, Vec<String>);
+
+    #[derive(Clone)]
+    struct RecordingRunner {
+        calls: Arc<Mutex<Vec<Call>>>,
+        reject_targeted: bool,
+    }
+
+    impl RecordingRunner {
+        fn new(reject_targeted: bool) -> Self {
+            Self {
+                calls: Arc::new(Mutex::new(Vec::new())),
+                reject_targeted,
+            }
+        }
+
+        fn calls(&self) -> Vec<Call> {
+            self.calls.lock().expect("runner calls").clone()
+        }
+    }
+
+    impl CommandRunner for RecordingRunner {
+        fn run(&self, bin: &str, args: &[&str]) -> bool {
+            self.calls.lock().expect("runner calls").push((
+                bin.to_string(),
+                args.iter().map(|arg| (*arg).to_string()).collect(),
+            ));
+            !self.reject_targeted || !args.contains(&"--window")
+        }
+    }
+
+    fn captured_target() -> FocusTarget {
+        FocusTarget {
+            window_id: Some("4242".to_string()),
+            app_id: None,
+            title: Some("captured".to_string()),
+        }
+    }
+
+    fn assert_only_targeted_x11_dispatch(calls: &[Call]) {
+        let dispatches: Vec<_> = calls
+            .iter()
+            .filter(|(bin, args)| {
+                bin == "xdotool" && matches!(args.first().map(String::as_str), Some("type" | "key"))
+            })
+            .collect();
+        assert!(!dispatches.is_empty(), "no X11 dispatch was attempted");
+        for (_, args) in dispatches {
+            assert!(
+                args.windows(2)
+                    .any(|pair| pair[0] == "--window" && pair[1] == "4242"),
+                "untargeted X11 dispatch: {args:?}"
+            );
+        }
+        assert!(
+            calls
+                .iter()
+                .all(|(bin, _)| bin != "ydotool" && bin != "wtype"),
+            "global fallback was attempted: {calls:?}"
+        );
+    }
 
     #[test]
     fn clipboard_only_keeps_transcript_available() {
@@ -322,5 +410,43 @@ mod tests {
             }
         );
         assert_eq!(injector.clipboard.text(), "secret");
+    }
+
+    #[test]
+    fn captured_x11_typing_uses_only_the_captured_window() {
+        let runner = RecordingRunner::new(false);
+        let injector =
+            LinuxInjector::with_runner(FakePasteboard::new("secret"), Arc::new(runner.clone()));
+
+        let report = injector.inject("nonce", &captured_target());
+
+        assert_eq!(
+            report,
+            InjectReport::Typed {
+                backend: InjectBackend::Xdotool
+            }
+        );
+        assert_only_targeted_x11_dispatch(&runner.calls());
+    }
+
+    #[test]
+    fn captured_x11_target_failure_does_not_use_global_fallback() {
+        let runner = RecordingRunner::new(true);
+        let board = FakePasteboard::new("secret");
+        let injector = LinuxInjector::with_runner(board.clone(), Arc::new(runner.clone()));
+
+        let report = injector.inject("nonce", &captured_target());
+
+        assert_eq!(report, InjectReport::ClipboardOnly);
+        assert_eq!(board.text(), "nonce");
+        let calls = runner.calls();
+        assert_only_targeted_x11_dispatch(&calls);
+        assert!(
+            calls
+                .iter()
+                .any(|(bin, args)| bin == "xdotool"
+                    && args.first().map(String::as_str) == Some("key")),
+            "targeted paste was not attempted: {calls:?}"
+        );
     }
 }
