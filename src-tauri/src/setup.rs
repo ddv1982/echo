@@ -453,7 +453,9 @@ impl SetupService {
                 {
                     *active = None;
                 }
+                let tray_request = crate::tray::request();
                 drop(active);
+                crate::tray::refresh_requested(&app, tray_request);
                 let _ = app.emit("setup-event", event);
             });
         if let Err(error) = spawned {

@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.14.14
+
+- Echo now retains its native Linux tray menu for the desktop process lifetime, preventing Open, recording, Language, and Quit entries from disappearing.
+- The tray now includes a language selector synchronized with Settings. It reflects the active engine's available language choices and keeps environment-controlled or fixed language modes read-only.
+
 ## v0.14.13
 
 - Desktop status polling, Settings, setup, History, Dictionary, shortcut recovery, stale-install removal, and voice-training startup now keep blocking filesystem and device work off the async runtime. Cached health and last-run details refresh when their inputs change without making routine polling expensive.

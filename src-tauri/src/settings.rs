@@ -1,5 +1,6 @@
 use std::env;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use echo_desktop::ipc::{
@@ -7,6 +8,22 @@ use echo_desktop::ipc::{
 };
 
 static CONFIG_WRITE_LOCK: Mutex<()> = Mutex::new(());
+static SETTINGS_REVISION: AtomicU64 = AtomicU64::new(0);
+
+struct SettingsWriteRevision;
+
+impl SettingsWriteRevision {
+    fn begin() -> Self {
+        SETTINGS_REVISION.fetch_add(1, Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for SettingsWriteRevision {
+    fn drop(&mut self) {
+        SETTINGS_REVISION.fetch_add(1, Ordering::SeqCst);
+    }
+}
 
 fn lock_config_writes(lock: &Mutex<()>) -> Result<std::sync::MutexGuard<'_, ()>, String> {
     lock.lock().map_err(|_| {
@@ -19,6 +36,7 @@ pub(super) fn update_file_config(
     update: impl FnOnce(&mut echo_core::Config) -> Result<(), String>,
 ) -> Result<(), String> {
     let _write = lock_config_writes(&CONFIG_WRITE_LOCK)?;
+    let _revision = SettingsWriteRevision::begin();
     update_file_config_at(&echo_core::config_path(), update)?;
     echo::settings::reload();
     crate::status::health_invalidate();
@@ -78,6 +96,29 @@ pub(super) fn snapshot(readiness: Readiness) -> Result<SettingsSnapshot, String>
     let file = load_preferences_for_update(&echo_core::config_path())?;
     let preferences = read_from_file(&file)?;
     Ok(crate::speech::snapshot(preferences, &file, readiness))
+}
+
+pub(super) fn snapshot_with_revision(
+    mut readiness: impl FnMut() -> Readiness,
+) -> Result<(u64, SettingsSnapshot), String> {
+    read_at_stable_revision(&SETTINGS_REVISION, || snapshot(readiness()))
+}
+
+fn read_at_stable_revision<T>(
+    revision_source: &AtomicU64,
+    mut read: impl FnMut() -> Result<T, String>,
+) -> Result<(u64, T), String> {
+    loop {
+        let revision = revision_source.load(Ordering::SeqCst);
+        if revision % 2 != 0 {
+            std::thread::yield_now();
+            continue;
+        }
+        let value = read()?;
+        if revision == revision_source.load(Ordering::SeqCst) {
+            return Ok((revision, value));
+        }
+    }
 }
 
 fn read_from_file(file: &echo_core::Config) -> Result<Settings, String> {
@@ -381,6 +422,27 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir.join("config.json")
+    }
+
+    #[test]
+    fn revisioned_read_retries_when_a_write_spans_the_snapshot() {
+        let revision = AtomicU64::new(0);
+        let mut reads = 0;
+
+        let result = read_at_stable_revision(&revision, || {
+            reads += 1;
+            if reads == 1 {
+                revision.store(1, Ordering::SeqCst);
+                revision.store(2, Ordering::SeqCst);
+                Ok("stale")
+            } else {
+                Ok("fresh")
+            }
+        })
+        .unwrap();
+
+        assert_eq!(result, (2, "fresh"));
+        assert_eq!(reads, 2);
     }
 
     #[test]

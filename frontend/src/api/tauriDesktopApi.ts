@@ -67,6 +67,8 @@ export function createTauriDesktopApi(): DesktopApi {
     cancelSetup: (operation) => invoke<boolean>('cancel_setup', { operation }),
     onSetupEvent: (handler) =>
       listen<SetupEvent>('setup-event', (event) => handler(event.payload)),
+    onSettingsEvent: (handler) =>
+      listen('settings-event', () => handler()),
   }
 }
 

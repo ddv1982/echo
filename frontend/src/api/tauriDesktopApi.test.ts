@@ -122,6 +122,17 @@ describe('Tauri desktop adapter contract', () => {
     expect(handler).toHaveBeenCalledWith(event)
   })
 
+  it('subscribes to settings-event notifications', async () => {
+    const handler = vi.fn()
+    await tauriDesktopApi.onSettingsEvent(handler)
+
+    expect(listenMock).toHaveBeenCalledWith('settings-event', expect.any(Function))
+    const registration = requireFixture(listenMock.mock.calls[0], 'settings-event registration')
+    const listener = requireFixture(registration[1], 'settings-event listener')
+    listener({ payload: { kind: 'finished', operationId: 'unused' } })
+    expect(handler).toHaveBeenCalledOnce()
+  })
+
   it('initializes below the five millisecond budget', () => {
     const durations = Array.from({ length: 51 }, (_, index) => {
       const start = `desktop-api-start-${index}`
