@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use caseless::Caseless;
 use fs2::FileExt;
-use regex::{Regex, RegexBuilder};
+use regex::{Regex, RegexBuilder, RegexSet, RegexSetBuilder};
 use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
 use unicode_segmentation::UnicodeSegmentation;
@@ -27,8 +27,9 @@ struct MatchLimits {
 
 enum PhraseMatcher {
     Regex {
-        regex: Regex,
+        regex_set: RegexSet,
         entry_indices: Vec<usize>,
+        folded_lengths: Vec<usize>,
     },
     SingleRegex {
         regex: Regex,
@@ -579,23 +580,20 @@ fn compile_matcher_chunk(
     regex_size_limit: Option<usize>,
     matchers: &mut Vec<PhraseMatcher>,
 ) {
-    let mut pattern = String::from(r"\A(?:");
-    for (position, entry_index) in entry_indices.iter().enumerate() {
-        if position > 0 {
-            pattern.push('|');
-        }
-        pattern.push('(');
-        pattern.push_str(&regex::escape(&canonical_fold(
-            &entries[*entry_index].spoken,
-        )));
-        pattern.push_str(r")(?:$|[^\w'])");
-    }
-    pattern.push(')');
+    let folded_phrases = entry_indices
+        .iter()
+        .map(|entry_index| canonical_fold(&entries[*entry_index].spoken))
+        .collect::<Vec<_>>();
+    let patterns = folded_phrases
+        .iter()
+        .map(|phrase| format!(r"\A{}(?:$|[^\w'])", regex::escape(phrase)))
+        .collect::<Vec<_>>();
 
-    if let Ok(regex) = compile_phrase_regex(&pattern, regex_size_limit) {
+    if let Ok(regex_set) = compile_phrase_regex_set(&patterns, regex_size_limit) {
         matchers.push(PhraseMatcher::Regex {
-            regex,
+            regex_set,
             entry_indices: entry_indices.to_vec(),
+            folded_lengths: folded_phrases.iter().map(String::len).collect(),
         });
     } else if entry_indices.len() > 1 {
         let middle = entry_indices.len() / 2;
@@ -614,7 +612,7 @@ fn compile_matcher_chunk(
     } else {
         let entry_index = entry_indices[0];
         let spoken = canonical_fold(&entries[entry_index].spoken);
-        if let Ok(regex) = compile_phrase_regex(&regex::escape(&spoken), None) {
+        if let Ok(regex) = compile_phrase_regex(&format!(r"\A{}", regex::escape(&spoken)), None) {
             matchers.push(PhraseMatcher::SingleRegex { regex, entry_index });
         } else {
             matchers.push(PhraseMatcher::Literal {
@@ -633,28 +631,47 @@ fn compile_phrase_regex(pattern: &str, size_limit: Option<usize>) -> Result<Rege
     builder.build()
 }
 
+fn compile_phrase_regex_set(
+    patterns: &[String],
+    size_limit: Option<usize>,
+) -> Result<RegexSet, regex::Error> {
+    let mut builder = RegexSetBuilder::new(patterns);
+    if let Some(size_limit) = size_limit {
+        builder.size_limit(size_limit);
+    }
+    builder.build()
+}
+
 fn matcher_candidates(matcher: &PhraseMatcher, text: &str) -> Vec<(usize, usize, usize)> {
     match matcher {
-        PhraseMatcher::Regex { regex, .. } => text
+        PhraseMatcher::Regex {
+            regex_set,
+            folded_lengths,
+            ..
+        } => text
             .char_indices()
-            .filter_map(|(start, _)| {
-                let captures = regex.captures(&text[start..])?;
-                let (priority, matched) = captures
+            .flat_map(|(start, _)| {
+                regex_set
+                    .matches(&text[start..])
                     .iter()
-                    .skip(1)
-                    .enumerate()
-                    .find_map(|(priority, capture)| capture.map(|matched| (priority, matched)))?;
-                let end = start + matched.end();
-                Some((priority, start, end))
+                    .map(move |priority| (priority, start, start + folded_lengths[priority]))
+                    .collect::<Vec<_>>()
             })
             .collect(),
-        PhraseMatcher::SingleRegex { regex, .. } => regex
-            .find_iter(text)
-            .map(|matched| (0, matched.start(), matched.end()))
+        PhraseMatcher::SingleRegex { regex, .. } => text
+            .char_indices()
+            .filter_map(|(start, _)| {
+                let matched = regex.find(&text[start..])?;
+                Some((0, start, start + matched.end()))
+            })
             .collect(),
         PhraseMatcher::Literal { needle, .. } => text
-            .match_indices(needle)
-            .map(|(start, matched)| (0, start, start + matched.len()))
+            .char_indices()
+            .filter_map(|(start, _)| {
+                text[start..]
+                    .starts_with(needle)
+                    .then_some((0, start, start + needle.len()))
+            })
             .collect(),
     }
 }
@@ -890,6 +907,48 @@ mod tests {
         assert_eq!(
             dict(&[("beta gamma delta", "LONG"), ("alpha beta", "SHORT")]).rewrite(text),
             expected
+        );
+    }
+
+    #[test]
+    fn shorter_match_survives_when_a_longer_overlap_wins() {
+        let dictionary = dict(&[
+            ("alpha beta", "SHORT"),
+            ("beta gamma delta", "LONG"),
+            ("alpha", "A"),
+        ]);
+        let mut with_unrelated_entries = dictionary.clone();
+        with_unrelated_entries
+            .entries
+            .extend((0..64).map(|index| DictEntry {
+                spoken: format!("filler{index:02}"),
+                written: format!("FILLER{index:02}"),
+                created_at: index,
+            }));
+
+        assert_eq!(
+            (
+                dictionary.rewrite("alpha beta gamma delta"),
+                with_unrelated_entries.rewrite("alpha beta gamma delta"),
+            ),
+            ("A LONG".to_string(), "A LONG".to_string())
+        );
+    }
+
+    #[test]
+    fn fallback_matchers_keep_overlapping_candidates() {
+        let dictionary = dict(&[("xx a", "LONG"), ("a a", "PAIR")]);
+
+        assert_eq!(
+            dictionary.rewrite_with_limits(
+                "xx a a a",
+                MatchLimits {
+                    entries: 2,
+                    pattern_bytes: usize::MAX,
+                    regex_size_limit: Some(0),
+                },
+            ),
+            "LONG PAIR"
         );
     }
 
