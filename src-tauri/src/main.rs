@@ -11,9 +11,6 @@ use commands::{
     set_microphone, set_settings, start_dictionary_training_sample, stop_recording,
     test_input_device, test_microphone_fallback, toggle_recording, DictionaryTrainingCaptures,
 };
-use tauri::image::Image;
-use tauri::menu::{Menu, MenuItem};
-use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, WindowEvent};
 
 mod blocking;
@@ -26,6 +23,7 @@ mod setup;
 mod shortcuts;
 mod speech;
 mod status;
+mod tray;
 
 #[cfg(test)]
 use status::{Health, HEALTH};
@@ -158,26 +156,14 @@ fn run_desktop() -> Result<(), String> {
                 }
                 echo::upgrade::StartupCleanup::TerminateStaleGui => {}
             }
-            let open = MenuItem::with_id(app, "open", "Open Echo", true, None::<&str>)?;
-            let record =
-                MenuItem::with_id(app, "record", "Start / stop recording", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &record, &quit])?;
-            let icon = Image::from_bytes(include_bytes!("../icons/tray-24.png"))
-                .expect("tray-24.png decodes as RGBA");
-            let tray = TrayIconBuilder::new()
-                .menu(&menu)
-                .icon(icon)
-                .on_menu_event(|app, event| match event.id().as_ref() {
-                    "open" => show_main_window(app),
-                    "record" => {
-                        let _ = commands::start_recording_thread();
-                    }
-                    "quit" => app.exit(0),
-                    _ => {}
-                });
-            let tray_ready = match panic::catch_unwind(AssertUnwindSafe(|| tray.build(app))) {
-                Ok(Ok(_)) => true,
+            let tray_ready = match panic::catch_unwind(AssertUnwindSafe(|| tray::build(app))) {
+                Ok(Ok(tray_menu)) => {
+                    app.manage(tray_menu);
+                    tray::refresh(app.handle());
+                    #[cfg(feature = "status-perf-probe")]
+                    commands::run_test_hook(app.handle());
+                    true
+                }
                 Ok(Err(err)) => {
                     eprintln!("tray icon: {err}");
                     false

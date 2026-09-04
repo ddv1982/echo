@@ -22,6 +22,8 @@ pub(super) use library::{
 pub(super) use recording::{
     get_recording_level, start_recording_thread, stop_recording, toggle_recording,
 };
+#[cfg(feature = "status-perf-probe")]
+pub(super) use settings::run_test_hook;
 pub(super) use settings::{get_settings, set_settings};
 pub(super) use shortcuts::{get_shortcut_status, repair_legacy_shortcut, retry_shortcut};
 pub(super) use status::get_app_status;
