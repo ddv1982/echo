@@ -67,7 +67,8 @@
   --border-subtle: 0 0% 90%;
   --border-strong: 0 0% 80%;
   --text-secondary: 0 0% 34%;
-  --text-tertiary: 0 0% 45%;
+  /* #666 on the #f5f5f5 raised surface is 5.25:1 (5.50:1 on #fafafa cards). */
+  --text-tertiary: 0 0% 40%;
   --accent: 0 0% 15%;
   --recording: 354 72% 49%;
   --recording-soft: 354 72% 94%;
@@ -91,5 +92,6 @@
     scroll-behavior: auto !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
+    transition-duration: 0ms !important;
   }
 }

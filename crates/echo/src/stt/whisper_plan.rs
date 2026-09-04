@@ -170,7 +170,6 @@ fn valid_uuid(value: &str) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WhisperProtocol {
     OneShotCli,
-    ResidentBroker,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

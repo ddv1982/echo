@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { deriveStats, groupByDay } from './stats'
+import { deriveStats, groupByDay, millisecondsUntilNextLocalDay } from './stats'
 
 const NOW = new Date('2026-08-22T15:00:00') // a Saturday
 
@@ -115,6 +115,22 @@ describe('groupByDay', () => {
 
       expect(deriveStats(rows, monday).dayStreak).toBe(2)
       expect(requireFixture(groupByDay(rows, monday)[0], 'DST group').label).toBe('Yesterday')
+    } finally {
+      if (previousTimezone === undefined) delete process.env.TZ
+      else process.env.TZ = previousTimezone
+    }
+  })
+})
+
+describe('millisecondsUntilNextLocalDay', () => {
+  it('uses local calendar arithmetic across both DST boundaries', () => {
+    const previousTimezone = process.env.TZ
+    process.env.TZ = 'Europe/Amsterdam'
+    try {
+      expect(millisecondsUntilNextLocalDay(new Date(2026, 2, 29, 0)))
+        .toBe(23 * 60 * 60 * 1000)
+      expect(millisecondsUntilNextLocalDay(new Date(2026, 9, 25, 0)))
+        .toBe(25 * 60 * 60 * 1000)
     } finally {
       if (previousTimezone === undefined) delete process.env.TZ
       else process.env.TZ = previousTimezone

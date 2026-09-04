@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::num::NonZeroUsize;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -28,6 +29,9 @@ use super::{
     WhisperRuntimeLaunch, WhisperTuning,
 };
 use crate::which::path_of;
+
+const STDERR_CAPTURE_LIMIT: usize = 64 * 1024;
+const STDERR_OMISSION_MARKER: &[u8] = b"\n...[stderr omitted]...\n";
 
 pub struct WhisperEngine {
     model: String,
@@ -446,23 +450,24 @@ fn run_attempt(
     let deadline = (Instant::now() + timeout).min(execution_deadline);
     let recording_lock = launch.and_then(|launch| launch.cancel_on_recording.as_deref());
     let should_cancel = || cancelled() || recording_lock.is_some_and(crate::rec::session_active_at);
-    let bounded =
-        run_process_group(command, deadline, &should_cancel).map_err(|error| match error {
-            ProcessRunError::Cancelled
+    let bounded = run_process_group_with_diagnostics(command, deadline, &should_cancel, true)
+        .map_err(|error| match error {
+            DiagnosticRunError::Cancelled(stderr)
                 if recording_lock.is_some_and(crate::rec::session_active_at) =>
             {
-                EngineError::Infer(
+                inference_error_with_stderr(
                     "Whisper calibration canceled because recording started".to_string(),
+                    &stderr,
                 )
             }
-            ProcessRunError::Cancelled => {
-                EngineError::Infer("Whisper runtime canceled".to_string())
+            DiagnosticRunError::Cancelled(stderr) => {
+                inference_error_with_stderr("Whisper runtime canceled".to_string(), &stderr)
             }
-            ProcessRunError::TimedOut => EngineError::Infer(format!(
-                "Whisper runtime timed out after {} ms",
-                timeout.as_millis()
-            )),
-            ProcessRunError::Io(message) => EngineError::Infer(message),
+            DiagnosticRunError::TimedOut(stderr) => inference_error_with_stderr(
+                format!("Whisper runtime timed out after {} ms", timeout.as_millis()),
+                &stderr,
+            ),
+            DiagnosticRunError::Io(message) => EngineError::Infer(message),
         })?;
     let output = bounded.output;
     let telemetry = WhisperAttemptTelemetry {
@@ -481,24 +486,47 @@ pub(super) struct BoundedProcessOutput {
     pub(super) process_start_ms: u64,
 }
 
+#[derive(Debug)]
 pub(super) enum ProcessRunError {
     Cancelled,
     TimedOut,
     Io(String),
 }
 
+#[derive(Debug)]
+enum DiagnosticRunError {
+    Cancelled(Vec<u8>),
+    TimedOut(Vec<u8>),
+    Io(String),
+}
+
 /// Spawn one isolated process group, drain both output pipes, and keep direct
 /// ownership of `Child` so every post-spawn error can explicitly wait it.
 pub(super) fn run_process_group(
-    mut command: Command,
+    command: Command,
     deadline: Instant,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<BoundedProcessOutput, ProcessRunError> {
+    run_process_group_with_diagnostics(command, deadline, cancelled, false).map_err(|error| {
+        match error {
+            DiagnosticRunError::Cancelled(_) => ProcessRunError::Cancelled,
+            DiagnosticRunError::TimedOut(_) => ProcessRunError::TimedOut,
+            DiagnosticRunError::Io(message) => ProcessRunError::Io(message),
+        }
+    })
+}
+
+fn run_process_group_with_diagnostics(
+    mut command: Command,
+    deadline: Instant,
+    cancelled: &dyn Fn() -> bool,
+    bound_stderr: bool,
+) -> Result<BoundedProcessOutput, DiagnosticRunError> {
     if cancelled() {
-        return Err(ProcessRunError::Cancelled);
+        return Err(DiagnosticRunError::Cancelled(Vec::new()));
     }
     if Instant::now() >= deadline {
-        return Err(ProcessRunError::TimedOut);
+        return Err(DiagnosticRunError::TimedOut(Vec::new()));
     }
     command
         .process_group(0)
@@ -507,14 +535,14 @@ pub(super) fn run_process_group(
     let spawn_started = Instant::now();
     let mut child = command
         .spawn()
-        .map_err(|error| ProcessRunError::Io(error.to_string()))?;
+        .map_err(|error| DiagnosticRunError::Io(error.to_string()))?;
     let process_start_ms = elapsed_ms(spawn_started);
     let raw_pid = match i32::try_from(child.id()) {
         Ok(raw_pid) => raw_pid,
         Err(_) => {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(ProcessRunError::Io(
+            return Err(DiagnosticRunError::Io(
                 "child process ID is out of range".to_string(),
             ));
         }
@@ -522,17 +550,19 @@ pub(super) fn run_process_group(
     let Some(pid) = rustix::process::Pid::from_raw(raw_pid) else {
         let _ = child.kill();
         let _ = child.wait();
-        return Err(ProcessRunError::Io("child process ID is zero".to_string()));
+        return Err(DiagnosticRunError::Io(
+            "child process ID is zero".to_string(),
+        ));
     };
     let Some(stdout) = child.stdout.take() else {
         kill_group_and_reap(pid, &mut child, false);
-        return Err(ProcessRunError::Io(
+        return Err(DiagnosticRunError::Io(
             "bounded child stdout pipe is missing".to_string(),
         ));
     };
     let Some(stderr) = child.stderr.take() else {
         kill_group_and_reap(pid, &mut child, false);
-        return Err(ProcessRunError::Io(
+        return Err(DiagnosticRunError::Io(
             "bounded child stderr pipe is missing".to_string(),
         ));
     };
@@ -540,23 +570,27 @@ pub(super) fn run_process_group(
         Ok(reader) => reader,
         Err(error) => {
             kill_group_and_reap(pid, &mut child, false);
-            return Err(ProcessRunError::Io(error.to_string()));
+            return Err(DiagnosticRunError::Io(error.to_string()));
         }
     };
-    let stderr = match spawn_pipe_reader(stderr) {
+    let stderr = match if bound_stderr {
+        spawn_bounded_stderr_reader(stderr)
+    } else {
+        spawn_pipe_reader(stderr)
+    } {
         Ok(reader) => reader,
         Err(error) => {
             kill_group_and_reap(pid, &mut child, false);
             let _ = stdout.join();
-            return Err(ProcessRunError::Io(error.to_string()));
+            return Err(DiagnosticRunError::Io(error.to_string()));
         }
     };
     let mut status = None;
     loop {
         let stop = if cancelled() {
-            Some(ProcessRunError::Cancelled)
+            Some(false)
         } else if Instant::now() >= deadline {
-            Some(ProcessRunError::TimedOut)
+            Some(true)
         } else {
             None
         };
@@ -565,8 +599,12 @@ pub(super) fn run_process_group(
             // Joining after SIGKILL guarantees no descendant still holds an
             // inherited output pipe when this call returns.
             let _ = stdout.join();
-            let _ = stderr.join();
-            return Err(stop);
+            let stderr = join_pipe_reader(stderr).unwrap_or_default();
+            return Err(if stop {
+                DiagnosticRunError::TimedOut(stderr)
+            } else {
+                DiagnosticRunError::Cancelled(stderr)
+            });
         }
         if status.is_none() {
             match child.try_wait() {
@@ -575,7 +613,7 @@ pub(super) fn run_process_group(
                     kill_group_and_reap(pid, &mut child, false);
                     let _ = stdout.join();
                     let _ = stderr.join();
-                    return Err(ProcessRunError::Io(error.to_string()));
+                    return Err(DiagnosticRunError::Io(error.to_string()));
                 }
             }
         }
@@ -613,11 +651,76 @@ fn spawn_pipe_reader(
 
 fn join_pipe_reader(
     reader: JoinHandle<std::io::Result<Vec<u8>>>,
-) -> Result<Vec<u8>, ProcessRunError> {
+) -> Result<Vec<u8>, DiagnosticRunError> {
     reader
         .join()
-        .map_err(|_| ProcessRunError::Io("child output thread panicked".to_string()))?
-        .map_err(|error| ProcessRunError::Io(error.to_string()))
+        .map_err(|_| DiagnosticRunError::Io("child output thread panicked".to_string()))?
+        .map_err(|error| DiagnosticRunError::Io(error.to_string()))
+}
+
+struct BoundedStderr {
+    head: Vec<u8>,
+    tail: VecDeque<u8>,
+    omitted: usize,
+}
+
+impl BoundedStderr {
+    fn new() -> Self {
+        Self {
+            head: Vec::with_capacity(Self::head_limit()),
+            tail: VecDeque::with_capacity(Self::tail_limit()),
+            omitted: 0,
+        }
+    }
+
+    fn head_limit() -> usize {
+        (STDERR_CAPTURE_LIMIT - STDERR_OMISSION_MARKER.len()) / 2
+    }
+
+    fn tail_limit() -> usize {
+        STDERR_CAPTURE_LIMIT - STDERR_OMISSION_MARKER.len() - Self::head_limit()
+    }
+
+    fn extend(&mut self, mut bytes: &[u8]) {
+        let head_remaining = Self::head_limit().saturating_sub(self.head.len());
+        let take_head = head_remaining.min(bytes.len());
+        self.head.extend_from_slice(&bytes[..take_head]);
+        bytes = &bytes[take_head..];
+        for byte in bytes {
+            if self.tail.len() == Self::tail_limit() {
+                self.tail.pop_front();
+                self.omitted = self.omitted.saturating_add(1);
+            }
+            self.tail.push_back(*byte);
+        }
+    }
+
+    fn finish(self) -> Vec<u8> {
+        let mut result = self.head;
+        if self.omitted > 0 {
+            result.extend_from_slice(STDERR_OMISSION_MARKER);
+        }
+        result.extend(self.tail);
+        result
+    }
+}
+
+fn spawn_bounded_stderr_reader(
+    mut pipe: impl Read + Send + 'static,
+) -> std::io::Result<JoinHandle<std::io::Result<Vec<u8>>>> {
+    std::thread::Builder::new()
+        .name("echo-stt-stderr".to_string())
+        .spawn(move || {
+            let mut capture = BoundedStderr::new();
+            let mut buffer = [0_u8; 8 * 1024];
+            loop {
+                let read = pipe.read(&mut buffer)?;
+                if read == 0 {
+                    return Ok(capture.finish());
+                }
+                capture.extend(&buffer[..read]);
+            }
+        })
 }
 
 fn kill_group_and_reap(pid: rustix::process::Pid, child: &mut Child, already_reaped: bool) {
@@ -877,9 +980,22 @@ fn finish_whisper(success: bool, stdout: &[u8], stderr: &str) -> Result<WhisperP
     if !success {
         return Err(EngineError::Infer(stderr.to_string()));
     }
-    let mut parsed = parse_whisper_stdout(stdout)?;
+    let mut parsed = parse_whisper_stdout(stdout).map_err(|error| match error {
+        EngineError::Infer(message) => inference_error_with_stderr(message, stderr.as_bytes()),
+        EngineError::Missing => EngineError::Missing,
+    })?;
     parsed.language_probability = parse_detection_probability(stderr);
     Ok(parsed)
+}
+
+fn inference_error_with_stderr(message: String, stderr: &[u8]) -> EngineError {
+    if stderr.is_empty() {
+        return EngineError::Infer(message);
+    }
+    EngineError::Infer(format!(
+        "{message}\nWhisper stderr:\n{}",
+        String::from_utf8_lossy(stderr).trim_end()
+    ))
 }
 
 /// whisper.cpp prints `auto-detected language: de (p = 0.973123)` on stderr
@@ -1438,10 +1554,81 @@ mod tests {
     }
 
     #[test]
+    fn malformed_successful_json_includes_bounded_stderr_diagnostics() {
+        let err = finish_whisper(
+            true,
+            b"not json at all",
+            "model loaded\ndecoder emitted malformed output",
+        )
+        .unwrap_err();
+        let message = err.as_str();
+        assert!(message.starts_with("whisper json:"), "{message}");
+        assert!(
+            message.contains("Whisper stderr:\nmodel loaded"),
+            "{message}"
+        );
+        assert!(
+            message.contains("decoder emitted malformed output"),
+            "{message}"
+        );
+
+        let without_stderr = finish_whisper(true, b"not json at all", "").unwrap_err();
+        assert_eq!(
+            without_stderr,
+            parse_whisper_json("not json at all").unwrap_err()
+        );
+    }
+
+    #[test]
     fn nonzero_exit_is_an_error_even_with_text() {
         let err = finish_whisper(false, fixture("english.json").as_bytes(), "decoder crashed")
             .unwrap_err();
         assert_eq!(err, EngineError::Infer("decoder crashed".into()));
+    }
+
+    #[test]
+    fn bounded_stderr_retains_head_and_tail_with_an_omission_marker() {
+        let mut raw = b"diagnostic-head\n".to_vec();
+        raw.extend(std::iter::repeat_n(b'x', STDERR_CAPTURE_LIMIT * 2));
+        raw.extend_from_slice(b"\ndiagnostic-tail");
+        let mut capture = BoundedStderr::new();
+        for chunk in raw.chunks(997) {
+            capture.extend(chunk);
+        }
+        let bounded = capture.finish();
+
+        assert_eq!(bounded.len(), STDERR_CAPTURE_LIMIT);
+        assert!(bounded.starts_with(b"diagnostic-head\n"));
+        assert!(bounded.ends_with(b"\ndiagnostic-tail"));
+        assert!(bounded
+            .windows(STDERR_OMISSION_MARKER.len())
+            .any(|window| window == STDERR_OMISSION_MARKER));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_stderr_is_bounded_while_the_pipe_is_fully_drained() {
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-c",
+            "yes x | head -c 131072 >&2; printf '\\ndiagnostic-tail' >&2",
+        ]);
+        let output = run_process_group_with_diagnostics(
+            command,
+            Instant::now() + Duration::from_secs(5),
+            &|| false,
+            true,
+        )
+        .unwrap()
+        .output;
+
+        assert!(output.status.success());
+        assert_eq!(output.stderr.len(), STDERR_CAPTURE_LIMIT);
+        assert!(output.stderr.ends_with(b"\ndiagnostic-tail"));
+        assert!(output
+            .stderr
+            .windows(STDERR_OMISSION_MARKER.len())
+            .any(|window| window == STDERR_OMISSION_MARKER));
     }
 
     #[test]
@@ -1474,5 +1661,55 @@ mod tests {
         .unwrap_err();
         assert!(error.as_str().contains("timed out"), "{error}");
         assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_timeout_surfaces_stderr_diagnostics() {
+        let error = run_attempt(
+            Path::new("/bin/sh"),
+            None,
+            vec![
+                "-c".to_string(),
+                "printf timeout-diagnostic >&2; sleep 5".to_string(),
+            ],
+            false,
+            Duration::from_millis(500),
+            Instant::now() + Duration::from_millis(500),
+            &|| false,
+        )
+        .unwrap_err();
+        let message = error.as_str();
+        assert!(message.contains("timed out"), "{message}");
+        assert!(message.contains("timeout-diagnostic"), "{message}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_cancellation_surfaces_stderr_diagnostics() {
+        let root = std::env::temp_dir().join(format!(
+            "echo-whisper-cancel-diagnostic-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let marker = root.join("ready");
+        let script = format!(
+            "printf cancel-diagnostic >&2; touch '{}'; sleep 5",
+            marker.display()
+        );
+        let error = run_attempt(
+            Path::new("/bin/sh"),
+            None,
+            vec!["-c".to_string(), script],
+            false,
+            Duration::from_secs(5),
+            Instant::now() + Duration::from_secs(5),
+            &|| marker.exists(),
+        )
+        .unwrap_err();
+        let message = error.as_str();
+        assert!(message.contains("canceled"), "{message}");
+        assert!(message.contains("cancel-diagnostic"), "{message}");
     }
 }

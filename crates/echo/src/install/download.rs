@@ -3,16 +3,20 @@ use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, RecvTimeoutError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use super::catalog::{ComponentId, ComponentSpec};
+use super::sha256_file_cancellable;
 use super::types::{InstallError, InstallPhase, InstallProgress, OperationId};
 
 const BUFFER_SIZE: usize = 64 * 1024;
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
+const RECEIVE_BODY_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const RECEIVE_BODY_STALL_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_CATALOG_ARTIFACT_BYTES: u64 = 574_041_195;
+const TRANSPORT_BODY_LIMIT: u64 = MAX_CATALOG_ARTIFACT_BYTES + 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DownloadSpec {
@@ -49,6 +53,10 @@ pub struct HttpResponse {
 
 pub trait HttpTransport: Send + Sync {
     fn get(&self, request: &HttpRequest) -> Result<HttpResponse, InstallError>;
+
+    fn body_stall_timeout(&self) -> Duration {
+        RECEIVE_BODY_STALL_TIMEOUT
+    }
 }
 
 pub trait DiskSpace: Send + Sync {
@@ -68,6 +76,7 @@ impl DiskSpace for SystemDisk {
 
 pub struct UreqTransport {
     agent: ureq::Agent,
+    body_stall_timeout: Duration,
 }
 
 impl Default for UreqTransport {
@@ -78,9 +87,14 @@ impl Default for UreqTransport {
             .timeout_resolve(Some(Duration::from_secs(30)))
             .timeout_connect(Some(Duration::from_secs(30)))
             .timeout_recv_response(Some(Duration::from_secs(30)))
+            .timeout_recv_body(Some(RECEIVE_BODY_POLL_INTERVAL))
+            .timeout_global(Some(REQUEST_TIMEOUT))
             .build()
             .new_agent();
-        Self { agent }
+        Self {
+            agent,
+            body_stall_timeout: RECEIVE_BODY_STALL_TIMEOUT,
+        }
     }
 }
 
@@ -107,13 +121,17 @@ impl HttpTransport for UreqTransport {
         let body = response
             .into_body()
             .into_with_config()
-            .limit(u64::MAX)
+            .limit(TRANSPORT_BODY_LIMIT)
             .reader();
         Ok(HttpResponse {
             status,
             headers,
             body: Box::new(body),
         })
+    }
+
+    fn body_stall_timeout(&self) -> Duration {
+        self.body_stall_timeout
     }
 }
 
@@ -157,23 +175,6 @@ fn save_metadata(path: &Path, metadata: &PartialMetadata) -> Result<(), InstallE
     echo_core::write_atomic(path, &raw).map_err(InstallError::IoMessage)
 }
 
-fn sha256_file(path: &Path, cancel: &AtomicBool) -> Result<String, InstallError> {
-    let mut file = fs::File::open(path)?;
-    let mut hash = Sha256::new();
-    let mut buffer = [0u8; BUFFER_SIZE];
-    loop {
-        if cancel.load(Ordering::Relaxed) {
-            return Err(InstallError::Cancelled);
-        }
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        hash.update(&buffer[..read]);
-    }
-    Ok(format!("{:x}", hash.finalize()))
-}
-
 fn parse_content_range(value: Option<&str>) -> Option<(u64, u64)> {
     let value = value?.strip_prefix("bytes ")?;
     let (range, total) = value.split_once('/')?;
@@ -181,55 +182,49 @@ fn parse_content_range(value: Option<&str>) -> Option<(u64, u64)> {
     Some((start.parse().ok()?, total.parse().ok()?))
 }
 
-enum BodyRead {
-    Chunk(Vec<u8>),
-    End,
-    Failed(String),
-}
-
 fn stream_body(
-    mut body: Box<dyn Read + Send>,
+    body: Box<dyn Read + Send>,
+    accepted_bytes: u64,
+    stall_timeout: Duration,
     cancel: &AtomicBool,
     mut consume: impl FnMut(&[u8]) -> Result<(), InstallError>,
 ) -> Result<(), InstallError> {
-    let (send, receive) = mpsc::sync_channel(2);
-    std::thread::Builder::new()
-        .name("echo-download-body".to_string())
-        .spawn(move || loop {
-            let mut buffer = vec![0u8; BUFFER_SIZE];
-            match body.read(&mut buffer) {
-                Ok(0) => {
-                    let _ = send.send(BodyRead::End);
-                    break;
-                }
-                Ok(read) => {
-                    buffer.truncate(read);
-                    if send.send(BodyRead::Chunk(buffer)).is_err() {
-                        break;
-                    }
-                }
-                Err(error) => {
-                    let _ = send.send(BodyRead::Failed(error.to_string()));
-                    break;
-                }
-            }
-        })?;
+    let mut body = body.take(accepted_bytes);
+    let mut buffer = [0_u8; BUFFER_SIZE];
+    let mut last_progress = Instant::now();
     loop {
         if cancel.load(Ordering::Relaxed) {
             return Err(InstallError::Cancelled);
         }
-        match receive.recv_timeout(Duration::from_millis(100)) {
-            Ok(BodyRead::Chunk(bytes)) => consume(&bytes)?,
-            Ok(BodyRead::End) => return Ok(()),
-            Ok(BodyRead::Failed(error)) => return Err(InstallError::Http(error)),
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => {
-                return Err(InstallError::Http(
-                    "download body ended without a completion signal".to_string(),
-                ))
+        let read = match body.read(&mut buffer) {
+            Ok(read) => read,
+            Err(error) => {
+                if cancel.load(Ordering::Relaxed) {
+                    return Err(InstallError::Cancelled);
+                }
+                if receive_body_poll_timed_out(&error) && last_progress.elapsed() < stall_timeout {
+                    continue;
+                }
+                return Err(InstallError::Http(error.to_string()));
             }
+        };
+        if cancel.load(Ordering::Relaxed) {
+            return Err(InstallError::Cancelled);
         }
+        if read == 0 {
+            return Ok(());
+        }
+        last_progress = Instant::now();
+        consume(&buffer[..read])?;
     }
+}
+
+fn receive_body_poll_timed_out(error: &std::io::Error) -> bool {
+    error.get_ref().is_some_and(|source| {
+        source
+            .downcast_ref::<ureq::Error>()
+            .is_some_and(|error| matches!(error, ureq::Error::Timeout(ureq::Timeout::RecvBody)))
+    })
 }
 
 pub fn download_verified(
@@ -340,26 +335,33 @@ pub fn download_verified(
                 .truncate(!append)
                 .open(&part)?;
             let resumed_from = partial_bytes;
-            stream_body(response.body, cancel, |bytes| {
-                partial_bytes = partial_bytes.saturating_add(bytes.len() as u64);
-                if partial_bytes > spec.size {
-                    let _ = fs::remove_file(&part);
-                    let _ = fs::remove_file(&metadata_path);
-                    return Err(InstallError::Http(
-                        "response exceeds the pinned size".to_string(),
+            let accepted_bytes = spec.size.saturating_sub(partial_bytes).saturating_add(1);
+            stream_body(
+                response.body,
+                accepted_bytes,
+                transport.body_stall_timeout(),
+                cancel,
+                |bytes| {
+                    partial_bytes = partial_bytes.saturating_add(bytes.len() as u64);
+                    if partial_bytes > spec.size {
+                        let _ = fs::remove_file(&part);
+                        let _ = fs::remove_file(&metadata_path);
+                        return Err(InstallError::Http(
+                            "response exceeds the pinned size".to_string(),
+                        ));
+                    }
+                    file.write_all(bytes)?;
+                    progress(InstallProgress::new(
+                        operation,
+                        spec.component,
+                        InstallPhase::Downloading,
+                        partial_bytes,
+                        spec.size,
+                        resumed_from,
                     ));
-                }
-                file.write_all(bytes)?;
-                progress(InstallProgress::new(
-                    operation,
-                    spec.component,
-                    InstallPhase::Downloading,
-                    partial_bytes,
-                    spec.size,
-                    resumed_from,
-                ));
-                Ok(())
-            })?;
+                    Ok(())
+                },
+            )?;
             file.flush()?;
         }
     }
@@ -381,7 +383,7 @@ pub fn download_verified(
         partial_bytes,
     ));
     fs::File::options().write(true).open(&part)?.sync_all()?;
-    let actual = sha256_file(&part, cancel)?;
+    let actual = sha256_file_cancellable(&part, Some(cancel))?;
     if cancel.load(Ordering::Relaxed) {
         return Err(InstallError::Cancelled);
     }
@@ -405,9 +407,11 @@ pub fn forget_partial(root: &Path, spec: &DownloadSpec) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
     use std::collections::VecDeque;
     use std::io::Cursor;
-    use std::sync::{mpsc::Receiver, Mutex};
+    use std::net::TcpListener;
+    use std::sync::{mpsc, Arc, Mutex};
 
     struct FakeDisk(Option<u64>);
 
@@ -445,33 +449,73 @@ mod tests {
         }
     }
 
-    struct SlowBody {
-        started: mpsc::SyncSender<()>,
-        release: Receiver<()>,
+    #[derive(Default)]
+    struct BodyObservation {
+        read_threads: Vec<std::thread::ThreadId>,
+        largest_buffer: usize,
+        dropped: bool,
     }
 
-    impl Read for SlowBody {
-        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
-            let _ = self.started.send(());
-            let _ = self.release.recv();
-            Ok(0)
+    struct ObservedBody {
+        bytes: Cursor<Vec<u8>>,
+        observation: Arc<Mutex<BodyObservation>>,
+    }
+
+    impl Read for ObservedBody {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            let mut observation = self.observation.lock().unwrap();
+            observation.read_threads.push(std::thread::current().id());
+            observation.largest_buffer = observation.largest_buffer.max(buffer.len());
+            drop(observation);
+            self.bytes.read(buffer)
         }
     }
 
-    struct SlowTransport {
-        started: mpsc::SyncSender<()>,
-        release: Mutex<Option<Receiver<()>>>,
+    impl Drop for ObservedBody {
+        fn drop(&mut self) {
+            self.observation.lock().unwrap().dropped = true;
+        }
     }
 
-    impl HttpTransport for SlowTransport {
+    struct ObservedTransport {
+        body: Mutex<Option<ObservedBody>>,
+    }
+
+    impl HttpTransport for ObservedTransport {
         fn get(&self, _: &HttpRequest) -> Result<HttpResponse, InstallError> {
             Ok(HttpResponse {
                 status: 200,
                 headers: BTreeMap::new(),
-                body: Box::new(SlowBody {
-                    started: self.started.clone(),
-                    release: self.release.lock().unwrap().take().unwrap(),
-                }),
+                body: Box::new(self.body.lock().unwrap().take().unwrap()),
+            })
+        }
+    }
+
+    struct PollingTimedOutBody {
+        entered: Option<mpsc::Sender<()>>,
+        poll_interval: Duration,
+    }
+
+    impl Read for PollingTimedOutBody {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            if let Some(entered) = self.entered.take() {
+                entered.send(()).unwrap();
+            }
+            std::thread::sleep(self.poll_interval);
+            Err(ureq::Error::Timeout(ureq::Timeout::RecvBody).into_io())
+        }
+    }
+
+    struct TimedOutBodyTransport {
+        body: Mutex<Option<PollingTimedOutBody>>,
+    }
+
+    impl HttpTransport for TimedOutBodyTransport {
+        fn get(&self, _: &HttpRequest) -> Result<HttpResponse, InstallError> {
+            Ok(HttpResponse {
+                status: 200,
+                headers: BTreeMap::new(),
+                body: Box::new(self.body.lock().unwrap().take().unwrap()),
             })
         }
     }
@@ -621,34 +665,291 @@ mod tests {
     }
 
     #[test]
-    fn cancellation_does_not_wait_for_a_stalled_response_body() {
-        let root = scratch("stalled-cancel");
-        let spec = spec(b"one byte");
-        let cancel = std::sync::Arc::new(AtomicBool::new(false));
-        let (started_send, started_receive) = mpsc::sync_channel(0);
-        let (release_send, release_receive) = mpsc::channel();
-        let transport = SlowTransport {
-            started: started_send,
-            release: Mutex::new(Some(release_receive)),
+    fn cancellation_interrupts_a_stalled_body_read_after_one_poll() {
+        let root = scratch("cancel-during-timed-out-read");
+        let fixture_spec = spec(b"expected body");
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let transport = TimedOutBodyTransport {
+            body: Mutex::new(Some(PollingTimedOutBody {
+                entered: Some(entered_tx),
+                poll_interval: RECEIVE_BODY_POLL_INTERVAL,
+            })),
         };
-        let trigger = cancel.clone();
-        let trigger = std::thread::spawn(move || {
-            started_receive.recv().unwrap();
-            trigger.store(true, Ordering::Relaxed);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = Arc::clone(&cancel);
+        let (result_tx, result_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = download_verified(
+                &root,
+                &fixture_spec,
+                &transport,
+                &FakeDisk(None),
+                &OperationId::fixture("1"),
+                worker_cancel.as_ref(),
+                |_| {},
+            );
+            result_tx.send(result).unwrap();
         });
+
+        entered_rx.recv().unwrap();
+        cancel.store(true, Ordering::Relaxed);
+
+        let error = result_rx
+            .recv_timeout(RECEIVE_BODY_POLL_INTERVAL * 3)
+            .expect("cancellation was not observed after one body-read poll")
+            .unwrap_err();
+        worker.join().unwrap();
+        assert!(
+            matches!(error, InstallError::Cancelled),
+            "cancellation during a stalled body read must win over its timeout error, got {error:?}"
+        );
+    }
+
+    #[test]
+    fn body_is_size_pinned_and_read_without_an_owned_reader_thread() {
+        let root = scratch("bounded-body");
+        let spec = spec(b"fit");
+        let observation = Arc::new(Mutex::new(BodyObservation::default()));
+        let transport = ObservedTransport {
+            body: Mutex::new(Some(ObservedBody {
+                bytes: Cursor::new(b"fits".to_vec()),
+                observation: observation.clone(),
+            })),
+        };
+        let caller = std::thread::current().id();
         let error = download_verified(
             &root,
             &spec,
             &transport,
             &FakeDisk(None),
             &OperationId::fixture("1"),
-            &cancel,
+            &AtomicBool::new(false),
             |_| {},
         )
         .unwrap_err();
-        release_send.send(()).expect("stalled body receiver");
-        trigger.join().unwrap();
-        assert!(matches!(error, InstallError::Cancelled));
+        assert!(matches!(error, InstallError::Http(message) if message.contains("pinned size")));
+
+        let observation = observation.lock().unwrap();
+        assert!(observation.dropped, "body must be dropped before return");
+        assert!(observation
+            .read_threads
+            .iter()
+            .all(|thread| thread == &caller));
+        assert_eq!(observation.largest_buffer, spec.size as usize + 1);
+    }
+
+    #[test]
+    fn ureq_requests_have_a_finite_total_deadline_and_catalog_body_limit() {
+        let transport = UreqTransport::default();
+        assert_eq!(
+            transport.agent.config().timeouts().global,
+            Some(REQUEST_TIMEOUT)
+        );
+        assert_eq!(
+            transport.agent.config().timeouts().recv_body,
+            Some(RECEIVE_BODY_POLL_INTERVAL)
+        );
+        assert_eq!(transport.body_stall_timeout, RECEIVE_BODY_STALL_TIMEOUT);
+        assert!(REQUEST_TIMEOUT >= Duration::from_secs(60 * 60));
+        assert_eq!(
+            TRANSPORT_BODY_LIMIT,
+            super::super::catalog::COMPONENTS
+                .iter()
+                .map(|spec| spec.artifact_size)
+                .max()
+                .unwrap()
+                + 1
+        );
+    }
+
+    #[test]
+    fn stalled_response_body_times_out_before_the_server_closes() {
+        const TEST_BODY_POLL_INTERVAL: Duration = Duration::from_millis(25);
+        const TEST_BODY_STALL_TIMEOUT: Duration = Duration::from_millis(100);
+        const SERVER_FALLBACK: Duration = Duration::from_secs(2);
+
+        let expected_body = b"partial body that never finishes";
+        let partial_body = b"partial body";
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (body_started_tx, body_started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (server_closed_tx, server_closed_rx) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 256];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = stream.read(&mut buffer).unwrap();
+                assert!(read > 0, "client closed before sending request headers");
+                request.extend_from_slice(&buffer[..read]);
+            }
+
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                expected_body.len()
+            )
+            .unwrap();
+            stream.write_all(partial_body).unwrap();
+            stream.flush().unwrap();
+            body_started_tx.send(()).unwrap();
+
+            let _ = release_rx.recv_timeout(SERVER_FALLBACK);
+            drop(stream);
+            server_closed_tx.send(()).unwrap();
+        });
+
+        let transport = UreqTransport {
+            agent: ureq::Agent::config_builder()
+                .http_status_as_error(false)
+                .https_only(false)
+                .proxy(None)
+                .timeout_recv_body(Some(TEST_BODY_POLL_INTERVAL))
+                .timeout_global(Some(Duration::from_secs(5)))
+                .build()
+                .new_agent(),
+            body_stall_timeout: TEST_BODY_STALL_TIMEOUT,
+        };
+        let mut fixture_spec = spec(expected_body);
+        fixture_spec.url = format!("http://{address}/artifact");
+        let root = scratch("stalled-response-body");
+
+        let started = Instant::now();
+        let result = download_verified(
+            &root,
+            &fixture_spec,
+            &transport,
+            &FakeDisk(None),
+            &OperationId::fixture("1"),
+            &AtomicBool::new(false),
+            |_| {},
+        );
+        let elapsed = started.elapsed();
+        let body_started = body_started_rx.recv_timeout(Duration::from_secs(1));
+        let server_closed_before_release = server_closed_rx.try_recv().is_ok();
+        let _ = release_tx.send(());
+        server.join().unwrap();
+
+        assert!(
+            body_started.is_ok(),
+            "server did not start the response body"
+        );
+        assert!(
+            !server_closed_before_release,
+            "server closed before the client returned"
+        );
+        assert!(
+            elapsed >= TEST_BODY_STALL_TIMEOUT,
+            "body timeout returned before the no-progress deadline: {elapsed:?}"
+        );
+        let error = result.unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                InstallError::Http(message)
+                    if message.contains("timeout") || message.contains("timed out")
+            ),
+            "expected an HTTP body timeout, got {error:?}"
+        );
+        let (part, _) = part_paths(&root, &fixture_spec);
+        assert_eq!(fs::read(part).unwrap(), partial_body);
+    }
+
+    #[test]
+    fn global_timeout_bounds_a_response_body_that_keeps_making_progress() {
+        const GLOBAL_TIMEOUT: Duration = Duration::from_millis(150);
+        const RECEIVE_BODY_TIMEOUT: Duration = Duration::from_secs(1);
+        const CHUNK_INTERVAL: Duration = Duration::from_millis(10);
+        const SERVER_FALLBACK: Duration = Duration::from_secs(3);
+        const BODY_LENGTH: usize = 1024 * 1024;
+
+        let expected_body = vec![b'x'; BODY_LENGTH];
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (body_started_tx, body_started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (server_closed_tx, server_closed_rx) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 256];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = stream.read(&mut buffer).unwrap();
+                assert!(read > 0, "client closed before sending request headers");
+                request.extend_from_slice(&buffer[..read]);
+            }
+
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {BODY_LENGTH}\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+            stream.write_all(b"progress").unwrap();
+            stream.flush().unwrap();
+            body_started_tx.send(()).unwrap();
+
+            let started = std::time::Instant::now();
+            while started.elapsed() < SERVER_FALLBACK {
+                match release_rx.recv_timeout(CHUNK_INTERVAL) {
+                    Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        let _ = stream.write_all(b"progress");
+                        let _ = stream.flush();
+                    }
+                }
+            }
+            drop(stream);
+            let _ = server_closed_tx.send(());
+        });
+
+        let transport = UreqTransport {
+            agent: ureq::Agent::config_builder()
+                .http_status_as_error(false)
+                .https_only(false)
+                .proxy(None)
+                .timeout_recv_body(Some(RECEIVE_BODY_TIMEOUT))
+                .timeout_global(Some(GLOBAL_TIMEOUT))
+                .build()
+                .new_agent(),
+            body_stall_timeout: RECEIVE_BODY_TIMEOUT,
+        };
+        let mut fixture_spec = spec(&expected_body);
+        fixture_spec.url = format!("http://{address}/artifact");
+        let root = scratch("progressing-response-global-timeout");
+
+        let result = download_verified(
+            &root,
+            &fixture_spec,
+            &transport,
+            &FakeDisk(None),
+            &OperationId::fixture("1"),
+            &AtomicBool::new(false),
+            |_| {},
+        );
+        let body_started = body_started_rx.recv_timeout(Duration::from_secs(1));
+        let server_closed_before_release = server_closed_rx.try_recv().is_ok();
+        let _ = release_tx.send(());
+        server.join().unwrap();
+
+        assert!(
+            body_started.is_ok(),
+            "server did not start the response body"
+        );
+        assert!(
+            !server_closed_before_release,
+            "server closed before the global timeout returned"
+        );
+        let error = result.unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                InstallError::Http(message)
+                    if message.to_ascii_lowercase().contains("timeout")
+                        || message.to_ascii_lowercase().contains("timed out")
+            ),
+            "expected an HTTP global timeout while the body was progressing, got {error:?}"
+        );
     }
 
     #[test]

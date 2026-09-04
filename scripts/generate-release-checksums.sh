@@ -24,8 +24,9 @@ collect_assets() {
         [ "${#appimages[@]}" -ne 1 ] || [ ! -f "$publish/echo-desktop" ] ||
         [ -L "$publish/echo-desktop" ] || [ ! -f "$publish/echo-desktop.cdx.json" ] ||
         [ -L "$publish/echo-desktop.cdx.json" ] || [ ! -f "$publish/LICENSE-MIT" ] ||
-        [ -L "$publish/LICENSE-MIT" ]; then
-        fail "expected the MIT license, one deb, one rpm, one AppImage, echo-desktop, and its SBOM"
+        [ -L "$publish/LICENSE-MIT" ] || [ ! -f "$publish/THIRD_PARTY.md" ] ||
+        [ -L "$publish/THIRD_PARTY.md" ]; then
+        fail "expected the MIT license, third-party notice, one deb, one rpm, one AppImage, echo-desktop, and its SBOM"
         return 1
     fi
 
@@ -33,6 +34,7 @@ collect_assets() {
         "$(basename "${appimages[0]}")"
         "$(basename "${debs[0]}")"
         "LICENSE-MIT"
+        "THIRD_PARTY.md"
         "echo-desktop"
         "echo-desktop.cdx.json"
         "$(basename "${rpms[0]}")"
@@ -103,6 +105,7 @@ self_test() {
     printf '{"bomFormat":"CycloneDX"}\n' >"$publish/echo-desktop.cdx.json"
     printf 'rpm\n' >"$publish/echo-1.0.0-1.x86_64.rpm"
     printf 'mit\n' >"$publish/LICENSE-MIT"
+    printf 'third-party attribution\n' >"$publish/THIRD_PARTY.md"
 
     write_manifest "$publish"
     first=$(sha256sum "$publish/SHA256SUMS" | cut -d' ' -f1)
@@ -112,6 +115,14 @@ self_test() {
         return 1
     fi
     verify_manifest "$publish" >/dev/null
+
+    rm "$publish/THIRD_PARTY.md"
+    if verify_manifest "$publish" >/dev/null 2>&1; then
+        fail "a staged set with no third-party attribution passed verification"
+        return 1
+    fi
+    printf 'third-party attribution\n' >"$publish/THIRD_PARTY.md"
+    write_manifest "$publish"
 
     rm "$publish/echo-desktop.cdx.json"
     if verify_manifest "$publish" >/dev/null 2>&1; then

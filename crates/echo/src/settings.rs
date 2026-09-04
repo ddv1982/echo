@@ -1,5 +1,12 @@
 use echo_core::Config;
 
+pub fn preflight_paths() -> Result<(), String> {
+    echo_core::try_data_dir()?;
+    echo_core::try_config_dir()?;
+    crate::stt::ModelCache::try_from_env()?;
+    Ok(())
+}
+
 pub fn runtime_config() -> Result<Config, String> {
     #[cfg(test)]
     {

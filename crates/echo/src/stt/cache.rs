@@ -10,16 +10,44 @@ pub struct ModelCache {
 impl ModelCache {
     #[must_use]
     pub fn from_env() -> Self {
-        let dir = env::var_os("ECHO_MODEL_DIR")
-            .map(PathBuf::from)
-            .or_else(|| {
-                env::var_os("XDG_CACHE_HOME").map(|cache| PathBuf::from(cache).join("echo"))
-            })
-            .or_else(|| {
-                env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache").join("echo"))
-            })
-            .unwrap_or_else(|| PathBuf::from("/tmp/echo-models"));
-        Self { dir }
+        Self::try_from_env().unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    pub fn try_from_env() -> Result<Self, String> {
+        Self::resolve_dir(
+            env::var_os("ECHO_MODEL_DIR").map(PathBuf::from),
+            env::var_os("XDG_CACHE_HOME").map(PathBuf::from),
+            env::var_os("HOME").map(PathBuf::from),
+        )
+        .map(Self::at)
+    }
+
+    fn resolve_dir(
+        explicit: Option<PathBuf>,
+        xdg: Option<PathBuf>,
+        home: Option<PathBuf>,
+    ) -> Result<PathBuf, String> {
+        if let Some(dir) = explicit {
+            if dir.is_absolute() {
+                return Ok(dir);
+            }
+            let value = if dir.as_os_str().is_empty() {
+                "it is empty".to_string()
+            } else {
+                format!("got {}", dir.display())
+            };
+            return Err(format!("ECHO_MODEL_DIR must be an absolute path ({value})"));
+        }
+        if let Some(xdg) = xdg.filter(|dir| dir.is_absolute()) {
+            return Ok(xdg.join("echo"));
+        }
+        if let Some(home) = home.filter(|dir| dir.is_absolute()) {
+            return Ok(home.join(".cache").join("echo"));
+        }
+        Err(
+            "could not resolve the Echo model directory: XDG_CACHE_HOME and HOME are unset, empty, or relative; set ECHO_MODEL_DIR to an absolute path"
+                .to_string(),
+        )
     }
 
     #[must_use]
@@ -285,6 +313,69 @@ mod tests {
         let inventory = ModelCache::at(&dir).inventory();
         let _ = fs::remove_dir_all(&dir);
         inventory
+    }
+
+    #[test]
+    fn absolute_explicit_model_directory_wins() {
+        assert_eq!(
+            ModelCache::resolve_dir(
+                Some(PathBuf::from("/models")),
+                Some(PathBuf::from("/xdg/cache")),
+                Some(PathBuf::from("/home/tester")),
+            )
+            .unwrap(),
+            PathBuf::from("/models")
+        );
+    }
+
+    #[test]
+    fn invalid_explicit_model_directory_is_a_hard_error() {
+        for explicit in [PathBuf::new(), PathBuf::from("relative/models")] {
+            let error = ModelCache::resolve_dir(
+                Some(explicit),
+                Some(PathBuf::from("/valid/xdg")),
+                Some(PathBuf::from("/home/tester")),
+            )
+            .unwrap_err();
+            assert!(error.contains("ECHO_MODEL_DIR"), "{error}");
+            assert!(error.contains("absolute path"), "{error}");
+        }
+    }
+
+    #[test]
+    fn model_directory_uses_absolute_xdg_then_absolute_home() {
+        assert_eq!(
+            ModelCache::resolve_dir(
+                None,
+                Some(PathBuf::from("/xdg/cache")),
+                Some(PathBuf::from("/home/tester")),
+            )
+            .unwrap(),
+            PathBuf::from("/xdg/cache/echo")
+        );
+        for xdg in [PathBuf::new(), PathBuf::from("relative/cache")] {
+            assert_eq!(
+                ModelCache::resolve_dir(None, Some(xdg), Some(PathBuf::from("/home/tester")),)
+                    .unwrap(),
+                PathBuf::from("/home/tester/.cache/echo")
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_home_without_absolute_xdg_has_no_fixed_tmp_fallback() {
+        for home in [
+            None,
+            Some(PathBuf::new()),
+            Some(PathBuf::from("relative/home")),
+        ] {
+            for xdg in [None, Some(PathBuf::from("relative/cache"))] {
+                let error = ModelCache::resolve_dir(None, xdg, home.clone()).unwrap_err();
+                assert!(error.contains("ECHO_MODEL_DIR"), "{error}");
+                assert!(error.contains("absolute path"), "{error}");
+                assert!(!error.contains("/tmp/"), "{error}");
+            }
+        }
     }
 
     #[test]

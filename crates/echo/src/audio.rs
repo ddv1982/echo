@@ -1,6 +1,6 @@
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, TryLockError};
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -30,6 +30,7 @@ impl LevelMeter {
     }
 
     pub fn publish(&self, rms: f32) {
+        let rms = if rms.is_finite() { rms } else { 0.0 };
         self.bits
             .store(rms.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
     }
@@ -69,7 +70,7 @@ pub fn play_fixture_meter(
     let samples: Vec<f32> = pcm
         .samples()
         .iter()
-        .map(|sample| *sample as f32 / f32::from(i16::MAX))
+        .map(|sample| *sample as f32 / -f32::from(i16::MIN))
         .collect();
     std::thread::spawn(move || {
         let mut played = 0;
@@ -138,16 +139,51 @@ pub struct CaptureResult {
     pub pcm: Pcm16kMono,
     pub duration: Duration,
     pub peak_rms: f32,
+    pub dropped_samples: u64,
 }
 
 impl CaptureResult {
     #[must_use]
     pub fn from_pcm(pcm: Pcm16kMono) -> Self {
+        Self::from_pcm_with_dropped_samples(pcm, 0)
+    }
+
+    #[must_use]
+    pub fn from_pcm_with_dropped_samples(pcm: Pcm16kMono, dropped_samples: u64) -> Self {
         Self {
             duration: Duration::from_millis(pcm.duration_ms()),
             peak_rms: pcm.peak_rms(),
+            dropped_samples,
             pcm,
         }
+    }
+}
+
+#[derive(Debug)]
+struct CaptureBuffer {
+    samples: Mutex<Vec<f32>>,
+    dropped_samples: AtomicU64,
+}
+
+impl CaptureBuffer {
+    fn with_capacity(capacity: usize) -> Result<Self, AudioError> {
+        let mut samples = Vec::new();
+        samples.try_reserve_exact(capacity).map_err(|error| {
+            AudioError::Stream(format!("could not reserve capture buffer: {error}"))
+        })?;
+        Ok(Self {
+            samples: Mutex::new(samples),
+            dropped_samples: AtomicU64::new(0),
+        })
+    }
+
+    fn dropped_samples(&self) -> u64 {
+        self.dropped_samples.load(Ordering::Relaxed)
+    }
+
+    fn account_dropped(&self, count: usize) {
+        self.dropped_samples
+            .fetch_add(count as u64, Ordering::Relaxed);
     }
 }
 
@@ -573,7 +609,9 @@ impl AudioCapture {
         let config = self.device.default_input_config().map_err(map_cpal_error)?;
         let src_hz = config.sample_rate();
         let channels = config.channels();
-        let collected = Arc::new(Mutex::new(Vec::<f32>::new()));
+        let collected = Arc::new(CaptureBuffer::with_capacity(capture_sample_capacity(
+            max, src_hz, channels,
+        ))?);
         let stream_state = Arc::new(Mutex::new(CaptureStreamState::default()));
         let stream = match config.sample_format() {
             SampleFormat::I8 => build_stream::<i8>(
@@ -678,20 +716,44 @@ impl AudioCapture {
             std::thread::sleep(Duration::from_millis(10));
         }
         finish_capture_stream(stream, &stream_state)?;
-        let samples = std::mem::take(&mut *collected.lock().expect("pcm lock"));
-        Ok(CaptureResult::from_pcm(resample_to_16k_mono(
-            &samples, src_hz, channels,
-        )))
+        let dropped_samples = collected.dropped_samples();
+        let samples = std::mem::take(
+            &mut *collected
+                .samples
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        Ok(CaptureResult::from_pcm_with_dropped_samples(
+            resample_to_16k_mono(&samples, src_hz, channels),
+            dropped_samples,
+        ))
     }
+}
+
+fn capture_sample_capacity(max: Duration, sample_rate: u32, channels: u16) -> usize {
+    const NANOS_PER_SECOND: u128 = 1_000_000_000;
+    let sample_nanos = max
+        .as_nanos()
+        .saturating_mul(u128::from(sample_rate))
+        .saturating_mul(u128::from(channels));
+    let samples = sample_nanos
+        .saturating_add(NANOS_PER_SECOND - 1)
+        .saturating_div(NANOS_PER_SECOND);
+    samples.min(usize::MAX as u128) as usize
 }
 
 fn finish_capture_stream<T>(
     stream: T,
     state: &Arc<Mutex<CaptureStreamState>>,
 ) -> Result<(), AudioError> {
-    let result = match state.lock().expect("stream state lock").begin_shutdown() {
-        Some(error) => Err(error),
-        None => Ok(()),
+    let result = match state.lock() {
+        Ok(mut state) => match state.begin_shutdown() {
+            Some(error) => Err(error),
+            None => Ok(()),
+        },
+        Err(_) => Err(AudioError::Stream(
+            "capture stream state lock poisoned".to_string(),
+        )),
     };
     drop(stream);
     result
@@ -700,7 +762,7 @@ fn finish_capture_stream<T>(
 fn build_stream<T>(
     device: &cpal::Device,
     config: cpal::StreamConfig,
-    collected: &Arc<Mutex<Vec<f32>>>,
+    collected: &Arc<CaptureBuffer>,
     stream_state: &Arc<Mutex<CaptureStreamState>>,
     meter: Option<&LevelMeter>,
 ) -> Result<cpal::Stream, AudioError>
@@ -715,30 +777,61 @@ where
         .build_input_stream(
             config,
             move |data: &[T], _| {
-                let mut sum_sq = 0.0f32;
-                {
-                    let mut buf = collected.lock().expect("pcm lock");
-                    for sample in data {
-                        let value = sample.to_sample::<f32>();
-                        sum_sq += value * value;
-                        buf.push(value);
-                    }
-                }
-                if let Some(meter) = &meter {
-                    if !data.is_empty() {
-                        meter.publish((sum_sq / data.len() as f32).sqrt());
-                    }
-                }
+                capture_input(&collected, data, meter.as_ref());
             },
             move |err| {
-                stream_state
-                    .lock()
-                    .expect("stream state lock")
-                    .report_error(map_cpal_error(err));
+                if let Ok(mut state) = stream_state.lock() {
+                    state.report_error(map_cpal_error(err));
+                }
             },
             None,
         )
         .map_err(map_cpal_error)
+}
+
+fn capture_input<T>(collected: &CaptureBuffer, data: &[T], meter: Option<&LevelMeter>)
+where
+    T: Sample,
+    f32: cpal::FromSample<T>,
+{
+    let mut sum_sq = 0.0f32;
+    match collected.samples.try_lock() {
+        Ok(mut samples) => {
+            let retained = data.len().min(samples.capacity() - samples.len());
+            for (index, sample) in data.iter().enumerate() {
+                let value = sample.to_sample::<f32>();
+                sum_sq += value * value;
+                if index < retained {
+                    samples.push(value);
+                }
+            }
+            collected.account_dropped(data.len() - retained);
+        }
+        Err(TryLockError::Poisoned(poisoned)) => {
+            let mut samples = poisoned.into_inner();
+            let retained = data.len().min(samples.capacity() - samples.len());
+            for (index, sample) in data.iter().enumerate() {
+                let value = sample.to_sample::<f32>();
+                sum_sq += value * value;
+                if index < retained {
+                    samples.push(value);
+                }
+            }
+            collected.account_dropped(data.len() - retained);
+        }
+        Err(TryLockError::WouldBlock) => {
+            for sample in data {
+                let value = sample.to_sample::<f32>();
+                sum_sq += value * value;
+            }
+            collected.account_dropped(data.len());
+        }
+    }
+    if let Some(meter) = meter {
+        if !data.is_empty() {
+            meter.publish((sum_sq / data.len() as f32).sqrt());
+        }
+    }
 }
 
 #[must_use]
@@ -787,24 +880,44 @@ pub fn load_wav(path: &Path) -> Result<CaptureResult, AudioError> {
     let mut reader =
         hound::WavReader::open(path).map_err(|err| AudioError::Wav(err.to_string()))?;
     let spec = reader.spec();
+    let samples = decode_wav_samples(&mut reader)?;
+    let pcm = resample_to_16k_mono(&samples, spec.sample_rate, spec.channels);
+    Ok(CaptureResult::from_pcm(pcm))
+}
+
+fn decode_wav_samples<R: std::io::Read>(
+    reader: &mut hound::WavReader<R>,
+) -> Result<Vec<f32>, AudioError> {
+    let spec = reader.spec();
     let samples: Result<Vec<f32>, AudioError> = match spec.sample_format {
         hound::SampleFormat::Float => reader
             .samples::<f32>()
             .map(|s| s.map_err(|err| AudioError::Wav(err.to_string())))
             .collect(),
         hound::SampleFormat::Int => {
-            let denom = f32::from(i16::MAX);
+            let denominator = signed_pcm_denominator(spec.bits_per_sample)?;
             reader
                 .samples::<i32>()
                 .map(|s| {
-                    s.map(|v| v as f32 / denom)
+                    s.map(|value| (value as f32 / denominator).clamp(-1.0, 1.0))
                         .map_err(|err| AudioError::Wav(err.to_string()))
                 })
                 .collect()
         }
     };
-    let pcm = resample_to_16k_mono(&samples?, spec.sample_rate, spec.channels);
-    Ok(CaptureResult::from_pcm(pcm))
+    samples
+}
+
+fn signed_pcm_denominator(bits_per_sample: u16) -> Result<f32, AudioError> {
+    let magnitude_bits = bits_per_sample
+        .checked_sub(1)
+        .ok_or_else(|| AudioError::Wav("integer WAV has invalid zero-bit samples".to_string()))?;
+    if magnitude_bits >= 32 {
+        return Err(AudioError::Wav(format!(
+            "unsupported integer WAV bit depth {bits_per_sample}"
+        )));
+    }
+    Ok((1_u64 << magnitude_bits) as f32)
 }
 
 #[cfg(test)]
@@ -839,6 +952,22 @@ mod tests {
         assert!(matches!(
             finish_capture_stream((), &state),
             Err(AudioError::Busy(_))
+        ));
+    }
+
+    #[test]
+    fn poisoned_shutdown_protocol_fails_explicitly() {
+        let state = Arc::new(Mutex::new(CaptureStreamState::default()));
+        let poison = Arc::clone(&state);
+        let _ = std::thread::spawn(move || {
+            let _guard = poison.lock().unwrap();
+            panic!("poison stream state");
+        })
+        .join();
+
+        assert!(matches!(
+            finish_capture_stream((), &state),
+            Err(AudioError::Stream(message)) if message.contains("poisoned")
         ));
     }
 
@@ -884,6 +1013,71 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude_code.wav")
     }
 
+    fn wav_bytes(sample_format: u16, bits: u16, samples: &[i32]) -> Vec<u8> {
+        let bytes_per_sample = usize::from(bits / 8);
+        let data_len = samples.len() * bytes_per_sample;
+        let mut bytes = Vec::with_capacity(44 + data_len);
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36_u32 + data_len as u32).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16_u32.to_le_bytes());
+        bytes.extend_from_slice(&sample_format.to_le_bytes());
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        bytes.extend_from_slice(&SAMPLE_RATE_HZ.to_le_bytes());
+        bytes.extend_from_slice(&(SAMPLE_RATE_HZ * bytes_per_sample as u32).to_le_bytes());
+        bytes.extend_from_slice(&(bytes_per_sample as u16).to_le_bytes());
+        bytes.extend_from_slice(&bits.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&(data_len as u32).to_le_bytes());
+        for sample in samples {
+            bytes.extend_from_slice(&sample.to_le_bytes()[..bytes_per_sample]);
+        }
+        bytes
+    }
+
+    fn decode_bytes(bytes: Vec<u8>) -> Vec<f32> {
+        let mut reader = hound::WavReader::new(std::io::Cursor::new(bytes)).expect("wav reader");
+        decode_wav_samples(&mut reader).expect("wav samples")
+    }
+
+    #[test]
+    fn integer_wav_uses_actual_16_24_and_32_bit_depth() {
+        for (bits, samples) in [
+            (
+                16,
+                vec![i16::MIN as i32, -16_384, 0, 16_384, i16::MAX as i32],
+            ),
+            (24, vec![-8_388_608, -4_194_304, 0, 4_194_304, 8_388_607]),
+            (
+                32,
+                vec![i32::MIN, -1_073_741_824, 0, 1_073_741_824, i32::MAX],
+            ),
+        ] {
+            let decoded = decode_bytes(wav_bytes(1, bits, &samples));
+            let denominator = (1_u64 << (bits - 1)) as f32;
+            let expected: Vec<_> = samples
+                .iter()
+                .map(|sample| (*sample as f32 / denominator).clamp(-1.0, 1.0))
+                .collect();
+
+            assert_eq!(decoded, expected, "{bits}-bit PCM");
+            assert_eq!(decoded[0], -1.0, "{bits}-bit minimum");
+            assert_eq!(decoded[1], -0.5, "{bits}-bit ordinary negative");
+            assert_eq!(decoded[3], 0.5, "{bits}-bit ordinary positive");
+            assert!(decoded.iter().all(|sample| (-1.0..=1.0).contains(sample)));
+        }
+    }
+
+    #[test]
+    fn float_wav_samples_are_not_integer_normalized_or_clamped() {
+        let samples = [-1.25_f32, -0.25, 0.0, 0.5, 1.25];
+        let encoded: Vec<i32> = samples
+            .iter()
+            .map(|sample| i32::from_le_bytes(sample.to_le_bytes()))
+            .collect();
+        assert_eq!(decode_bytes(wav_bytes(3, 32, &encoded)), samples);
+    }
+
     #[test]
     fn fixture_is_16k_and_not_silent() {
         let capture = load_wav(&fixture()).expect("fixture wav");
@@ -917,6 +1111,61 @@ mod tests {
         assert_eq!(sample_to_f32(1u64 << 63), 0.0);
         assert_eq!(sample_to_f32(0.0f32), 0.0);
         assert_eq!(sample_to_f32(0.0f64), 0.0);
+    }
+
+    #[test]
+    fn poisoned_capture_buffer_is_recovered() {
+        let collected = Arc::new(CaptureBuffer::with_capacity(4).unwrap());
+        let poison = Arc::clone(&collected);
+        let _ = std::thread::spawn(move || {
+            let _guard = poison.samples.lock().unwrap();
+            panic!("poison capture samples");
+        })
+        .join();
+
+        capture_input(&collected, &[0.25_f32, -0.5], None);
+
+        let samples = collected
+            .samples
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(&*samples, &[0.25, -0.5]);
+        assert_eq!(collected.dropped_samples(), 0);
+    }
+
+    #[test]
+    fn unavailable_or_full_capture_buffer_counts_dropped_samples() {
+        let collected = CaptureBuffer::with_capacity(2).unwrap();
+        capture_input(&collected, &[0.1_f32, 0.2, 0.3], None);
+        assert_eq!(collected.dropped_samples(), 1);
+
+        let guard = collected.samples.lock().unwrap();
+        capture_input(&collected, &[0.4_f32, 0.5], None);
+        drop(guard);
+        assert_eq!(collected.dropped_samples(), 3);
+    }
+
+    #[test]
+    fn capture_result_exposes_dropped_samples() {
+        let result =
+            CaptureResult::from_pcm_with_dropped_samples(Pcm16kMono::from_samples(vec![0]), 17);
+        assert_eq!(result.dropped_samples, 17);
+        assert_eq!(
+            CaptureResult::from_pcm(Pcm16kMono::from_samples(vec![])).dropped_samples,
+            0
+        );
+    }
+
+    #[test]
+    fn meter_projection_is_finite_and_bounded() {
+        let meter = LevelMeter::new();
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1.0, 2.0] {
+            meter.publish(value);
+            assert!(meter.level().is_finite());
+            assert!((0.0..=1.0).contains(&meter.level()));
+        }
+        meter.publish_samples(&[-1.0, 1.0]);
+        assert_eq!(meter.level(), 1.0);
     }
 
     #[test]
@@ -1034,6 +1283,7 @@ mod tests {
         let capture = CaptureResult::from_pcm(pcm);
         assert!(capture.peak_rms == 0.0);
         assert!(capture.duration > Duration::ZERO);
+        assert_eq!(capture.dropped_samples, 0);
     }
 
     #[test]

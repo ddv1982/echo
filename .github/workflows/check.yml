@@ -4,23 +4,16 @@ on:
   push:
   pull_request:
 
+permissions: {}
+
 jobs:
-  check:
+  policy:
     runs-on: ubuntu-latest
-    env:
-      CARGO_INCREMENTAL: 0
-      CARGO_PROFILE_DEV_DEBUG: 0
-      CARGO_PROFILE_TEST_DEBUG: 0
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "22"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
 
       - name: Check workflow action pins
         run: |
@@ -36,6 +29,31 @@ jobs:
       - name: Lint Python scripts with Ruff
         run: pipx run --spec ruff==0.14.11 ruff check scripts
 
+      - name: Check changelog notes
+        run: |
+          python3 scripts/changelog-notes.py --self-test
+          package_version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
+          python3 scripts/changelog-notes.py "v$package_version-alpha.1" > /dev/null \
+            || python3 scripts/changelog-notes.py "v$package_version" > /dev/null
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
       - name: Install native dependencies
         run: |
           sudo apt-get update
@@ -47,30 +65,18 @@ jobs:
             libasound2-dev \
             libpipewire-0.3-dev \
             libpulse-dev \
-            libwebkit2gtk-4.1-dev \
             libdbus-1-dev \
-            libayatana-appindicator3-dev \
-            ripgrep \
-            xdotool \
-            desktop-file-utils \
-            xvfb
+            ripgrep
 
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable 2026-08-30
         with:
           toolchain: "1.89.0"
-          components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
-      - name: Install cargo-audit
-        run: cargo install cargo-audit --version 0.22.2 --locked
-
       - run: npm ci --prefix frontend
 
-      - name: Audit dependency lockfiles
-        run: |
-          cargo audit
-          npm audit --prefix frontend
+      - run: npm audit --prefix frontend
 
       - run: npm run ipc:check --prefix frontend
 
@@ -88,6 +94,50 @@ jobs:
       - run: npm run lint --prefix frontend
 
       - run: npm run test --prefix frontend
+
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Prepare Tauri frontend directory
+        run: mkdir -p frontend/dist
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            build-essential \
+            clang \
+            libclang-dev \
+            pkg-config \
+            libasound2-dev \
+            libpipewire-0.3-dev \
+            libpulse-dev \
+            libwebkit2gtk-4.1-dev \
+            libdbus-1-dev \
+            libayatana-appindicator3-dev \
+            xdotool \
+            xvfb
+
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable 2026-08-30
+        with:
+          toolchain: "1.89.0"
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - run: cargo audit
 
       - run: cargo fmt --all --check
 
@@ -109,22 +159,91 @@ jobs:
 
       - run: cargo build --release
 
+  assets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install desktop entry validator
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y desktop-file-utils
+
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable 2026-08-30
+        with:
+          toolchain: "1.89.0"
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
       - name: Check icon raster drift
         run: |
-          ./target/release/xtask
+          cargo run --package xtask
           git diff --exit-code -- src-tauri/icons frontend/public assets/icons
 
-      - name: Validate desktop entry
+      - name: Validate desktop entries
         run: |
-          out=$(desktop-file-validate packaging/Echo.desktop 2>&1) || true
+          temporary=$(mktemp -d)
+          trap 'rm -rf "$temporary"' EXIT
+          python3 - "$temporary" \
+            src-tauri/templates/Echo.desktop \
+            src-tauri/templates/Echo.AppImage.desktop <<'PY'
+          import pathlib
+          import re
+          import sys
+
+          destination = pathlib.Path(sys.argv[1])
+          conditional = re.compile(
+              r"\{\{#if comment\}\}\nComment=\{\{comment\}\}\n\{\{/if\}\}\n"
+          )
+          replacements = {
+              "{{categories}}": "Utility;",
+              "{{exec}}": "echo-desktop",
+              "{{icon}}": "echo-desktop",
+          }
+          for source_name in sys.argv[2:]:
+              source = pathlib.Path(source_name)
+              rendered = conditional.sub("Comment=Private local dictation\n", source.read_text())
+              for placeholder, value in replacements.items():
+                  rendered = rendered.replace(placeholder, value)
+              leftovers = sorted(set(re.findall(r"\{\{[^{}]+\}\}", rendered)))
+              if leftovers:
+                  raise SystemExit(f"{source}: unrendered placeholders: {', '.join(leftovers)}")
+              (destination / source.name).write_text(rendered)
+          PY
+          set +e
+          out=$(desktop-file-validate \
+            packaging/Echo.desktop \
+            "$temporary/Echo.desktop" \
+            "$temporary/Echo.AppImage.desktop" 2>&1)
+          status=$?
+          set -e
           if [ -n "$out" ]; then
             printf '%s\n' "$out"
+          fi
+          if [ "$status" -ne 0 ] || [ -n "$out" ]; then
             exit 1
           fi
 
-      - name: Check changelog notes
+  check:
+    name: check
+    if: always()
+    needs: [policy, frontend, rust, assets]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require successful check jobs
         run: |
-          python3 scripts/changelog-notes.py --self-test
-          package_version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
-          python3 scripts/changelog-notes.py "v$package_version-alpha.1" > /dev/null \
-            || python3 scripts/changelog-notes.py "v$package_version" > /dev/null
+          for result in \
+            "${{ needs.policy.result }}" \
+            "${{ needs.frontend.result }}" \
+            "${{ needs.rust.result }}" \
+            "${{ needs.assets.result }}"; do
+            if [ "$result" != success ]; then
+              printf 'required check job result: %s\n' "$result"
+              exit 1
+            fi
+          done

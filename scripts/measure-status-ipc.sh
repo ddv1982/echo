@@ -21,7 +21,29 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$(dirname "$output")" "$perf_root/data" "$perf_root/config" "$perf_root/models"
-printf '{"rows":[]}\n' > "$perf_root/data/history.json"
+if [ "$fixture" = existing ]; then
+  python3 - "$perf_root/data/history.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+rows = [
+    {
+        "id": f"status-perf-{index}",
+        "text": "existing history row",
+        "raw": "existing history row",
+        "engine": "Fake",
+        "started_at": index + 1,
+        "infer_ms": 1,
+        "inject": "ClipboardOnly",
+    }
+    for index in range(2_000)
+]
+Path(sys.argv[1]).write_text(json.dumps({"rows": rows}) + "\n")
+PY
+else
+  printf '{"rows":[]}\n' > "$perf_root/data/history.json"
+fi
 
 (
   cd "$repo_dir"
@@ -36,14 +58,12 @@ printf '{"rows":[]}\n' > "$perf_root/data/history.json"
 run_log="$perf_root/run.log"
 set +e
 runtime_env=(GDK_BACKEND=x11)
-if [ "$fixture" = empty ]; then
-  runtime_env+=(
-    ECHO_DATA_DIR="$perf_root/data"
-    ECHO_CONFIG_DIR="$perf_root/config"
-    ECHO_MODEL_DIR="$perf_root/models"
-    ECHO_ENGINE=fake
-  )
-fi
+runtime_env+=(
+  ECHO_DATA_DIR="$perf_root/data"
+  ECHO_CONFIG_DIR="$perf_root/config"
+  ECHO_MODEL_DIR="$perf_root/models"
+  ECHO_ENGINE=fake
+)
 timeout 180s xvfb-run -a env "${runtime_env[@]}" \
   "$target_dir/release/echo-desktop" >"$run_log" 2>&1
 run_status=$?

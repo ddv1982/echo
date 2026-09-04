@@ -29,7 +29,8 @@ Use the setup or repair action on Home or Settings. Managed downloads resume
 after interruption, verify SHA-256 before extraction, and activate only a
 complete generation. Models normally live under `~/.cache/echo` or
 `$XDG_CACHE_HOME/echo`. Set `ECHO_MODEL_DIR` only when you intentionally manage
-models elsewhere.
+models elsewhere. This root contains all managed speech models, runtimes, and
+components, not only model weight files.
 
 For GPU-specific fallback messages, see [GPU runtime](gpu-runtime.md).
 
@@ -56,10 +57,24 @@ echo-desktop --version
 
 ## Find local state
 
-- settings: the path shown under **Settings → Setup and diagnostics**;
-- models and managed runtimes: `$XDG_CACHE_HOME/echo` or `~/.cache/echo`;
-- history, dictionary, and session status: `$XDG_DATA_HOME/echo` or
-  `~/.local/share/echo`.
+Echo resolves each root in this order:
+
+| Contents | Explicit override | XDG root | `HOME` fallback |
+| --- | --- | --- | --- |
+| settings | `ECHO_CONFIG_DIR` | `$XDG_CONFIG_HOME/echo` | `~/.config/echo` |
+| history, dictionary, session status | `ECHO_DATA_DIR` | `$XDG_DATA_HOME/echo` | `~/.local/share/echo` |
+| models, managed runtimes, components | `ECHO_MODEL_DIR` | `$XDG_CACHE_HOME/echo` | `~/.cache/echo` |
+
+An explicit `ECHO_CONFIG_DIR`, `ECHO_DATA_DIR`, or `ECHO_MODEL_DIR` must be an
+absolute path. If it is set to an empty or relative value, Echo reports an error
+instead of trying a lower-precedence location. An empty or relative XDG value
+is treated as unset and falls back only when `HOME` is absolute. If neither is
+valid, set the named `ECHO_*_DIR` override to an absolute path. Echo never uses
+predictable `/tmp/echo-data`, `/tmp/echo-config`, or `/tmp/echo-models`
+fallbacks.
+
+The active settings path is also shown under **Settings → Setup and
+diagnostics**.
 
 The status file records the active session PID, process start time, and recording limit. A recording
 whose writer process died reads as Idle. A Failed state remains visible until

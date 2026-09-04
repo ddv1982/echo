@@ -47,7 +47,7 @@
       "icons/512x512.png"
     ],
     "shortDescription": "Private local dictation",
-    "longDescription": "Echo records speech, transcribes it locally, cleans it up, and inserts it at the active cursor.",
+    "longDescription": "Echo records speech, transcribes it locally, and inserts it at the active cursor.",
     "category": "Utility",
     "linux": {
       "deb": {

@@ -73,11 +73,17 @@ fn main() {
             eprintln!("echo-desktop: replacement handoff failed: {error}");
             std::process::exit(1);
         }
-        run_desktop();
+        if let Err(error) = run_desktop() {
+            eprintln!("echo-desktop: {error}");
+            std::process::exit(1);
+        }
         return;
     }
     if args.is_empty() {
-        run_desktop();
+        if let Err(error) = run_desktop() {
+            eprintln!("echo-desktop: {error}");
+            std::process::exit(1);
+        }
     } else {
         std::process::exit(cli::run(args));
     }
@@ -89,7 +95,8 @@ struct UpgradeWatch {
     identity: echo::upgrade::FileIdentity,
 }
 
-fn run_desktop() {
+fn run_desktop() -> Result<(), String> {
+    echo::settings::preflight_paths()?;
     let mut context = tauri::generate_context!();
     context.config_mut().app.tray_icon = None;
     let builder = tauri::Builder::default()
@@ -249,7 +256,7 @@ fn run_desktop() {
         ])
         .run(context);
     shortcuts::shutdown();
-    result.expect("error while running Echo");
+    result.map_err(|error| format!("error while running Echo: {error}"))
 }
 
 #[cfg(test)]

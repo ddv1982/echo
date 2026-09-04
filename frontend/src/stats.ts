@@ -29,6 +29,12 @@ function previousDay(day: number): number {
   return dayStart(previous)
 }
 
+export function millisecondsUntilNextLocalDay(now: Date): number {
+  const next = new Date(dayStart(now))
+  next.setDate(next.getDate() + 1)
+  return next.getTime() - now.getTime()
+}
+
 export function deriveStats(rows: StatsRow[], now: Date): UsageStats {
   const words = rows.reduce((total, row) => {
     const trimmed = row.text.trim()

@@ -8,23 +8,59 @@ use rustix::fs::{AtFlags, Mode, OFlags};
 
 #[must_use]
 pub fn data_dir() -> PathBuf {
-    resolve_dir(
+    try_data_dir().unwrap_or_else(|error| panic!("{error}"))
+}
+
+pub fn try_data_dir() -> Result<PathBuf, String> {
+    resolve_data_dir(
         env::var_os("ECHO_DATA_DIR").map(PathBuf::from),
         env::var_os("XDG_DATA_HOME").map(PathBuf::from),
         env::var_os("HOME").map(PathBuf::from),
-        &[".local", "share", "echo"],
-        "/tmp/echo-data",
     )
 }
 
 #[must_use]
 pub fn config_dir() -> PathBuf {
-    resolve_dir(
+    try_config_dir().unwrap_or_else(|error| panic!("{error}"))
+}
+
+pub fn try_config_dir() -> Result<PathBuf, String> {
+    resolve_config_dir(
         env::var_os("ECHO_CONFIG_DIR").map(PathBuf::from),
         env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
         env::var_os("HOME").map(PathBuf::from),
+    )
+}
+
+fn resolve_data_dir(
+    explicit: Option<PathBuf>,
+    xdg: Option<PathBuf>,
+    home: Option<PathBuf>,
+) -> Result<PathBuf, String> {
+    resolve_dir(
+        explicit,
+        xdg,
+        home,
+        "ECHO_DATA_DIR",
+        "XDG_DATA_HOME",
+        &[".local", "share", "echo"],
+        "data",
+    )
+}
+
+fn resolve_config_dir(
+    explicit: Option<PathBuf>,
+    xdg: Option<PathBuf>,
+    home: Option<PathBuf>,
+) -> Result<PathBuf, String> {
+    resolve_dir(
+        explicit,
+        xdg,
+        home,
+        "ECHO_CONFIG_DIR",
+        "XDG_CONFIG_HOME",
         &[".config", "echo"],
-        "/tmp/echo-config",
+        "configuration",
     )
 }
 
@@ -32,25 +68,37 @@ fn resolve_dir(
     explicit: Option<PathBuf>,
     xdg: Option<PathBuf>,
     home: Option<PathBuf>,
+    explicit_variable: &str,
+    xdg_variable: &str,
     under_home: &[&str],
-    fallback: &str,
-) -> PathBuf {
-    if let Some(dir) = explicit.filter(|dir| dir.is_absolute()) {
-        return dir;
-    }
-    if let Some(xdg) = xdg {
-        if xdg.is_absolute() {
-            return xdg.join("echo");
+    description: &str,
+) -> Result<PathBuf, String> {
+    if let Some(dir) = explicit {
+        if dir.is_absolute() {
+            return Ok(dir);
         }
+        let value = if dir.as_os_str().is_empty() {
+            "it is empty".to_string()
+        } else {
+            format!("got {}", dir.display())
+        };
+        return Err(format!(
+            "{explicit_variable} must be an absolute path ({value})"
+        ));
     }
-    if let Some(home) = home {
+    if let Some(xdg) = xdg.filter(|dir| dir.is_absolute()) {
+        return Ok(xdg.join("echo"));
+    }
+    if let Some(home) = home.filter(|dir| dir.is_absolute()) {
         let mut dir = home;
         for part in under_home {
             dir.push(part);
         }
-        return dir;
+        return Ok(dir);
     }
-    PathBuf::from(fallback)
+    Err(format!(
+        "could not resolve the Echo {description} directory: {xdg_variable} and HOME are unset, empty, or relative; set {explicit_variable} to an absolute path"
+    ))
 }
 
 #[must_use]
@@ -124,6 +172,39 @@ pub fn write_atomic_private(path: &Path, contents: &[u8]) -> Result<(), String> 
     PrivateDir::open(parent)
         .and_then(|directory| directory.write_atomic(name, contents))
         .map_err(|err| err.to_string())
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PrivateWriteFailure {
+    Write,
+    Sync,
+}
+
+#[cfg(test)]
+thread_local! {
+    static NEXT_PRIVATE_WRITE_FAILURE: std::cell::Cell<Option<PrivateWriteFailure>> = const {
+        std::cell::Cell::new(None)
+    };
+}
+
+#[cfg(test)]
+pub(crate) fn fail_next_private_write(failure: PrivateWriteFailure) {
+    NEXT_PRIVATE_WRITE_FAILURE.with(|next| next.set(Some(failure)));
+}
+
+#[cfg(test)]
+fn fail_private_write_at(point: PrivateWriteFailure) -> io::Result<()> {
+    NEXT_PRIVATE_WRITE_FAILURE.with(|next| {
+        if next.get() == Some(point) {
+            next.set(None);
+            Err(io::Error::other(format!(
+                "injected private {point:?} failure"
+            )))
+        } else {
+            Ok(())
+        }
+    })
 }
 
 fn write_atomic_with_dir_sync(
@@ -300,7 +381,11 @@ impl PrivateDir {
 
         let result = (|| {
             let mut file = self.create_new(&tmp)?;
+            #[cfg(test)]
+            fail_private_write_at(PrivateWriteFailure::Write)?;
             file.write_all(contents)?;
+            #[cfg(test)]
+            fail_private_write_at(PrivateWriteFailure::Sync)?;
             file.sync_all()?;
             drop(file);
             rustix::fs::renameat(&self.handle, &tmp, &self.handle, name)
@@ -531,66 +616,99 @@ mod tests {
     }
 
     #[test]
-    fn empty_xdg_config_home_falls_back_to_home_config() {
-        let got = resolve_dir(
+    fn absolute_xdg_config_home_wins_over_home() {
+        let got = resolve_config_dir(
             None,
-            Some(PathBuf::from("")),
+            Some(PathBuf::from("/xdg/config")),
             Some(PathBuf::from("/home/tester")),
-            &[".config", "echo"],
-            "/tmp/echo-config",
-        );
-        assert_eq!(got, PathBuf::from("/home/tester/.config/echo"));
+        )
+        .unwrap();
+        assert_eq!(got, PathBuf::from("/xdg/config/echo"));
     }
 
     #[test]
-    fn relative_xdg_config_home_falls_back_to_home_config() {
-        let got = resolve_dir(
-            None,
-            Some(PathBuf::from("relative/xdg")),
-            Some(PathBuf::from("/home/tester")),
-            &[".config", "echo"],
-            "/tmp/echo-config",
+    fn absolute_explicit_directories_win() {
+        assert_eq!(
+            resolve_data_dir(
+                Some(PathBuf::from("/echo/data")),
+                Some(PathBuf::from("/xdg/data")),
+                Some(PathBuf::from("/home/tester")),
+            )
+            .unwrap(),
+            PathBuf::from("/echo/data")
         );
-        assert_eq!(got, PathBuf::from("/home/tester/.config/echo"));
+        assert_eq!(
+            resolve_config_dir(
+                Some(PathBuf::from("/echo/config")),
+                Some(PathBuf::from("/xdg/config")),
+                Some(PathBuf::from("/home/tester")),
+            )
+            .unwrap(),
+            PathBuf::from("/echo/config")
+        );
     }
 
     #[test]
-    fn empty_xdg_data_home_falls_back_to_home_local_share() {
-        let got = resolve_dir(
-            None,
-            Some(PathBuf::from("")),
-            Some(PathBuf::from("/home/tester")),
-            &[".local", "share", "echo"],
-            "/tmp/echo-data",
-        );
-        assert_eq!(got, PathBuf::from("/home/tester/.local/share/echo"));
-    }
-
-    #[test]
-    fn relative_xdg_data_home_falls_back_to_home_local_share() {
-        let got = resolve_dir(
-            None,
-            Some(PathBuf::from("relative/xdg")),
-            Some(PathBuf::from("/home/tester")),
-            &[".local", "share", "echo"],
-            "/tmp/echo-data",
-        );
-        assert_eq!(got, PathBuf::from("/home/tester/.local/share/echo"));
-    }
-
-    #[test]
-    fn empty_or_relative_explicit_directory_falls_back() {
+    fn invalid_explicit_data_directory_is_a_hard_error() {
         for explicit in [PathBuf::new(), PathBuf::from("relative/echo")] {
+            let error = resolve_data_dir(
+                Some(explicit),
+                Some(PathBuf::from("/valid/xdg")),
+                Some(PathBuf::from("/home/tester")),
+            )
+            .unwrap_err();
+            assert!(error.contains("ECHO_DATA_DIR"), "{error}");
+            assert!(error.contains("absolute path"), "{error}");
+        }
+    }
+
+    #[test]
+    fn invalid_explicit_config_directory_is_a_hard_error() {
+        for explicit in [PathBuf::new(), PathBuf::from("relative/echo")] {
+            let error = resolve_config_dir(
+                Some(explicit),
+                Some(PathBuf::from("/valid/xdg")),
+                Some(PathBuf::from("/home/tester")),
+            )
+            .unwrap_err();
+            assert!(error.contains("ECHO_CONFIG_DIR"), "{error}");
+            assert!(error.contains("absolute path"), "{error}");
+        }
+    }
+
+    #[test]
+    fn invalid_xdg_values_fall_back_only_to_absolute_home() {
+        for xdg in [PathBuf::new(), PathBuf::from("relative/xdg")] {
             assert_eq!(
-                resolve_dir(
-                    Some(explicit),
-                    None,
-                    Some(PathBuf::from("/home/tester")),
-                    &[".local", "share", "echo"],
-                    "/tmp/echo-data",
-                ),
+                resolve_data_dir(None, Some(xdg.clone()), Some(PathBuf::from("/home/tester")),)
+                    .unwrap(),
                 PathBuf::from("/home/tester/.local/share/echo")
             );
+            assert_eq!(
+                resolve_config_dir(None, Some(xdg), Some(PathBuf::from("/home/tester")),).unwrap(),
+                PathBuf::from("/home/tester/.config/echo")
+            );
+        }
+    }
+
+    #[test]
+    fn missing_or_invalid_home_without_absolute_xdg_is_actionable() {
+        for home in [
+            None,
+            Some(PathBuf::new()),
+            Some(PathBuf::from("relative/home")),
+        ] {
+            for xdg in [None, Some(PathBuf::from("relative/xdg"))] {
+                let data_error = resolve_data_dir(None, xdg.clone(), home.clone()).unwrap_err();
+                assert!(data_error.contains("ECHO_DATA_DIR"), "{data_error}");
+                assert!(data_error.contains("absolute path"), "{data_error}");
+                assert!(!data_error.contains("/tmp/"), "{data_error}");
+
+                let config_error = resolve_config_dir(None, xdg, home.clone()).unwrap_err();
+                assert!(config_error.contains("ECHO_CONFIG_DIR"), "{config_error}");
+                assert!(config_error.contains("absolute path"), "{config_error}");
+                assert!(!config_error.contains("/tmp/"), "{config_error}");
+            }
         }
     }
 

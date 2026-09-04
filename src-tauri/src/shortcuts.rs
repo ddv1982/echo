@@ -1,6 +1,6 @@
 use std::env;
 use std::panic::{self, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -128,21 +128,27 @@ enum NativeShortcutState {
 
 static NATIVE_SHORTCUT_STATE: OnceLock<Arc<Mutex<NativeShortcutState>>> = OnceLock::new();
 
+fn recover_shortcut_lock<'a, T>(state: &'a Mutex<T>, name: &str) -> std::sync::MutexGuard<'a, T> {
+    match state.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            eprintln!("native shortcuts: recovering poisoned {name} state");
+            state.clear_poison();
+            poisoned.into_inner()
+        }
+    }
+}
+
 fn native_state_cell() -> &'static Arc<Mutex<NativeShortcutState>> {
     NATIVE_SHORTCUT_STATE.get_or_init(|| Arc::new(Mutex::new(NativeShortcutState::Probing)))
 }
 
 fn native_shortcut_state() -> NativeShortcutState {
-    native_state_cell()
-        .lock()
-        .expect("native shortcut state lock")
-        .clone()
+    recover_shortcut_lock(native_state_cell(), "status").clone()
 }
 
 fn set_native_shortcut_state(state: NativeShortcutState) {
-    *native_state_cell()
-        .lock()
-        .expect("native shortcut state lock") = state;
+    *recover_shortcut_lock(native_state_cell(), "status") = state;
 }
 
 fn is_legacy_registry_absence(error: &ashpd::Error) -> bool {
@@ -162,11 +168,13 @@ fn is_global_shortcuts_absence(error: &ashpd::Error) -> bool {
 }
 
 struct NativeShortcutHandle {
+    generation: u64,
     cancel: echo::audio::CancellationToken,
     thread: JoinHandle<()>,
 }
 
 static NATIVE_SHORTCUT: Mutex<Option<NativeShortcutHandle>> = Mutex::new(None);
+static NEXT_NATIVE_SHORTCUT_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 #[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -270,8 +278,8 @@ pub(crate) fn reconcile() {
     reconcile_native_shortcuts_with_recovery(false, false);
 }
 
-fn retry_native_shortcuts_after_failure() {
-    reconcile_native_shortcuts_with_recovery(true, true);
+fn retry_native_shortcuts_after_failure(generation: u64) {
+    run_native_retry_if_owned(generation, || reconcile_native_shortcuts_locked(true, true));
 }
 
 pub(crate) fn retry() -> ShortcutStatus {
@@ -289,6 +297,10 @@ fn reconcile_native_shortcuts_with_recovery(recovering: bool, force: bool) {
     let _reconcile = NATIVE_RECONCILE
         .lock()
         .expect("native shortcut reconcile lock");
+    reconcile_native_shortcuts_locked(recovering, force);
+}
+
+fn reconcile_native_shortcuts_locked(recovering: bool, force: bool) {
     let old = {
         let mut guard = NATIVE_SHORTCUT.lock().expect("native shortcut lock");
         if !force
@@ -316,6 +328,7 @@ fn reconcile_native_shortcuts_with_recovery(recovering: bool, force: bool) {
 
     let cancel = echo::audio::CancellationToken::new();
     let thread_cancel = cancel.clone();
+    let generation = NEXT_NATIVE_SHORTCUT_GENERATION.fetch_add(1, Ordering::Relaxed);
     let spawned = std::thread::Builder::new()
         .name(
             match session {
@@ -345,31 +358,42 @@ fn reconcile_native_shortcuts_with_recovery(recovering: bool, force: bool) {
                     return;
                 }
                 mark_native_failure(error);
-                if should_retry_native_listener(active, recovering, false) {
-                    if let Err(err) = schedule_native_retry(
-                        thread_cancel,
-                        Duration::from_secs(1),
-                        retry_native_shortcuts_after_failure,
-                    ) {
+                if should_retry_native_listener(
+                    active,
+                    recovering,
+                    thread_cancel.is_cancelled(),
+                    &native_shortcut_state(),
+                ) {
+                    if let Err(err) =
+                        schedule_native_retry(thread_cancel, Duration::from_secs(1), move || {
+                            retry_native_shortcuts_after_failure(generation)
+                        })
+                    {
                         eprintln!("native shortcuts: {err}");
                     }
                 }
-            } else if !active
-                && should_retry_native_listener(active, recovering, thread_cancel.is_cancelled())
-            {
-                if let Err(err) = schedule_native_retry(
-                    thread_cancel,
-                    Duration::from_secs(1),
-                    retry_native_shortcuts_after_failure,
-                ) {
+            } else if should_retry_native_listener(
+                active,
+                recovering,
+                thread_cancel.is_cancelled(),
+                &native_shortcut_state(),
+            ) {
+                if let Err(err) =
+                    schedule_native_retry(thread_cancel, Duration::from_secs(1), move || {
+                        retry_native_shortcuts_after_failure(generation)
+                    })
+                {
                     eprintln!("native shortcuts: {err}");
                 }
             }
         });
     match spawned {
         Ok(thread) => {
-            *NATIVE_SHORTCUT.lock().expect("native shortcut lock") =
-                Some(NativeShortcutHandle { cancel, thread });
+            *NATIVE_SHORTCUT.lock().expect("native shortcut lock") = Some(NativeShortcutHandle {
+                generation,
+                cancel,
+                thread,
+            });
         }
         Err(err) => mark_native_failure(format!("cannot spawn native shortcut listener: {err}")),
     }
@@ -385,6 +409,9 @@ fn stop_native_handle(handle: Option<NativeShortcutHandle>) {
 }
 
 pub(crate) fn shutdown() {
+    let _reconcile = NATIVE_RECONCILE
+        .lock()
+        .expect("native shortcut reconcile lock");
     let old = NATIVE_SHORTCUT.lock().expect("native shortcut lock").take();
     stop_native_handle(old);
 }
@@ -418,8 +445,33 @@ fn schedule_native_retry(
         .map_err(|err| format!("cannot schedule native shortcut retry: {err}"))
 }
 
-fn should_retry_native_listener(active: bool, recovering: bool, cancelled: bool) -> bool {
-    !cancelled && (active || recovering)
+fn run_native_retry_if_owned(generation: u64, retry: impl FnOnce()) {
+    let _reconcile = NATIVE_RECONCILE
+        .lock()
+        .expect("native shortcut reconcile lock");
+    let owned = NATIVE_SHORTCUT
+        .lock()
+        .expect("native shortcut lock")
+        .as_ref()
+        .is_some_and(|running| running.generation == generation && !running.cancel.is_cancelled());
+    if owned {
+        retry();
+    }
+}
+
+fn should_retry_native_listener(
+    active: bool,
+    recovering: bool,
+    cancelled: bool,
+    state: &NativeShortcutState,
+) -> bool {
+    !cancelled
+        && !recovering
+        && (active
+            || matches!(
+                state,
+                NativeShortcutState::Probing | NativeShortcutState::Failed { .. }
+            ))
 }
 
 fn dispatch_shortcut_edge(

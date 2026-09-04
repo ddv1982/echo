@@ -2,11 +2,17 @@ import { act, renderHook, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createPreviewDesktopApi } from '../api/previewDesktopApi'
-import type { SettingsChange, SetupEvent } from '../generated/ipc'
+import type {
+  ComponentId,
+  SettingsChange,
+  SettingsSnapshot,
+  SetupEvent,
+} from '../generated/ipc'
 import {
   configureDesktopApi,
   getSettings,
   onSetupEvent,
+  repairManaged,
   setSettings,
 } from '../tauri'
 import { useSettingsController } from './useSettingsController'
@@ -19,6 +25,7 @@ vi.mock('../tauri', async (importOriginal) => {
     ...actual,
     getSettings: vi.fn(() => actual.getSettings()),
     onSetupEvent: vi.fn((handler: (event: SetupEvent) => void) => actual.onSetupEvent(handler)),
+    repairManaged: vi.fn((component: ComponentId) => actual.repairManaged(component)),
     setSettings: vi.fn((change: SettingsChange) => actual.setSettings(change)),
   }
 })
@@ -46,6 +53,8 @@ describe('useSettingsController', () => {
     vi.mocked(getSettings).mockImplementation(() => actual.getSettings())
     vi.mocked(onSetupEvent).mockReset()
     vi.mocked(onSetupEvent).mockImplementation((handler) => actual.onSetupEvent(handler))
+    vi.mocked(repairManaged).mockReset()
+    vi.mocked(repairManaged).mockImplementation((component) => actual.repairManaged(component))
     vi.mocked(setSettings).mockReset()
     vi.mocked(setSettings).mockImplementation((change) => actual.setSettings(change))
   })
@@ -86,6 +95,149 @@ describe('useSettingsController', () => {
       { kind: 'hud', value: false },
     ])
     expect(result.current.settings?.language.value).toBe('en')
+    expect(result.current.settings?.hud.value).toBe(false)
+  })
+
+  it('continues the settings write chain after a rejected write', async () => {
+    const actual = await vi.importActual<typeof import('../tauri')>('../tauri')
+    vi.mocked(setSettings)
+      .mockRejectedValueOnce(new Error('first write failed'))
+      .mockImplementationOnce((change) => actual.setSettings(change))
+    const onStatusChange = vi.fn().mockResolvedValue(undefined)
+    const onError = vi.fn()
+    const { result } = renderHook(() => useSettingsController({
+      onStatusChange,
+      onError,
+    }))
+    await waitFor(() => expect(result.current.settings).not.toBeNull())
+
+    let failedWrite: Promise<void>
+    let successfulWrite: Promise<void>
+    act(() => {
+      failedWrite = result.current.updateLanguage('en')
+      successfulWrite = result.current.updateHud(false)
+    })
+    await act(async () => Promise.all([failedWrite, successfulWrite]))
+
+    expect(onError).toHaveBeenCalledWith('first write failed')
+    expect(vi.mocked(setSettings).mock.calls.map(([change]) => change)).toEqual([
+      { kind: 'language', value: 'en' },
+      { kind: 'hud', value: false },
+    ])
+    expect(result.current.settings?.hud.value).toBe(false)
+    expect(result.current.settingsWritePending).toBe(false)
+  })
+
+  it('does not let the initial settings read replace a newer settings write', async () => {
+    const staleSettings = await previewDesktopApi.getSettings()
+    const initialRead = deferred<SettingsSnapshot>()
+    vi.mocked(getSettings).mockImplementationOnce(() => initialRead.promise)
+    const onStatusChange = vi.fn().mockResolvedValue(undefined)
+    const onError = vi.fn()
+    const { result } = renderHook(() => useSettingsController({
+      onStatusChange,
+      onError,
+    }))
+    await waitFor(() => expect(getSettings).toHaveBeenCalledOnce())
+
+    await act(async () => result.current.updateHud(false))
+    initialRead.resolve(staleSettings)
+    await act(async () => initialRead.promise)
+
+    expect(result.current.settings?.hud.value).toBe(false)
+  })
+
+  it('waits for an already queued settings write before refreshing readiness', async () => {
+    const actual = await vi.importActual<typeof import('../tauri')>('../tauri')
+    const writeStarted = deferred<void>()
+    const releaseWrite = deferred<void>()
+    vi.mocked(setSettings).mockImplementationOnce(async (change) => {
+      writeStarted.resolve()
+      await releaseWrite.promise
+      return actual.setSettings(change)
+    })
+    const onStatusChange = vi.fn().mockResolvedValue(undefined)
+    const onError = vi.fn()
+    const { result } = renderHook(() => useSettingsController({
+      onStatusChange,
+      onError,
+    }))
+    await waitFor(() => expect(result.current.settings).not.toBeNull())
+
+    let write: Promise<void>
+    act(() => {
+      write = result.current.updateHud(false)
+    })
+    await writeStarted.promise
+    await act(async () => {
+      result.current.refreshReadiness()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(getSettings).toHaveBeenCalledOnce()
+
+    await act(async () => releaseWrite.resolve())
+    await act(async () => write)
+    await waitFor(() => expect(getSettings).toHaveBeenCalledTimes(2))
+    expect(result.current.settings?.hud.value).toBe(false)
+  })
+
+  it('waits for an already queued settings write before the GPU repair refresh', async () => {
+    const actual = await vi.importActual<typeof import('../tauri')>('../tauri')
+    const initialSettings = await previewDesktopApi.getSettings()
+    const component = initialSettings.readiness.components.find(
+      (candidate) => candidate.id === 'whisper-vulkan-runtime',
+    )
+    if (!component) throw new Error('preview GPU prerequisite is missing')
+    const gpuSettings: SettingsSnapshot = {
+      ...initialSettings,
+      preferences: {
+        ...initialSettings.preferences,
+        whisperAcceleration: {
+          ...initialSettings.preferences.whisperAcceleration,
+          effective: 'gpu',
+        },
+      },
+      transcription: {
+        ...initialSettings.transcription,
+        whisper: { kind: 'applicable', gpu: { kind: 'needs-install', component } },
+      },
+    }
+    vi.mocked(getSettings).mockResolvedValueOnce(gpuSettings)
+    vi.mocked(repairManaged).mockResolvedValueOnce('gpu-repair')
+    const writeStarted = deferred<void>()
+    const releaseWrite = deferred<void>()
+    vi.mocked(setSettings).mockImplementationOnce(async (change) => {
+      writeStarted.resolve()
+      await releaseWrite.promise
+      return actual.setSettings(change)
+    })
+    const onStatusChange = vi.fn().mockResolvedValue(undefined)
+    const onError = vi.fn()
+    const { result } = renderHook(() => useSettingsController({
+      onStatusChange,
+      onError,
+    }))
+    await waitFor(() => expect(result.current.gpuPrerequisite).not.toBeNull())
+
+    let write: Promise<void>
+    act(() => {
+      write = result.current.updateHud(false)
+    })
+    await writeStarted.promise
+    await act(async () => {
+      result.current.installGpuPrerequisite()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(repairManaged).toHaveBeenCalledWith('whisper-vulkan-runtime')
+    expect(getSettings).toHaveBeenCalledOnce()
+
+    await act(async () => releaseWrite.resolve())
+    await act(async () => write)
+    await waitFor(() => expect(getSettings).toHaveBeenCalledTimes(2))
     expect(result.current.settings?.hud.value).toBe(false)
   })
 

@@ -388,19 +388,18 @@ fn cached_status_detects_same_size_mutation_with_restored_mtime() {
     let original_metadata = fs::metadata(&payload).unwrap();
     let original_mtime = FileTime::from_last_modification_time(&original_metadata);
 
-    fs::write(&payload, vec![b'x'; spec.artifact_size as usize]).unwrap();
-    set_file_mtime(&payload, original_mtime).unwrap();
+    let replacement = payload_root.join("same-size-replacement");
+    fs::write(&replacement, vec![b'x'; spec.artifact_size as usize]).unwrap();
+    fs::set_permissions(&replacement, original_metadata.permissions()).unwrap();
+    set_file_mtime(&replacement, original_mtime).unwrap();
+    fs::rename(&replacement, &payload).unwrap();
     let changed_metadata = fs::metadata(&payload).unwrap();
+    assert_eq!(changed_metadata.len(), original_metadata.len());
     assert_eq!(
         FileTime::from_last_modification_time(&changed_metadata),
         original_mtime
     );
-    assert!(
-        original_metadata.ino() != changed_metadata.ino()
-            || (original_metadata.ctime(), original_metadata.ctime_nsec())
-                != (changed_metadata.ctime(), changed_metadata.ctime_nsec()),
-        "the filesystem did not change inode identity or ctime after the write"
-    );
+    assert_ne!(original_metadata.ino(), changed_metadata.ino());
 
     assert!(matches!(
         store.status_with(&spec, &expected_files_for(&spec), false),

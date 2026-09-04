@@ -135,7 +135,24 @@ enum OutputFormat {
 }
 
 pub fn run(args: impl IntoIterator<Item = OsString>) -> i32 {
+    run_with_preflight(args, echo::settings::preflight_paths)
+}
+
+fn run_with_preflight(
+    args: impl IntoIterator<Item = OsString>,
+    preflight: impl FnOnce() -> Result<(), String>,
+) -> i32 {
     let args = args.into_iter().collect::<Vec<_>>();
+    let parsed = match Cli::try_parse_from(
+        std::iter::once(OsString::from("echo-desktop")).chain(args.iter().cloned()),
+    ) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            let code = error.exit_code();
+            let _ = error.print();
+            return code;
+        }
+    };
     if args.first().and_then(|arg| arg.to_str()) == Some("rec") {
         let rec_args = args
             .get(1..)
@@ -143,28 +160,25 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> i32 {
             .iter()
             .filter_map(|arg| arg.to_str())
             .collect::<Vec<_>>();
-        if !matches!(
-            rec_args.as_slice(),
-            ["--once"] | ["--toggle"] | ["--help"] | ["-h"]
-        ) {
+        if !matches!(rec_args.as_slice(), ["--once"] | ["--toggle"]) {
             eprintln!("usage: echo-desktop rec --once|--toggle");
             return 2;
         }
     }
-    let parsed =
-        match Cli::try_parse_from(std::iter::once(OsString::from("echo-desktop")).chain(args)) {
-            Ok(parsed) => parsed,
-            Err(error) => {
-                let code = error.exit_code();
-                let _ = error.print();
-                return code;
-            }
-        };
     if parsed.hud_demo {
         if parsed.command.is_some() {
             eprintln!("error: --hud-demo cannot be combined with a command");
             return 2;
         }
+    } else if parsed.command.is_none() {
+        eprintln!("error: a command is required");
+        return 2;
+    }
+    if let Err(error) = preflight() {
+        eprintln!("echo-desktop: {error}");
+        return 1;
+    }
+    if parsed.hud_demo {
         return match echo::ui::hud::run_hud_demo() {
             Ok(()) => 0,
             Err(error) => {
@@ -189,10 +203,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> i32 {
                 1
             }
         },
-        None => {
-            eprintln!("error: a command is required");
-            2
-        }
+        None => unreachable!("a command was required before path preflight"),
     }
 }
 
@@ -539,10 +550,92 @@ fn positive_u8(raw: &str) -> Result<u8, String> {
 mod tests {
     use super::*;
 
+    const PATH_PREFLIGHT_CHILD: &str = "ECHO_PATH_PREFLIGHT_CHILD";
+
     #[test]
     fn trailing_newline_is_exact() {
         assert_eq!(one_trailing_newline("hello".into()), "hello\n");
         assert_eq!(one_trailing_newline("hello\n\n".into()), "hello\n");
         assert_eq!(one_trailing_newline(String::new()), "\n");
+    }
+
+    #[test]
+    fn help_does_not_run_path_preflight() {
+        let code = run_with_preflight([OsString::from("--help")], || {
+            panic!("preflight must not run for help")
+        });
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn syntax_error_does_not_run_path_preflight() {
+        let code = run_with_preflight([OsString::from("rec")], || {
+            panic!("preflight must not run for syntax errors")
+        });
+        assert_eq!(code, 2);
+    }
+
+    #[test]
+    fn valid_command_reports_path_preflight_as_runtime_failure() {
+        let code = run_with_preflight([OsString::from("languages")], || {
+            Err("set ECHO_DATA_DIR to an absolute path".to_string())
+        });
+        assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn hud_demo_runs_path_preflight_before_starting() {
+        let code = run_with_preflight([OsString::from("--hud-demo")], || {
+            Err("set ECHO_MODEL_DIR to an absolute path".to_string())
+        });
+        assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn missing_real_roots_are_runtime_errors() {
+        if let Some(expected_variable) = std::env::var_os(PATH_PREFLIGHT_CHILD) {
+            let expected_variable = expected_variable.to_string_lossy();
+            let code = run([OsString::from("languages")]);
+            assert_eq!(code, 1, "missing {expected_variable} must fail");
+            return;
+        }
+
+        for expected_variable in ["ECHO_DATA_DIR", "ECHO_CONFIG_DIR", "ECHO_MODEL_DIR"] {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "cli::tests::missing_real_roots_are_runtime_errors",
+                    "--nocapture",
+                ])
+                .env(PATH_PREFLIGHT_CHILD, expected_variable)
+                .env_remove("ECHO_DATA_DIR")
+                .env_remove("ECHO_CONFIG_DIR")
+                .env_remove("ECHO_MODEL_DIR")
+                .env_remove("XDG_DATA_HOME")
+                .env_remove("XDG_CONFIG_HOME")
+                .env_remove("XDG_CACHE_HOME")
+                .env_remove("HOME");
+            if expected_variable != "ECHO_DATA_DIR" {
+                command.env("ECHO_DATA_DIR", "/secure-test/data");
+            }
+            if expected_variable != "ECHO_CONFIG_DIR" {
+                command.env("ECHO_CONFIG_DIR", "/secure-test/config");
+            }
+            if expected_variable != "ECHO_MODEL_DIR" {
+                command.env("ECHO_MODEL_DIR", "/secure-test/models");
+            }
+
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "isolated test failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains(expected_variable), "{stderr}");
+            assert!(stderr.contains("absolute path"), "{stderr}");
+            assert!(!stderr.contains("/tmp/echo-"), "{stderr}");
+        }
     }
 }

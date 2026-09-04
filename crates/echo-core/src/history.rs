@@ -30,9 +30,36 @@ pub struct HistoryRow {
     pub detail: RunDetail,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 struct HistoryFile {
     rows: Vec<HistoryRow>,
+}
+
+impl<'de> Deserialize<'de> for HistoryFile {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct CurrentHistoryFile {
+            rows: Vec<HistoryRow>,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum HistoryFileWire {
+            Current(CurrentHistoryFile),
+            Other(std::collections::BTreeMap<String, serde::de::IgnoredAny>),
+        }
+
+        match HistoryFileWire::deserialize(deserializer)? {
+            HistoryFileWire::Current(file) => Ok(Self { rows: file.rows }),
+            HistoryFileWire::Other(fields) if fields.is_empty() => Ok(Self::default()),
+            HistoryFileWire::Other(_) => Err(serde::de::Error::custom(
+                "history object is missing its rows field",
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -91,15 +118,27 @@ impl History {
     }
 
     pub fn append_default(row: HistoryRow) -> Result<(), String> {
-        Self::update_locked(history_path(), move |history| history.append(row))
+        Self::mutate_path_locked(history_path(), move |rows| {
+            Self::append_loaded(rows, row);
+            ((), true)
+        })
+        .map(|_| ())
     }
 
     pub fn remove_default(id: &str) -> Result<bool, String> {
-        Self::update_locked(history_path(), |history| history.remove(id))
+        Self::mutate_path_locked(history_path(), |rows| {
+            let removed = Self::remove_loaded(rows, id);
+            (removed, removed)
+        })
+        .map(|(result, _)| result)
     }
 
     pub fn clear_default() -> Result<usize, String> {
-        Self::update_locked(history_path(), Self::clear)
+        Self::mutate_path_locked(history_path(), |rows| {
+            let count = Self::clear_loaded(rows);
+            (count, count > 0)
+        })
+        .map(|(result, _)| result)
     }
 
     #[must_use]
@@ -108,60 +147,106 @@ impl History {
     }
 
     pub fn append(&mut self, row: HistoryRow) -> Result<(), String> {
-        self.rows.push(row);
-        if self.rows.len() > HISTORY_CAP {
-            let drop = self.rows.len() - HISTORY_CAP;
-            self.rows.drain(..drop);
-        }
-        self.save()
+        let (_, rows) = Self::mutate_path_locked(&self.path, move |rows| {
+            Self::append_loaded(rows, row);
+            ((), true)
+        })?;
+        self.rows = rows;
+        Ok(())
     }
 
     pub fn remove(&mut self, id: &str) -> Result<bool, String> {
-        let Some(index) = self.rows.iter().position(|row| row.id == id) else {
-            return Ok(false);
-        };
-        let mut rows = self.rows.clone();
-        rows.remove(index);
-        self.save_rows(&rows)?;
+        let (removed, rows) = Self::mutate_path_locked(&self.path, |rows| {
+            let removed = Self::remove_loaded(rows, id);
+            (removed, removed)
+        })?;
         self.rows = rows;
-        Ok(true)
+        Ok(removed)
     }
 
     pub fn clear(&mut self) -> Result<usize, String> {
-        let count = self.rows.len();
-        if count == 0 {
-            return Ok(0);
-        }
-        let rows = Vec::new();
-        self.save_rows(&rows)?;
+        let (count, rows) = Self::mutate_path_locked(&self.path, |rows| {
+            let count = Self::clear_loaded(rows);
+            (count, count > 0)
+        })?;
         self.rows = rows;
         Ok(count)
     }
 
     pub fn save(&self) -> Result<(), String> {
-        self.save_rows(&self.rows)
+        let _process_guard = history_process_guard()?;
+        let _file_guard = lock_history_file(&self.path)?;
+        let rows = match Self::read_rows_read_only(&self.path)? {
+            Some(rows) => rows,
+            None => self.rows.clone(),
+        };
+        Self::save_rows_at(&self.path, &rows)
     }
 
-    fn save_rows(&self, rows: &[HistoryRow]) -> Result<(), String> {
+    fn save_rows_at(path: &Path, rows: &[HistoryRow]) -> Result<(), String> {
         let file = HistoryFile {
             rows: rows.to_vec(),
         };
         let raw = serde_json::to_string_pretty(&file).map_err(|err| err.to_string())?;
-        write_atomic_private(&self.path, raw.as_bytes())
+        write_atomic_private(path, raw.as_bytes())
     }
 
-    fn update_locked<T>(
+    fn mutate_path_locked<T>(
         path: impl AsRef<Path>,
-        update: impl FnOnce(&mut Self) -> Result<T, String>,
-    ) -> Result<T, String> {
-        let _process_guard = HISTORY_WRITES.lock().map_err(|_| {
-            "History writes are unavailable because the history lock is poisoned.".to_string()
-        })?;
+        update: impl FnOnce(&mut Vec<HistoryRow>) -> (T, bool),
+    ) -> Result<(T, Vec<HistoryRow>), String> {
+        let _process_guard = history_process_guard()?;
         let path = path.as_ref();
         let _file_guard = lock_history_file(path)?;
-        let mut history = Self::load_from(path)?;
-        update(&mut history)
+        let mut rows = Self::read_rows_read_only(path)?.unwrap_or_default();
+        let (result, changed) = update(&mut rows);
+        if changed {
+            Self::save_rows_at(path, &rows)?;
+        }
+        Ok((result, rows))
     }
+
+    fn read_rows_read_only(path: &Path) -> Result<Option<Vec<HistoryRow>>, String> {
+        let Some(raw) = read_private(path)? else {
+            return Ok(None);
+        };
+        serde_json::from_slice::<HistoryFile>(&raw)
+            .map(|file| Some(file.rows))
+            .map_err(|error| {
+                format!(
+                    "History file {} contains invalid JSON and was not loaded: {error}",
+                    path.display()
+                )
+            })
+    }
+
+    fn append_loaded(rows: &mut Vec<HistoryRow>, row: HistoryRow) {
+        rows.push(row);
+        if rows.len() > HISTORY_CAP {
+            let drop = rows.len() - HISTORY_CAP;
+            rows.drain(..drop);
+        }
+    }
+
+    fn remove_loaded(rows: &mut Vec<HistoryRow>, id: &str) -> bool {
+        let Some(index) = rows.iter().position(|row| row.id == id) else {
+            return false;
+        };
+        rows.remove(index);
+        true
+    }
+
+    fn clear_loaded(rows: &mut Vec<HistoryRow>) -> usize {
+        let count = rows.len();
+        rows.clear();
+        count
+    }
+}
+
+fn history_process_guard() -> Result<std::sync::MutexGuard<'static, ()>, String> {
+    HISTORY_WRITES.lock().map_err(|_| {
+        "History writes are unavailable because the history lock is poisoned.".to_string()
+    })
 }
 
 fn lock_history_file(path: &Path) -> Result<fs::File, String> {
@@ -184,19 +269,46 @@ fn lock_history_file(path: &Path) -> Result<fs::File, String> {
     let lock_file = directory
         .open_or_create(lock_path.file_name().expect("lock path has a file name"))
         .map_err(|err| format!("Could not open history lock {}: {err}", lock_path.display()))?;
-    lock_file
-        .lock_exclusive()
-        .map_err(|err| format!("Could not lock history file {}: {err}", lock_path.display()))?;
+    match lock_file.try_lock_exclusive() {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+            #[cfg(test)]
+            report_history_lock_contention();
+            lock_file.lock_exclusive().map_err(|err| {
+                format!("Could not lock history file {}: {err}", lock_path.display())
+            })?;
+        }
+        Err(err) => {
+            return Err(format!(
+                "Could not lock history file {}: {err}",
+                lock_path.display()
+            ));
+        }
+    }
     Ok(lock_file)
+}
+
+#[cfg(test)]
+fn report_history_lock_contention() {
+    let Some(address) = std::env::var_os("ECHO_TEST_HISTORY_CONTENTION_ADDRESS") else {
+        return;
+    };
+    let mut stream = std::net::TcpStream::connect(address.to_string_lossy().as_ref())
+        .expect("history contention observer should accept a connection");
+    std::io::Write::write_all(&mut stream, b"history lock contended")
+        .expect("history contention marker should be written");
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::inject::InjectBackend;
+    use crate::paths::{fail_next_private_write, PrivateWriteFailure};
+    use std::io::Read;
+    use std::net::TcpListener;
     use std::process::{Command, Stdio};
     use std::sync::{mpsc, Arc, Barrier};
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     fn row(id: &str, text: &str) -> HistoryRow {
         HistoryRow {
@@ -213,6 +325,19 @@ mod tests {
             },
             detail: RunDetail::default(),
         }
+    }
+
+    fn assert_no_history_temp_file(path: &Path) {
+        let prefix = format!(".{}.tmp-", path.file_name().unwrap().to_string_lossy());
+        let residual = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name())
+            .find(|name| name.to_string_lossy().starts_with(&prefix));
+        assert!(
+            residual.is_none(),
+            "residual history temp file: {residual:?}"
+        );
     }
 
     #[test]
@@ -281,6 +406,35 @@ mod tests {
     }
 
     #[test]
+    fn empty_object_loads_as_empty_history_without_quarantine() {
+        let dir = std::env::temp_dir().join(format!("echo-hist-empty-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.json");
+        fs::write(&path, "{}").unwrap();
+
+        assert!(History::load_from(&path).unwrap().rows().is_empty());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{}");
+        assert!(!dir.join("history.json.corrupt").exists());
+    }
+
+    #[test]
+    fn nonempty_object_without_rows_is_still_rejected() {
+        let dir = std::env::temp_dir().join(format!(
+            "echo-hist-incompatible-empty-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.json");
+        fs::write(&path, r#"{"unexpected":true}"#).unwrap();
+
+        assert!(History::load_from(&path).is_err());
+        assert!(!path.exists());
+        assert!(dir.join("history.json.corrupt").exists());
+    }
+
+    #[test]
     fn repeated_corruption_preserves_every_backup() {
         let dir = std::env::temp_dir().join(format!(
             "echo-hist-repeated-corruption-{}",
@@ -341,16 +495,20 @@ mod tests {
         assert!(read_error.contains("invalid JSON"), "{read_error}");
         assert_eq!(fs::read(&path).unwrap(), original);
 
-        let append_error = History::update_locked(&path, |history| {
-            history.append(row("fresh", "must not replace existing history"))
-        })
-        .unwrap_err();
+        let mut history = History {
+            rows: vec![row("fresh", "must not replace existing history")],
+            path: path.clone(),
+        };
+        let append_error = history
+            .append(row("another", "must not replace existing history"))
+            .unwrap_err();
 
         assert!(append_error.contains("invalid JSON"), "{append_error}");
-        assert!(!path.exists(), "no fresh history should be written");
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert!(!dir.join("history.json.corrupt").exists());
         assert_eq!(
-            fs::read(dir.join("history.json.corrupt")).unwrap(),
-            original
+            history.rows(),
+            &[row("fresh", "must not replace existing history")]
         );
     }
 
@@ -364,17 +522,18 @@ mod tests {
         let original = "{\"rows\": [{\"id\": \"existing";
         fs::write(&path, original).unwrap();
 
-        let error = History::update_locked(&path, |history| {
-            history.append(row("fresh", "must not replace existing history"))
-        })
-        .unwrap_err();
+        let mut history = History {
+            rows: Vec::new(),
+            path: path.clone(),
+        };
+        let error = history
+            .append(row("fresh", "must not replace existing history"))
+            .unwrap_err();
 
         assert!(error.contains("invalid JSON"), "{error}");
-        assert!(!path.exists(), "no replacement history should be written");
-        assert_eq!(
-            fs::read_to_string(dir.join("history.json.corrupt")).unwrap(),
-            original
-        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        assert!(!dir.join("history.json.corrupt").exists());
+        assert!(history.rows().is_empty());
     }
 
     #[test]
@@ -387,14 +546,16 @@ mod tests {
         let original = "{\"rows\": [{\"id\": \"existing";
         fs::write(&path, original).unwrap();
 
-        let error = History::update_locked(&path, History::clear).unwrap_err();
+        let mut history = History {
+            rows: vec![row("stale", "stale")],
+            path: path.clone(),
+        };
+        let error = history.clear().unwrap_err();
 
         assert!(error.contains("invalid JSON"), "{error}");
-        assert!(!path.exists(), "no reset history should be written");
-        assert_eq!(
-            fs::read_to_string(dir.join("history.json.corrupt")).unwrap(),
-            original
-        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        assert!(!dir.join("history.json.corrupt").exists());
+        assert_eq!(history.rows(), &[row("stale", "stale")]);
     }
 
     #[test]
@@ -440,6 +601,53 @@ mod tests {
     }
 
     #[test]
+    fn stale_instances_reload_locked_state_before_every_mutation() {
+        let dir =
+            std::env::temp_dir().join(format!("echo-hist-stale-mutations-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.json");
+        let mut first = History::load_from(&path).unwrap();
+        first.append(row("first", "one")).unwrap();
+        let mut stale = History::load_from(&path).unwrap();
+
+        first.append(row("second", "two")).unwrap();
+        assert!(stale.remove("first").unwrap());
+        assert_eq!(stale.rows(), &[row("second", "two")]);
+
+        first.append(row("third", "three")).unwrap();
+        stale.append(row("fourth", "four")).unwrap();
+        assert_eq!(
+            stale.rows(),
+            &[
+                row("second", "two"),
+                row("third", "three"),
+                row("fourth", "four")
+            ]
+        );
+        assert_eq!(History::load_from(&path).unwrap().rows(), stale.rows());
+    }
+
+    #[test]
+    fn stale_save_does_not_clobber_newer_history() {
+        let dir = std::env::temp_dir().join(format!("echo-hist-stale-save-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.json");
+        let mut current = History::load_from(&path).unwrap();
+        current.append(row("first", "one")).unwrap();
+        let stale = History::load_from(&path).unwrap();
+        current.append(row("second", "two")).unwrap();
+
+        stale.save().unwrap();
+
+        assert_eq!(
+            History::load_from(&path).unwrap().rows(),
+            &[row("first", "one"), row("second", "two")]
+        );
+    }
+
+    #[test]
     fn locked_updates_preserve_serial_remove_then_append_order() {
         let dir = std::env::temp_dir().join(format!("echo-hist-serialized-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
@@ -454,11 +662,13 @@ mod tests {
         let (release_first_tx, release_first_rx) = mpsc::channel();
         let first_path = path.clone();
         let first = std::thread::spawn(move || {
-            History::update_locked(&first_path, |history| {
+            History::mutate_path_locked(&first_path, |rows| {
                 first_entered_tx.send(()).unwrap();
                 release_first_rx.recv().unwrap();
-                history.remove("old")
+                let removed = History::remove_loaded(rows, "old");
+                (removed, removed)
             })
+            .map(|(result, _)| result)
         });
         first_entered_rx.recv().unwrap();
 
@@ -470,10 +680,12 @@ mod tests {
         let second = std::thread::spawn(move || {
             second_start.wait();
             second_attempting_tx.send(()).unwrap();
-            History::update_locked(&second_path, |history| {
+            History::mutate_path_locked(&second_path, |rows| {
                 second_entered_tx.send(()).unwrap();
-                history.append(row("new", "keep me"))
+                History::append_loaded(rows, row("new", "keep me"));
+                ((), true)
             })
+            .map(|_| ())
         });
         start_second.wait();
         second_attempting_rx.recv().unwrap();
@@ -497,13 +709,10 @@ mod tests {
         let Some(path) = std::env::var_os("ECHO_TEST_HISTORY_CHILD_PATH") else {
             return;
         };
-        let marker = std::env::var_os("ECHO_TEST_HISTORY_ATTEMPT_MARKER")
-            .expect("child attempt marker path should be set");
-        fs::write(marker, b"attempting update").unwrap();
-        History::update_locked(PathBuf::from(path), |history| {
-            history.append(row("child", "written second"))
-        })
-        .unwrap();
+        History::load_from(PathBuf::from(path))
+            .unwrap()
+            .append(row("child", "written second"))
+            .unwrap();
     }
 
     #[test]
@@ -513,57 +722,42 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("history.json");
-        let marker = dir.join("child-attempted");
-
-        let lock_file = lock_history_file(&path).unwrap();
         History::load_from(&path)
             .unwrap()
             .append(row("parent", "written first"))
             .unwrap();
+        let lock_file = lock_history_file(&path).unwrap();
+        let contention_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let contention_address = contention_listener.local_addr().unwrap();
 
         let mut child = Command::new(std::env::current_exe().unwrap())
             .arg("--exact")
             .arg("history::tests::cross_process_update_helper")
             .env("ECHO_TEST_HISTORY_CHILD_PATH", &path)
-            .env("ECHO_TEST_HISTORY_ATTEMPT_MARKER", &marker)
+            .env(
+                "ECHO_TEST_HISTORY_CONTENTION_ADDRESS",
+                contention_address.to_string(),
+            )
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
             .unwrap();
 
-        let marker_deadline = Instant::now() + Duration::from_secs(5);
-        let marker_observed = loop {
-            if marker.exists() {
-                break true;
-            }
-            if child.try_wait().unwrap().is_some() || Instant::now() >= marker_deadline {
-                break false;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        };
-        std::thread::sleep(Duration::from_millis(150));
-        let blocked_while_parent_held_lock = child.try_wait().unwrap().is_none();
-
-        FileExt::unlock(&lock_file).unwrap();
-        let child_deadline = Instant::now() + Duration::from_secs(5);
-        let child_status = loop {
-            if let Some(status) = child.try_wait().unwrap() {
-                break Some(status);
-            }
-            if Instant::now() >= child_deadline {
-                child.kill().unwrap();
-                let _ = child.wait();
-                break None;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        };
-
-        assert!(marker_observed, "child did not reach the update attempt");
+        let (mut contention, _) = contention_listener.accept().unwrap();
+        let mut marker = [0_u8; 22];
+        contention.read_exact(&mut marker).unwrap();
+        assert_eq!(&marker, b"history lock contended");
+        assert_eq!(
+            History::load_from_read_only(&path).unwrap().rows(),
+            &[row("parent", "written first")]
+        );
         assert!(
-            blocked_while_parent_held_lock,
+            child.try_wait().unwrap().is_none(),
             "child completed while the parent held the advisory lock"
         );
-        assert!(child_status.is_some_and(|status| status.success()));
+
+        FileExt::unlock(&lock_file).unwrap();
+        assert!(child.wait().unwrap().success());
         assert_eq!(
             History::load_from(&path).unwrap().rows(),
             &[
@@ -574,44 +768,98 @@ mod tests {
     }
 
     #[test]
-    fn failed_remove_keeps_memory_and_persisted_history_unchanged() {
-        let dir =
-            std::env::temp_dir().join(format!("echo-hist-remove-failure-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        let original_path = dir.join("history.json");
-        let mut store = History::load_from(&original_path).unwrap();
-        store.append(row("first", "one")).unwrap();
-        store.append(row("second", "two")).unwrap();
-        let original_rows = store.rows().to_vec();
-        let original_file = fs::read_to_string(&original_path).unwrap();
-        let invalid_parent = dir.join("regular-file");
-        fs::write(&invalid_parent, "not a directory").unwrap();
-        store.path = invalid_parent.join("history.json");
+    fn failed_append_keeps_memory_and_persisted_history_unchanged() {
+        for failure in [PrivateWriteFailure::Write, PrivateWriteFailure::Sync] {
+            let dir = std::env::temp_dir().join(format!(
+                "echo-hist-append-failure-{}-{failure:?}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("history.json");
+            let mut store = History::load_from(&path).unwrap();
+            store.append(row("first", "one")).unwrap();
+            let original_rows = store.rows().to_vec();
+            let original_file = fs::read(&path).unwrap();
 
-        assert!(store.remove("first").is_err());
-        assert_eq!(store.rows(), original_rows);
-        assert_eq!(fs::read_to_string(&original_path).unwrap(), original_file);
+            fail_next_private_write(failure);
+            assert!(store.append(row("second", "two")).is_err());
+            assert_eq!(store.rows(), original_rows);
+            assert_eq!(fs::read(&path).unwrap(), original_file);
+            assert_no_history_temp_file(&path);
+        }
+    }
+
+    #[test]
+    fn failed_remove_keeps_memory_and_persisted_history_unchanged() {
+        for failure in [PrivateWriteFailure::Write, PrivateWriteFailure::Sync] {
+            let dir = std::env::temp_dir().join(format!(
+                "echo-hist-remove-failure-{}-{failure:?}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("history.json");
+            let mut store = History::load_from(&path).unwrap();
+            store.append(row("first", "one")).unwrap();
+            store.append(row("second", "two")).unwrap();
+            let original_rows = store.rows().to_vec();
+            let original_file = fs::read(&path).unwrap();
+
+            fail_next_private_write(failure);
+            assert!(store.remove("first").is_err());
+            assert_eq!(store.rows(), original_rows);
+            assert_eq!(fs::read(&path).unwrap(), original_file);
+            assert_no_history_temp_file(&path);
+        }
     }
 
     #[test]
     fn failed_clear_keeps_memory_and_persisted_history_unchanged() {
-        let dir =
-            std::env::temp_dir().join(format!("echo-hist-clear-failure-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        let original_path = dir.join("history.json");
-        let mut store = History::load_from(&original_path).unwrap();
-        store.append(row("first", "one")).unwrap();
-        store.append(row("second", "two")).unwrap();
-        let original_rows = store.rows().to_vec();
-        let original_file = fs::read_to_string(&original_path).unwrap();
-        let invalid_parent = dir.join("regular-file");
-        fs::write(&invalid_parent, "not a directory").unwrap();
-        store.path = invalid_parent.join("history.json");
+        for failure in [PrivateWriteFailure::Write, PrivateWriteFailure::Sync] {
+            let dir = std::env::temp_dir().join(format!(
+                "echo-hist-clear-failure-{}-{failure:?}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("history.json");
+            let mut store = History::load_from(&path).unwrap();
+            store.append(row("first", "one")).unwrap();
+            store.append(row("second", "two")).unwrap();
+            let original_rows = store.rows().to_vec();
+            let original_file = fs::read(&path).unwrap();
 
-        assert!(store.clear().is_err());
-        assert_eq!(store.rows(), original_rows);
-        assert_eq!(fs::read_to_string(&original_path).unwrap(), original_file);
+            fail_next_private_write(failure);
+            assert!(store.clear().is_err());
+            assert_eq!(store.rows(), original_rows);
+            assert_eq!(fs::read(&path).unwrap(), original_file);
+            assert_no_history_temp_file(&path);
+        }
+    }
+
+    #[test]
+    fn failed_save_keeps_memory_and_persisted_history_unchanged_without_temp_files() {
+        for failure in [PrivateWriteFailure::Write, PrivateWriteFailure::Sync] {
+            let dir = std::env::temp_dir().join(format!(
+                "echo-hist-save-failure-{}-{failure:?}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("history.json");
+            let mut store = History::load_from(&path).unwrap();
+            store.append(row("first", "one")).unwrap();
+            let original_rows = store.rows().to_vec();
+            let original_file = fs::read(&path).unwrap();
+
+            fail_next_private_write(failure);
+            let error = store.save().unwrap_err();
+
+            assert!(error.contains("injected private"), "{error}");
+            assert_eq!(store.rows(), original_rows);
+            assert_eq!(fs::read(&path).unwrap(), original_file);
+            assert_no_history_temp_file(&path);
+        }
     }
 }

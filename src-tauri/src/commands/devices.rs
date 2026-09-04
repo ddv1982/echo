@@ -2,51 +2,15 @@ use std::env;
 use std::sync::{Mutex, OnceLock};
 
 use echo::audio::AudioCapture;
-use echo_desktop::ipc::{
-    LanguageGroup, LanguageMode, LanguageOption, LanguageOptions, ModelInventory,
-};
+use echo_desktop::ipc::{LanguageOptions, ModelInventory};
 
 #[tauri::command]
 pub(crate) fn list_languages() -> LanguageOptions {
-    match echo::stt::language_support() {
-        echo::stt::LanguageSupport::WhisperMultilingual => LanguageOptions {
-            mode: LanguageMode::Multilingual,
-            model: None,
-            options: echo_core::Language::all()
-                .map(|language| LanguageOption {
-                    code: language.code().to_string(),
-                    english_name: language.english_name().to_string(),
-                    group: if ["en", "de", "es", "fr"].contains(&language.code()) {
-                        LanguageGroup::Common
-                    } else {
-                        LanguageGroup::All
-                    },
-                })
-                .collect(),
-        },
-        echo::stt::LanguageSupport::WhisperEnglishOnly { model } => LanguageOptions {
-            mode: LanguageMode::English,
-            model: Some(model),
-            options: vec![LanguageOption {
-                code: "en".to_string(),
-                english_name: "english".to_string(),
-                group: LanguageGroup::Common,
-            }],
-        },
-        echo::stt::LanguageSupport::Parakeet => LanguageOptions {
-            mode: LanguageMode::Parakeet,
-            model: None,
-            options: echo_core::PARAKEET_LANGUAGES
-                .iter()
-                .filter_map(|code| echo_core::Language::from_code(code))
-                .map(|language| LanguageOption {
-                    code: language.code().to_string(),
-                    english_name: language.english_name().to_string(),
-                    group: LanguageGroup::All,
-                })
-                .collect(),
-        },
-    }
+    list_languages_for_support(echo::stt::language_support())
+}
+
+fn list_languages_for_support(support: echo::stt::LanguageSupport) -> LanguageOptions {
+    crate::speech::language_options_for_support(support)
 }
 
 static GPU_DEVICES: OnceLock<Mutex<Option<Vec<echo::stt::GpuDevice>>>> = OnceLock::new();
@@ -81,8 +45,9 @@ pub(crate) async fn list_gpu_devices(
 }
 
 #[tauri::command]
-pub(crate) fn list_models() -> Result<ModelInventory, String> {
-    Ok(crate::speech::model_inventory())
+pub(crate) async fn list_models() -> Result<ModelInventory, String> {
+    crate::blocking::run_blocking("model inventory", || Ok(crate::speech::model_inventory()))
+        .await?
 }
 
 #[tauri::command]
@@ -171,6 +136,7 @@ fn microphone_test(
                 hint: String::new(),
             }),
             peak_rms: result.peak_rms,
+            dropped_samples: result.dropped_samples,
             outcome: if result.peak_rms > 0.001 {
                 echo::microphone::MicrophoneTestOutcome::Heard
             } else {
@@ -186,16 +152,23 @@ fn microphone_test(
 }
 
 #[tauri::command]
-pub(crate) fn test_input_device(
+pub(crate) async fn test_input_device(
     id: Option<String>,
 ) -> Result<echo_desktop::ipc::MicrophoneTestResult, String> {
-    let id = id.map(echo::microphone::MicrophoneId::parse).transpose()?;
-    Ok(microphone_test(AudioCapture::open_exact(id.as_ref())).into())
+    crate::blocking::run_blocking("microphone test", move || {
+        let id = id.map(echo::microphone::MicrophoneId::parse).transpose()?;
+        Ok(microphone_test(AudioCapture::open_exact(id.as_ref())).into())
+    })
+    .await?
 }
 
 #[tauri::command]
-pub(crate) fn test_microphone_fallback() -> echo_desktop::ipc::MicrophoneTestResult {
-    microphone_test(AudioCapture::open_default()).into()
+pub(crate) async fn test_microphone_fallback(
+) -> Result<echo_desktop::ipc::MicrophoneTestResult, String> {
+    crate::blocking::run_blocking("default microphone test", || {
+        echo_desktop::ipc::MicrophoneTestResult::from(microphone_test(AudioCapture::open_default()))
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -211,6 +184,59 @@ mod tests {
     #[test]
     fn gpu_device_listing_yields_before_detection() {
         assert_async_gpu_devices(list_gpu_devices(false));
+    }
+
+    #[test]
+    fn language_command_projection_covers_every_support_mode() {
+        let multilingual =
+            list_languages_for_support(echo::stt::LanguageSupport::WhisperMultilingual);
+        assert_eq!(
+            multilingual.mode,
+            echo_desktop::ipc::LanguageMode::Multilingual
+        );
+        assert_eq!(multilingual.model, None);
+        assert_eq!(
+            multilingual.options.len(),
+            echo_core::Language::all().count()
+        );
+        for (option, language) in multilingual.options.iter().zip(echo_core::Language::all()) {
+            assert_eq!(option.code, language.code());
+            assert_eq!(option.english_name, language.english_name());
+            let expected_group = if ["en", "de", "es", "fr"].contains(&language.code()) {
+                echo_desktop::ipc::LanguageGroup::Common
+            } else {
+                echo_desktop::ipc::LanguageGroup::All
+            };
+            assert_eq!(option.group, expected_group);
+        }
+
+        let english = list_languages_for_support(echo::stt::LanguageSupport::WhisperEnglishOnly {
+            model: "base.en".to_string(),
+        });
+        assert_eq!(english.mode, echo_desktop::ipc::LanguageMode::English);
+        assert_eq!(english.model.as_deref(), Some("base.en"));
+        assert_eq!(english.options.len(), 1);
+        assert_eq!(english.options[0].code, "en");
+        assert_eq!(english.options[0].english_name, "english");
+        assert_eq!(
+            english.options[0].group,
+            echo_desktop::ipc::LanguageGroup::Common
+        );
+
+        let parakeet = list_languages_for_support(echo::stt::LanguageSupport::Parakeet);
+        assert_eq!(parakeet.mode, echo_desktop::ipc::LanguageMode::Parakeet);
+        assert_eq!(parakeet.model, None);
+        assert_eq!(parakeet.options.len(), echo_core::PARAKEET_LANGUAGES.len());
+        for (option, code) in parakeet
+            .options
+            .iter()
+            .zip(echo_core::PARAKEET_LANGUAGES.iter().copied())
+        {
+            let language = echo_core::Language::from_code(code).unwrap();
+            assert_eq!(option.code, code);
+            assert_eq!(option.english_name, language.english_name());
+            assert_eq!(option.group, echo_desktop::ipc::LanguageGroup::All);
+        }
     }
 
     #[test]

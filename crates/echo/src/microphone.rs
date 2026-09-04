@@ -363,6 +363,7 @@ pub enum MicrophoneTestResult {
     Completed {
         device: InputDeviceInfo,
         peak_rms: f32,
+        dropped_samples: u64,
         outcome: MicrophoneTestOutcome,
     },
     Failed {

@@ -8,10 +8,17 @@ use echo_desktop::ipc::{
 
 static CONFIG_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
+fn lock_config_writes(lock: &Mutex<()>) -> Result<std::sync::MutexGuard<'_, ()>, String> {
+    lock.lock().map_err(|_| {
+        "Preferences changes are unavailable because the configuration write lock is poisoned."
+            .to_string()
+    })
+}
+
 pub(super) fn update_file_config(
     update: impl FnOnce(&mut echo_core::Config) -> Result<(), String>,
 ) -> Result<(), String> {
-    let _write = CONFIG_WRITE_LOCK.lock().expect("config write lock");
+    let _write = lock_config_writes(&CONFIG_WRITE_LOCK)?;
     update_file_config_at(&echo_core::config_path(), update)?;
     echo::settings::reload();
     crate::status::health_invalidate();
@@ -476,6 +483,24 @@ mod tests {
         assert_eq!(
             Config::load_from(&path).unwrap().engine,
             Some(EngineChoice::Fake)
+        );
+    }
+
+    #[test]
+    fn poisoned_config_write_protocol_returns_an_explicit_error() {
+        let lock = std::sync::Arc::new(Mutex::new(()));
+        let poison = std::sync::Arc::clone(&lock);
+        assert!(std::thread::spawn(move || {
+            let _guard = poison.lock().unwrap();
+            panic!("poison config write protocol");
+        })
+        .join()
+        .is_err());
+
+        let error = lock_config_writes(&lock).unwrap_err();
+        assert!(
+            error.contains("configuration write lock is poisoned"),
+            "{error}"
         );
     }
 

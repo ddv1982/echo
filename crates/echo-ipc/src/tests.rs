@@ -1,4 +1,5 @@
 use super::*;
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 fn generated_path() -> PathBuf {
@@ -59,6 +60,51 @@ fn generated_contract_is_deterministic() {
         registered_type_names().len()
     );
 }
+
+mod module_schema {
+    use ts_rs::TS;
+
+    #[derive(TS)]
+    pub struct ModuleType {
+        pub value: String,
+    }
+}
+
+mod module_reexport {
+    pub use super::module_schema::ModuleType as ReexportedModuleType;
+}
+
+type ModuleTypeAlias = module_reexport::ReexportedModuleType;
+
+macro_rules! fixture_schema_types {
+    ($callback:ident $($prefix:tt)*) => {
+        $callback! {
+            $($prefix)*
+            module_reexport::ReexportedModuleType => ModuleTypeAlias,
+        }
+    };
+}
+
+fixture_schema_types!(export_schema_types);
+
+#[test]
+fn registry_resolves_module_types_aliases_and_reexports_through_rust_types() {
+    let config = Config::default();
+    macro_rules! declare_fixture_schema_types {
+        ($config:expr; $($export:path => $ty:ty),+ $(,)?) => {
+            declarations!($config, $($ty),+)
+        };
+    }
+    let (contract, names) = fixture_schema_types!(declare_fixture_schema_types &config;);
+    let fixture = ReexportedModuleType {
+        value: "module-safe".to_string(),
+    };
+
+    assert_eq!(fixture.value, "module-safe");
+    assert!(contract.contains("export type ModuleType = { value: string, };"));
+    assert_eq!(names, BTreeSet::from(["ModuleType".to_string()]));
+}
+
 #[test]
 fn component_ids_preserve_wire_spellings_and_accept_catalog_aliases() {
     let values = [
@@ -260,6 +306,7 @@ fn microphone_test_serializes_every_variant() {
         MicrophoneTestResult::Completed {
             device: device(),
             peak_rms: 0.5,
+            dropped_samples: 17,
             outcome: MicrophoneTestOutcome::Heard,
         },
         MicrophoneTestResult::Failed {
@@ -275,6 +322,7 @@ fn microphone_test_serializes_every_variant() {
                 "kind": "completed",
                 "device": device_value(),
                 "peakRms": 0.5,
+                "droppedSamples": 17,
                 "outcome": "heard"
             }),
             json!({
@@ -285,6 +333,33 @@ fn microphone_test_serializes_every_variant() {
             })
         ]
     );
+}
+#[cfg(feature = "desktop")]
+#[test]
+fn microphone_test_projection_preserves_dropped_samples() {
+    let result = echo::microphone::MicrophoneTestResult::Completed {
+        device: echo::microphone::InputDeviceInfo {
+            id: echo::microphone::MicrophoneId::parse("input-1").unwrap(),
+            label: "Input".to_string(),
+            is_default: true,
+            manufacturer: None,
+            device_type: None,
+            interface_type: None,
+            address: None,
+            driver: None,
+            extended: Vec::new(),
+            host: echo::microphone::AudioHost::PipeWire,
+            transport: echo::microphone::InputTransport::BuiltIn,
+            tier: echo::microphone::EndpointTier::Primary,
+            hint: "Built in".to_string(),
+        },
+        peak_rms: 0.5,
+        dropped_samples: 23,
+        outcome: echo::microphone::MicrophoneTestOutcome::Heard,
+    };
+
+    let projected = MicrophoneTestResult::from(result);
+    assert_eq!(value(projected)["droppedSamples"], json!(23));
 }
 #[test]
 fn managed_state_serializes_every_variant() {
@@ -431,4 +506,33 @@ fn nullable_performance_fields_are_present() {
         .unwrap(),
         json!({ "deviceUUID": "device", "driverUUID": "driver" })
     );
+}
+
+#[cfg(feature = "desktop")]
+#[test]
+fn every_core_acceleration_skip_has_an_ipc_projection() {
+    use echo_core::WhisperAccelerationSkip as Core;
+
+    for (core, ipc) in [
+        (Core::RuntimeMissing, AccelerationSkipReason::RuntimeMissing),
+        (
+            Core::NoDeviceEnumerated,
+            AccelerationSkipReason::NoDeviceEnumerated,
+        ),
+        (
+            Core::PinnedDeviceAbsent,
+            AccelerationSkipReason::PinnedDeviceAbsent,
+        ),
+        (
+            Core::DeviceQuarantined,
+            AccelerationSkipReason::DeviceQuarantined,
+        ),
+        (
+            Core::CpuFallbackMissing,
+            AccelerationSkipReason::CpuFallbackMissing,
+        ),
+        (Core::DeviceNotReady, AccelerationSkipReason::DeviceNotReady),
+    ] {
+        assert_eq!(AccelerationSkipReason::from(core), ipc);
+    }
 }

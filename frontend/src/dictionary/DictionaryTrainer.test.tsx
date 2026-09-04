@@ -1,8 +1,12 @@
 import { createRef } from 'react'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { DictionaryItem, DictionaryTrainingSample } from '../generated/ipc'
+import type {
+  DictionaryBatchResult,
+  DictionaryItem,
+  DictionaryTrainingSample,
+} from '../generated/ipc'
 import { DictionaryTrainer } from './DictionaryTrainer'
 import {
   classifySamples,
@@ -39,6 +43,26 @@ function sample(take: number, transcript: string): PronunciationSample {
 function requireFixture<T>(value: T | undefined, description: string): T {
   if (value === undefined) throw new Error(`missing test fixture: ${description}`)
   return value
+}
+
+function deferred<T>() {
+  let resolvePromise: ((value: T | PromiseLike<T>) => void) | undefined
+  let rejectPromise: ((reason?: unknown) => void) | undefined
+  const promise = new Promise<T>((resolve, reject) => {
+    resolvePromise = resolve
+    rejectPromise = reject
+  })
+  return {
+    promise,
+    resolve(value: T | PromiseLike<T>) {
+      if (!resolvePromise) throw new Error('deferred promise is not initialized')
+      resolvePromise(value)
+    },
+    reject(reason?: unknown) {
+      if (!rejectPromise) throw new Error('deferred promise is not initialized')
+      rejectPromise(reason)
+    },
+  }
 }
 
 async function recordTake(take: number) {
@@ -90,7 +114,9 @@ describe('dictionary voice trainer', () => {
       </>,
     )
 
-    fireEvent.change(screen.getByLabelText('Exact word or phrase'), { target: { value: 'Canonical' } })
+    const canonical = screen.getByLabelText('Exact word or phrase')
+    expect(canonical).toHaveFocus()
+    fireEvent.change(canonical, { target: { value: 'Canonical' } })
     const dialog = screen.getByRole('dialog', { name: 'Teach Echo by voice' })
     const firstControl = screen.getByRole('button', { name: 'Close voice training' })
     const lastControl = screen.getByRole('button', { name: 'Start five takes' })
@@ -101,6 +127,43 @@ describe('dictionary voice trainer', () => {
 
     fireEvent.keyDown(dialog, { key: 'Tab' })
     expect(firstControl).toHaveFocus()
+  })
+
+  it('keeps focus in the dialog across trainer control transitions', async () => {
+    trainingMocks.finish.mockResolvedValueOnce({
+      transcript: 'heard phrase',
+      engine: 'whisper-small',
+    })
+    const triggerRef = createRef<HTMLButtonElement>()
+    render(
+      <>
+        <button ref={triggerRef} type="button">Voice trigger</button>
+        <DictionaryTrainer
+          items={[]}
+          triggerRef={triggerRef}
+          onClose={() => undefined}
+          onSave={() => Promise.reject(new Error('not reached'))}
+        />
+      </>,
+    )
+
+    fireEvent.change(screen.getByLabelText('Exact word or phrase'), { target: { value: 'Canonical' } })
+    const start = screen.getByRole('button', { name: 'Start five takes' })
+    start.focus()
+    fireEvent.click(start)
+
+    const close = screen.getByRole('button', { name: 'Close voice training' })
+    await waitFor(() => expect(close).toHaveFocus())
+
+    const record = screen.getByRole('button', { name: 'Record take 1' })
+    record.focus()
+    fireEvent.click(record)
+    const stop = await screen.findByRole('button', { name: 'Stop take 1' })
+    expect(close).toHaveFocus()
+
+    fireEvent.click(stop)
+    await screen.findByRole('button', { name: 'Retry take 1' })
+    expect(close).toHaveFocus()
   })
 
   it('collects five non-empty takes and saves one batch of actionable variants', async () => {
@@ -295,11 +358,9 @@ describe('dictionary voice trainer', () => {
     expect(catchSpy).toHaveBeenCalledOnce()
   })
 
-  it('keeps the dialog open while a stopped take is transcribing', async () => {
-    let resolveFinish: ((sample: DictionaryTrainingSample) => void) | undefined
-    trainingMocks.finish.mockImplementation(() => new Promise((resolve) => {
-      resolveFinish = resolve
-    }))
+  it('holds focus in the dialog while a stopped take is transcribing and recovers it afterward', async () => {
+    const finish = deferred<DictionaryTrainingSample>()
+    trainingMocks.finish.mockImplementation(() => finish.promise)
     const onClose = vi.fn()
     const triggerRef = createRef<HTMLButtonElement>()
     render(
@@ -317,16 +378,158 @@ describe('dictionary voice trainer', () => {
     fireEvent.change(screen.getByLabelText('Exact word or phrase'), { target: { value: 'Canonical' } })
     fireEvent.click(screen.getByRole('button', { name: 'Start five takes' }))
     fireEvent.click(screen.getByRole('button', { name: 'Record take 1' }))
-    fireEvent.click(await screen.findByRole('button', { name: 'Stop take 1' }))
+    const stop = await screen.findByRole('button', { name: 'Stop take 1' })
+    stop.focus()
+    fireEvent.click(stop)
 
+    const dialog = screen.getByRole('dialog')
     await waitFor(() => {
       expect(screen.getByRole('button', { name: 'Close voice training' })).toBeDisabled()
     })
-    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' })
+    expect(dialog).toHaveFocus()
+    fireEvent.keyDown(dialog, { key: 'Tab' })
+    expect(dialog).toHaveFocus()
+    fireEvent.keyDown(dialog, { key: 'Escape' })
     expect(onClose).not.toHaveBeenCalled()
 
-    resolveFinish?.({ transcript: 'heard phrase', engine: 'whisper-small' })
+    await act(async () => {
+      finish.resolve({ transcript: 'heard phrase', engine: 'whisper-small' })
+      await finish.promise
+    })
     expect(await screen.findByText('heard phrase', { selector: 'q' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Close voice training' })).toBeEnabled()
+    const close = screen.getByRole('button', { name: 'Close voice training' })
+    expect(close).toBeEnabled()
+    expect(close).toHaveFocus()
   })
+
+  it('holds focus in the dialog while saving and recovers it after a failed save', async () => {
+    for (let take = 1; take <= 5; take += 1) {
+      trainingMocks.finish.mockResolvedValueOnce({
+        transcript: `heard phrase ${take}`,
+        engine: 'whisper-small',
+      })
+    }
+    const saving = deferred<DictionaryBatchResult>()
+    const triggerRef = createRef<HTMLButtonElement>()
+    render(
+      <DictionaryTrainer
+        items={[]}
+        triggerRef={triggerRef}
+        onClose={() => undefined}
+        onSave={() => saving.promise}
+      />,
+    )
+
+    fireEvent.change(screen.getByLabelText('Exact word or phrase'), { target: { value: 'Canonical' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Start five takes' }))
+    for (let take = 1; take <= 5; take += 1) {
+      await recordTake(take)
+      await screen.findByText(`heard phrase ${take}`, { selector: 'q' })
+    }
+
+    const save = screen.getByRole('button', { name: 'Save 5 pronunciations' })
+    save.focus()
+    fireEvent.click(save)
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toHaveFocus()
+    fireEvent.keyDown(dialog, { key: 'Tab' })
+    expect(dialog).toHaveFocus()
+
+    await act(async () => {
+      saving.reject(new Error('save failed'))
+      await saving.promise.catch(() => undefined)
+    })
+    expect(await screen.findByRole('alert')).toHaveTextContent('save failed')
+    const close = screen.getByRole('button', { name: 'Close voice training' })
+    expect(close).toBeEnabled()
+    expect(close).toHaveFocus()
+  })
+
+  it.each(['resolve', 'reject'] as const)(
+    'settles a stopped take that %s after unmount without updating the trainer',
+    async (outcome) => {
+      const finish = deferred<DictionaryTrainingSample>()
+      trainingMocks.finish.mockImplementation(() => finish.promise)
+      const onClose = vi.fn()
+      const triggerRef = createRef<HTMLButtonElement>()
+      const view = render(
+        <>
+          <button ref={triggerRef} type="button">Voice trigger</button>
+          <DictionaryTrainer
+            items={[]}
+            triggerRef={triggerRef}
+            onClose={onClose}
+            onSave={() => Promise.reject(new Error('not reached'))}
+          />
+        </>,
+      )
+
+      fireEvent.change(screen.getByLabelText('Exact word or phrase'), { target: { value: 'Canonical' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Start five takes' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Record take 1' }))
+      fireEvent.click(await screen.findByRole('button', { name: 'Stop take 1' }))
+      await waitFor(() => expect(trainingMocks.finish).toHaveBeenCalledWith('capture-1'))
+
+      view.unmount()
+      await act(async () => {
+        if (outcome === 'resolve') {
+          finish.resolve({ transcript: 'late transcript', engine: 'whisper-small' })
+        } else {
+          finish.reject(new Error('late transcription failure'))
+        }
+        await finish.promise.catch(() => undefined)
+      })
+
+      expect(trainingMocks.cancel).toHaveBeenCalledWith('capture-1')
+      expect(onClose).not.toHaveBeenCalled()
+    },
+  )
+
+  it.each(['resolve', 'reject'] as const)(
+    'settles a save that %s after unmount without closing the trainer',
+    async (outcome) => {
+      for (let take = 1; take <= 5; take += 1) {
+        trainingMocks.finish.mockResolvedValueOnce({
+          transcript: `heard phrase ${take}`,
+          engine: 'whisper-small',
+        })
+      }
+      const saving = deferred<DictionaryBatchResult>()
+      const onSave = vi.fn(() => saving.promise)
+      const onClose = vi.fn()
+      const triggerRef = createRef<HTMLButtonElement>()
+      const view = render(
+        <>
+          <button ref={triggerRef} type="button">Voice trigger</button>
+          <DictionaryTrainer
+            items={[]}
+            triggerRef={triggerRef}
+            onClose={onClose}
+            onSave={onSave}
+          />
+        </>,
+      )
+
+      fireEvent.change(screen.getByLabelText('Exact word or phrase'), { target: { value: 'Canonical' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Start five takes' }))
+      for (let take = 1; take <= 5; take += 1) {
+        await recordTake(take)
+        await screen.findByText(`heard phrase ${take}`, { selector: 'q' })
+      }
+      fireEvent.click(screen.getByRole('button', { name: 'Save 5 pronunciations' }))
+      await waitFor(() => expect(onSave).toHaveBeenCalledOnce())
+
+      view.unmount()
+      await act(async () => {
+        if (outcome === 'resolve') {
+          saving.resolve({ entries: [], added: 5, unchanged: 0, conflicts: [] })
+        } else {
+          saving.reject(new Error('late save failure'))
+        }
+        await saving.promise.catch(() => undefined)
+      })
+
+      expect(onClose).not.toHaveBeenCalled()
+    },
+  )
 })

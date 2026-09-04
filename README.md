@@ -41,9 +41,16 @@ Audio and transcripts stay on this machine. Speech recognition, Dictionary
 replacements, and text insertion run locally. Echo uses the network only to
 download speech models and managed runtime components that you choose to install.
 
-Settings and local data follow the XDG directories. Models and managed
-components normally live in `~/.cache/echo`; history and dictionary data
-normally live in `~/.local/share/echo`.
+Settings and local data follow the XDG directories. Models and all managed
+runtimes and components normally live in `~/.cache/echo`; history and
+dictionary data normally live in `~/.local/share/echo`.
+
+Each root uses an absolute `ECHO_CONFIG_DIR`, `ECHO_DATA_DIR`, or
+`ECHO_MODEL_DIR` override first, then the corresponding absolute XDG directory,
+then an absolute `HOME`. An explicit Echo override that is empty or relative is
+an error. Empty or relative XDG values are ignored and may fall back to an
+absolute `HOME`. Echo stops with an actionable error when no secure absolute
+root can be resolved. It never falls back to a fixed directory under `/tmp`.
 
 ## CLI
 
@@ -79,7 +86,9 @@ Ubuntu build packages.
 - [Quality assurance](docs/qa/README.md)
 - [Release process](docs/RELEASING.md)
 - [Release history cleanup](docs/history/releases.md)
+- [Third-party component notices](THIRD_PARTY.md)
 
 ## License
 
-Echo is available under the [MIT license](LICENSE-MIT).
+Echo is available under the [MIT license](LICENSE-MIT). Managed runtimes and
+model weights retain the terms listed in [THIRD_PARTY.md](THIRD_PARTY.md).

@@ -2,9 +2,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use echo::install::catalog::{
-    component, managed_platform_supported, plan, recommended_model, HardwareProfile,
-};
+use echo::install::catalog::{component, managed_platform_supported, plan, recommended_model};
 use echo::install::{
     CommandRuntimeProbe, ComponentId as CoreComponentId, DiskSpace,
     InstallProgress as CoreInstallProgress, Installer,
@@ -31,6 +29,19 @@ struct ActiveOperation {
     action: SetupAction,
     cancel: Arc<AtomicBool>,
     progress: Option<CoreInstallProgress>,
+}
+
+fn lock_active_operation(
+    active: &Mutex<Option<ActiveOperation>>,
+) -> std::sync::MutexGuard<'_, Option<ActiveOperation>> {
+    match active.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            eprintln!("setup: recovering poisoned active-operation state");
+            active.clear_poison();
+            poisoned.into_inner()
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -151,7 +162,7 @@ impl SetupService {
         let cache = ModelCache::from_env();
         let store = ManagedStore::new(cache.dir());
         let (active_operation, active_cancellable, activity) = {
-            let active = self.active.lock().expect("setup operation lock");
+            let active = lock_active_operation(&self.active);
             (
                 active
                     .as_ref()
@@ -209,9 +220,7 @@ impl SetupService {
                     .map(InstallProgress::from),
             });
         }
-        let hardware = HardwareProfile {
-            total_memory_bytes: total_memory_bytes(),
-        };
+        let total_memory_bytes = total_memory_bytes();
         let plan_ids = [
             CoreSetupPlanId::Recommended,
             CoreSetupPlanId::Parakeet,
@@ -224,7 +233,7 @@ impl SetupService {
         let plans = plan_ids
             .into_iter()
             .map(|id| {
-                let ids = plan(id, hardware);
+                let ids = plan(id);
                 let satisfied = ids.iter().all(|id| {
                     components
                         .iter()
@@ -299,8 +308,8 @@ impl SetupService {
                 "Managed setup is available on Linux x86_64. Use a system runtime and manual models on this platform."
                     .to_string()
             }),
-            total_memory_bytes: hardware.total_memory_bytes,
-            recommended_model: recommended_model(hardware).into(),
+            total_memory_bytes,
+            recommended_model: recommended_model().into(),
             components,
             plans,
             microphone_ready,
@@ -316,7 +325,7 @@ impl SetupService {
         if !managed_platform_supported() {
             return Err("Echo-managed speech setup supports Linux x86_64 only".to_string());
         }
-        let mut active = self.active.lock().expect("setup operation lock");
+        let mut active = lock_active_operation(&self.active);
         if let Some(operation) = active.as_ref() {
             if operation.action == action {
                 return Ok(operation.id.clone());
@@ -362,9 +371,7 @@ impl SetupService {
                     }
                     last_progress_phase = Some(progress.phase);
                     last_progress_emit = Instant::now();
-                    if let Some(active) =
-                        worker_state.lock().expect("setup operation lock").as_mut()
-                    {
+                    if let Some(active) = lock_active_operation(&worker_state).as_mut() {
                         if active.id == operation_id {
                             active.progress = Some(progress.clone());
                         }
@@ -378,9 +385,6 @@ impl SetupService {
                 };
                 let result = match action {
                     SetupAction::Plan(plan_id, managed_copy) => {
-                        let hardware = HardwareProfile {
-                            total_memory_bytes: total_memory_bytes(),
-                        };
                         let inventory = cache.inventory();
                         let whisper_runtime = ["whisper-cli", "whisper-cpp", "whisper"]
                             .into_iter()
@@ -388,7 +392,7 @@ impl SetupService {
                         let sherpa_runtime = ["sherpa-onnx-offline", "sherpa-onnx"]
                             .into_iter()
                             .find_map(echo::which::path_of);
-                        let components = plan(plan_id, hardware)
+                        let components = plan(plan_id)
                             .into_iter()
                             .filter(|component| {
                                 managed_copy
@@ -413,7 +417,7 @@ impl SetupService {
                                 if cancel.load(Ordering::Relaxed) {
                                     Err(echo::install::InstallError::Cancelled)
                                 } else {
-                                    activate_plan_config(plan_id, hardware)
+                                    activate_plan_config(plan_id)
                                 }
                             })
                     }
@@ -442,7 +446,7 @@ impl SetupService {
                         error: error.to_string(),
                     },
                 };
-                let mut active = worker_state.lock().expect("setup operation lock");
+                let mut active = lock_active_operation(&worker_state);
                 if active
                     .as_ref()
                     .is_some_and(|active| active.id == operation_id)
@@ -453,7 +457,7 @@ impl SetupService {
                 let _ = app.emit("setup-event", event);
             });
         if let Err(error) = spawned {
-            let mut active = active_state.lock().expect("setup operation lock");
+            let mut active = lock_active_operation(&active_state);
             if active.as_ref().is_some_and(|active| active.id == id) {
                 *active = None;
             }
@@ -463,18 +467,14 @@ impl SetupService {
     }
 }
 
-fn activate_plan_config(
-    plan_id: CoreSetupPlanId,
-    hardware: HardwareProfile,
-) -> Result<(), echo::install::InstallError> {
-    crate::settings::update_file_config(|config| apply_plan_config(config, plan_id, hardware))
+fn activate_plan_config(plan_id: CoreSetupPlanId) -> Result<(), echo::install::InstallError> {
+    crate::settings::update_file_config(|config| apply_plan_config(config, plan_id))
         .map_err(echo::install::InstallError::IoMessage)
 }
 
 fn apply_plan_config(
     config: &mut echo_core::Config,
     plan_id: CoreSetupPlanId,
-    hardware: HardwareProfile,
 ) -> Result<(), String> {
     match plan_id {
         CoreSetupPlanId::Parakeet => {
@@ -487,7 +487,7 @@ fn apply_plan_config(
         | CoreSetupPlanId::WhisperLargeV3Turbo => {
             config.engine = Some(echo_core::EngineChoice::Whisper);
             let model = match plan_id {
-                CoreSetupPlanId::Recommended => recommended_model(hardware),
+                CoreSetupPlanId::Recommended => recommended_model(),
                 CoreSetupPlanId::WhisperBase => CoreComponentId::WhisperBaseQ51,
                 CoreSetupPlanId::WhisperSmall => CoreComponentId::WhisperSmall,
                 CoreSetupPlanId::WhisperLargeV3Turbo => CoreComponentId::WhisperLargeV3TurboQ50,
@@ -560,10 +560,7 @@ pub fn remove_managed(
 
 #[tauri::command]
 pub fn cancel_setup(operation: String, state: State<'_, SetupService>) -> bool {
-    state
-        .active
-        .lock()
-        .expect("setup operation lock")
+    lock_active_operation(&state.active)
         .as_ref()
         .filter(|active| active.id.as_str() == operation)
         .map(|active| {
@@ -575,8 +572,10 @@ pub fn cancel_setup(operation: String, state: State<'_, SetupService>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_plan_config, get_readiness, plan_space, Readiness, SetupService};
-    use echo::install::catalog::HardwareProfile;
+    use super::{
+        apply_plan_config, get_readiness, lock_active_operation, plan_space, Readiness,
+        SetupService,
+    };
     use echo::install::SetupPlanId;
     use echo_core::{Config, EngineChoice};
     use std::future::Future;
@@ -608,6 +607,21 @@ mod tests {
     }
 
     #[test]
+    fn poisoned_active_operation_state_is_recovered() {
+        let active = Arc::new(Mutex::new(None));
+        let poison = Arc::clone(&active);
+        assert!(std::thread::spawn(move || {
+            let _guard = poison.lock().unwrap();
+            panic!("poison active operation state");
+        })
+        .join()
+        .is_err());
+
+        assert!(lock_active_operation(&active).is_none());
+        assert!(!active.is_poisoned());
+    }
+
+    #[test]
     fn plan_disk_check_includes_payloads_retained_by_earlier_components() {
         let runtime = (10, 20, 0);
         let model = (100, 100, 0);
@@ -632,14 +646,7 @@ mod tests {
             whisper_model: Some("small".to_string()),
             ..Config::default()
         };
-        apply_plan_config(
-            &mut config,
-            SetupPlanId::Parakeet,
-            HardwareProfile {
-                total_memory_bytes: Some(16 * 1024 * 1024 * 1024),
-            },
-        )
-        .unwrap();
+        apply_plan_config(&mut config, SetupPlanId::Parakeet).unwrap();
         assert_eq!(config.engine, Some(EngineChoice::Parakeet));
         assert_eq!(config.whisper_model, None);
     }
@@ -647,14 +654,7 @@ mod tests {
     #[test]
     fn recommended_activation_pins_whisper_small() {
         let mut config = Config::default();
-        apply_plan_config(
-            &mut config,
-            SetupPlanId::Recommended,
-            HardwareProfile {
-                total_memory_bytes: Some(64 * 1024 * 1024 * 1024),
-            },
-        )
-        .unwrap();
+        apply_plan_config(&mut config, SetupPlanId::Recommended).unwrap();
         assert_eq!(config.engine, Some(EngineChoice::Whisper));
         assert_eq!(config.whisper_model.as_deref(), Some("small"));
     }

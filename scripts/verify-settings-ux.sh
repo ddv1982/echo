@@ -20,7 +20,7 @@ rg -Fq "'libgtk-3.so.0()(64bit)'" .github/workflows/release.yml
 rg -q 'Advanced audio endpoints' frontend/src/settings/MicrophoneChooser.tsx
 rg -q 'Installed components' frontend/src/settings/SpeechSetupSection.tsx
 rg -q 'Advanced speech options' frontend/src/settings/SpeechSetupSection.tsx
-rg -q 'aria-label="Transcription"' frontend/src/settings/SettingsView.tsx
+rg -q 'aria-label="Transcription"' frontend/src/settings/TranscriptionSection.tsx
 rg -q 'GPU preference saved for Whisper' src-tauri/src/speech.rs
 rg -q 'NextSpeechRun' crates/echo-ipc/src/lib.rs
 if rg -q '<summary>Advanced</summary>' frontend/src/settings/SettingsView.tsx; then
@@ -28,9 +28,9 @@ if rg -q '<summary>Advanced</summary>' frontend/src/settings/SettingsView.tsx; t
   exit 1
 fi
 rg -q -- '--radius-md:' frontend/src/styles/tokens.css
-rg -Fq '@media (max-width: 960px)' frontend/src/styles/views.css
-if rg -Fq '@media (max-width: 760px)' frontend/src/styles/views.css \
-  || sed -n '/@media (max-width: 520px)/,/^}/p' frontend/src/styles/views.css | rg -q 'setting-row'; then
+rg -Fq '@media (max-width: 960px)' frontend/src/styles/view-responsive.css
+if rg -Fq '@media (max-width: 760px)' frontend/src/styles/view-responsive.css \
+  || sed -n '/@media (max-width: 520px)/,/^}/p' frontend/src/styles/view-responsive.css | rg -q 'setting-row'; then
   printf '%s\n' 'stale Settings-specific narrow breakpoint remains' >&2
   exit 1
 fi
