@@ -45,12 +45,11 @@ export function HomeView({
         ? 'Sending the transcript to your active cursor.'
         : status.phase === 'Failed'
           ? 'Check the error details, then start a new recording.'
-          : 'Speak your mind. Your audio stays on this machine.'
+          : 'Private, local dictation.'
   return (
     <div className="view-stack">
       <section className="record-hero" data-state={status.phase.toLowerCase()} aria-label="Dictation">
         <div className="hero-copy" aria-live="polite" aria-atomic="true">
-          <span className="eyebrow">Your words, without the typing</span>
           <h2>{presentation.title}</h2>
           <p>{description}</p>
         </div>
@@ -95,7 +94,7 @@ export function HomeView({
 
       <div className="home-grid">
         <section className="panel last-transcript">
-          <SectionHeading title="Last transcript" subtitle="Your most recent dictation" />
+          <SectionHeading title="Last transcript" />
           {status.lastTranscript ? (
             <blockquote>{status.lastTranscript}</blockquote>
           ) : (

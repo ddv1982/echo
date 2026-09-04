@@ -105,7 +105,7 @@ export function SetupChecklist({
   if (readiness?.firstRunComplete && verified) return null
   return (
     <section className="panel checklist" aria-label="Finish setup">
-      <SectionHeading title="Finish setup" subtitle="A few checks before your first dictation." />
+      <SectionHeading title="Finish setup" />
       {setupError ? <div role="alert" className="error-banner">{setupError}</div> : null}
       {readiness && !readiness.microphoneReady && microphones ? (
         <div className="first-run-step">

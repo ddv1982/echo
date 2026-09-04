@@ -1,12 +1,18 @@
 # Echo 1.0 frontend
 
-Echo uses a full-width workspace with labeled navigation and a text recording button. The latest transcript sits above recent history and compact usage counts. Warm light and charcoal dark themes share the same controls and spacing.
+Echo uses a full-width workspace with labeled navigation and a text recording button. The latest transcript sits above recent history and compact usage counts. Neutral light and dark themes share the same controls and spacing.
 
-We compared a sidebar studio with a horizontal workspace at the 920 × 680 default window and 760 × 560 minimum. The horizontal layout preserves more room for transcripts and Settings. The final design uses that layout, the studio's warm palette, and a distinct recording color. Existing controllers and generated IPC types still own application state.
+Page headings use 28px Inter, section headings use 14px, controls use 13px, and secondary text uses 12px. The transcript uses 16px for reading. Spoken dictionary phrases use the same proportional font as the rest of the interface. Icon buttons center their glyphs without inherited text-button padding.
+
+Horizontal navigation preserves content width at the 920 × 680 default window and 760 × 560 minimum. Home places recording beside its heading on desktop and below it on narrow screens. Responsive styles load after component styles so narrow layouts take precedence. Existing controllers and generated IPC types still own application state.
 
 ![Home in light mode](home-light.png)
 
 ![Home in dark mode](home-dark.png)
+
+![Settings in light mode](settings-light.png)
+
+![Settings in dark mode](settings-dark.png)
 
 ## Reproduce the screenshots
 
@@ -35,6 +41,6 @@ npm run lint --prefix frontend
 npm run test --prefix frontend
 ```
 
-The browser suite checks navigation at 390, 680, 681, 760, 920, and 1280 pixels, keyboard recording, processing controls, search, dictionary edits and long phrases, dialog focus, reduced motion, and secondary-text contrast. The existing Settings suite also checks breakpoint edges, microphone controls, theme selection, and long diagnostics.
+The browser suite checks navigation at 390, 680, 681, 760, 920, and 1280 pixels, keyboard recording, processing controls, search, dictionary edits and long phrases, dialog focus, reduced motion, secondary-text contrast, icon alignment, consistent typography, and narrow Home layout. The existing Settings suite also checks breakpoint edges, microphone controls, theme selection, and long diagnostics.
 
 Browser verification covers the React interface with the preview API. Native microphone capture, global shortcuts, text insertion, and Linux packaging remain covered by the repository's native tests and release workflows.

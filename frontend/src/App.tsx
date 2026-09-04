@@ -5,7 +5,6 @@ import {
   Home,
   Power,
   Settings,
-  ShieldCheck,
 } from 'lucide-react'
 import { BrandMark, StatusPill } from './app/chrome'
 import { useAppController } from './app/useAppController'
@@ -73,7 +72,6 @@ function App() {
           </div>
         </nav>
         <div className="topbar-actions">
-          <span className="privacy-note"><ShieldCheck size={14} aria-hidden="true" /><span>On this device</span></span>
           <StatusPill status={status} />
           <button
             type="button"

@@ -1,16 +1,13 @@
 @media (max-width: 960px) {
-  .main-content { padding-inline: var(--space-5); }
-  .topbar { padding-inline: var(--space-5); }
+  .main-content { padding-inline: var(--space-8); }
+  .topbar { padding-inline: var(--space-8); }
+}
+
+@media (max-width: 700px) {
   .dictionary-form { grid-template-columns: minmax(0, 1fr); }
   .dictionary-training-prompt { align-items: stretch; flex-direction: column; }
   .mapping-arrow { display: none; }
-}
 
-@media (max-width: 1100px) {
-  .privacy-note { display: none; }
-}
-
-@media (max-width: 680px) {
   .topbar { flex-wrap: wrap; gap: var(--space-2); padding: var(--space-3); }
   .brand-lockup { padding-left: var(--space-2); }
   .topbar-actions { margin-left: auto; }
@@ -19,7 +16,9 @@
   .nav-item { justify-content: center; gap: var(--space-1); padding: var(--space-2) var(--space-1); font-size: var(--text-xs); }
   .nav-item svg { width: 15px; }
   .main-content { padding: var(--space-5) var(--space-5) var(--space-6); }
-  .record-actions { align-items: flex-start; flex-direction: column; }
+  .record-hero { grid-template-columns: minmax(0, 1fr); }
+  .record-hero .record-actions { align-items: flex-start; }
+  .icon-button { width: 2.75rem; height: 2.75rem; }
 }
 
 @media (max-width: 520px) {

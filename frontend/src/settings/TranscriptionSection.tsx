@@ -85,7 +85,7 @@ export function TranscriptionSection({
 
   return (
     <section className="panel settings-section" aria-label="Transcription">
-      <SectionHeading title="Transcription" subtitle="Choose what Echo will use for the next recording." />
+      <SectionHeading title="Transcription" />
       {settings && nextRun ? (
         <NextRunSummary nextRun={nextRun} settings={settings} />
       ) : null}

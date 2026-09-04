@@ -55,7 +55,7 @@ export function HistoryView({
   }
   return (
     <div className="view-stack">
-      <ViewHeader title="History" subtitle="Every successful local transcription, newest first." />
+      <ViewHeader title="History" />
       <div className="history-toolbar">
         <label className="search-field">
           <Search size={17} aria-hidden="true" />

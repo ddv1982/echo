@@ -52,12 +52,12 @@ export function StatusPill({ status }: { status: AppStatus }) {
   )
 }
 
-export function ViewHeader({ title, subtitle }: { title: string; subtitle: string }) {
-  return <header className="view-header"><h2>{title}</h2><p>{subtitle}</p></header>
+export function ViewHeader({ title }: { title: string }) {
+  return <header className="view-header"><h2>{title}</h2></header>
 }
 
-export function SectionHeading({ title, subtitle }: { title: string; subtitle: string }) {
-  return <div className="section-heading"><h3>{title}</h3><p>{subtitle}</p></div>
+export function SectionHeading({ title, subtitle }: { title: string; subtitle?: string }) {
+  return <div className="section-heading"><h3>{title}</h3>{subtitle ? <p>{subtitle}</p> : null}</div>
 }
 
 type SettingTone = 'ok' | 'attention'

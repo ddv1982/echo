@@ -41,7 +41,7 @@ export function DictionaryView({
   }
   return (
     <div className="view-stack">
-      <ViewHeader title="Dictionary" subtitle="Teach Echo names, products, and phrases your transcription model often mishears." />
+      <ViewHeader title="Dictionary" />
       <form className="panel dictionary-form" onSubmit={(event) => void submit(event)}>
         <label><span>What Echo hears</span><input value={spoken} onChange={(event) => setSpoken(event.target.value)} placeholder="clawed code" /></label>
         <div className="mapping-arrow" aria-hidden="true">→</div>
@@ -49,7 +49,7 @@ export function DictionaryView({
         <button className="primary-button compact-button" type="submit" disabled={saving || !spoken.trim() || !written.trim()}><Plus size={17} /> Add</button>
       </form>
       <div className="dictionary-training-prompt">
-        <div><strong>Not sure what Echo hears?</strong><span>Say the phrase five times and review the pronunciations together.</span></div>
+        <div><span>Record five examples of a word or phrase.</span></div>
         <button ref={trainerTriggerRef} className="secondary-button" type="button" onClick={() => setTrainerOpen(true)}>
           <Mic size={16} aria-hidden="true" /> Teach by voice
         </button>
@@ -58,7 +58,7 @@ export function DictionaryView({
         <div className="table-header"><span>Spoken phrase</span><span>Written form</span><span /></div>
         {items.map((item) => (
           <div className="dictionary-row" key={`${item.spoken}-${item.createdAt}`}>
-            <code>{item.spoken}</code>
+            <span>{item.spoken}</span>
             <strong>{item.written}</strong>
             <button className="icon-button danger-button" type="button" onClick={() => void onRemove(item)} aria-label={`Remove ${item.written}`}><Trash2 size={16} /></button>
           </div>

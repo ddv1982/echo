@@ -239,7 +239,6 @@ export function DictionaryTrainer({
       >
         <header className="trainer-header">
           <div>
-            <p className="eyebrow">Dictionary training</p>
             <h2 id="trainer-title">Teach Echo by voice</h2>
             <p id="trainer-description">
               Say the same word or phrase five times. Echo will learn the different ways your selected transcription model hears it.

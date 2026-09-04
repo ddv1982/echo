@@ -4,7 +4,7 @@
 
 Echo 1.0 introduces a redesigned desktop workspace for private, local dictation.
 
-- Home, History, Dictionary, and Settings share warm light and charcoal dark themes, clearer typography, consistent controls, and quieter borders.
+- Home, History, Dictionary, and Settings share neutral light and dark themes, a consistent type scale, aligned controls, and quieter borders.
 - Labeled navigation stays visible at the default and minimum desktop window sizes. Compact windows keep all four section names available.
 - Home puts a labeled recording action above a full-width transcript, with recent history and compact usage counts below. A new View history action opens saved transcripts directly.
 - Recording, transcription, text insertion, and failure have distinct messages. Recording controls wait while Echo processes or inserts text, and recording retains its live level meter and elapsed-time limit.

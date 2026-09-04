@@ -103,7 +103,7 @@ export function SettingsView({
   const previousRun = status.lastRun ?? lastUsed
   return (
     <div className="view-stack settings-view" data-settings-surface>
-      <ViewHeader title="Settings" subtitle="Change how Echo records and transcribes, on this machine." />
+      <ViewHeader title="Settings" />
       <TranscriptionSection
         settings={settings}
         inventory={inventory}
@@ -127,7 +127,7 @@ export function SettingsView({
       />
 
       <section className="panel settings-section" aria-label="Input and controls">
-        <SectionHeading title="Input and controls" subtitle="Recording source, limits, and shortcuts." />
+        <SectionHeading title="Input and controls" />
         {microphones ? (
           <MicrophoneChooser
             snapshot={microphones}
@@ -165,7 +165,7 @@ export function SettingsView({
       </section>
 
       <section className="panel settings-section" aria-label="Appearance">
-        <SectionHeading title="Appearance" subtitle="Application display." />
+        <SectionHeading title="Appearance" />
         {settings ? (
           <SettingToggle
             label="Recording HUD"
@@ -187,7 +187,7 @@ export function SettingsView({
       </section>
 
       <section className="panel settings-section" aria-label="Setup and diagnostics">
-        <SectionHeading title="Setup and diagnostics" subtitle="Installed components and evidence from previous recordings." />
+        <SectionHeading title="Setup and diagnostics" />
         {readiness ? (
           <SpeechSetupSection
             readiness={readiness}
