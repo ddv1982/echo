@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.14.15
+
+- Dictionary replacements now preserve shorter valid matches when a longer overlapping phrase takes priority. Adding unrelated dictionary entries no longer changes which replacements apply.
+
 ## v0.14.14
 
 - Echo now retains its native Linux tray menu for the desktop process lifetime, preventing Open, recording, Language, and Quit entries from disappearing.
