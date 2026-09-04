@@ -455,6 +455,32 @@ def _check_policy(lines, jobs):
                     + ", ".join(sorted(missing_desktops)),
                 )
             )
+
+    rust = jobs.get("rust")
+    if rust is not None:
+        runs = _run_scalars(lines, rust["start"], rust["end"])
+        compile_lines = [
+            line_number
+            for line_number, command in runs
+            if re.search(r"\bcargo\s+(?:clippy|test|build)\b", command)
+        ]
+        prepares_dist = [
+            line_number
+            for line_number, command in runs
+            if re.search(
+                r"(?:^|\n)\s*mkdir\s+-p\s+(?:--\s+)?['\"]?frontend/dist['\"]?(?:\s|$)",
+                command,
+            )
+        ]
+        if compile_lines and not any(
+            line_number < min(compile_lines) for line_number in prepares_dist
+        ):
+            findings.append(
+                (
+                    rust["line"],
+                    "rust must create frontend/dist before compiling Tauri targets",
+                )
+            )
     return findings
 
 
@@ -692,6 +718,7 @@ jobs:
     permissions:
       contents: read
     steps:
+      - run: mkdir -p frontend/dist
       - run: cargo test
   assets:
     runs-on: ubuntu-latest
@@ -878,6 +905,11 @@ jobs:
         if workflow_policy_findings(release):
             raise RuntimeError("the valid release policy fixture was rejected")
 
+        _expect_policy_finding(
+            check,
+            _replace(CHECK_FIXTURE, "      - run: mkdir -p frontend/dist\n", ""),
+            "rust must create frontend/dist before compiling Tauri targets",
+        )
         _expect_policy_finding(
             check,
             _replace(
