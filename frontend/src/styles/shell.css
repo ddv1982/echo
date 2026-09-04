@@ -8,13 +8,13 @@
   z-index: 20;
   top: 0;
   display: flex;
-  min-height: 4rem;
+  min-height: 4.5rem;
+  border-bottom: 1px solid hsl(var(--border-subtle));
   align-items: center;
   justify-content: space-between;
   gap: var(--space-4);
-  border-bottom: 1px solid hsl(var(--border-subtle));
   background: hsl(var(--surface-topbar));
-  padding: 0 var(--space-6);
+  padding: 0 var(--space-8);
 }
 
 .brand-lockup,
@@ -25,16 +25,25 @@
 }
 
 .brand-lockup {
-  gap: var(--space-3);
+  gap: var(--space-2);
+  padding: 0;
+}
+
+.privacy-note {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: hsl(var(--text-tertiary));
+  font-size: var(--text-xs);
 }
 
 .brand-lockup h1 {
-  font-size: var(--text-md);
+  font-size: 1.35rem;
 }
 
 .brand-mark {
-  width: 1.4rem;
-  height: 1.4rem;
+  width: 1.9rem;
+  height: 1.9rem;
   flex: 0 0 auto;
 }
 
@@ -103,40 +112,30 @@
 }
 
 .workspace {
-  display: grid;
-  min-height: calc(100vh - 4rem);
-  grid-template-columns: 13.5rem minmax(0, 1fr);
+  min-width: 0;
 }
 
-.sidebar {
-  position: sticky;
-  top: 4rem;
-  display: flex;
-  height: calc(100vh - 4rem);
+.navigation {
   min-width: 0;
-  align-self: start;
-  flex-direction: column;
-  justify-content: space-between;
-  border-right: 1px solid hsl(var(--border-subtle));
-  background: hsl(var(--surface-sidebar));
-  padding: var(--space-5) var(--space-3);
+  margin-right: auto;
 }
 
 .nav-list {
-  display: grid;
+  display: flex;
   gap: var(--space-1);
 }
 
 .nav-item {
   display: flex;
-  width: 100%;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-2);
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   background: transparent;
   color: hsl(var(--text-secondary));
-  padding: 0.7rem var(--space-3);
+  min-height: 2.75rem;
+  padding: 0.7rem 0.65rem;
+  font-size: var(--text-sm);
   text-align: left;
   transition: background-color var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
 }
@@ -147,46 +146,27 @@
 }
 
 .nav-item[data-active='true'] {
+  font-weight: var(--weight-semibold);
   background: hsl(var(--surface-hover));
   color: hsl(var(--foreground));
 }
 
-.shortcut-card {
-  display: grid;
-  gap: var(--space-2);
-  border: 1px solid hsl(var(--border-subtle));
-  border-radius: var(--radius-lg);
-  background: hsl(var(--surface-card));
-  padding: var(--space-3);
-}
-
-.shortcut-card > span {
-  color: hsl(var(--text-tertiary));
-  font-size: var(--text-xs);
-  font-weight: var(--weight-medium);
-  text-transform: uppercase;
-  letter-spacing: var(--label-tracking);
-}
-
-.shortcut-card kbd,
 .shortcut-hint kbd {
   width: fit-content;
-  border: 1px solid hsl(var(--border-strong));
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  border: 1px solid hsl(var(--border-subtle));
+  border-bottom-color: hsl(var(--border-strong));
   border-radius: var(--radius-sm);
-  background: hsl(var(--surface-raised));
+  background: hsl(var(--surface-card));
   color: hsl(var(--foreground));
-  padding: 0.32rem 0.5rem;
+  padding: 0.35rem 0.55rem;
   font-size: var(--text-xs);
-}
-
-.shortcut-card small {
-  color: hsl(var(--text-tertiary));
-  line-height: 1.4;
 }
 
 .main-content {
   min-width: 0;
-  padding: var(--space-6);
+  padding: var(--space-8) var(--space-10) var(--space-10);
 }
 
 .error-banner {

@@ -318,6 +318,25 @@ describe('Echo desktop shell', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Add' })).toBeEnabled())
   })
 
+  it.each([
+    ['Transcribing', 'Transcribing locally…', 'Transcribing'],
+    ['Injecting', 'Inserting your text…', 'Inserting text'],
+  ] satisfies Array<[AppStatus['phase'], string, string]>)('keeps %s visible and prevents a second recording', async (phase, title, action) => {
+    seedPreviewStatus({ phase })
+    render(<App />)
+    expect(await screen.findByRole('heading', { name: title })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: action })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: 'Start recording' })).not.toBeInTheDocument()
+  })
+
+  it('offers a fresh recording after a failed transcription without claiming readiness', async () => {
+    seedPreviewStatus({ phase: 'Failed', lastError: 'Speech engine stopped' })
+    render(<App />)
+    expect(await screen.findByRole('heading', { name: 'Let’s try that again' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Start recording' })).toBeEnabled()
+    expect(screen.queryByRole('heading', { name: 'Ready when you are' })).not.toBeInTheDocument()
+  })
+
   it('uses the snapped recording limit on Home', async () => {
     seedPreviewStatus({
       phase: 'Recording',

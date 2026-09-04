@@ -177,7 +177,7 @@ describe('Echo desktop shell', () => {
 
     await waitFor(() => expect(getHistory).toHaveBeenCalledTimes(2))
     expect(await screen.findByText('recoverable transcript')).toBeInTheDocument()
-    expect(screen.getByText('Most recently transcribed text')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Last transcript' })).toBeInTheDocument()
   })
 
   it('shows usage stats derived from history', async () => {
@@ -247,6 +247,7 @@ describe('Echo desktop shell', () => {
           recordingSeconds={0}
           onToggleRecording={async () => undefined}
           onOpenSettings={vi.fn()}
+          onOpenHistory={vi.fn()}
         />,
       )
       const label = screen.getByText('sessions this week')

@@ -30,6 +30,15 @@ select {
 
 button {
   color: inherit;
+  border: 1px solid hsl(var(--border-strong));
+  border-radius: var(--radius-sm);
+  background: hsl(var(--surface-card));
+  padding: 0.55rem 0.85rem;
+  transition: background-color var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out);
+}
+
+button:hover:not(:disabled) {
+  background: hsl(var(--surface-hover));
 }
 
 button:not(:disabled) {
@@ -43,7 +52,9 @@ button:disabled {
 
 button:focus-visible,
 input:focus,
-select:focus {
+select:focus,
+summary:focus-visible,
+a:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px hsl(var(--background)), 0 0 0 4px hsl(var(--focus));
 }
@@ -77,7 +88,7 @@ h2,
 h3 {
   font-weight: var(--weight-medium);
   line-height: 1.2;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.035em;
 }
 
 code,

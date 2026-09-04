@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.0.0
+
+Echo 1.0 introduces a redesigned desktop workspace for private, local dictation.
+
+- Home, History, Dictionary, and Settings share warm light and charcoal dark themes, clearer typography, consistent controls, and quieter borders.
+- Labeled navigation stays visible at the default and minimum desktop window sizes. Compact windows keep all four section names available.
+- Home puts a labeled recording action above a full-width transcript, with recent history and compact usage counts below. A new View history action opens saved transcripts directly.
+- Recording, transcription, text insertion, and failure have distinct messages. Recording controls wait while Echo processes or inserts text, and recording retains its live level meter and elapsed-time limit.
+- Setup progress takes less space while keeping microphone, speech, and shortcut repair actions visible. Keyboard focus, reduced motion, and text contrast have browser regression coverage.
+
+Existing settings, models, history, dictionary entries, and the dictation shortcut remain compatible. No data migration is required. Linux Debian, RPM, AppImage, and standalone binary downloads remain available.
+
 ## v0.14.15
 
 - Dictionary replacements now preserve shorter valid matches when a longer overlapping phrase takes priority. Adding unrelated dictionary entries no longer changes which replacements apply.

@@ -1,4 +1,4 @@
-import { CircleAlert, Mic, Waves } from 'lucide-react'
+import { ArrowUpRight, CircleAlert, LoaderCircle, Mic, Square } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { BarsMotif, SectionHeading } from '../app/chrome'
@@ -7,8 +7,16 @@ import { useSerialPoll } from '../hooks/useSerialPoll'
 import { presentShortcut } from '../shortcut'
 import { deriveStats, millisecondsUntilNextLocalDay } from '../stats'
 import { getRecordingLevel, removeStaleInstalls } from '../tauri'
-import type { AppStatus, HistoryItem } from '../generated/ipc'
+import type { AppPhase, AppStatus, HistoryItem } from '../generated/ipc'
 import { SetupChecklist } from './SetupChecklist'
+
+const phasePresentation = {
+  Idle: { title: 'Ready when you are', action: 'Start recording' },
+  Recording: { title: 'Listening…', action: 'Stop and transcribe' },
+  Transcribing: { title: 'Transcribing locally…', action: 'Transcribing' },
+  Injecting: { title: 'Inserting your text…', action: 'Inserting text' },
+  Failed: { title: 'Let’s try that again', action: 'Start recording' },
+} satisfies Record<AppPhase, { title: string; action: string }>
 
 export function HomeView({
   status,
@@ -16,65 +24,61 @@ export function HomeView({
   recordingSeconds,
   onToggleRecording,
   onOpenSettings,
+  onOpenHistory,
 }: {
   status: AppStatus
   history: HistoryItem[]
   recordingSeconds: number
   onToggleRecording: () => Promise<void>
   onOpenSettings: () => void
+  onOpenHistory: () => void
 }) {
   const shortcut = presentShortcut(status.shortcut)
   const recording = status.phase === 'Recording'
-  const heroState = recording
-    ? 'recording'
+  const processing = status.phase === 'Transcribing' || status.phase === 'Injecting'
+  const presentation = phasePresentation[status.phase]
+  const description = recording
+    ? 'Speak naturally. Stop when you’re done.'
     : status.phase === 'Transcribing'
-      ? 'transcribing'
-      : 'idle'
-  const stateCopy = recording
-    ? ['Listening…', 'Speak naturally, then press the shortcut again.']
-    : status.phase === 'Transcribing'
-      ? ['Transcribing locally…', `${status.engineName} is turning your recording into text.`]
-      : ['Ready when you are', 'Your audio stays on this machine.']
+      ? `${status.engineName} is turning your recording into text.`
+      : status.phase === 'Injecting'
+        ? 'Sending the transcript to your active cursor.'
+        : status.phase === 'Failed'
+          ? 'Check the error details, then start a new recording.'
+          : 'Speak your mind. Your audio stays on this machine.'
   return (
     <div className="view-stack">
-      <section className="record-hero" data-state={heroState}>
-        <div className="hero-glow" aria-hidden="true" />
-        <div className="hero-main">
+      <section className="record-hero" data-state={status.phase.toLowerCase()} aria-label="Dictation">
+        <div className="hero-copy" aria-live="polite" aria-atomic="true">
+          <span className="eyebrow">Your words, without the typing</span>
+          <h2>{presentation.title}</h2>
+          <p>{description}</p>
+        </div>
+        <div className="record-actions">
           <button
-            className="record-orb"
+            className="record-button"
             type="button"
             onClick={() => void onToggleRecording()}
-            aria-label={recording ? 'Stop and transcribe' : 'Start recording'}
+            disabled={processing}
           >
-            <span className="record-ring" aria-hidden="true" />
-            {recording ? <Waves size={26} /> : <Mic size={26} />}
+            {recording ? <Square size={17} fill="currentColor" aria-hidden="true" />
+              : processing ? <LoaderCircle className="processing-icon" size={18} aria-hidden="true" />
+                : <Mic size={18} aria-hidden="true" />}
+            <span>{presentation.action}</span>
           </button>
-          <div className="hero-copy">
-            <div className="readout">
-              <span>{recording ? 'Listening' : status.phase === 'Transcribing' ? 'Transcribing' : 'Ready'}</span>
-              {recording ? (
-                <span className="readout-timer">
-                  {status.recordingLimitSeconds == null
-                    ? formatDuration(recordingSeconds)
-                    : `${formatDuration(Math.min(recordingSeconds, status.recordingLimitSeconds))} / ${formatDuration(status.recordingLimitSeconds)}`}
-                </span>
-              ) : null}
-            </div>
-            <h2>{stateCopy[0]}</h2>
-            <p>{stateCopy[1]}</p>
-            {recording ? <LevelBars live={status.recordingInProcess} /> : null}
-            <div className="record-actions">
-              <div className="shortcut-hint">
-                <kbd>{shortcut.display}</kbd>
-                <span>
-                  {shortcut.ready
-                    ? 'works from any app'
-                    : 'setup required in Settings'}
-                </span>
-              </div>
-            </div>
+          <div className="shortcut-hint">
+            <kbd>{shortcut.display}</kbd>
+            <span>{shortcut.ready ? 'from any app' : shortcut.manualCommand ? 'Bind it in your desktop settings.' : 'setup required in Settings'}</span>
           </div>
+          {recording ? (
+            <span className="readout-timer">
+              {status.recordingLimitSeconds == null
+                ? formatDuration(recordingSeconds)
+                : `${formatDuration(Math.min(recordingSeconds, status.recordingLimitSeconds))} / ${formatDuration(status.recordingLimitSeconds)}`}
+            </span>
+          ) : null}
         </div>
+        {recording ? <LevelBars live={status.recordingInProcess} /> : null}
       </section>
 
       <StaleInstallWarning status={status} />
@@ -89,11 +93,9 @@ export function HomeView({
         </div>
       ) : null}
 
-      <StatsStrip history={history} />
-
       <div className="home-grid">
         <section className="panel last-transcript">
-          <SectionHeading title="Last transcript" subtitle="Most recently transcribed text" />
+          <SectionHeading title="Last transcript" subtitle="Your most recent dictation" />
           {status.lastTranscript ? (
             <blockquote>{status.lastTranscript}</blockquote>
           ) : (
@@ -103,8 +105,11 @@ export function HomeView({
             </div>
           )}
         </section>
-        <section className="panel recent-panel">
-          <SectionHeading title="Recent" subtitle={`${history.length} saved transcript${history.length === 1 ? '' : 's'}`} />
+        <section className="recent-panel">
+          <div className="recent-heading">
+            <SectionHeading title="Recent" subtitle={`${history.length} saved transcript${history.length === 1 ? '' : 's'}`} />
+            <button type="button" className="text-button" onClick={onOpenHistory}>View history <ArrowUpRight size={14} aria-hidden="true" /></button>
+          </div>
           <div className="recent-list">
             {history.slice(0, 3).map((item) => (
               <div className="recent-row" key={item.id}>
@@ -121,6 +126,7 @@ export function HomeView({
           </div>
         </section>
       </div>
+      <StatsStrip history={history} />
     </div>
   )
 }

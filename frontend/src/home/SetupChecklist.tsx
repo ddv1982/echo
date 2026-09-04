@@ -105,7 +105,7 @@ export function SetupChecklist({
   if (readiness?.firstRunComplete && verified) return null
   return (
     <section className="panel checklist" aria-label="Finish setup">
-      <SectionHeading title="Finish setup" subtitle="The first-run job is one successful dictation." />
+      <SectionHeading title="Finish setup" subtitle="A few checks before your first dictation." />
       {setupError ? <div role="alert" className="error-banner">{setupError}</div> : null}
       {readiness && !readiness.microphoneReady && microphones ? (
         <div className="first-run-step">
@@ -179,19 +179,21 @@ export function SetupChecklist({
           />
         </div>
       ) : null}
-      {items.map((item) => (
-        <div className="checklist-item" data-done={item.done} key={item.key}>
-          <span className="checklist-check" aria-hidden="true">
-            {item.done ? <Check size={13} /> : null}
-          </span>
-          <span className="checklist-label">{item.label}</span>
-          {!item.done && item.key === 'shortcut' ? (
-            <button type="button" className="compact-button" onClick={onOpenSettings}>
-              Open Settings
-            </button>
-          ) : null}
-        </div>
-      ))}
+      <div className="checklist-progress">
+        {items.map((item) => (
+          <div className="checklist-item" data-done={item.done} key={item.key}>
+            <span className="checklist-check" aria-hidden="true">
+              {item.done ? <Check size={13} /> : null}
+            </span>
+            <span className="checklist-label">{item.label}</span>
+            {!item.done && item.key === 'shortcut' ? (
+              <button type="button" className="compact-button" onClick={onOpenSettings}>
+                Open Settings
+              </button>
+            ) : null}
+          </div>
+        ))}
+      </div>
     </section>
   )
 }

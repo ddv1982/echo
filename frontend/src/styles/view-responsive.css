@@ -1,32 +1,28 @@
 @media (max-width: 960px) {
-  .topbar { padding-inline: var(--space-4); }
-  .workspace { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
-  .sidebar {
-    position: sticky;
-    z-index: 15;
-    top: 4rem;
-    display: block;
-    height: auto;
-    border-right: 0;
-    border-bottom: 1px solid hsl(var(--border-subtle));
-    padding: var(--space-2) var(--space-3);
-  }
-  .nav-list { grid-template-columns: repeat(4, 1fr); }
-  .nav-item { justify-content: center; padding: 0.6rem; }
-  .nav-item span { display: none; }
-  .shortcut-card { display: none; }
-  .main-content { padding: var(--space-4); }
-  .record-hero { padding: var(--space-6); }
-  .hero-main { flex-direction: column; align-items: flex-start; }
-  .home-grid { grid-template-columns: 1fr; }
-  .dictionary-form { grid-template-columns: 1fr; }
+  .main-content { padding-inline: var(--space-5); }
+  .topbar { padding-inline: var(--space-5); }
+  .dictionary-form { grid-template-columns: minmax(0, 1fr); }
   .dictionary-training-prompt { align-items: stretch; flex-direction: column; }
   .mapping-arrow { display: none; }
 }
 
-@media (max-width: 520px) {
-  .status-pill { display: none; }
+@media (max-width: 1100px) {
+  .privacy-note { display: none; }
+}
+
+@media (max-width: 680px) {
+  .topbar { flex-wrap: wrap; gap: var(--space-2); padding: var(--space-3); }
+  .brand-lockup { padding-left: var(--space-2); }
+  .topbar-actions { margin-left: auto; }
+  .navigation { order: 3; flex-basis: 100%; }
+  .nav-list { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; }
+  .nav-item { justify-content: center; gap: var(--space-1); padding: var(--space-2) var(--space-1); font-size: var(--text-xs); }
+  .nav-item svg { width: 15px; }
+  .main-content { padding: var(--space-5) var(--space-5) var(--space-6); }
   .record-actions { align-items: flex-start; flex-direction: column; }
+}
+
+@media (max-width: 520px) {
   .history-toolbar { align-items: stretch; flex-direction: column; }
   .history-toolbar .search-field,
   .history-clear-button { width: 100%; max-width: none; }

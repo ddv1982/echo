@@ -5,6 +5,7 @@ import {
   Home,
   Power,
   Settings,
+  ShieldCheck,
 } from 'lucide-react'
 import { BrandMark, StatusPill } from './app/chrome'
 import { useAppController } from './app/useAppController'
@@ -12,7 +13,6 @@ import { DictionaryView } from './dictionary/DictionaryView'
 import { HistoryView } from './history/HistoryView'
 import { HomeView } from './home/HomeView'
 import { SettingsView } from './settings/SettingsView'
-import { presentShortcut } from './shortcut'
 import type { View } from './types'
 
 const navigation: Array<{ id: View; label: string; icon: typeof Home }> = [
@@ -43,7 +43,6 @@ function App() {
     addDictionaryEntriesBatch,
     removeDictionaryEntry,
   } = useAppController()
-  const shortcut = presentShortcut(status.shortcut)
 
   return (
     <div className="app-shell">
@@ -52,22 +51,7 @@ function App() {
           <BrandMark />
           <h1>Echo</h1>
         </div>
-        <div className="topbar-actions">
-          <StatusPill status={status} />
-          <button
-            type="button"
-            className="icon-button"
-            aria-label="Quit Echo"
-            title="Quit Echo"
-            onClick={() => void quitApp()}
-          >
-            <Power size={17} aria-hidden="true" />
-          </button>
-        </div>
-      </header>
-
-      <div className="workspace">
-        <nav className="sidebar" aria-label="Echo sections">
+        <nav className="navigation" aria-label="Echo sections">
           <div className="nav-list">
             {navigation.map((item) => {
               const Icon = item.icon
@@ -87,19 +71,23 @@ function App() {
               )
             })}
           </div>
-          <div className="shortcut-card">
-            <span>Toggle shortcut</span>
-            <kbd>{shortcut.display}</kbd>
-            <small>
-              {shortcut.ready
-                ? 'Press once to start, again to stop.'
-                : shortcut.manualCommand
-                  ? 'Bind it in your desktop settings.'
-                  : 'Open Settings to finish shortcut setup.'}
-            </small>
-          </div>
         </nav>
+        <div className="topbar-actions">
+          <span className="privacy-note"><ShieldCheck size={14} aria-hidden="true" /><span>On this device</span></span>
+          <StatusPill status={status} />
+          <button
+            type="button"
+            className="icon-button"
+            aria-label="Quit Echo"
+            title="Quit Echo"
+            onClick={() => void quitApp()}
+          >
+            <Power size={17} aria-hidden="true" />
+          </button>
+        </div>
+      </header>
 
+      <div className="workspace">
         <main className="main-content">
           {error ? (
             <div className="error-banner" role="alert">
@@ -116,6 +104,7 @@ function App() {
               recordingSeconds={recordingSeconds}
               onToggleRecording={toggleRecording}
               onOpenSettings={() => setView('settings')}
+              onOpenHistory={() => setView('history')}
             />
           ) : null}
           {view === 'history' ? (
