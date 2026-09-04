@@ -26,7 +26,7 @@ delivery progress in the repository.
 
 ## Publication
 
-- [ ] Open a focused pull request and address actionable review comments.
+- [x] Open a focused pull request and address actionable review comments.
 - [ ] Merge only after required pull-request checks pass.
 - [ ] Tag the green merged `main` commit with annotated `v0.14.13` and verify the release workflow and published assets.
 
