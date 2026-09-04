@@ -238,7 +238,7 @@ impl TrayMenu {
     }
 
     fn apply_projection(&self, projection: &LanguageMenuProjection) -> tauri::Result<()> {
-        self.language_menu.set_enabled(projection.enabled)?;
+        self.language_menu.set_enabled(true)?;
         for (code, item) in &self.language_items {
             item.set_enabled(projection.item_enabled(code))?;
             item.set_checked(projection.item_checked(code))?;
