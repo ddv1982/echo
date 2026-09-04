@@ -11,6 +11,7 @@ import type {
 import {
   configureDesktopApi,
   getSettings,
+  onSettingsEvent,
   onSetupEvent,
   repairManaged,
   setSettings,
@@ -24,6 +25,7 @@ vi.mock('../tauri', async (importOriginal) => {
   return {
     ...actual,
     getSettings: vi.fn(() => actual.getSettings()),
+    onSettingsEvent: vi.fn((handler: () => void) => actual.onSettingsEvent(handler)),
     onSetupEvent: vi.fn((handler: (event: SetupEvent) => void) => actual.onSetupEvent(handler)),
     repairManaged: vi.fn((component: ComponentId) => actual.repairManaged(component)),
     setSettings: vi.fn((change: SettingsChange) => actual.setSettings(change)),
@@ -51,6 +53,8 @@ describe('useSettingsController', () => {
     const actual = await vi.importActual<typeof import('../tauri')>('../tauri')
     vi.mocked(getSettings).mockReset()
     vi.mocked(getSettings).mockImplementation(() => actual.getSettings())
+    vi.mocked(onSettingsEvent).mockReset()
+    vi.mocked(onSettingsEvent).mockImplementation((handler) => actual.onSettingsEvent(handler))
     vi.mocked(onSetupEvent).mockReset()
     vi.mocked(onSetupEvent).mockImplementation((handler) => actual.onSetupEvent(handler))
     vi.mocked(repairManaged).mockReset()
@@ -145,6 +149,125 @@ describe('useSettingsController', () => {
     await act(async () => initialRead.promise)
 
     expect(result.current.settings?.hud.value).toBe(false)
+  })
+
+  it('refreshes an open Settings view after a tray settings change', async () => {
+    let settingsEvent: (() => void) | null = null
+    vi.mocked(onSettingsEvent).mockImplementation((handler) => {
+      settingsEvent = handler
+      return Promise.resolve(vi.fn())
+    })
+    const onStatusChange = vi.fn().mockResolvedValue(undefined)
+    const onError = vi.fn()
+    const { result } = renderHook(() => useSettingsController({
+      onStatusChange,
+      onError,
+    }))
+    await waitFor(() => {
+      expect(result.current.settings).not.toBeNull()
+      expect(settingsEvent).not.toBeNull()
+    })
+    await previewDesktopApi.setSettings({ kind: 'language', value: 'de' })
+
+    act(() => settingsEvent?.())
+
+    await waitFor(() => expect(result.current.settings?.language.value).toBe('de'))
+    expect(onStatusChange).toHaveBeenCalledOnce()
+    expect(onError).not.toHaveBeenCalled()
+  })
+
+  it('keeps the settings-event subscription across rerenders', async () => {
+    const unlisten = vi.fn()
+    vi.mocked(onSettingsEvent).mockResolvedValue(unlisten)
+    const onStatusChange = vi.fn().mockResolvedValue(undefined)
+    const onError = vi.fn()
+    const { result, unmount } = renderHook(() => useSettingsController({
+      onStatusChange,
+      onError,
+    }))
+    await waitFor(() => expect(result.current.settings).not.toBeNull())
+
+    await act(async () => result.current.updateHud(false))
+
+    expect(onSettingsEvent).toHaveBeenCalledOnce()
+    expect(unlisten).not.toHaveBeenCalled()
+    unmount()
+    expect(unlisten).toHaveBeenCalledOnce()
+  })
+
+  it('reloads tray state after a concurrent frontend write fails', async () => {
+    let settingsEvent: (() => void) | null = null
+    vi.mocked(onSettingsEvent).mockImplementation((handler) => {
+      settingsEvent = handler
+      return Promise.resolve(vi.fn())
+    })
+    const trayRead = deferred<SettingsSnapshot>()
+    const actual = await vi.importActual<typeof import('../tauri')>('../tauri')
+    const onStatusChange = vi.fn().mockResolvedValue(undefined)
+    const onError = vi.fn()
+    const { result } = renderHook(() => useSettingsController({
+      onStatusChange,
+      onError,
+    }))
+    await waitFor(() => {
+      expect(result.current.settings).not.toBeNull()
+      expect(settingsEvent).not.toBeNull()
+    })
+    await previewDesktopApi.setSettings({ kind: 'language', value: 'de' })
+    vi.mocked(getSettings)
+      .mockImplementationOnce(() => trayRead.promise)
+      .mockImplementationOnce(() => actual.getSettings())
+    vi.mocked(setSettings).mockRejectedValueOnce(new Error('write failed'))
+
+    act(() => settingsEvent?.())
+    await waitFor(() => expect(getSettings).toHaveBeenCalledTimes(2))
+    await act(async () => result.current.updateHud(false))
+    trayRead.resolve(await actual.getSettings())
+    await act(async () => trayRead.promise)
+
+    await waitFor(() => expect(result.current.settings?.language.value).toBe('de'))
+    expect(onError).toHaveBeenCalledWith('write failed')
+  })
+
+  it('does not let an older setup read replace a newer tray read', async () => {
+    let setupEvent: ((event: SetupEvent) => void) | null = null
+    let settingsEvent: (() => void) | null = null
+    vi.mocked(onSetupEvent).mockImplementation((handler) => {
+      setupEvent = handler
+      return Promise.resolve(vi.fn())
+    })
+    vi.mocked(onSettingsEvent).mockImplementation((handler) => {
+      settingsEvent = handler
+      return Promise.resolve(vi.fn())
+    })
+    const staleSettings = await previewDesktopApi.getSettings()
+    const setupRead = deferred<SettingsSnapshot>()
+    const actual = await vi.importActual<typeof import('../tauri')>('../tauri')
+    const onStatusChange = vi.fn().mockResolvedValue(undefined)
+    const onError = vi.fn()
+    const { result } = renderHook(() => useSettingsController({
+      onStatusChange,
+      onError,
+    }))
+    await waitFor(() => {
+      expect(result.current.settings).not.toBeNull()
+      expect(setupEvent).not.toBeNull()
+      expect(settingsEvent).not.toBeNull()
+    })
+    vi.mocked(getSettings)
+      .mockImplementationOnce(() => setupRead.promise)
+      .mockImplementationOnce(() => actual.getSettings())
+
+    act(() => setupEvent?.({ kind: 'finished', operationId: 'setup' }))
+    await waitFor(() => expect(getSettings).toHaveBeenCalledTimes(2))
+    await previewDesktopApi.setSettings({ kind: 'language', value: 'de' })
+    act(() => settingsEvent?.())
+    await waitFor(() => expect(result.current.settings?.language.value).toBe('de'))
+    setupRead.resolve(staleSettings)
+    await act(async () => setupRead.promise)
+
+    expect(result.current.settings?.language.value).toBe('de')
+    expect(onError).not.toHaveBeenCalled()
   })
 
   it('waits for an already queued settings write before refreshing readiness', async () => {

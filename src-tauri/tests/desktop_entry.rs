@@ -111,6 +111,15 @@ fn settings_changes_publish_an_ordered_tray_snapshot() {
     assert!(tray_runtime.contains("app.run_on_main_thread(move ||"));
 }
 
+#[test]
+fn tray_language_changes_notify_the_settings_ui() {
+    let tray_runtime = include_str!("../src/tray.rs");
+    let settings_controller = include_str!("../../frontend/src/settings/useSettingsController.ts");
+
+    assert!(tray_runtime.contains("app.emit(\"settings-event\", ())"));
+    assert!(settings_controller.contains("onSettingsEvent"));
+}
+
 #[cfg(feature = "status-perf-probe")]
 #[test]
 #[ignore = "needs a live Linux session bus and StatusNotifierWatcher"]

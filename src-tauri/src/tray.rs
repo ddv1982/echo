@@ -8,7 +8,7 @@ use echo_desktop::ipc::{
 use tauri::image::Image;
 use tauri::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
-use tauri::{App, AppHandle, Manager, Wry};
+use tauri::{App, AppHandle, Emitter, Manager, Wry};
 
 static NEXT_LANGUAGE_REQUEST: AtomicU64 = AtomicU64::new(0);
 
@@ -339,7 +339,10 @@ fn select_language(app: &AppHandle, value: String) {
         .await
         .and_then(|result| result);
         match outcome {
-            Ok((revision, snapshot)) => sync(&app, request, revision, &snapshot),
+            Ok((revision, snapshot)) => {
+                sync(&app, request, revision, &snapshot);
+                let _ = app.emit("settings-event", ());
+            }
             Err(error) => {
                 eprintln!("tray language: {error}");
                 restore(&app);

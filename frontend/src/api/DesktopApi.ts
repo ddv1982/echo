@@ -56,4 +56,5 @@ export interface DesktopApi {
   removeManaged(component: ComponentId): Promise<string>
   cancelSetup(operation: string): Promise<boolean>
   onSetupEvent(handler: (event: SetupEvent) => void): Promise<() => void>
+  onSettingsEvent(handler: () => void): Promise<() => void>
 }

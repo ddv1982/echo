@@ -12,6 +12,7 @@ mod tests {
 
     struct EventContract {
         name: &'static str,
+        source: &'static str,
         payload_types: &'static [&'static str],
     }
 
@@ -202,10 +203,18 @@ mod tests {
         },
     ];
 
-    const EVENTS: &[EventContract] = &[EventContract {
-        name: "setup-event",
-        payload_types: &["SetupEvent", "InstallProgress"],
-    }];
+    const EVENTS: &[EventContract] = &[
+        EventContract {
+            name: "setup-event",
+            source: SETUP,
+            payload_types: &["SetupEvent", "InstallProgress"],
+        },
+        EventContract {
+            name: "settings-event",
+            source: include_str!("tray.rs"),
+            payload_types: &[],
+        },
+    ];
 
     fn handler_names(source: &str) -> Vec<&str> {
         let body = source
@@ -262,9 +271,9 @@ mod tests {
         }
 
         for event in EVENTS {
-            assert!(SETUP.contains(&format!("\"{}\"", event.name)));
+            assert!(event.source.contains(&format!("\"{}\"", event.name)));
             for payload_type in event.payload_types {
-                assert!(SETUP.contains(payload_type));
+                assert!(event.source.contains(payload_type));
                 assert!(registered.contains(*payload_type));
                 manifest_types.insert((*payload_type).to_string());
             }

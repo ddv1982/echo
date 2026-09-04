@@ -8,6 +8,7 @@ import {
   getMicrophones,
   getSettings,
   listGpuDevices,
+  onSettingsEvent,
   onSetupEvent,
   repairLegacyShortcut,
   repairManaged,
@@ -34,6 +35,7 @@ interface UseSettingsControllerArgs {
 interface SettingsReadResult {
   snapshot: SettingsSnapshot
   mutationVersion: number
+  readVersion: number
 }
 
 export function useSettingsController({
@@ -43,6 +45,7 @@ export function useSettingsController({
   const [snapshot, setSnapshot] = useState<SettingsSnapshot | null>(null)
   const writeChainRef = useRef(Promise.resolve())
   const settingsMutationVersion = useRef(0)
+  const settingsReadVersion = useRef(0)
   const active = useRef(true)
   const [microphones, setMicrophones] = useState<MicrophoneSnapshot | null>(null)
   const [micTest, setMicTest] = useState<MicrophoneTestResult | null>(null)
@@ -57,18 +60,20 @@ export function useSettingsController({
   }, [onError])
 
   const loadSettingsSnapshot = useCallback(async (): Promise<SettingsReadResult | null> => {
+    const readVersion = ++settingsReadVersion.current
     const mutationVersion = settingsMutationVersion.current
     const queuedWrites = writeChainRef.current
     await queuedWrites
     if (!active.current || settingsMutationVersion.current !== mutationVersion) return null
-    return { snapshot: await getSettings(), mutationVersion }
+    return { snapshot: await getSettings(), mutationVersion, readVersion }
   }, [])
 
   const applySettingsSnapshot = useCallback((result: SettingsReadResult | null) => {
     if (
       result != null &&
       active.current &&
-      settingsMutationVersion.current === result.mutationVersion
+      settingsMutationVersion.current === result.mutationVersion &&
+      settingsReadVersion.current === result.readVersion
     ) {
       setSnapshot(result.snapshot)
     }
@@ -162,6 +167,18 @@ export function useSettingsController({
     getRefresh: getSettingsSetupRefresh,
     onError: reportSettingsError,
   })
+  const getSettingsEventRefresh = useCallback(() => () =>
+    loadSettingsSnapshot().then((result) => async () => {
+      applySettingsSnapshot(result)
+      await onStatusChange()
+    }), [applySettingsSnapshot, loadSettingsSnapshot, onStatusChange])
+  const handleSettingsEvent = useCallback(() => undefined, [])
+  useAsyncSubscription<void>({
+    subscribe: onSettingsEvent,
+    onEvent: handleSettingsEvent,
+    getRefresh: getSettingsEventRefresh,
+    onError: reportSettingsError,
+  })
 
   const commit = useCallback(async (change: SettingsChange) => {
     try {
@@ -171,6 +188,7 @@ export function useSettingsController({
       await onStatusChange()
     } catch (reason) {
       reportSettingsError(reason)
+      throw reason
     }
   }, [onStatusChange, reportSettingsError])
 
@@ -178,13 +196,20 @@ export function useSettingsController({
     setSettingsWritePending(true)
     settingsMutationVersion.current += 1
     const queued = writeChainRef.current.then(() => commit(change))
-    writeChainRef.current = queued
+    const continuing = queued.catch(() => undefined)
+    writeChainRef.current = continuing
     try {
       await queued
+    } catch {
+      const result = await loadSettingsSnapshot().catch((reason: unknown) => {
+        reportSettingsError(reason)
+        return null
+      })
+      applySettingsSnapshot(result)
     } finally {
-      if (active.current && writeChainRef.current === queued) setSettingsWritePending(false)
+      if (active.current && writeChainRef.current === continuing) setSettingsWritePending(false)
     }
-  }, [commit])
+  }, [applySettingsSnapshot, commit, loadSettingsSnapshot, reportSettingsError])
 
   const selectEngine = useCallback(async (engine: string) => {
     await updateSettings({ kind: 'engine', value: engine })

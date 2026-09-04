@@ -590,6 +590,11 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
     return Promise.resolve(() => previewSetupListeners.delete(handler))
   }
 
+  function onSettingsEvent(handler: () => void): Promise<() => void> {
+    void handler
+    return Promise.resolve(() => undefined)
+  }
+
   function seedPreviewReadiness(readiness: Readiness) {
     previewReadiness = ipcSnapshot(readiness)
   }
@@ -833,6 +838,7 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
     removeManaged,
     cancelSetup,
     onSetupEvent,
+    onSettingsEvent,
     seedPreviewReadiness,
   }
 }

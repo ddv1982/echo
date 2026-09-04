@@ -61,3 +61,5 @@ export const removeManaged: DesktopApi['removeManaged'] = (component) =>
 export const cancelSetup: DesktopApi['cancelSetup'] = (operation) => api().cancelSetup(operation)
 export const onSetupEvent: DesktopApi['onSetupEvent'] = (handler) =>
   api().onSetupEvent(handler)
+export const onSettingsEvent: DesktopApi['onSettingsEvent'] = (handler) =>
+  api().onSettingsEvent(handler)
