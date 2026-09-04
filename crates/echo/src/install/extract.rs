@@ -4,9 +4,8 @@ use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use sha2::{Digest, Sha256};
-
 use super::catalog::{ArtifactFormat, PayloadKind};
+use super::sha256_file_cancellable;
 use super::types::InstallError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,23 +60,6 @@ fn safe_relative(raw: &Path) -> Result<PathBuf, InstallError> {
         ));
     }
     Ok(safe)
-}
-
-fn sha256_file(path: &Path, cancel: &AtomicBool) -> Result<String, InstallError> {
-    let mut file = fs::File::open(path)?;
-    let mut hash = Sha256::new();
-    let mut buffer = [0u8; 64 * 1024];
-    loop {
-        if cancel.load(Ordering::Relaxed) {
-            return Err(InstallError::Cancelled);
-        }
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        hash.update(&buffer[..read]);
-    }
-    Ok(format!("{:x}", hash.finalize()))
 }
 
 #[cfg(unix)]
@@ -261,7 +243,7 @@ fn extract_tar<R: Read>(
                 }
                 target.flush()?;
                 set_mode(&output, file.mode)?;
-                if sha256_file(&output, cancel)? != file.sha256 {
+                if sha256_file_cancellable(&output, Some(cancel))? != file.sha256 {
                     return Err(InstallError::Payload(format!(
                         "{} failed its payload SHA-256",
                         source.display()
@@ -335,7 +317,7 @@ fn extract_tar<R: Read>(
     }
     for (source, link) in &symlinks {
         let output = destination.join(&link.output_relative);
-        if sha256_file(&output, cancel)? != link.expected_sha256 {
+        if sha256_file_cancellable(&output, Some(cancel))? != link.expected_sha256 {
             return Err(InstallError::Payload(format!(
                 "materialized symlink {} failed SHA-256",
                 source.display()
@@ -383,6 +365,7 @@ pub fn extract_archive(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
     use std::io::Cursor;
 
     fn payload(body: &[u8]) -> ExtractFile {

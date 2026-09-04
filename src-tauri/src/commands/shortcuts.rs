@@ -6,11 +6,14 @@ pub(crate) fn get_shortcut_status() -> ShortcutStatus {
 }
 
 #[tauri::command]
-pub(crate) fn retry_shortcut() -> ShortcutStatus {
-    crate::shortcuts::retry()
+pub(crate) async fn retry_shortcut() -> Result<ShortcutStatus, String> {
+    crate::blocking::run_blocking("shortcut retry", crate::shortcuts::retry).await
 }
 
 #[tauri::command]
-pub(crate) fn repair_legacy_shortcut() -> Result<LegacyShortcutSetup, String> {
-    crate::shortcuts::repair(&crate::status::current_exe_string())
+pub(crate) async fn repair_legacy_shortcut() -> Result<LegacyShortcutSetup, String> {
+    crate::blocking::run_blocking("legacy shortcut repair", || {
+        crate::shortcuts::repair(&crate::status::current_exe_string())
+    })
+    .await?
 }

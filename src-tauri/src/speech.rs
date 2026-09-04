@@ -89,70 +89,119 @@ fn resolved_engine(engine: &echo::transcribe::ResolvedEngine) -> ResolvedSpeechE
 }
 
 fn language_options(resolved: Option<&echo::transcribe::ResolvedRun>) -> LanguageOptions {
-    match resolved.map(|run| &run.engine) {
-        Some(echo::transcribe::ResolvedEngine::ParakeetTdt06bV3) => LanguageOptions {
-            mode: LanguageMode::Parakeet,
-            model: Some("tdt-0.6b-v3".to_string()),
-            options: echo_core::PARAKEET_LANGUAGES
-                .iter()
-                .filter_map(|code| echo_core::Language::from_code(code))
-                .map(language_option)
-                .collect(),
-        },
-        Some(echo::transcribe::ResolvedEngine::Whisper {
+    let projection = resolved
+        .and_then(|run| projection_for_resolved_engine(&run.engine))
+        .unwrap_or_else(|| projection_for_support(echo::stt::language_support()));
+    build_language_options(projection)
+}
+
+pub(crate) fn language_options_for_support(support: echo::stt::LanguageSupport) -> LanguageOptions {
+    build_language_options(projection_for_support(support))
+}
+
+enum LanguageProjection {
+    Whisper {
+        model: Option<String>,
+        multilingual: bool,
+    },
+    Parakeet {
+        model: Option<String>,
+        grouping: LanguageGrouping,
+    },
+}
+
+#[derive(Clone, Copy)]
+enum LanguageGrouping {
+    Common,
+    All,
+}
+
+fn projection_for_resolved_engine(
+    engine: &echo::transcribe::ResolvedEngine,
+) -> Option<LanguageProjection> {
+    match engine {
+        echo::transcribe::ResolvedEngine::Whisper {
             model,
-            multilingual: false,
+            multilingual,
             ..
-        }) => LanguageOptions {
-            mode: LanguageMode::English,
+        } => Some(LanguageProjection::Whisper {
             model: Some(model.clone()),
-            options: vec![language_option(echo_core::Language::ENGLISH)],
+            multilingual: *multilingual,
+        }),
+        echo::transcribe::ResolvedEngine::ParakeetTdt06bV3 => Some(LanguageProjection::Parakeet {
+            model: Some("tdt-0.6b-v3".to_string()),
+            grouping: LanguageGrouping::Common,
+        }),
+        echo::transcribe::ResolvedEngine::Fake => None,
+    }
+}
+
+fn projection_for_support(support: echo::stt::LanguageSupport) -> LanguageProjection {
+    match support {
+        echo::stt::LanguageSupport::WhisperMultilingual => LanguageProjection::Whisper {
+            model: None,
+            multilingual: true,
         },
-        Some(echo::transcribe::ResolvedEngine::Whisper {
+        echo::stt::LanguageSupport::WhisperEnglishOnly { model } => LanguageProjection::Whisper {
+            model: Some(model),
+            multilingual: false,
+        },
+        echo::stt::LanguageSupport::Parakeet => LanguageProjection::Parakeet {
+            model: None,
+            grouping: LanguageGrouping::All,
+        },
+    }
+}
+
+fn build_language_options(projection: LanguageProjection) -> LanguageOptions {
+    let (mode, model, options) = match projection {
+        LanguageProjection::Whisper {
             model,
             multilingual: true,
-            ..
-        }) => LanguageOptions {
-            mode: LanguageMode::Multilingual,
-            model: Some(model.clone()),
-            options: echo_core::Language::all().map(language_option).collect(),
-        },
-        Some(echo::transcribe::ResolvedEngine::Fake) | None => fallback_language_options(),
-    }
-}
-
-fn fallback_language_options() -> LanguageOptions {
-    match echo::stt::language_support() {
-        echo::stt::LanguageSupport::WhisperMultilingual => LanguageOptions {
-            mode: LanguageMode::Multilingual,
-            model: None,
-            options: echo_core::Language::all().map(language_option).collect(),
-        },
-        echo::stt::LanguageSupport::WhisperEnglishOnly { model } => LanguageOptions {
-            mode: LanguageMode::English,
-            model: Some(model),
-            options: vec![language_option(echo_core::Language::ENGLISH)],
-        },
-        echo::stt::LanguageSupport::Parakeet => LanguageOptions {
-            mode: LanguageMode::Parakeet,
-            model: Some("tdt-0.6b-v3".to_string()),
-            options: echo_core::PARAKEET_LANGUAGES
+        } => (
+            LanguageMode::Multilingual,
+            model,
+            echo_core::Language::all()
+                .map(|language| language_option(language, LanguageGrouping::Common))
+                .collect(),
+        ),
+        LanguageProjection::Whisper {
+            model,
+            multilingual: false,
+        } => (
+            LanguageMode::English,
+            model,
+            vec![language_option(
+                echo_core::Language::ENGLISH,
+                LanguageGrouping::Common,
+            )],
+        ),
+        LanguageProjection::Parakeet { model, grouping } => (
+            LanguageMode::Parakeet,
+            model,
+            echo_core::PARAKEET_LANGUAGES
                 .iter()
                 .filter_map(|code| echo_core::Language::from_code(code))
-                .map(language_option)
+                .map(|language| language_option(language, grouping))
                 .collect(),
-        },
+        ),
+    };
+    LanguageOptions {
+        mode,
+        model,
+        options,
     }
 }
 
-fn language_option(language: echo_core::Language) -> LanguageOption {
+fn language_option(language: echo_core::Language, grouping: LanguageGrouping) -> LanguageOption {
     LanguageOption {
         code: language.code().to_string(),
         english_name: language.english_name().to_string(),
-        group: if ["en", "de", "es", "fr"].contains(&language.code()) {
-            LanguageGroup::Common
-        } else {
-            LanguageGroup::All
+        group: match grouping {
+            LanguageGrouping::Common if ["en", "de", "es", "fr"].contains(&language.code()) => {
+                LanguageGroup::Common
+            }
+            LanguageGrouping::Common | LanguageGrouping::All => LanguageGroup::All,
         },
     }
 }
@@ -214,5 +263,83 @@ fn whisper_applicability(
         None => WhisperApplicability::Applicable {
             gpu: WhisperGpuSetup::Ready,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn resolved_run(engine: echo::transcribe::ResolvedEngine) -> echo::transcribe::ResolvedRun {
+        echo::transcribe::ResolvedRun {
+            engine,
+            language: echo_core::LanguageChoice::default(),
+        }
+    }
+
+    fn assert_common_grouping(options: &[LanguageOption]) {
+        for option in options {
+            let expected = if ["en", "de", "es", "fr"].contains(&option.code.as_str()) {
+                LanguageGroup::Common
+            } else {
+                LanguageGroup::All
+            };
+            assert_eq!(
+                option.group, expected,
+                "unexpected group for {}",
+                option.code
+            );
+        }
+    }
+
+    #[test]
+    fn resolved_settings_projection_preserves_language_wire_values() {
+        let parakeet = resolved_run(echo::transcribe::ResolvedEngine::ParakeetTdt06bV3);
+        let parakeet_options = language_options(Some(&parakeet));
+        assert_eq!(parakeet_options.mode, LanguageMode::Parakeet);
+        assert_eq!(parakeet_options.model.as_deref(), Some("tdt-0.6b-v3"));
+        assert_eq!(
+            parakeet_options.options.len(),
+            echo_core::PARAKEET_LANGUAGES.len()
+        );
+        for (option, code) in parakeet_options
+            .options
+            .iter()
+            .zip(echo_core::PARAKEET_LANGUAGES.iter().copied())
+        {
+            let language = echo_core::Language::from_code(code).unwrap();
+            assert_eq!(option.code, code);
+            assert_eq!(option.english_name, language.english_name());
+        }
+        assert_common_grouping(&parakeet_options.options);
+
+        let english = resolved_run(echo::transcribe::ResolvedEngine::Whisper {
+            model: "base.en".to_string(),
+            multilingual: false,
+            model_path: None,
+        });
+        let english_options = language_options(Some(&english));
+        assert_eq!(english_options.mode, LanguageMode::English);
+        assert_eq!(english_options.model.as_deref(), Some("base.en"));
+        assert_eq!(english_options.options.len(), 1);
+        assert_eq!(english_options.options[0].code, "en");
+        assert_eq!(english_options.options[0].english_name, "english");
+        assert_eq!(english_options.options[0].group, LanguageGroup::Common);
+
+        let multilingual = resolved_run(echo::transcribe::ResolvedEngine::Whisper {
+            model: "large-v3".to_string(),
+            multilingual: true,
+            model_path: None,
+        });
+        let multilingual_options = language_options(Some(&multilingual));
+        assert_eq!(multilingual_options.mode, LanguageMode::Multilingual);
+        assert_eq!(multilingual_options.model.as_deref(), Some("large-v3"));
+        let expected_languages = echo_core::Language::all().collect::<Vec<_>>();
+        assert_eq!(multilingual_options.options.len(), expected_languages.len());
+        for (option, language) in multilingual_options.options.iter().zip(expected_languages) {
+            assert_eq!(option.code, language.code());
+            assert_eq!(option.english_name, language.english_name());
+        }
+        assert_common_grouping(&multilingual_options.options);
     }
 }

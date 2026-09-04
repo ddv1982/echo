@@ -28,7 +28,7 @@ pub use language::{Language, LanguageChoice, PARAKEET_LANGUAGES};
 pub use nonspeech::strip_nonspeech;
 pub use paths::{
     config_dir, config_path, data_dir, dictionary_path, ensure_private_dir, history_path,
-    status_path, write_atomic, write_atomic_private, PrivateDir,
+    status_path, try_config_dir, try_data_dir, write_atomic, write_atomic_private, PrivateDir,
 };
 pub use recording::{
     resolve_recording_limit, RecordingLimit, RecordingLimitSource, ResolvedRecordingLimit,

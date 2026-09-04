@@ -53,3 +53,50 @@ pub trait Injector {
     fn focus(&self) -> Result<FocusTarget, FailReason>;
     fn inject(&self, text: &str, target: &FocusTarget) -> InjectReport;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inject_report_wire_shapes_remain_compatible() {
+        let cases = [
+            (
+                InjectReport::Typed {
+                    backend: InjectBackend::Ydotool,
+                },
+                r#"{"Typed":{"backend":"Ydotool"}}"#,
+            ),
+            (
+                InjectReport::Typed {
+                    backend: InjectBackend::Wtype,
+                },
+                r#"{"Typed":{"backend":"Wtype"}}"#,
+            ),
+            (
+                InjectReport::Pasted {
+                    backend: InjectBackend::Xdotool,
+                },
+                r#"{"Pasted":{"backend":"Xdotool"}}"#,
+            ),
+            (InjectReport::ClipboardOnly, r#""ClipboardOnly""#),
+            (
+                InjectReport::Failed {
+                    reason: FailReason::InjectPermission,
+                },
+                r#"{"Failed":{"reason":"InjectPermission"}}"#,
+            ),
+            (
+                InjectReport::Failed {
+                    reason: FailReason::InjectUnconfirmed,
+                },
+                r#"{"Failed":{"reason":"InjectUnconfirmed"}}"#,
+            ),
+        ];
+
+        for (report, wire) in cases {
+            assert_eq!(serde_json::to_string(&report).unwrap(), wire);
+            assert_eq!(serde_json::from_str::<InjectReport>(wire).unwrap(), report);
+        }
+    }
+}

@@ -27,7 +27,9 @@ pub struct TakeoverReservation(Option<ToggleSession>);
 impl TakeoverReservation {
     fn commit(mut self) {
         let session = self.0.take().expect("takeover reservation");
-        *COMMITTED_TAKEOVER.lock().expect("committed takeover lock") = Some(session);
+        *COMMITTED_TAKEOVER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(session);
     }
 }
 
@@ -684,7 +686,7 @@ impl ToggleSession {
         self.directory
             .read_to_string("recording.stop".as_ref())
             .ok()
-            .is_some_and(|token| token.trim() == self.token)
+            .is_some_and(|request| stop_request_matches(Some(&self.token), &request))
     }
 
     fn clear_stop_request(&self) {
@@ -765,6 +767,13 @@ fn lock_owner_is_alive(path: &Path) -> bool {
 fn write_stop_request(path: &Path, owner: &LockOwner) -> Result<(), String> {
     let contents = owner.token.as_deref().unwrap_or("stop");
     echo_core::write_atomic_private(path, format!("{contents}\n").as_bytes())
+}
+
+fn stop_request_matches(token: Option<&str>, request: &str) -> bool {
+    match token {
+        Some(token) => request.trim() == token,
+        None => request.trim() == "stop",
+    }
 }
 
 #[cfg(test)]
@@ -1211,6 +1220,35 @@ mod tests {
         assert!(!dir.join("recording.stop").exists());
         assert!(ToggleSession::request_stop_for_token_in(&dir, &session.token).unwrap());
         assert!(session.stop_requested());
+    }
+
+    #[test]
+    fn live_pid_only_lock_receives_an_observable_legacy_stop_request() {
+        let dir = std::env::temp_dir().join(format!(
+            "echo-legacy-stop-{}-{}",
+            std::process::id(),
+            new_session_token()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        let session = ToggleSession::try_start_in(&dir).unwrap().unwrap();
+        fs::write(
+            dir.join("recording.lock"),
+            format!("{}\n", std::process::id()),
+        )
+        .unwrap();
+
+        let owner = live_lock_owner(&dir.join("recording.lock")).expect("live legacy owner");
+        assert_eq!(owner.token, None);
+        assert!(matches!(
+            ToggleSession::start_or_stop_in(&dir).unwrap(),
+            ToggleAction::Stop(LockOwner { token: None, .. })
+        ));
+        let request = fs::read_to_string(dir.join("recording.stop")).unwrap();
+        assert!(stop_request_matches(owner.token.as_deref(), &request));
+        assert_eq!(request, "stop\n");
+
+        drop(session);
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

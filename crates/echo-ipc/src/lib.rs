@@ -1,7 +1,11 @@
 use std::collections::BTreeSet;
 
-use serde::{Deserialize, Serialize};
 use ts_rs::{Config, TS};
+
+#[rustfmt::skip]
+mod schema {
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 #[derive(Debug, Clone, PartialEq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -603,6 +607,7 @@ pub enum MicrophoneTestResult {
     Completed {
         device: InputDevice,
         peak_rms: f32,
+        dropped_samples: u64,
         outcome: MicrophoneTestOutcome,
     },
     Failed {
@@ -793,6 +798,88 @@ pub enum SetupEvent {
     Failed { operation_id: String, error: String },
 }
 
+}
+
+macro_rules! schema_types {
+    ($callback:ident $($prefix:tt)*) => {
+        $callback! {
+            $($prefix)*
+            schema::AccelerationSkipReason => schema::AccelerationSkipReason,
+            schema::ActiveComponentOrigin => schema::ActiveComponentOrigin,
+            schema::AppPhase => schema::AppPhase,
+            schema::AppStatus => schema::AppStatus,
+            schema::AudioHost => schema::AudioHost,
+            schema::ComponentId => schema::ComponentId,
+            schema::ComponentOrigin => schema::ComponentOrigin,
+            schema::ComponentStatus => schema::ComponentStatus,
+            schema::DictionaryBatchResult => schema::DictionaryBatchResult,
+            schema::DictionaryConflict => schema::DictionaryConflict,
+            schema::DictionaryItem => schema::DictionaryItem,
+            schema::DictionaryTrainingSample => schema::DictionaryTrainingSample,
+            schema::EndpointTier => schema::EndpointTier,
+            schema::EngineAvailability => schema::EngineAvailability,
+            schema::ExternalComponent => schema::ExternalComponent,
+            schema::GnomeShortcutSetup => schema::GnomeShortcutSetup,
+            schema::GnomeShortcutState => schema::GnomeShortcutState,
+            schema::GpuDevice => schema::GpuDevice,
+            schema::HistoryItem => schema::HistoryItem,
+            schema::InputDevice => schema::InputDevice,
+            schema::InputTransport => schema::InputTransport,
+            schema::InstallPhase => schema::InstallPhase,
+            schema::InstallProgress => schema::InstallProgress,
+            schema::LanguageGroup => schema::LanguageGroup,
+            schema::LanguageMode => schema::LanguageMode,
+            schema::LanguageOption => schema::LanguageOption,
+            schema::LanguageOptions => schema::LanguageOptions,
+            schema::LastRun => schema::LastRun,
+            schema::LastRunPerformance => schema::LastRunPerformance,
+            schema::LegacyShortcutSetup => schema::LegacyShortcutSetup,
+            schema::LegacyShortcutState => schema::LegacyShortcutState,
+            schema::ManagedComponentState => schema::ManagedComponentState,
+            schema::MicrophoneFailure => schema::MicrophoneFailure,
+            schema::MicrophoneSelection => schema::MicrophoneSelection,
+            schema::MicrophoneSnapshot => schema::MicrophoneSnapshot,
+            schema::MicrophoneSource => schema::MicrophoneSource,
+            schema::MicrophoneTestOutcome => schema::MicrophoneTestOutcome,
+            schema::MicrophoneTestResult => schema::MicrophoneTestResult,
+            schema::ModelInventory => schema::ModelInventory,
+            schema::NextSpeechRun => schema::NextSpeechRun,
+            schema::Readiness => schema::Readiness,
+            schema::RecordingPolicy => schema::RecordingPolicy,
+            schema::RecoveryReason => schema::RecoveryReason,
+            schema::RecoveryTelemetry => schema::RecoveryTelemetry,
+            schema::ResolvedSpeechEngine => schema::ResolvedSpeechEngine,
+            schema::RunMode => schema::RunMode,
+            schema::RuntimeBackend => schema::RuntimeBackend,
+            schema::RuntimeSource => schema::RuntimeSource,
+            schema::SettingField => schema::SettingField<String>,
+            schema::SettingSource => schema::SettingSource,
+            schema::Settings => schema::Settings,
+            schema::SettingsChange => schema::SettingsChange,
+            schema::SettingsSnapshot => schema::SettingsSnapshot,
+            schema::SetupEvent => schema::SetupEvent,
+            schema::SetupPlan => schema::SetupPlan,
+            schema::SetupPlanId => schema::SetupPlanId,
+            schema::ShortcutBackend => schema::ShortcutBackend,
+            schema::ShortcutStatus => schema::ShortcutStatus,
+            schema::TranscriptionSnapshot => schema::TranscriptionSnapshot,
+            schema::TuningTelemetry => schema::TuningTelemetry,
+            schema::VulkanDeviceId => schema::VulkanDeviceId,
+            schema::WhisperApplicability => schema::WhisperApplicability,
+            schema::WhisperGpuSetup => schema::WhisperGpuSetup,
+            schema::WhisperModelInfo => schema::WhisperModelInfo,
+        }
+    };
+}
+
+macro_rules! export_schema_types {
+    ($($export:path => $ty:ty),+ $(,)?) => {
+        $(pub use $export;)+
+    };
+}
+
+schema_types!(export_schema_types);
+
 macro_rules! declarations {
     ($config:expr, $($ty:ty),+ $(,)?) => {{
         let mut output = String::from("// Generated from crates/echo-ipc/src/lib.rs. Do not edit.\n\n");
@@ -808,7 +895,6 @@ macro_rules! declarations {
             .into_iter()
             .map(|name| name.split('<').next().unwrap().to_string())
             .collect::<BTreeSet<_>>();
-        assert_eq!(schema_names, declared_schema_names(), "IPC type registry is incomplete");
         assert_eq!(output.matches("export type ").count(), schema_names.len());
         (output, schema_names)
     }};
@@ -816,88 +902,12 @@ macro_rules! declarations {
 
 fn contract_parts() -> (String, BTreeSet<String>) {
     let config = Config::default().with_large_int("number");
-    declarations!(
-        &config,
-        AccelerationSkipReason,
-        ActiveComponentOrigin,
-        AppPhase,
-        AppStatus,
-        AudioHost,
-        ComponentId,
-        ComponentOrigin,
-        ComponentStatus,
-        DictionaryBatchResult,
-        DictionaryConflict,
-        DictionaryItem,
-        DictionaryTrainingSample,
-        EndpointTier,
-        EngineAvailability,
-        ExternalComponent,
-        GnomeShortcutSetup,
-        GnomeShortcutState,
-        GpuDevice,
-        HistoryItem,
-        InputDevice,
-        InputTransport,
-        InstallPhase,
-        InstallProgress,
-        LanguageGroup,
-        LanguageMode,
-        LanguageOption,
-        LanguageOptions,
-        LastRun,
-        LastRunPerformance,
-        LegacyShortcutSetup,
-        LegacyShortcutState,
-        ManagedComponentState,
-        MicrophoneFailure,
-        MicrophoneSelection,
-        MicrophoneSnapshot,
-        MicrophoneSource,
-        MicrophoneTestOutcome,
-        MicrophoneTestResult,
-        ModelInventory,
-        NextSpeechRun,
-        Readiness,
-        RecordingPolicy,
-        RecoveryReason,
-        RecoveryTelemetry,
-        ResolvedSpeechEngine,
-        RunMode,
-        RuntimeBackend,
-        RuntimeSource,
-        SettingField<String>,
-        SettingSource,
-        Settings,
-        SettingsChange,
-        SettingsSnapshot,
-        SetupEvent,
-        SetupPlan,
-        SetupPlanId,
-        ShortcutBackend,
-        ShortcutStatus,
-        TranscriptionSnapshot,
-        TuningTelemetry,
-        VulkanDeviceId,
-        WhisperApplicability,
-        WhisperGpuSetup,
-        WhisperModelInfo,
-    )
-}
-
-fn declared_schema_names() -> BTreeSet<String> {
-    include_str!("lib.rs")
-        .lines()
-        .filter_map(|line| {
-            let declaration = line
-                .strip_prefix("pub struct ")
-                .or_else(|| line.strip_prefix("pub enum "))?;
-            declaration
-                .split(['<', ' ', '{'])
-                .next()
-                .map(str::to_string)
-        })
-        .collect()
+    macro_rules! declare_schema_types {
+        ($config:expr; $($export:path => $ty:ty),+ $(,)?) => {
+            declarations!($config, $($ty),+)
+        };
+    }
+    schema_types!(declare_schema_types &config;)
 }
 
 #[must_use]

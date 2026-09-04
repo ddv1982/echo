@@ -1,6 +1,6 @@
 use echo_desktop::ipc::AppStatus;
 
 #[tauri::command]
-pub(crate) fn get_app_status() -> AppStatus {
-    crate::status::app_status()
+pub(crate) async fn get_app_status() -> Result<AppStatus, String> {
+    crate::blocking::run_blocking("application status", crate::status::app_status).await
 }

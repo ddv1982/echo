@@ -1,9 +1,9 @@
 import { Check, Clock3, Copy, Search, Trash2 } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { BarsMotif, ViewHeader } from '../app/chrome'
 import { formatDateTime, messageFrom } from '../app/formatting'
-import { groupByDay } from '../stats'
+import { groupByDay, millisecondsUntilNextLocalDay } from '../stats'
 import { copyText } from '../tauri'
 import type { HistoryItem } from '../generated/ipc'
 
@@ -21,11 +21,19 @@ export function HistoryView({
   const [query, setQuery] = useState('')
   const [pendingId, setPendingId] = useState<string | null>(null)
   const [clearing, setClearing] = useState(false)
+  const [calendarDate, setCalendarDate] = useState(() => new Date())
+  useEffect(() => {
+    const timer = window.setTimeout(
+      () => setCalendarDate(new Date()),
+      millisecondsUntilNextLocalDay(calendarDate),
+    )
+    return () => window.clearTimeout(timer)
+  }, [calendarDate])
   const filtered = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase()
     return needle ? items.filter((item) => item.text.toLocaleLowerCase().includes(needle)) : items
   }, [items, query])
-  const groups = useMemo(() => groupByDay(filtered, new Date()), [filtered])
+  const groups = useMemo(() => groupByDay(filtered, calendarDate), [filtered, calendarDate])
   const busy = clearing || pendingId !== null
   const remove = async (item: HistoryItem) => {
     if (busy || !window.confirm('Delete this transcript permanently? This action cannot be undone.')) return
@@ -108,13 +116,40 @@ function TranscriptRow({
   onError: (message: string) => void
 }) {
   const [copied, setCopied] = useState(false)
+  const mountedRef = useRef(true)
+  const copyVersionRef = useRef(0)
+  const feedbackTimeoutRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      copyVersionRef.current += 1
+      if (feedbackTimeoutRef.current !== null) {
+        window.clearTimeout(feedbackTimeoutRef.current)
+        feedbackTimeoutRef.current = null
+      }
+    }
+  }, [])
+
   const copy = async () => {
+    if (!mountedRef.current) return
+    const version = ++copyVersionRef.current
+    if (feedbackTimeoutRef.current !== null) {
+      window.clearTimeout(feedbackTimeoutRef.current)
+      feedbackTimeoutRef.current = null
+    }
+    setCopied(false)
     try {
       await copyText(item.text)
+      if (!mountedRef.current || copyVersionRef.current !== version) return
       setCopied(true)
-      window.setTimeout(() => setCopied(false), 1200)
+      feedbackTimeoutRef.current = window.setTimeout(() => {
+        feedbackTimeoutRef.current = null
+        if (mountedRef.current && copyVersionRef.current === version) setCopied(false)
+      }, 1200)
     } catch (reason) {
-      onError(messageFrom(reason))
+      if (mountedRef.current && copyVersionRef.current === version) onError(messageFrom(reason))
     }
   }
   return (

@@ -1,0 +1,17 @@
+@container settings (max-width: 50rem) {
+  .setting-row,
+  .setting-line,
+  .speech-summary {
+    align-items: stretch;
+    flex-direction: column;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .setting-actions {
+    justify-content: flex-start;
+  }
+
+  .setting-row select {
+    width: 100%;
+  }
+}

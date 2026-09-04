@@ -49,11 +49,27 @@ impl Pcm16kMono {
             .samples
             .iter()
             .map(|s| {
-                let v = f64::from(*s) / f64::from(i16::MAX);
+                let v = f64::from(*s) / -f64::from(i16::MIN);
                 v * v
             })
             .sum();
-        (sum_sq / self.samples.len() as f64).sqrt() as f32
+        ((sum_sq / self.samples.len() as f64).sqrt() as f32).clamp(0.0, 1.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rms_is_bounded_for_signed_pcm_extrema() {
+        let minimum = Pcm16kMono::from_samples(vec![i16::MIN]);
+        let maximum = Pcm16kMono::from_samples(vec![i16::MAX]);
+        let mixed = Pcm16kMono::from_samples(vec![i16::MIN, i16::MAX]);
+
+        assert_eq!(minimum.peak_rms(), 1.0);
+        assert!(maximum.peak_rms() <= 1.0);
+        assert!(mixed.peak_rms() <= 1.0);
     }
 }
 

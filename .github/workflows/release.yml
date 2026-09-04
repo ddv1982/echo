@@ -11,8 +11,7 @@ on:
   schedule:
     - cron: "17 4 * * *"
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
   group: release-${{ github.workflow }}-${{ github.ref }}
@@ -99,9 +98,12 @@ jobs:
             --sha "$RELEASE_SHA"
 
   linux-packages:
+    if: github.event_name != 'pull_request'
     needs: release-policy
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: read
     env:
       ARTIFACT_STEM: ${{ github.ref_type == 'tag' && format('echo-{0}-linux', github.ref_name) || format('echo-nightly-{0}-linux', github.sha) }}
     steps:
@@ -221,9 +223,12 @@ jobs:
           if-no-files-found: error
 
   appimage:
+    if: github.event_name != 'pull_request'
     needs: release-policy
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: read
     env:
       ARTIFACT_STEM: ${{ github.ref_type == 'tag' && format('echo-{0}-linux', github.ref_name) || format('echo-nightly-{0}-linux', github.sha) }}
       # linuxdeploy is an AppImage. GitHub-hosted Ubuntu 24.04 runners
@@ -300,9 +305,12 @@ jobs:
           if-no-files-found: error
 
   release-assets:
+    if: github.event_name != 'pull_request'
     needs: [linux-packages, appimage]
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
     env:
       ARTIFACT_STEM: ${{ github.ref_type == 'tag' && format('echo-{0}-linux', github.ref_name) || format('echo-nightly-{0}-linux', github.sha) }}
     steps:
@@ -333,6 +341,7 @@ jobs:
             release-assets/bin/echo-desktop \
             release-assets/bin/echo-desktop.cdx.json \
             LICENSE-MIT \
+            THIRD_PARTY.md \
             release-assets/publish/
 
       - name: Generate release checksums
@@ -409,7 +418,9 @@ jobs:
           path: release-assets/publish
 
       - name: Extract release notes
-        run: python3 scripts/changelog-notes.py "${{ github.ref_name }}" > release-notes.md
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python3 scripts/changelog-notes.py "$RELEASE_TAG" > release-notes.md
 
       - name: Verify the downloaded release checksums
         run: scripts/generate-release-checksums.sh --verify release-assets/publish

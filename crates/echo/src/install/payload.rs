@@ -6,13 +6,12 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-use sha2::{Digest, Sha256};
-
 use super::catalog::{
     self, archive_component, component, ArtifactFormat, ComponentId, PayloadKind,
 };
 use super::extract::{ExtractFile, ExtractionPlan};
 use super::filesystem::ensure_contained;
+use super::sha256_file_cancellable;
 use super::types::{InstallError, InstalledFile};
 
 pub(super) fn expected_files(id: ComponentId) -> Vec<InstalledFile> {
@@ -268,26 +267,11 @@ pub(super) fn verify_payload_cancellable(
                 )));
             }
         }
-        if full {
-            let mut source = fs::File::open(&path)?;
-            let mut hash = Sha256::new();
-            let mut buffer = [0u8; 64 * 1024];
-            loop {
-                if cancel.is_some_and(|cancel| cancel.load(Ordering::Relaxed)) {
-                    return Err(InstallError::Cancelled);
-                }
-                let read = source.read(&mut buffer)?;
-                if read == 0 {
-                    break;
-                }
-                hash.update(&buffer[..read]);
-            }
-            if format!("{:x}", hash.finalize()) != file.sha256 {
-                return Err(InstallError::Payload(format!(
-                    "{} is corrupt",
-                    file.relative_path
-                )));
-            }
+        if full && sha256_file_cancellable(&path, cancel)? != file.sha256 {
+            return Err(InstallError::Payload(format!(
+                "{} is corrupt",
+                file.relative_path
+            )));
         }
     }
     Ok(())

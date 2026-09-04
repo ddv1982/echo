@@ -1,17 +1,22 @@
+use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use caseless::Caseless;
+use fs2::FileExt;
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::paths::{dictionary_path, read_private, set_aside_corrupt, write_atomic_private};
+use crate::paths::{
+    dictionary_path, read_private, set_aside_corrupt, write_atomic_private, PrivateDir,
+};
 
 const MATCH_CHUNK_ENTRIES: usize = 64;
 const MATCH_CHUNK_PATTERN_BYTES: usize = 16 * 1024;
+static DICTIONARY_WRITES: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Copy)]
 struct MatchLimits {
@@ -148,9 +153,38 @@ pub struct DictionaryBatchOutcome {
     pub conflicts: Vec<DictionaryConflict>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 struct DictFile {
     entries: Vec<DictEntry>,
+}
+
+impl<'de> Deserialize<'de> for DictFile {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct CurrentDictFile {
+            entries: Vec<DictEntry>,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum DictFileWire {
+            Current(CurrentDictFile),
+            Other(std::collections::BTreeMap<String, serde::de::IgnoredAny>),
+        }
+
+        match DictFileWire::deserialize(deserializer)? {
+            DictFileWire::Current(file) => Ok(Self {
+                entries: file.entries,
+            }),
+            DictFileWire::Other(fields) if fields.is_empty() => Ok(Self::default()),
+            DictFileWire::Other(_) => Err(serde::de::Error::custom(
+                "dictionary object is missing its entries field",
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -231,20 +265,19 @@ impl Dictionary {
             written: written.into(),
             created_at: now_secs(),
         };
-        self.entries.push(entry.clone());
-        self.save()?;
-        Ok(entry)
+        self.update_locked(move |entries| {
+            entries.push(entry.clone());
+            Ok((entry, true))
+        })
     }
 
     pub fn remove(&mut self, spoken: &str, written: &str) -> Result<bool, String> {
-        let original_len = self.entries.len();
-        self.entries
-            .retain(|entry| entry.spoken != spoken || entry.written != written);
-        let removed = self.entries.len() != original_len;
-        if removed {
-            self.save()?;
-        }
-        Ok(removed)
+        self.update_locked(|entries| {
+            let original_len = entries.len();
+            entries.retain(|entry| entry.spoken != spoken || entry.written != written);
+            let removed = entries.len() != original_len;
+            Ok((removed, removed))
+        })
     }
 
     pub fn add_batch(
@@ -256,97 +289,129 @@ impl Dictionary {
         if written.is_empty() {
             return Err("The written form is required.".to_string());
         }
+        let spoken_variants = spoken_variants.into_iter();
 
-        let canonical_key = phrase_key(&written);
-        let mut seen = std::collections::HashSet::new();
-        let mut candidates = Vec::new();
-        let mut unchanged = 0;
+        self.update_locked(move |entries| {
+            let canonical_key = phrase_key(&written);
+            let mut seen = std::collections::HashSet::new();
+            let mut candidates = Vec::new();
+            let mut unchanged = 0;
 
-        for spoken in spoken_variants {
-            let spoken = clean_phrase(&spoken);
-            if spoken.is_empty() {
-                unchanged += 1;
-                continue;
+            for spoken in spoken_variants {
+                let spoken = clean_phrase(&spoken);
+                if spoken.is_empty() {
+                    unchanged += 1;
+                    continue;
+                }
+                let key = phrase_key(&spoken);
+                if key == canonical_key || !seen.insert(key.clone()) {
+                    unchanged += 1;
+                    continue;
+                }
+                candidates.push((key, spoken));
             }
-            let key = phrase_key(&spoken);
-            if key == canonical_key || !seen.insert(key.clone()) {
-                unchanged += 1;
-                continue;
-            }
-            candidates.push((key, spoken));
-        }
 
-        let mut additions = Vec::new();
-        let mut conflicts = Vec::new();
-        for (key, spoken) in candidates {
-            let matching = self
-                .entries
-                .iter()
-                .filter(|entry| phrase_key(&entry.spoken) == key)
-                .collect::<Vec<_>>();
-            if matching.is_empty() {
-                additions.push(spoken);
-                continue;
-            }
-            if matching
-                .iter()
-                .all(|entry| clean_phrase(&entry.written) == written)
-            {
-                unchanged += 1;
-                continue;
-            }
-            for entry in matching {
-                if clean_phrase(&entry.written) != written {
-                    conflicts.push(DictionaryConflict {
-                        spoken: spoken.clone(),
-                        written: entry.written.clone(),
-                    });
+            let mut additions = Vec::new();
+            let mut conflicts = Vec::new();
+            for (key, spoken) in candidates {
+                let matching = entries
+                    .iter()
+                    .filter(|entry| phrase_key(&entry.spoken) == key)
+                    .collect::<Vec<_>>();
+                if matching.is_empty() {
+                    additions.push(spoken);
+                    continue;
+                }
+                if matching
+                    .iter()
+                    .all(|entry| clean_phrase(&entry.written) == written)
+                {
+                    unchanged += 1;
+                    continue;
+                }
+                for entry in matching {
+                    if clean_phrase(&entry.written) != written {
+                        conflicts.push(DictionaryConflict {
+                            spoken: spoken.clone(),
+                            written: entry.written.clone(),
+                        });
+                    }
                 }
             }
-        }
 
-        conflicts.sort_by(|left, right| {
-            phrase_key(&left.spoken)
-                .cmp(&phrase_key(&right.spoken))
-                .then_with(|| left.written.cmp(&right.written))
-        });
-        conflicts.dedup();
-        if !conflicts.is_empty() {
-            return Ok(DictionaryBatchOutcome {
-                added: 0,
-                unchanged,
-                conflicts,
+            conflicts.sort_by(|left, right| {
+                phrase_key(&left.spoken)
+                    .cmp(&phrase_key(&right.spoken))
+                    .then_with(|| left.written.cmp(&right.written))
             });
-        }
+            conflicts.dedup();
+            if !conflicts.is_empty() {
+                return Ok((
+                    DictionaryBatchOutcome {
+                        added: 0,
+                        unchanged,
+                        conflicts,
+                    },
+                    false,
+                ));
+            }
 
-        let added = additions.len();
-        let created_at = now_secs();
-        let original_len = self.entries.len();
-        self.entries
-            .extend(additions.into_iter().map(|spoken| DictEntry {
+            let added = additions.len();
+            let created_at = now_secs();
+            entries.extend(additions.into_iter().map(|spoken| DictEntry {
                 spoken,
                 written: written.clone(),
                 created_at,
             }));
-        if added > 0 {
-            if let Err(error) = self.save() {
-                self.entries.truncate(original_len);
-                return Err(error);
-            }
-        }
-        Ok(DictionaryBatchOutcome {
-            added,
-            unchanged,
-            conflicts: Vec::new(),
+            Ok((
+                DictionaryBatchOutcome {
+                    added,
+                    unchanged,
+                    conflicts: Vec::new(),
+                },
+                added > 0,
+            ))
         })
     }
 
     pub fn save(&self) -> Result<(), String> {
+        let _process_guard = dictionary_process_guard()?;
+        let _file_guard = lock_dictionary_file(&self.path)?;
+        let entries = match read_private(&self.path)? {
+            Some(raw) => serde_json::from_slice::<DictFile>(&raw)
+                .map(|file| file.entries)
+                .map_err(|error| {
+                    format!(
+                        "Dictionary file {} contains invalid JSON and was not loaded: {error}",
+                        self.path.display()
+                    )
+                })?,
+            None => self.entries.clone(),
+        };
+        self.save_entries(&entries)
+    }
+
+    fn save_entries(&self, entries: &[DictEntry]) -> Result<(), String> {
         let file = DictFile {
-            entries: self.entries.clone(),
+            entries: entries.to_vec(),
         };
         let raw = serde_json::to_string_pretty(&file).map_err(|err| err.to_string())?;
         write_atomic_private(&self.path, raw.as_bytes())
+    }
+
+    fn update_locked<T>(
+        &mut self,
+        update: impl FnOnce(&mut Vec<DictEntry>) -> Result<(T, bool), String>,
+    ) -> Result<T, String> {
+        let _process_guard = dictionary_process_guard()?;
+        let _file_guard = lock_dictionary_file(&self.path)?;
+        let mut entries = Self::load_from(&self.path)?.entries;
+        let (result, changed) = update(&mut entries)?;
+        if changed {
+            self.save_entries(&entries)?;
+        }
+        self.entries = entries;
+        Ok(result)
     }
 
     #[must_use]
@@ -408,6 +473,70 @@ impl Dictionary {
         hits.sort_by_key(|hit| hit.0);
         apply_hits(text, &hits)
     }
+}
+
+fn dictionary_process_guard() -> Result<std::sync::MutexGuard<'static, ()>, String> {
+    DICTIONARY_WRITES.lock().map_err(|_| {
+        "Dictionary writes are unavailable because the dictionary lock is poisoned.".to_string()
+    })
+}
+
+fn lock_dictionary_file(path: &Path) -> Result<fs::File, String> {
+    let parent = path
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let directory = PrivateDir::open(parent).map_err(|err| {
+        format!(
+            "Could not create dictionary lock directory {}: {err}",
+            parent.display()
+        )
+    })?;
+    let mut lock_name = path
+        .file_name()
+        .ok_or_else(|| format!("Could not derive a lock file for {}", path.display()))?
+        .to_os_string();
+    lock_name.push(".lock");
+    let lock_path = parent.join(lock_name);
+    let lock_file = directory
+        .open_or_create(lock_path.file_name().expect("lock path has a file name"))
+        .map_err(|err| {
+            format!(
+                "Could not open dictionary lock {}: {err}",
+                lock_path.display()
+            )
+        })?;
+    match lock_file.try_lock_exclusive() {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+            #[cfg(test)]
+            report_dictionary_lock_contention();
+            lock_file.lock_exclusive().map_err(|err| {
+                format!(
+                    "Could not lock dictionary file {}: {err}",
+                    lock_path.display()
+                )
+            })?;
+        }
+        Err(err) => {
+            return Err(format!(
+                "Could not lock dictionary file {}: {err}",
+                lock_path.display()
+            ));
+        }
+    }
+    Ok(lock_file)
+}
+
+#[cfg(test)]
+fn report_dictionary_lock_contention() {
+    let Some(address) = std::env::var_os("ECHO_TEST_DICTIONARY_CONTENTION_ADDRESS") else {
+        return;
+    };
+    let mut stream = std::net::TcpStream::connect(address.to_string_lossy().as_ref())
+        .expect("dictionary contention observer should accept a connection");
+    std::io::Write::write_all(&mut stream, b"dictionary lock contended")
+        .expect("dictionary contention marker should be written");
 }
 
 fn compile_phrase_matchers(
@@ -593,7 +722,10 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+    use crate::paths::{fail_next_private_write, PrivateWriteFailure};
+    use std::io::Read;
+    use std::net::TcpListener;
+    use std::process::{Command, Stdio};
 
     fn dict(entries: &[(&str, &str)]) -> Dictionary {
         Dictionary {
@@ -623,6 +755,19 @@ mod tests {
         dictionary.path = root.join("dictionary.json");
         dictionary.save().unwrap();
         dictionary
+    }
+
+    fn assert_no_dictionary_temp_file(path: &Path) {
+        let prefix = format!(".{}.tmp-", path.file_name().unwrap().to_string_lossy());
+        let residual = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name())
+            .find(|name| name.to_string_lossy().starts_with(&prefix));
+        assert!(
+            residual.is_none(),
+            "residual dictionary temp file: {residual:?}"
+        );
     }
 
     #[test]
@@ -820,8 +965,7 @@ mod tests {
                 .len(),
             2
         );
-        let _ = fs::remove_file(&dictionary.path);
-        let _ = fs::remove_dir(dictionary.path.parent().unwrap());
+        let _ = fs::remove_dir_all(dictionary.path.parent().unwrap());
     }
 
     #[test]
@@ -845,32 +989,24 @@ mod tests {
         );
         assert_eq!(dictionary.entries().len(), 1);
         assert_eq!(fs::read_to_string(&dictionary.path).unwrap(), before);
-        let _ = fs::remove_file(&dictionary.path);
-        let _ = fs::remove_dir(dictionary.path.parent().unwrap());
+        let _ = fs::remove_dir_all(dictionary.path.parent().unwrap());
     }
 
     #[test]
-    fn batch_write_failure_keeps_in_memory_entries_unchanged() {
-        let parent = std::env::temp_dir().join(format!(
-            "echo-dictionary-batch-blocked-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
-        fs::write(&parent, "not a directory").unwrap();
-        let mut dictionary = dict(&[("existing", "Existing")]);
-        dictionary.path = parent.join("dictionary.json");
+    fn batch_write_failure_keeps_memory_and_persisted_entries_unchanged() {
+        for failure in [PrivateWriteFailure::Write, PrivateWriteFailure::Sync] {
+            let mut dictionary = persisted_dict(&[("existing", "Existing")]);
+            let before_entries = dictionary.entries().to_vec();
+            let before_file = fs::read(&dictionary.path).unwrap();
 
-        let result = dictionary.add_batch("Canonical", ["new hearing".to_string()]);
+            fail_next_private_write(failure);
+            let result = dictionary.add_batch("Canonical", ["new hearing".to_string()]);
 
-        assert!(result.is_err());
-        assert_eq!(
-            dictionary.entries(),
-            dict(&[("existing", "Existing")]).entries()
-        );
-        let _ = fs::remove_file(parent);
+            assert!(result.is_err());
+            assert_eq!(dictionary.entries(), before_entries);
+            assert_eq!(fs::read(&dictionary.path).unwrap(), before_file);
+            let _ = fs::remove_dir_all(dictionary.path.parent().unwrap());
+        }
     }
 
     #[test]
@@ -894,6 +1030,53 @@ mod tests {
     }
 
     #[test]
+    fn stale_save_reloads_cross_process_state_instead_of_clobbering_it() {
+        let mut current = persisted_dict(&[("existing", "Existing")]);
+        let stale = Dictionary::load_from(&current.path).unwrap();
+        current.add("new hearing", "Canonical").unwrap();
+
+        stale.save().unwrap();
+
+        let persisted = Dictionary::load_from(&current.path).unwrap();
+        assert_eq!(persisted.entries(), current.entries());
+        let _ = fs::remove_dir_all(current.path.parent().unwrap());
+    }
+
+    #[test]
+    fn failed_save_keeps_persisted_entries_unchanged_without_temp_files() {
+        for failure in [PrivateWriteFailure::Write, PrivateWriteFailure::Sync] {
+            let dictionary = persisted_dict(&[("existing", "Existing")]);
+            let before_entries = dictionary.entries().to_vec();
+            let before_file = fs::read(&dictionary.path).unwrap();
+
+            fail_next_private_write(failure);
+            let error = dictionary.save().unwrap_err();
+
+            assert!(error.contains("injected private"), "{error}");
+            assert_eq!(dictionary.entries(), before_entries);
+            assert_eq!(fs::read(&dictionary.path).unwrap(), before_file);
+            assert_no_dictionary_temp_file(&dictionary.path);
+            let _ = fs::remove_dir_all(dictionary.path.parent().unwrap());
+        }
+    }
+
+    #[test]
+    fn add_write_failure_keeps_memory_and_persisted_entries_unchanged() {
+        for failure in [PrivateWriteFailure::Write, PrivateWriteFailure::Sync] {
+            let mut dictionary = persisted_dict(&[("existing", "Existing")]);
+            let before_entries = dictionary.entries().to_vec();
+            let before_file = fs::read(&dictionary.path).unwrap();
+
+            fail_next_private_write(failure);
+            assert!(dictionary.add("new hearing", "Canonical").is_err());
+
+            assert_eq!(dictionary.entries(), before_entries);
+            assert_eq!(fs::read(&dictionary.path).unwrap(), before_file);
+            let _ = fs::remove_dir_all(dictionary.path.parent().unwrap());
+        }
+    }
+
+    #[test]
     fn removes_exact_entry_and_persists() {
         let dir = std::env::temp_dir().join(format!("echo-dict-remove-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
@@ -908,6 +1091,23 @@ mod tests {
         let reloaded = Dictionary::load_from(&path).unwrap();
         assert_eq!(reloaded.entries().len(), 1);
         assert_eq!(reloaded.entries()[0].written, "Echo");
+    }
+
+    #[test]
+    fn remove_write_failure_keeps_memory_and_persisted_entries_unchanged() {
+        for failure in [PrivateWriteFailure::Write, PrivateWriteFailure::Sync] {
+            let mut dictionary =
+                persisted_dict(&[("clawed code", "Claude Code"), ("echo", "Echo")]);
+            let before_entries = dictionary.entries().to_vec();
+            let before_file = fs::read(&dictionary.path).unwrap();
+
+            fail_next_private_write(failure);
+            assert!(dictionary.remove("clawed code", "Claude Code").is_err());
+
+            assert_eq!(dictionary.entries(), before_entries);
+            assert_eq!(fs::read(&dictionary.path).unwrap(), before_file);
+            let _ = fs::remove_dir_all(dictionary.path.parent().unwrap());
+        }
     }
 
     #[test]
@@ -974,6 +1174,145 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), original);
         assert!(!path.with_extension("json.corrupt").exists());
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn empty_object_loads_as_empty_dictionary_without_quarantine() {
+        let dir = std::env::temp_dir().join(format!("echo-dict-empty-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("dictionary.json");
+        fs::write(&path, "{}").unwrap();
+
+        assert!(Dictionary::load_from(&path).unwrap().entries().is_empty());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "{}");
+        assert!(!dir.join("dictionary.json.corrupt").exists());
+    }
+
+    #[test]
+    fn nonempty_object_without_entries_is_still_rejected() {
+        let dir = std::env::temp_dir().join(format!(
+            "echo-dict-incompatible-empty-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("dictionary.json");
+        fs::write(&path, r#"{"unexpected":true}"#).unwrap();
+
+        assert!(Dictionary::load_from(&path).is_err());
+        assert!(!path.exists());
+        assert!(dir.join("dictionary.json.corrupt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dictionary_lock_secures_its_directory_and_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "echo-dictionary-private-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let path = dir.join("dictionary.json");
+        let lock = lock_dictionary_file(&path).unwrap();
+
+        assert_eq!(
+            fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(dir.join("dictionary.json.lock"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+
+        drop(lock);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn cross_process_update_helper() {
+        let Some(path) = std::env::var_os("ECHO_TEST_DICTIONARY_CHILD_PATH") else {
+            return;
+        };
+        let mut dictionary = Dictionary::load_from(PathBuf::from(path)).unwrap();
+        dictionary.add("child sound", "Child").unwrap();
+    }
+
+    #[test]
+    fn concurrent_process_updates_reload_locked_state_and_preserve_both_changes() {
+        let dir = std::env::temp_dir().join(format!(
+            "echo-dict-cross-process-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("dictionary.json");
+        Dictionary::load_from(&path).unwrap().save().unwrap();
+
+        let lock_file = lock_dictionary_file(&path).unwrap();
+        let contention_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let contention_address = contention_listener.local_addr().unwrap();
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("dictionary::tests::cross_process_update_helper")
+            .env("ECHO_TEST_DICTIONARY_CHILD_PATH", &path)
+            .env(
+                "ECHO_TEST_DICTIONARY_CONTENTION_ADDRESS",
+                contention_address.to_string(),
+            )
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+
+        let (mut contention, _) = contention_listener.accept().unwrap();
+        let mut marker = [0_u8; 25];
+        contention.read_exact(&mut marker).unwrap();
+        assert_eq!(&marker, b"dictionary lock contended");
+        assert!(
+            Dictionary::load_from_read_only(&path)
+                .unwrap()
+                .entries()
+                .is_empty(),
+            "child changed the persisted dictionary while the parent held the advisory lock"
+        );
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "child update was not blocked by the advisory lock"
+        );
+
+        let mut parent = Dictionary::load_from(&path).unwrap();
+        parent.entries.push(DictEntry {
+            spoken: "parent sound".to_string(),
+            written: "Parent".to_string(),
+            created_at: 1,
+        });
+        parent.save_entries(&parent.entries).unwrap();
+        FileExt::unlock(&lock_file).unwrap();
+        assert!(child.wait().unwrap().success());
+        let persisted = Dictionary::load_from(&path).unwrap();
+        assert_eq!(persisted.entries().len(), 2);
+        assert!(persisted
+            .entries()
+            .iter()
+            .any(|entry| entry.spoken == "parent sound" && entry.written == "Parent"));
+        assert!(persisted
+            .entries()
+            .iter()
+            .any(|entry| entry.spoken == "child sound" && entry.written == "Child"));
     }
 
     #[test]

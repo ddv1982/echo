@@ -30,6 +30,8 @@ import {
   type TrainerState,
 } from './trainerState'
 
+const FOCUSABLE_SELECTOR = 'button:not([disabled]), input:not([disabled])'
+
 function statusText(sample: ReviewedSample): string {
   switch (sample.status) {
     case 'actionable': return 'New pronunciation'
@@ -92,6 +94,18 @@ export function DictionaryTrainer({
   }, [cancelCapture, triggerRef])
 
   useEffect(() => {
+    const dialog = dialogRef.current
+    if (!dialog) return
+    const active = document.activeElement
+    if (active instanceof HTMLElement &&
+      dialog.contains(active) &&
+      active.matches(FOCUSABLE_SELECTOR)) return
+    const first = dialog.querySelector<HTMLElement>(FOCUSABLE_SELECTOR)
+    if (first) first.focus()
+    else dialog.focus()
+  }, [state])
+
+  useEffect(() => {
     if (state.kind === 'saved') onClose()
   }, [onClose, state.kind])
 
@@ -141,6 +155,7 @@ export function DictionaryTrainer({
     dispatch({ type: 'capture-finishing', captureId })
     try {
       const sample = await finishDictionaryTrainingSample(captureId)
+      if (!mountedRef.current) return
       if (!sample.transcript.trim()) {
         dispatch({
           type: 'capture-failed',
@@ -151,7 +166,9 @@ export function DictionaryTrainer({
       }
       dispatch({ type: 'sample-finished', captureId, sample, items })
     } catch (reason) {
-      dispatch({ type: 'capture-failed', target, message: messageFrom(reason) })
+      if (mountedRef.current) {
+        dispatch({ type: 'capture-failed', target, message: messageFrom(reason) })
+      }
     }
   }
 
@@ -161,9 +178,10 @@ export function DictionaryTrainer({
     const selected = state.selected
     dispatch({ type: 'save-started' })
     try {
-      dispatch({ type: 'save-finished', result: await onSave(canonical, selected) })
+      const result = await onSave(canonical, selected)
+      if (mountedRef.current) dispatch({ type: 'save-finished', result })
     } catch (reason) {
-      dispatch({ type: 'save-failed', message: messageFrom(reason) })
+      if (mountedRef.current) dispatch({ type: 'save-failed', message: messageFrom(reason) })
     }
   }
 
@@ -174,10 +192,12 @@ export function DictionaryTrainer({
       return
     }
     if (event.key !== 'Tab' || !dialogRef.current) return
-    const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLElement>(
-      'button:not([disabled]), input:not([disabled])',
-    ))
-    if (focusable.length === 0) return
+    const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR))
+    if (focusable.length === 0) {
+      event.preventDefault()
+      dialogRef.current.focus()
+      return
+    }
     const first = focusable[0]
     const last = focusable[focusable.length - 1]
     if (!first || !last) return
@@ -213,6 +233,7 @@ export function DictionaryTrainer({
         aria-modal="true"
         aria-labelledby="trainer-title"
         aria-describedby="trainer-description"
+        tabIndex={-1}
         ref={dialogRef}
         onKeyDown={handleKeys}
       >

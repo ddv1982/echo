@@ -74,7 +74,7 @@ export type MicrophoneSource = "environment" | "config" | "default";
 
 export type MicrophoneTestOutcome = "heard" | "silent";
 
-export type MicrophoneTestResult = { "kind": "completed", device: InputDevice, peakRms: number, outcome: MicrophoneTestOutcome, } | { "kind": "failed", device: InputDevice | null, category: MicrophoneFailure, message: string, };
+export type MicrophoneTestResult = { "kind": "completed", device: InputDevice, peakRms: number, droppedSamples: number, outcome: MicrophoneTestOutcome, } | { "kind": "failed", device: InputDevice | null, category: MicrophoneFailure, message: string, };
 
 export type ModelInventory = { whisper: Array<WhisperModelInfo>, vad: Array<string>, parakeet: string | null, engines: Array<EngineAvailability>, };
 

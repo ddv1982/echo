@@ -15,6 +15,12 @@ pub enum DesktopSession {
 }
 
 impl DesktopSession {
+    /// Detect the current desktop session from `XDG_SESSION_TYPE` only.
+    #[must_use]
+    pub fn current() -> Self {
+        Self::from_xdg_session_type(std::env::var("XDG_SESSION_TYPE").ok().as_deref())
+    }
+
     #[must_use]
     pub fn from_xdg_session_type(value: Option<&str>) -> Self {
         match value.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
@@ -121,18 +127,17 @@ mod tests {
 
     #[test]
     fn desktop_session_uses_session_type_only() {
-        assert_eq!(
-            DesktopSession::from_xdg_session_type(Some("wayland")),
-            DesktopSession::Wayland
-        );
-        assert_eq!(
-            DesktopSession::from_xdg_session_type(Some(" X11 ")),
-            DesktopSession::X11
-        );
-        assert_eq!(
-            DesktopSession::from_xdg_session_type(None),
-            DesktopSession::Unknown
-        );
+        let cases = [
+            (Some("wayland"), DesktopSession::Wayland),
+            (Some("  WaYlAnD\t"), DesktopSession::Wayland),
+            (Some(" X11 "), DesktopSession::X11),
+            (Some("mir"), DesktopSession::Unknown),
+            (Some(""), DesktopSession::Unknown),
+            (None, DesktopSession::Unknown),
+        ];
+        for (value, expected) in cases {
+            assert_eq!(DesktopSession::from_xdg_session_type(value), expected);
+        }
     }
 
     #[test]

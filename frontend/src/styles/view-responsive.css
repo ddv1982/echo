@@ -1,0 +1,56 @@
+@media (max-width: 960px) {
+  .topbar { padding-inline: var(--space-4); }
+  .workspace { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+  .sidebar {
+    position: sticky;
+    z-index: 15;
+    top: 4rem;
+    display: block;
+    height: auto;
+    border-right: 0;
+    border-bottom: 1px solid hsl(var(--border-subtle));
+    padding: var(--space-2) var(--space-3);
+  }
+  .nav-list { grid-template-columns: repeat(4, 1fr); }
+  .nav-item { justify-content: center; padding: 0.6rem; }
+  .nav-item span { display: none; }
+  .shortcut-card { display: none; }
+  .main-content { padding: var(--space-4); }
+  .record-hero { padding: var(--space-6); }
+  .hero-main { flex-direction: column; align-items: flex-start; }
+  .home-grid { grid-template-columns: 1fr; }
+  .dictionary-form { grid-template-columns: 1fr; }
+  .dictionary-training-prompt { align-items: stretch; flex-direction: column; }
+  .mapping-arrow { display: none; }
+}
+
+@media (max-width: 520px) {
+  .status-pill { display: none; }
+  .record-actions { align-items: flex-start; flex-direction: column; }
+  .history-toolbar { align-items: stretch; flex-direction: column; }
+  .history-toolbar .search-field,
+  .history-clear-button { width: 100%; max-width: none; }
+  .transcript-row { gap: var(--space-3); padding-inline: var(--space-4); }
+  .transcript-actions { flex-direction: column; }
+  .dictionary-row,
+  .table-header { grid-template-columns: minmax(0, 1fr) 2.4rem; }
+  .dictionary-row strong,
+  .table-header span:nth-child(2) { grid-column: 1; }
+  .dictionary-row button { grid-column: 2; grid-row: 1 / span 2; }
+  .trainer-backdrop { place-items: start center; padding: 0; }
+  .dictionary-trainer { min-height: 100vh; max-height: none; border: 0; border-radius: 0; }
+  .trainer-header,
+  .trainer-entry,
+  .trainer-collection,
+  .trainer-review { padding: var(--space-4); }
+  .take-row { grid-template-columns: 2rem minmax(0, 1fr); }
+  .take-row .record-take-button { grid-column: 2; justify-self: start; }
+  .review-row { grid-template-columns: auto minmax(0, 1fr); }
+  .review-row em { grid-column: 2; }
+  .trainer-actions { align-items: stretch; flex-direction: column-reverse; }
+  .trainer-actions button { width: 100%; }
+}
+
+@media (max-height: 600px) {
+  .main-content { padding-block: var(--space-4); }
+}

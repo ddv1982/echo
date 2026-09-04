@@ -1,9 +1,10 @@
 # Releasing Echo
 
-The release workflow builds packages for every pull request, every push to
-`main`, every `v*` tag, and the nightly schedule. GitHub Releases are the
-supported downloads. A Git tag without a corresponding GitHub Release marks
-source history only.
+The release workflow runs its policy checks for every pull request. Package
+proof runs for pushes to `main` and `v*` tags, the nightly schedule, and manual
+workflow dispatches, not for pull requests. GitHub Releases are the supported
+downloads. A Git tag without a corresponding GitHub Release marks source
+history only.
 
 ## Repository gate
 
@@ -11,13 +12,11 @@ Protect `main` and require these pull-request checks before merging:
 
 - `check / check`
 - `release / release-policy`
-- `release / linux-packages`
-- `release / appimage`
-- `release / release-assets`
 
-The AppImage is required. The `release-assets` job waits for both package build
-jobs and verifies the same seven-file publish directory on pull requests,
-`main`, nightlies, and tags.
+`check / check` is the aggregate result of the policy, frontend, Rust, and asset
+jobs. The AppImage remains a required package gate. On non-PR events,
+`release-assets` waits for both package build jobs and verifies the same
+eight-file publish directory on `main`, tags, nightlies, and manual dispatches.
 
 Pin each third-party action to a full commit SHA. Dependabot checks action pins
 plus Cargo and npm dependencies each week and opens reviewable pull requests.
@@ -40,10 +39,16 @@ repository ruleset.
 
 1. Bump `workspace.package.version` in `Cargo.toml`.
 2. Add a `## vX.Y.Z` or `## vX.Y.Z-alpha.1` section to `CHANGELOG.md`.
-3. Open a pull request and wait for both the normal checks and the Linux
-   package build to pass.
-4. Merge the pull request, then wait for the `main` release workflow run to
-   pass. This proves the exact merged commit packages successfully.
+3. When changing an entry in `crates/echo/src/install/catalog.rs`, update its
+   URL, digest, license, supplier/source provenance, and the corresponding
+   attribution in [`THIRD_PARTY.md`](../THIRD_PARTY.md) in the same pull
+   request.
+4. Open a pull request and wait for the required `check / check` and
+   `release / release-policy` contexts to pass.
+5. Merge the pull request, then wait for the `main` release workflow run for
+   the exact merged `main` SHA to pass every package gate before tagging. This
+   proves that exact commit builds and verifies the Linux packages, AppImage,
+   staged release assets, and attestations successfully.
 
 ## Publish
 
@@ -111,8 +116,12 @@ gh release create whisper-vulkan-runtime-1.9.2 \
 
 The archive has to exist at that URL before a build pointing at it reaches
 users. Ship the catalog change in an ordinary application release afterwards.
-The desktop SBOM does not cover this archive. Its receipt, catalog size, and
-catalog SHA-256 digest are the archive's separate verification contract.
+The archive bytes are separate from application assets. The desktop SBOM does
+record the component's catalog URL, digest, license, supplier, and source
+attribution. Its receipt, catalog size, catalog SHA-256 digest, and per-file
+inventory remain the archive's separate verification contract. Update
+[`THIRD_PARTY.md`](../THIRD_PARTY.md) whenever its provenance or attribution
+changes.
 
 ### Push the application tag
 
@@ -131,11 +140,15 @@ exactly one Debian package, one RPM, one AppImage, and one raw binary. The
 workflow checks package metadata and contents. It also checks the final
 AppImage desktop entry, executable, and reported version.
 
-The workflow stages those four application files, the MIT license, and
-`echo-desktop.cdx.json` in one directory. The CycloneDX SBOM lists every Cargo
-package in the locked workspace graph and every npm package in
-`frontend/package-lock.json`, including frontend build dependencies. It names
-Cargo and npm on each component so consumers can separate the ecosystems.
+The workflow stages those four application files, the MIT license,
+`THIRD_PARTY.md`, and `echo-desktop.cdx.json` in one directory. The CycloneDX
+SBOM lists every Cargo package in the locked workspace graph, every npm package
+in `frontend/package-lock.json` (including frontend build dependencies), and all
+eight catalog-managed runtime and model components. Managed downloads are not
+embedded in the application files, their SBOM records contain the catalog URL,
+SHA-256 digest, license, supplier, component kind, and source attribution. The
+SBOM labels Cargo, npm, and managed components so consumers can separate the
+ecosystems.
 
 The workflow creates `SHA256SUMS` from the sorted file names, verifies every
 digest, and rejects missing or extra files. On GitHub-hosted non-PR runs, the
@@ -149,7 +162,7 @@ by hand.
 
 Confirm that the workflow is green. The GitHub Release must contain one Debian
 package, one RPM, one AppImage, `echo-desktop`, `echo-desktop.cdx.json`, the
-MIT license, and `SHA256SUMS`.
+MIT license, `THIRD_PARTY.md`, and `SHA256SUMS`.
 
 ```sh
 gh run list --workflow release.yml --limit 5

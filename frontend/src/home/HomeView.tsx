@@ -1,11 +1,11 @@
 import { CircleAlert, Mic, Waves } from 'lucide-react'
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { BarsMotif, SectionHeading } from '../app/chrome'
 import { formatDuration, formatTime, messageFrom } from '../app/formatting'
 import { useSerialPoll } from '../hooks/useSerialPoll'
 import { presentShortcut } from '../shortcut'
-import { deriveStats } from '../stats'
+import { deriveStats, millisecondsUntilNextLocalDay } from '../stats'
 import { getRecordingLevel, removeStaleInstalls } from '../tauri'
 import type { AppStatus, HistoryItem } from '../generated/ipc'
 import { SetupChecklist } from './SetupChecklist'
@@ -203,7 +203,15 @@ function StaleInstallWarning({ status }: { status: AppStatus }) {
 }
 
 function StatsStrip({ history }: { history: HistoryItem[] }) {
-  const stats = useMemo(() => deriveStats(history, new Date()), [history])
+  const [calendarDate, setCalendarDate] = useState(() => new Date())
+  useEffect(() => {
+    const timer = window.setTimeout(
+      () => setCalendarDate(new Date()),
+      millisecondsUntilNextLocalDay(calendarDate),
+    )
+    return () => window.clearTimeout(timer)
+  }, [calendarDate])
+  const stats = useMemo(() => deriveStats(history, calendarDate), [history, calendarDate])
   if (history.length === 0) return null
   return (
     <section className="stats-strip" aria-label="Usage">

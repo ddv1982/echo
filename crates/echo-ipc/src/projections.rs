@@ -97,6 +97,19 @@ impl From<echo_core::WhisperRecoveryReason> for RecoveryReason {
     }
 }
 
+impl From<echo_core::WhisperAccelerationSkip> for AccelerationSkipReason {
+    fn from(value: echo_core::WhisperAccelerationSkip) -> Self {
+        match value {
+            echo_core::WhisperAccelerationSkip::RuntimeMissing => Self::RuntimeMissing,
+            echo_core::WhisperAccelerationSkip::NoDeviceEnumerated => Self::NoDeviceEnumerated,
+            echo_core::WhisperAccelerationSkip::PinnedDeviceAbsent => Self::PinnedDeviceAbsent,
+            echo_core::WhisperAccelerationSkip::DeviceQuarantined => Self::DeviceQuarantined,
+            echo_core::WhisperAccelerationSkip::CpuFallbackMissing => Self::CpuFallbackMissing,
+            echo_core::WhisperAccelerationSkip::DeviceNotReady => Self::DeviceNotReady,
+        }
+    }
+}
+
 impl From<&echo_core::DictEntry> for DictionaryItem {
     fn from(value: &echo_core::DictEntry) -> Self {
         Self {
@@ -287,10 +300,12 @@ impl From<echo::microphone::MicrophoneTestResult> for MicrophoneTestResult {
             echo::microphone::MicrophoneTestResult::Completed {
                 device,
                 peak_rms,
+                dropped_samples,
                 outcome,
             } => Self::Completed {
                 device: device.into(),
                 peak_rms,
+                dropped_samples,
                 outcome: outcome.into(),
             },
             echo::microphone::MicrophoneTestResult::Failed {

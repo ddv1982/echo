@@ -1,6 +1,76 @@
-import { expect, test } from '@playwright/test'
+import { expect, test, type Locator } from '@playwright/test'
 
 const widths = [760, 761, 800, 920, 959, 960, 961, 1024]
+
+async function expectNoHorizontalOverflow(surface: Locator, label: string) {
+  const geometry = await surface.evaluate((node: HTMLElement) => {
+    const documentElement = document.documentElement
+    const bounds = node.getBoundingClientRect()
+    return {
+      documentFits: documentElement.scrollWidth <= documentElement.clientWidth,
+      surfaceFits: node.scrollWidth <= node.clientWidth,
+      surfaceInsideDocument:
+        bounds.left >= -0.5 && bounds.right <= documentElement.clientWidth + 0.5,
+    }
+  })
+  expect(geometry, label).toEqual({
+    documentFits: true,
+    surfaceFits: true,
+    surfaceInsideDocument: true,
+  })
+}
+
+test('primary surfaces stay usable without horizontal overflow on mobile and desktop', async ({ page }) => {
+  for (const width of [390, 1280]) {
+    await page.setViewportSize({ width, height: width === 390 ? 844 : 900 })
+    await page.goto('/')
+
+    const home = page.locator('main.main-content > .view-stack')
+    const start = page.getByRole('button', { name: 'Start recording' })
+    await expect(start).toBeVisible()
+    await start.click()
+    const stop = page.getByRole('button', { name: 'Stop and transcribe' })
+    await expect(stop).toBeVisible()
+    await stop.click()
+    await expect(page.getByText('Last transcript', { exact: true })).toBeVisible()
+    await expectNoHorizontalOverflow(home, `Home at ${width}px`)
+
+    await page.getByRole('button', { name: 'History', exact: true }).click()
+    const history = page.locator('main.main-content > .view-stack')
+    await expect(page.getByRole('heading', { name: 'History' })).toBeVisible()
+    const search = page.getByPlaceholder('Search transcripts…')
+    await search.fill('local')
+    await expect(search).toHaveValue('local')
+    await expect(page.locator('.transcript-list').first()).toBeVisible()
+    await expectNoHorizontalOverflow(history, `History at ${width}px`)
+
+    await page.getByRole('button', { name: 'Dictionary', exact: true }).click()
+    const dictionary = page.locator('main.main-content > .view-stack')
+    await expect(page.getByRole('heading', { name: 'Dictionary' })).toBeVisible()
+    const trainerTrigger = page.getByRole('button', { name: 'Teach by voice' })
+    await expect(trainerTrigger).toBeVisible()
+    await trainerTrigger.click()
+    const trainer = page.getByRole('dialog', { name: 'Teach Echo by voice' })
+    await expect(trainer).toBeVisible()
+    await expect(page.getByLabel('Exact word or phrase')).toBeVisible()
+    await expectNoHorizontalOverflow(trainer, `Dictionary voice trainer at ${width}px`)
+    await page.getByRole('button', { name: 'Close voice training' }).click()
+    await expect(trainer).toBeHidden()
+    await expect(trainerTrigger).toBeVisible()
+    await expectNoHorizontalOverflow(dictionary, `Dictionary at ${width}px`)
+
+    await page.getByRole('button', { name: 'Settings', exact: true }).click()
+    const settings = page.locator('main.main-content > .view-stack')
+    await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible()
+    await expect(page.getByRole('group', { name: 'Whisper acceleration' })).toBeVisible()
+    const theme = width === 390 ? 'Dark' : 'Light'
+    const themeButton = page.getByRole('group', { name: 'Application theme' })
+      .getByRole('button', { name: theme })
+    await themeButton.click()
+    await expect(themeButton).toHaveAttribute('aria-pressed', 'true')
+    await expectNoHorizontalOverflow(settings, `Settings at ${width}px`)
+  }
+})
 
 for (const theme of ['light', 'dark'] as const) {
   test(`Settings fits every supported edge in ${theme} mode`, async ({ page }) => {

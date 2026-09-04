@@ -31,6 +31,11 @@ interface UseSettingsControllerArgs {
   onError: (message: string) => void
 }
 
+interface SettingsReadResult {
+  snapshot: SettingsSnapshot
+  mutationVersion: number
+}
+
 export function useSettingsController({
   onStatusChange,
   onError,
@@ -51,14 +56,30 @@ export function useSettingsController({
     if (active.current) onError(messageFrom(reason))
   }, [onError])
 
+  const loadSettingsSnapshot = useCallback(async (): Promise<SettingsReadResult | null> => {
+    const mutationVersion = settingsMutationVersion.current
+    const queuedWrites = writeChainRef.current
+    await queuedWrites
+    if (!active.current || settingsMutationVersion.current !== mutationVersion) return null
+    return { snapshot: await getSettings(), mutationVersion }
+  }, [])
+
+  const applySettingsSnapshot = useCallback((result: SettingsReadResult | null) => {
+    if (
+      result != null &&
+      active.current &&
+      settingsMutationVersion.current === result.mutationVersion
+    ) {
+      setSnapshot(result.snapshot)
+    }
+  }, [])
+
   useEffect(() => {
     let current = true
     active.current = true
-    void getSettings()
-      .then((next) => {
-        if (current && active.current) {
-          setSnapshot(next)
-        }
+    void loadSettingsSnapshot()
+      .then((result) => {
+        if (current) applySettingsSnapshot(result)
       })
       .catch((reason: unknown) => {
         if (current && active.current) reportSettingsError(reason)
@@ -68,7 +89,7 @@ export function useSettingsController({
       active.current = false
       micTestVersion.current += 1
     }
-  }, [reportSettingsError])
+  }, [applySettingsSnapshot, loadSettingsSnapshot, reportSettingsError])
 
   const settings = snapshot?.preferences ?? null
   const inventory = snapshot?.transcription.models ?? null
@@ -125,19 +146,16 @@ export function useSettingsController({
       })
     }
     if (classified.kind === 'terminal' && classified.error != null) {
-      onError(classified.error)
+      reportSettingsError(classified.error)
     }
-  }, [onError])
+  }, [reportSettingsError])
   const getSettingsSetupRefresh = useCallback((event: SetupEvent) => {
     if (classifySetupEvent(event).kind === 'incremental') return null
-    const version = settingsMutationVersion.current
-    return () => getSettings().then((next) => async () => {
-      if (settingsMutationVersion.current === version) {
-        setSnapshot(next)
-      }
+    return () => loadSettingsSnapshot().then((result) => async () => {
+      applySettingsSnapshot(result)
       await onStatusChange()
     })
-  }, [onStatusChange])
+  }, [applySettingsSnapshot, loadSettingsSnapshot, onStatusChange])
   useAsyncSubscription({
     subscribe: onSetupEvent,
     onEvent: handleSettingsSetupEvent,
@@ -200,20 +218,16 @@ export function useSettingsController({
   }, [onStatusChange, reportSettingsError])
 
   const refreshReadiness = useCallback(() => {
-    void getSettings().then((next) => {
-      if (active.current) setSnapshot(next)
-    }).catch(reportSettingsError)
-  }, [reportSettingsError])
+    void loadSettingsSnapshot().then(applySettingsSnapshot).catch(reportSettingsError)
+  }, [applySettingsSnapshot, loadSettingsSnapshot, reportSettingsError])
 
   const installGpuPrerequisite = useCallback(() => {
     if (gpuPrerequisite == null) return
     void repairManaged(gpuPrerequisite.id)
-      .then(() => getSettings())
-      .then((next) => {
-        if (active.current) setSnapshot(next)
-      })
+      .then(loadSettingsSnapshot)
+      .then(applySettingsSnapshot)
       .catch(reportSettingsError)
-  }, [gpuPrerequisite, reportSettingsError])
+  }, [applySettingsSnapshot, gpuPrerequisite, loadSettingsSnapshot, reportSettingsError])
 
   const refreshGpuDevices = useCallback(() => {
     void listGpuDevices(true).then((next) => {
@@ -296,5 +310,6 @@ export function useSettingsController({
     refreshGpuDevices,
     selectMicrophone,
     testMicrophone,
+    reportSettingsError,
   }
 }

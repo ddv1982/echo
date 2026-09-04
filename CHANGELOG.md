@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.14.13
+
+- Desktop status polling, Settings, setup, History, Dictionary, shortcut recovery, stale-install removal, and voice-training startup now keep blocking filesystem and device work off the async runtime. Cached health and last-run details refresh when their inputs change without making routine polling expensive.
+- Echo now rejects unsafe temporary-directory fallbacks for private data and managed executables. History and Dictionary updates are failure-atomic across processes, and recording sessions recover safely from supported legacy and poisoned-lock states.
+- Text injection no longer retries globally, treats leading hyphens as text, uses consistent desktop-session detection, and restores the previous clipboard after a confirmed paste. Failed injection keeps the transcript recoverable.
+- Integer WAV input is normalized by its real bit depth, spoken text such as `(yes)` and `*hello*` is no longer removed as non-speech, audio peaks stay bounded, and dropped capture samples are reported.
+- Settings, setup, shortcut verification, microphone tests, Dictionary training, and copy feedback now reject stale post-unmount results. Keyboard focus, reduced motion, pressed-state semantics, contrast, midnight statistics, and mobile layouts are preserved across affected views.
+- Managed downloads and speech-engine failures are bounded and cancellable, model sources are pinned to immutable revisions, and releases now include maintained third-party attribution plus managed runtime and model entries in the CycloneDX SBOM.
+
 ## v0.14.12
 
 - The X11 recording HUD now uses a compact waveform capsule with distinct recording, transcribing, success, and failure indicators, plus compositor-aware translucency, highlighting, and shadow treatment.

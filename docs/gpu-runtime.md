@@ -24,9 +24,12 @@ activating an immutable generation. Repair replaces a missing or corrupt
 generation. Remove deletes only inventory-owned files under Echo's managed
 cache.
 
-The GPU archive is not part of the desktop SBOM because it is built and
-published separately. Its catalog digest, archive receipt, and per-file
-inventory are its verification contract.
+The archive bytes are published separately and are not embedded in application
+assets. The desktop SBOM nevertheless represents the managed component's
+catalog URL, SHA-256 digest, license, supplier, and source attribution. The
+catalog digest, archive receipt, and per-file inventory remain the downloaded
+archive's verification contract. See the release
+[`THIRD_PARTY.md`](../THIRD_PARTY.md) notice for human-readable attribution.
 
 ## Diagnose a fallback
 
