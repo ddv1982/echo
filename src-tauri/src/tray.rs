@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
@@ -12,7 +12,7 @@ use tauri::{App, AppHandle, Emitter, Manager, Wry};
 
 static NEXT_LANGUAGE_REQUEST: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct LanguageMenuRequest(u64);
 
 pub(crate) struct TrayMenu {
@@ -21,6 +21,7 @@ pub(crate) struct TrayMenu {
     language_menu: Submenu<Wry>,
     language_items: Vec<(String, CheckMenuItem<Wry>)>,
     language_state: Mutex<LanguageMenuState>,
+    language_writes: Mutex<LanguageWriteQueue>,
 }
 
 pub(crate) fn build(app: &mut App) -> tauri::Result<TrayMenu> {
@@ -74,6 +75,7 @@ pub(crate) fn build(app: &mut App) -> tauri::Result<TrayMenu> {
             revision: LanguageMenuRevision::default(),
             projection: None,
         }),
+        language_writes: Mutex::new(LanguageWriteQueue::default()),
     };
     TrayIconBuilder::new()
         .menu(&tray_menu._menu)
@@ -128,6 +130,37 @@ struct LanguageMenuProjection {
 struct LanguageMenuState {
     revision: LanguageMenuRevision,
     projection: Option<LanguageMenuProjection>,
+}
+
+struct LanguageWrite {
+    request: LanguageMenuRequest,
+    value: String,
+}
+
+#[derive(Default)]
+struct LanguageWriteQueue {
+    active: bool,
+    pending: VecDeque<LanguageWrite>,
+}
+
+impl LanguageWriteQueue {
+    fn enqueue(&mut self, write: LanguageWrite) -> bool {
+        self.pending.push_back(write);
+        if self.active {
+            false
+        } else {
+            self.active = true;
+            true
+        }
+    }
+
+    fn next(&mut self) -> Option<LanguageWrite> {
+        let next = self.pending.pop_front();
+        if next.is_none() {
+            self.active = false;
+        }
+        next
+    }
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -242,6 +275,20 @@ impl TrayMenu {
             }
         }
     }
+
+    fn enqueue_language_write(&self, write: LanguageWrite) -> Result<bool, String> {
+        self.language_writes
+            .lock()
+            .map(|mut queue| queue.enqueue(write))
+            .map_err(|_| "tray language write queue is unavailable".to_string())
+    }
+
+    fn next_language_write(&self) -> Result<Option<LanguageWrite>, String> {
+        self.language_writes
+            .lock()
+            .map(|mut queue| queue.next())
+            .map_err(|_| "tray language write queue is unavailable".to_string())
+    }
 }
 
 pub(crate) fn request() -> LanguageMenuRequest {
@@ -329,9 +376,38 @@ fn select_language(app: &AppHandle, value: String) {
         return;
     }
     let request = request();
-    let app = app.clone();
-    let service = app.state::<crate::setup::SetupService>().inner().clone();
-    tauri::async_runtime::spawn(async move {
+    let start_worker = match menu.enqueue_language_write(LanguageWrite { request, value }) {
+        Ok(start_worker) => start_worker,
+        Err(error) => {
+            eprintln!("tray language: {error}");
+            restore(app);
+            return;
+        }
+    };
+    if start_worker {
+        tauri::async_runtime::spawn(process_language_writes(app.clone()));
+    }
+}
+
+async fn process_language_writes(app: AppHandle) {
+    loop {
+        let write = {
+            let Some(menu) = app.try_state::<TrayMenu>() else {
+                return;
+            };
+            match menu.next_language_write() {
+                Ok(write) => write,
+                Err(error) => {
+                    eprintln!("tray language: {error}");
+                    return;
+                }
+            }
+        };
+        let Some(write) = write else {
+            return;
+        };
+        let service = app.state::<crate::setup::SetupService>().inner().clone();
+        let value = write.value;
         let outcome = crate::blocking::run_blocking("tray language change", move || {
             crate::settings::change(SettingsChange::Language { value: Some(value) })?;
             crate::settings::snapshot_with_revision(|| service.snapshot())
@@ -340,7 +416,7 @@ fn select_language(app: &AppHandle, value: String) {
         .and_then(|result| result);
         match outcome {
             Ok((revision, snapshot)) => {
-                sync(&app, request, revision, &snapshot);
+                sync(&app, write.request, revision, &snapshot);
                 let _ = app.emit("settings-event", ());
             }
             Err(error) => {
@@ -348,7 +424,7 @@ fn select_language(app: &AppHandle, value: String) {
                 restore(&app);
             }
         }
-    });
+    }
 }
 
 fn restore(app: &AppHandle) {
@@ -412,6 +488,35 @@ mod tests {
         assert_eq!(state.revision.settings, 4);
         assert_eq!(state.revision.request, 2);
         assert!(state.projection.unwrap().item_checked("de"));
+    }
+
+    #[test]
+    fn language_writes_are_dequeued_in_click_order() {
+        let mut queue = LanguageWriteQueue::default();
+        assert!(queue.enqueue(LanguageWrite {
+            request: LanguageMenuRequest(1),
+            value: "fr".to_string(),
+        }));
+        assert!(!queue.enqueue(LanguageWrite {
+            request: LanguageMenuRequest(2),
+            value: "de".to_string(),
+        }));
+
+        let first = queue.next().unwrap();
+        let second = queue.next().unwrap();
+        assert_eq!(
+            (first.request, first.value.as_str()),
+            (LanguageMenuRequest(1), "fr")
+        );
+        assert_eq!(
+            (second.request, second.value.as_str()),
+            (LanguageMenuRequest(2), "de")
+        );
+        assert!(queue.next().is_none());
+        assert!(queue.enqueue(LanguageWrite {
+            request: LanguageMenuRequest(3),
+            value: "es".to_string(),
+        }));
     }
 
     #[test]

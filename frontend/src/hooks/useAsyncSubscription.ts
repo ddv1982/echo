@@ -6,6 +6,7 @@ interface AsyncSubscriptionOptions<T> {
   subscribe: (handler: (event: T) => void) => Promise<() => void>
   onEvent: (event: T) => void
   getRefresh: (event: T) => (() => Promise<Commit>) | null
+  initialRefresh?: () => Promise<Commit>
   onError?: (reason: unknown) => void
 }
 
@@ -13,6 +14,7 @@ export function useAsyncSubscription<T>({
   subscribe,
   onEvent,
   getRefresh,
+  initialRefresh,
   onError,
 }: AsyncSubscriptionOptions<T>) {
   useEffect(() => {
@@ -34,17 +36,21 @@ export function useAsyncSubscription<T>({
       })
     }
 
+    const scheduleRefresh = (refresh: () => Promise<Commit>) => {
+      if (inFlight) {
+        queued.push(refresh)
+      } else {
+        runRefresh(refresh)
+      }
+    }
+
     const dispatch = (event: T) => {
       if (!active) return
       try {
         onEvent(event)
         const refresh = getRefresh(event)
         if (!refresh) return
-        if (inFlight) {
-          queued.push(refresh)
-        } else {
-          runRefresh(refresh)
-        }
+        scheduleRefresh(refresh)
       } catch (reason) {
         if (active) onError?.(reason)
       }
@@ -53,11 +59,14 @@ export function useAsyncSubscription<T>({
     void subscribe(dispatch).then((next) => {
       if (active) {
         unlisten = next
+        if (initialRefresh) scheduleRefresh(initialRefresh)
       } else {
         next()
       }
     }).catch((reason: unknown) => {
-      if (active) onError?.(reason)
+      if (!active) return
+      onError?.(reason)
+      if (initialRefresh) scheduleRefresh(initialRefresh)
     })
 
     return () => {
@@ -65,5 +74,5 @@ export function useAsyncSubscription<T>({
       queued.length = 0
       unlisten?.()
     }
-  }, [getRefresh, onError, onEvent, subscribe])
+  }, [getRefresh, initialRefresh, onError, onEvent, subscribe])
 }

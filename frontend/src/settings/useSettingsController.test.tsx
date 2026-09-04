@@ -172,8 +172,45 @@ describe('useSettingsController', () => {
     act(() => settingsEvent?.())
 
     await waitFor(() => expect(result.current.settings?.language.value).toBe('de'))
-    expect(onStatusChange).toHaveBeenCalledOnce()
+    expect(onStatusChange).toHaveBeenCalledTimes(2)
     expect(onError).not.toHaveBeenCalled()
+  })
+
+  it('establishes the settings listener before its initial read', async () => {
+    const registration = deferred<() => void>()
+    vi.mocked(onSettingsEvent).mockReturnValue(registration.promise)
+    const onStatusChange = vi.fn().mockResolvedValue(undefined)
+    const onError = vi.fn()
+    const { result } = renderHook(() => useSettingsController({
+      onStatusChange,
+      onError,
+    }))
+
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(getSettings).not.toHaveBeenCalled()
+    await previewDesktopApi.setSettings({ kind: 'language', value: 'de' })
+    await act(async () => registration.resolve(() => undefined))
+
+    await waitFor(() => expect(result.current.settings?.language.value).toBe('de'))
+    expect(getSettings).toHaveBeenCalledOnce()
+    expect(onError).not.toHaveBeenCalled()
+  })
+
+  it('loads Settings when settings-event registration fails', async () => {
+    vi.mocked(onSettingsEvent).mockRejectedValue(new Error('listener unavailable'))
+    const onStatusChange = vi.fn().mockResolvedValue(undefined)
+    const onError = vi.fn()
+    const { result } = renderHook(() => useSettingsController({
+      onStatusChange,
+      onError,
+    }))
+
+    await waitFor(() => expect(result.current.settings).not.toBeNull())
+    expect(onError).toHaveBeenCalledWith('listener unavailable')
+    expect(getSettings).toHaveBeenCalledOnce()
   })
 
   it('keeps the settings-event subscription across rerenders', async () => {

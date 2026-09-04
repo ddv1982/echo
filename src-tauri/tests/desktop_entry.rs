@@ -109,6 +109,7 @@ fn settings_changes_publish_an_ordered_tray_snapshot() {
     assert!(setup_request < setup_unlock);
     assert!(setup_completion.contains("crate::tray::refresh_requested(&app, tray_request);"));
     assert!(tray_runtime.contains("app.run_on_main_thread(move ||"));
+    assert!(tray_runtime.contains("LanguageWriteQueue"));
 }
 
 #[test]

@@ -80,21 +80,12 @@ export function useSettingsController({
   }, [])
 
   useEffect(() => {
-    let current = true
     active.current = true
-    void loadSettingsSnapshot()
-      .then((result) => {
-        if (current) applySettingsSnapshot(result)
-      })
-      .catch((reason: unknown) => {
-        if (current && active.current) reportSettingsError(reason)
-      })
     return () => {
-      current = false
       active.current = false
       micTestVersion.current += 1
     }
-  }, [applySettingsSnapshot, loadSettingsSnapshot, reportSettingsError])
+  }, [])
 
   const settings = snapshot?.preferences ?? null
   const inventory = snapshot?.transcription.models ?? null
@@ -167,16 +158,18 @@ export function useSettingsController({
     getRefresh: getSettingsSetupRefresh,
     onError: reportSettingsError,
   })
-  const getSettingsEventRefresh = useCallback(() => () =>
+  const refreshSettingsEvent = useCallback(() =>
     loadSettingsSnapshot().then((result) => async () => {
       applySettingsSnapshot(result)
       await onStatusChange()
     }), [applySettingsSnapshot, loadSettingsSnapshot, onStatusChange])
+  const getSettingsEventRefresh = useCallback(() => refreshSettingsEvent, [refreshSettingsEvent])
   const handleSettingsEvent = useCallback(() => undefined, [])
   useAsyncSubscription<void>({
     subscribe: onSettingsEvent,
     onEvent: handleSettingsEvent,
     getRefresh: getSettingsEventRefresh,
+    initialRefresh: refreshSettingsEvent,
     onError: reportSettingsError,
   })
 
