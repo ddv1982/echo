@@ -894,6 +894,48 @@ mod tests {
     }
 
     #[test]
+    fn shorter_match_survives_when_a_longer_overlap_wins() {
+        let dictionary = dict(&[
+            ("alpha beta", "SHORT"),
+            ("beta gamma delta", "LONG"),
+            ("alpha", "A"),
+        ]);
+        let mut with_unrelated_entries = dictionary.clone();
+        with_unrelated_entries
+            .entries
+            .extend((0..64).map(|index| DictEntry {
+                spoken: format!("filler{index:02}"),
+                written: format!("FILLER{index:02}"),
+                created_at: index,
+            }));
+
+        assert_eq!(
+            (
+                dictionary.rewrite("alpha beta gamma delta"),
+                with_unrelated_entries.rewrite("alpha beta gamma delta"),
+            ),
+            ("A LONG".to_string(), "A LONG".to_string())
+        );
+    }
+
+    #[test]
+    fn fallback_matchers_keep_overlapping_candidates() {
+        let dictionary = dict(&[("xx a", "LONG"), ("a a", "PAIR")]);
+
+        assert_eq!(
+            dictionary.rewrite_with_limits(
+                "xx a a a",
+                MatchLimits {
+                    entries: 2,
+                    pattern_bytes: usize::MAX,
+                    regex_size_limit: Some(0),
+                },
+            ),
+            "LONG PAIR"
+        );
+    }
+
+    #[test]
     fn equal_length_overlaps_follow_dictionary_order_deterministically() {
         let text = "東京 alpha βγ";
         let mut first_before_second = dict(&[("東京 alpha", "FIRST"), ("alpha βγ", "SECOND")]);
