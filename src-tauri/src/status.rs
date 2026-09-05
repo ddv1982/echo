@@ -111,8 +111,6 @@ pub(super) struct Health {
     pub(super) language_warning: Option<String>,
 }
 
-pub(super) static HEALTH: Mutex<Option<(Instant, Health)>> = Mutex::new(None);
-
 const HEALTH_SOURCE_FRESHNESS: Duration = Duration::from_secs(1);
 const HEALTH_TTL: Duration = Duration::from_secs(10);
 
@@ -306,20 +304,15 @@ impl HealthCacheDecision {
 
 fn health_cache_state() -> &'static Mutex<HealthCacheState> {
     static STATE: OnceLock<Mutex<HealthCacheState>> = OnceLock::new();
-    STATE.get_or_init(|| {
-        let legacy_seed = {
-            let mirror = recover_cache_lock(&HEALTH, "health mirror");
-            mirror
-                .as_ref()
-                .filter(|(at, _)| at.elapsed() < HEALTH_TTL)
-                .map(|(_, health)| health.clone())
-        };
-        let mut state = HealthCacheState::new(HEALTH_SOURCE_FRESHNESS, HEALTH_TTL);
-        if let Some(health) = legacy_seed {
-            state.publish(health_clock(), None, health);
-        }
-        Mutex::new(state)
-    })
+    STATE.get_or_init(|| Mutex::new(HealthCacheState::new(HEALTH_SOURCE_FRESHNESS, HEALTH_TTL)))
+}
+
+#[cfg(test)]
+pub(super) fn seed_health_for_test(health: Health) {
+    let mut state = recover_cache_lock(health_cache_state(), "health state");
+    state.invalidate();
+    state.probe_pending = None;
+    state.publish(health_clock(), None, health);
 }
 
 fn health_clock() -> Duration {
@@ -540,25 +533,18 @@ fn start_health_source_probe(generation: u64) -> bool {
         .is_ok()
 }
 
-fn collect_and_publish_health<C, P>(
+fn collect_and_publish_health(
     state: &Mutex<HealthCacheState>,
     generation: u64,
-    collect: C,
-    on_publish: P,
-) -> (Health, bool)
-where
-    C: FnOnce() -> Health,
-    P: FnOnce(&Health),
-{
+    collect: impl FnOnce() -> Health,
+) -> (Health, bool) {
     let health = collect();
-    let published = {
-        let mut state = recover_cache_lock(state, "health state");
-        let published = state.publish_if_current(generation, health_clock(), None, health.clone());
-        if published {
-            on_publish(&health);
-        }
-        published
-    };
+    let published = recover_cache_lock(state, "health state").publish_if_current(
+        generation,
+        health_clock(),
+        None,
+        health.clone(),
+    );
     (health, published)
 }
 
@@ -570,15 +556,7 @@ fn publish_health_for_generation(generation: u64) -> Health {
             std::panic::resume_unwind(payload);
         }
     };
-    collect_and_publish_health(
-        health_cache_state(),
-        generation,
-        || health,
-        |health| {
-            *recover_cache_lock(&HEALTH, "health mirror") = Some((Instant::now(), health.clone()));
-        },
-    )
-    .0
+    collect_and_publish_health(health_cache_state(), generation, || health).0
 }
 
 fn start_health_refresh(generation: u64) -> bool {
@@ -620,7 +598,6 @@ fn health_snapshot() -> Health {
 pub(super) fn health_invalidate() {
     let mut state = recover_cache_lock(health_cache_state(), "health state");
     state.invalidate();
-    *recover_cache_lock(&HEALTH, "health mirror") = None;
 }
 
 #[cfg(test)]
@@ -1093,16 +1070,11 @@ mod tests {
         let (release_send, release_receive) = std::sync::mpsc::sync_channel(0);
         let collection_state = std::sync::Arc::clone(&state);
         let collection = std::thread::spawn(move || {
-            collect_and_publish_health(
-                &collection_state,
-                generation,
-                || {
-                    started_send.send(()).unwrap();
-                    release_receive.recv().unwrap();
-                    fake_health("stale")
-                },
-                |_| {},
-            )
+            collect_and_publish_health(&collection_state, generation, || {
+                started_send.send(()).unwrap();
+                release_receive.recv().unwrap();
+                fake_health("stale")
+            })
             .1
         });
 
@@ -1134,6 +1106,36 @@ mod tests {
             after_invalidation.collection_generation,
             Some(generation + 1)
         );
+    }
+
+    #[test]
+    fn health_fixture_reseeds_initialized_cache_and_rejects_pending_work() {
+        seed_health_for_test(fake_health("first"));
+        assert_eq!(health_snapshot().engine_name, "first");
+        let generation = {
+            let mut state = health_cache_state().lock().unwrap();
+            let generation = state.generation;
+            state.probe_pending = Some(generation);
+            state.refresh_pending = Some(generation);
+            generation
+        };
+
+        seed_health_for_test(fake_health("replacement"));
+        {
+            let mut state = health_cache_state().lock().unwrap();
+            state.probe_completed(generation, health_clock(), 42);
+            assert!(!state.publish_if_current(
+                generation,
+                health_clock(),
+                None,
+                fake_health("stale"),
+            ));
+            assert!(state.probe_pending.is_none());
+            assert!(state.refresh_pending.is_none());
+            assert!(state.cached.as_ref().unwrap().source_fingerprint.is_none());
+        }
+        assert_eq!(health_snapshot().engine_name, "replacement");
+        health_invalidate();
     }
 
     fn health_test_root(label: &str) -> std::path::PathBuf {

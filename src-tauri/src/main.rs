@@ -26,9 +26,6 @@ mod speech;
 mod status;
 mod tray;
 
-#[cfg(test)]
-use status::{Health, HEALTH};
-
 const APP_ID: &str = "io.github.ddv1982.echo";
 
 fn show_main_window(app: &tauri::AppHandle) {

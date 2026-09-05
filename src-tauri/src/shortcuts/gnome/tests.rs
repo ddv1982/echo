@@ -1,6 +1,6 @@
 use super::super::*;
 use super::*;
-use crate::{Health, HEALTH};
+use crate::status::{seed_health_for_test, Health};
 
 fn custom_binding(path: &str, name: &str, command: &str, binding: &str) -> GnomeCustomBinding {
     GnomeCustomBinding {
@@ -35,20 +35,17 @@ fn invoke_test_command(
 #[test]
 #[ignore = "manual 20-sample status IPC latency probe"]
 fn status_ipc_latency_probe() {
-    *HEALTH.lock().expect("health cache lock") = Some((
-        Instant::now(),
-        Health {
-            microphone_ready: false,
-            engine_name: String::new(),
-            engine_ready: false,
-            injection_name: String::new(),
-            injection_ready: false,
-            current_exe: String::new(),
-            first_path_hit: None,
-            stale_installs: Vec::new(),
-            language_warning: None,
-        },
-    ));
+    seed_health_for_test(Health {
+        microphone_ready: false,
+        engine_name: String::new(),
+        engine_ready: false,
+        injection_name: String::new(),
+        injection_ready: false,
+        current_exe: String::new(),
+        first_path_hit: None,
+        stale_installs: Vec::new(),
+        language_warning: None,
+    });
     let app = tauri::test::mock_builder()
         .invoke_handler(crate::shortcut_test_handler())
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
@@ -412,7 +409,7 @@ fn legacy_wayland_host_repairs_only_the_echo_owned_binding() {
         stale_installs: Vec::new(),
         language_warning: None,
     };
-    *HEALTH.lock().expect("health cache lock") = Some((Instant::now(), health));
+    seed_health_for_test(health);
     let app = tauri::test::mock_builder()
         .invoke_handler(crate::shortcut_test_handler())
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
