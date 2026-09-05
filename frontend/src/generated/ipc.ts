@@ -6,7 +6,7 @@ export type ActiveComponentOrigin = "managed" | "system" | "external";
 
 export type AppPhase = "Idle" | "Recording" | "Transcribing" | "Injecting" | "Failed";
 
-export type AppStatus = { phase: AppPhase, lastTranscript: string | null, lastHistoryId: string | null, microphoneReady: boolean, engineName: string, engineReady: boolean, injectionName: string, injectionReady: boolean, shortcut: ShortcutStatus, hudEnabled: boolean, recordingLimitSeconds: number | null, recordingPolicy: RecordingPolicy, settingsPath: string, version: string, lastError: string | null, lastRun: LastRun | null, languageWarning: string | null, recordingInProcess: boolean, currentExe: string, firstPathHit: string | null, staleInstalls: Array<string>, };
+export type AppStatus = { phase: AppPhase, lastTranscript: string | null, lastHistoryId: string | null, microphoneReady: boolean, engineName: string, engineReady: boolean, injectionName: string, injectionReady: boolean, shortcut: ShortcutStatus, hudEnabled: boolean, recordingLimitSeconds: number | null, recordingPolicy: RecordingPolicy, settingsPath: string, version: string, lastError: string | null, lastRun: LastRun | null, languageWarning: string | null, recordingInProcess: boolean, recordingSessionId: string | null, captureStopRequested: boolean, recordingRevision: number, currentExe: string, firstPathHit: string | null, staleInstalls: Array<string>, };
 
 export type AudioHost = "pipe-wire" | "pulse-audio" | "alsa" | "core-audio" | "wasapi" | "other";
 
@@ -83,6 +83,8 @@ export type NextSpeechRun = { "kind": "ready", engine: ResolvedSpeechEngine, lan
 export type Readiness = { managedSupported: boolean, unsupportedReason: string | null, totalMemoryBytes: number | null, recommendedModel: ComponentId, components: Array<ComponentStatus>, plans: Array<SetupPlan>, microphoneReady: boolean, speechReady: boolean, hasSuccessfulDictation: boolean, firstRunComplete: boolean, activeOperation: string | null, activeCancellable: boolean, };
 
 export type RecordingPolicy = { minimumSeconds: number, defaultSeconds: number, maximumSeconds: number, presetsSeconds: Array<number>, };
+
+export type RecordingSnapshot = { sessionId: string | null, phase: AppPhase, captureStopRequested: boolean, revision: number, };
 
 export type RecoveryReason = "quarantined" | "quarantineUnreadable" | "runtimeFailure" | "timeout" | "malformedOutput" | "missingReceipt" | "receiptMismatch" | "cpuFallback" | "identityMismatch";
 

@@ -16,6 +16,8 @@ pub struct Status {
     /// persistence errors, so the desktop app can expose the actual problem.
     pub error: Option<String>,
     pub recording_limit: Option<RecordingLimit>,
+    pub session_id: Option<String>,
+    pub revision: u64,
 }
 
 impl Status {
@@ -27,6 +29,8 @@ impl Status {
             last_history_id: None,
             error: None,
             recording_limit: None,
+            session_id: None,
+            revision: 0,
         }
     }
 }
@@ -56,8 +60,51 @@ pub fn write_status(
     )
 }
 
+/// Only the recording owner calls this while it holds the lease. Keeping the
+/// identity in the same atomic status file prevents a reader from combining
+/// an old phase with a replacement lock token.
+pub fn write_status_for_session(
+    session_id: &str,
+    revision: u64,
+    state: SessionState,
+    last: Option<&str>,
+    error: Option<&str>,
+    last_history_id: Option<&str>,
+) -> Result<(), String> {
+    write_atomic_private(
+        &status_path(),
+        render_for_session(session_id, revision, state, last, error, last_history_id).as_bytes(),
+    )
+}
+
 pub fn write_recording(limit: RecordingLimit) -> Result<(), String> {
     write_atomic_private(&status_path(), render_recording(limit).as_bytes())
+}
+
+pub fn write_recording_for_session(
+    session_id: &str,
+    revision: u64,
+    limit: RecordingLimit,
+) -> Result<(), String> {
+    let mut body = render_writer("Recording");
+    body.push_str(&format!("session_id={session_id}\n"));
+    body.push_str(&format!("session_revision={revision}\n"));
+    body.push_str(&format!("recording_limit_seconds={}\n", limit.seconds()));
+    write_atomic_private(&status_path(), body.as_bytes())
+}
+
+fn render_for_session(
+    session_id: &str,
+    revision: u64,
+    state: SessionState,
+    last: Option<&str>,
+    error: Option<&str>,
+    last_history_id: Option<&str>,
+) -> String {
+    let mut body = render(state, last, error, last_history_id);
+    body.push_str(&format!("session_id={session_id}\n"));
+    body.push_str(&format!("session_revision={revision}\n"));
+    body
 }
 
 fn render_recording(limit: RecordingLimit) -> String {
@@ -194,6 +241,13 @@ fn parse(raw: &str, alive: impl Fn(ProcessIdentity) -> bool) -> Status {
                 .and_then(RecordingLimit::new)
         })
         .flatten();
+    let session_id = field("session_id=")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let revision = field("session_revision=")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
     let active = state != "Idle" && !state.starts_with("Failed");
     let writer = field("pid=")
         .and_then(|pid| pid.parse().ok())
@@ -209,6 +263,8 @@ fn parse(raw: &str, alive: impl Fn(ProcessIdentity) -> bool) -> Status {
             last_history_id,
             error,
             recording_limit: None,
+            session_id: None,
+            revision: 0,
         };
     }
     Status {
@@ -217,6 +273,8 @@ fn parse(raw: &str, alive: impl Fn(ProcessIdentity) -> bool) -> Status {
         last_history_id,
         error,
         recording_limit,
+        session_id,
+        revision,
     }
 }
 
@@ -239,6 +297,15 @@ mod tests {
         assert_eq!(status.state, "Recording");
         assert_eq!(status.recording_limit, Some(limit));
         assert!(body.contains("recording_limit_seconds=600\n"));
+    }
+
+    #[test]
+    fn owner_status_keeps_the_session_identity_with_its_phase() {
+        let body = render_for_session("session-a", 7, SessionState::Transcribing, None, None, None);
+        let status = parse(&body, |_| true);
+        assert_eq!(status.state, "Transcribing");
+        assert_eq!(status.session_id.as_deref(), Some("session-a"));
+        assert_eq!(status.revision, 7);
     }
 
     #[test]

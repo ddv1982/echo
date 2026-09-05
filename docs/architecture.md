@@ -50,6 +50,14 @@ upgrade takeover all use that lease. A fixed gate file supplies kernel-backed
 exclusion. The token-bearing lock file remains a compatibility and diagnostic
 record for older Echo processes.
 
+Home uses explicit start, capture-stop, and transcription-cancel commands.
+Each acknowledgement identifies its session. The recording owner publishes
+that identity and a monotonic session revision with its status. Capture-stop
+and cancellation use separate files scoped to the session, so a delayed request
+cannot overwrite a replacement session's control signal. CLI, tray, and shortcut
+toggles remain adapters over these intents. Legacy owners retain their existing
+flat control-file protocol.
+
 ## Desktop boundary
 
 Tauri command functions are thin adapters. Settings owns serialized config
@@ -74,10 +82,11 @@ successful insertion and a failed insertion with recoverable text.
 
 ## IPC contract
 
-Rust is authoritative for serialized commands, events, and payloads. `ipc-gen`
-writes the TypeScript contract and command manifest. CI regenerates them and
-fails on drift. Frontend code imports generated types and calls a `DesktopApi`
-interface rather than constructing command strings throughout the UI.
+Rust defines the payload schemas. `ipc-gen` exports their TypeScript types,
+and CI checks those generated types for drift. Separate contract tests check
+command and event registrations and their payload types. Frontend code imports
+generated types and calls a `DesktopApi` interface rather than constructing
+command strings throughout the UI.
 
 The production adapter invokes Tauri. The preview adapter is isolated to the
 browser development graph and cannot enter the production bundle.
@@ -105,3 +114,21 @@ attribution are represented in the desktop SBOM. Third-party workflow actions
 are pinned to full commit SHAs.
 
 See [RELEASING.md](RELEASING.md) for the operator contract.
+
+## Offline tooling
+
+The desktop runs the Rust speech and installation code. The Python and shell
+tools below support verification, runtime publication, and research outside the
+desktop process.
+
+| Purpose | Entry points |
+| --- | --- |
+| CI regression and archive verification | `verify-stt-benchmark.sh`, `verify-stt-corpus.sh`, `verify-whisper-runtime-archive.sh` |
+| Managed GPU runtime publication | `build-whisper-vulkan-receipt.sh`, `generate-managed-inventory.py`, and the installer proof in [RELEASING.md](RELEASING.md) |
+| Offline admission and tuning research | `sweep-whisper-admission.py`, `promote-whisper-admission.py`, `compose-whisper-admission-set.py`, and their probe and identity modules |
+
+The admission tools remain maintained research tools, as recorded in the
+[evidence history](history/evidence-2026-08-30.md#durable-acceleration-decisions).
+They are not application startup dependencies. Their lack of desktop callers
+does not make them obsolete. Retiring this workflow requires checking its
+research consumers and preserving the benchmark and archive checks used by CI.

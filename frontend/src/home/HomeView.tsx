@@ -14,21 +14,22 @@ export function HomeView({
   status,
   history,
   recordingSeconds,
-  stopPending,
+  recordingRequestPending,
   onToggleRecording,
   onOpenSettings,
 }: {
   status: AppStatus
   history: HistoryItem[]
   recordingSeconds: number
-  stopPending: boolean
+  recordingRequestPending: boolean
   onToggleRecording: () => Promise<void>
   onOpenSettings: () => void
 }) {
   const shortcut = presentShortcut(status.shortcut)
   const recording = status.phase === 'Recording'
   const processing = status.phase === 'Transcribing' || status.phase === 'Injecting'
-  const busy = processing || stopPending
+  const stopPending = recording && status.captureStopRequested
+  const busy = processing || stopPending || recordingRequestPending
   const heroState = recording && !stopPending
     ? 'recording'
     : busy

@@ -97,9 +97,19 @@ mod tests {
             payload_types: &[],
         },
         CommandContract {
-            handler: "toggle_recording",
+            handler: "start_capture",
             source: RECORDING,
-            payload_types: &[],
+            payload_types: &["RecordingSnapshot"],
+        },
+        CommandContract {
+            handler: "stop_capture",
+            source: RECORDING,
+            payload_types: &["RecordingSnapshot"],
+        },
+        CommandContract {
+            handler: "cancel_transcription",
+            source: RECORDING,
+            payload_types: &["RecordingSnapshot"],
         },
         CommandContract {
             handler: "stop_recording",
@@ -278,6 +288,6 @@ mod tests {
                 manifest_types.insert((*payload_type).to_string());
             }
         }
-        assert_eq!(manifest_types.len(), 19);
+        assert_eq!(manifest_types.len(), 20);
     }
 }

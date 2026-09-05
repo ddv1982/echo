@@ -12,6 +12,7 @@ import type {
   MicrophoneSnapshot,
   MicrophoneTestResult,
   Readiness,
+  RecordingSnapshot,
   SetupEvent,
   SetupPlanId,
   ComponentId,
@@ -58,6 +59,7 @@ function ipcSnapshot<T>(value: T): T {
 export function createPreviewDesktopApi(): PreviewDesktopApi {
 
   let previewStatus: AppStatus = richPreviewStatus()
+  let recordingSequence = 0
 
   let previewSettings: Settings = defaultPreviewSettings()
   let previewRecordingDeadline: number | null = null
@@ -260,23 +262,56 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
     return Promise.resolve(true)
   }
 
-  function toggleRecording(): Promise<void> {
-    if (previewStatus.phase === 'Recording') {
-      stopPreviewRecording()
-    } else {
-      const limit = previewSettings.recordSeconds.effective
-      previewStatus = {
-        ...previewStatus,
-        recordingInProcess: true,
-        phase: 'Recording',
-        recordingLimitSeconds: limit,
-      }
-      previewRecordingDeadline = schedulePreview(() => {
-        previewRecordingDeadline = null
-        stopPreviewRecording()
-      }, limit * 1000)
+  function recordingSnapshot(): RecordingSnapshot {
+    return {
+      sessionId: previewStatus.recordingSessionId,
+      phase: previewStatus.phase,
+      captureStopRequested: previewStatus.captureStopRequested,
+      revision: previewStatus.recordingRevision,
     }
-    return Promise.resolve()
+  }
+
+  function startCapture(): Promise<RecordingSnapshot> {
+    if (['Recording', 'Transcribing', 'Injecting'].includes(previewStatus.phase)) {
+      return Promise.reject(new Error('Another recording is already active.'))
+    }
+    const sessionId = `preview-${++recordingSequence}`
+    const limit = previewSettings.recordSeconds.effective
+    previewStatus = {
+      ...previewStatus,
+      recordingSessionId: sessionId,
+      recordingRevision: 2,
+      captureStopRequested: false,
+      recordingInProcess: true,
+      phase: 'Recording',
+      recordingLimitSeconds: limit,
+    }
+    previewRecordingDeadline = schedulePreview(() => {
+      previewRecordingDeadline = null
+      stopPreviewRecording()
+    }, limit * 1000)
+    return Promise.resolve(recordingSnapshot())
+  }
+
+  function stopCapture(sessionId: string): Promise<RecordingSnapshot> {
+    if (previewStatus.recordingSessionId !== sessionId || previewStatus.phase !== 'Recording') {
+      return Promise.reject(new Error('Recording session changed before stop was accepted.'))
+    }
+    stopPreviewRecording()
+    return Promise.resolve(recordingSnapshot())
+  }
+
+  function cancelTranscription(sessionId: string): Promise<RecordingSnapshot> {
+    if (previewStatus.recordingSessionId !== sessionId || previewStatus.phase !== 'Transcribing') {
+      return Promise.reject(new Error('Recording session changed before cancellation was accepted.'))
+    }
+    previewStatus = {
+      ...previewStatus,
+      phase: 'Failed',
+      recordingRevision: previewStatus.recordingRevision + 2,
+      lastError: 'Transcription cancelled.',
+    }
+    return Promise.resolve(recordingSnapshot())
   }
 
   function stopRecording(activation: string): Promise<boolean> {
@@ -295,10 +330,14 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
     previewStatus = {
       ...previewStatus,
       recordingInProcess: false,
+      captureStopRequested: false,
+      recordingRevision: previewStatus.recordingRevision + 2,
       phase: 'Transcribing',
     }
+    const sessionId = previewStatus.recordingSessionId
     schedulePreview(() => {
-      previewStatus = { ...previewStatus, phase: 'Idle' }
+      if (previewStatus.recordingSessionId !== sessionId || previewStatus.phase !== 'Transcribing') return
+      previewStatus = { ...previewStatus, phase: 'Idle', recordingRevision: previewStatus.recordingRevision + 2 }
     }, 900)
     return true
   }
@@ -807,7 +846,9 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
     startDictionaryTrainingSample,
     finishDictionaryTrainingSample,
     cancelDictionaryTrainingSample,
-    toggleRecording,
+    startCapture,
+    stopCapture,
+    cancelTranscription,
     stopRecording,
     getRecordingLevel,
     copyText,

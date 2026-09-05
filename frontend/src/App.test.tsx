@@ -1,8 +1,9 @@
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import { createPreviewDesktopApi } from './api/previewDesktopApi'
 import { useSerialPoll } from './hooks/useSerialPoll'
+import { useAppController } from './app/useAppController'
 import {
   addDictionaryEntry,
   configureDesktopApi,
@@ -12,11 +13,13 @@ import {
   getReadiness,
   quitApp,
   removeStaleInstalls,
-  toggleRecording,
+  startCapture,
+  stopCapture,
 } from './tauri'
 import { deferred, resetDesktopApiMocks } from './test/desktopApiHarness'
 import type {
   AppStatus,
+  RecordingSnapshot,
 } from './generated/ipc'
 
 const previewDesktopApi = createPreviewDesktopApi()
@@ -217,15 +220,16 @@ describe('Echo desktop shell', () => {
     },
   )
 
-  it('keeps a successful stop pending through stale statuses and polling errors', async () => {
+  it('uses the session-bound stop acknowledgement without reconstructing a stop state', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
-    const recording = { ...richPreviewStatus(), phase: 'Recording' } satisfies AppStatus
-    const transcribing = { ...recording, phase: 'Transcribing', recordingInProcess: false } satisfies AppStatus
-    const idle = { ...recording, phase: 'Idle', recordingInProcess: false } satisfies AppStatus
-    vi.mocked(toggleRecording).mockResolvedValueOnce(undefined)
+    const recording = { ...richPreviewStatus(), phase: 'Recording', recordingSessionId: 'test-session', recordingRevision: 2 } satisfies AppStatus
+    const stopping = { ...recording, captureStopRequested: true, recordingRevision: 3 }
+    const transcribing = { ...recording, phase: 'Transcribing', recordingInProcess: false, recordingRevision: 4 } satisfies AppStatus
+    const idle = { ...recording, phase: 'Idle', recordingInProcess: false, recordingRevision: 6 } satisfies AppStatus
+    vi.mocked(stopCapture).mockResolvedValueOnce({ sessionId: 'test-session', phase: 'Recording', captureStopRequested: true, revision: 3 })
     vi.mocked(getAppStatus)
       .mockResolvedValueOnce(recording)
-      .mockResolvedValueOnce(recording)
+      .mockResolvedValueOnce(stopping)
       .mockRejectedValueOnce(new Error('temporary status error'))
       .mockResolvedValueOnce(transcribing)
       .mockResolvedValueOnce(idle)
@@ -234,12 +238,8 @@ describe('Echo desktop shell', () => {
       const stop = await screen.findByRole('button', { name: 'Stop and transcribe' })
       fireEvent.click(stop)
       await act(async () => {})
-      expect(toggleRecording).toHaveBeenCalledOnce()
-
-      const stopping = screen.getByRole('button', { name: 'Stopping recording' })
-      expect(stopping).toBeDisabled()
-      fireEvent.click(stopping)
-      expect(toggleRecording).toHaveBeenCalledOnce()
+      expect(stopCapture).toHaveBeenCalledOnce()
+      expect(screen.getByRole('button', { name: 'Stopping recording' })).toBeDisabled()
 
       await act(async () => vi.advanceTimersByTimeAsync(400))
       expect(screen.getByRole('button', { name: 'Stopping recording' })).toBeDisabled()
@@ -253,17 +253,110 @@ describe('Echo desktop shell', () => {
   })
 
   it('releases a rejected stop request for retry', async () => {
-    const recording = { ...richPreviewStatus(), phase: 'Recording' } satisfies AppStatus
+    const recording = { ...richPreviewStatus(), phase: 'Recording', recordingSessionId: 'test-session' } satisfies AppStatus
     vi.mocked(getAppStatus).mockResolvedValue(recording)
-    vi.mocked(toggleRecording)
+    vi.mocked(stopCapture)
       .mockRejectedValueOnce(new Error('stop was rejected'))
-      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({ sessionId: 'test-session', phase: 'Recording', captureStopRequested: false, revision: 2 })
     render(<App />)
 
     fireEvent.click(await screen.findByRole('button', { name: 'Stop and transcribe' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('stop was rejected')
     fireEvent.click(screen.getByRole('button', { name: 'Stop and transcribe' }))
-    await waitFor(() => expect(toggleRecording).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(stopCapture).toHaveBeenCalledTimes(2))
+  })
+
+  it('accepts an external session first observed during transcription', async () => {
+    vi.useFakeTimers()
+    const initial = { ...richPreviewStatus(), recordingSessionId: 'previous', recordingRevision: 6 }
+    const external = { ...initial, recordingSessionId: 'external', recordingRevision: 4, phase: 'Transcribing' } satisfies AppStatus
+    vi.mocked(getAppStatus)
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(external)
+      .mockResolvedValue({ ...external, phase: 'Idle', recordingRevision: 6, lastTranscript: 'external completed' })
+    try {
+      render(<App />)
+      await act(async () => vi.advanceTimersByTimeAsync(0))
+      await act(async () => vi.advanceTimersByTimeAsync(400))
+      expect(screen.getByRole('heading', { name: 'Transcribing locally…' })).toBeInTheDocument()
+      await act(async () => vi.advanceTimersByTimeAsync(400))
+      expect(screen.getByText('external completed')).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('ignores a poll started before an accepted stop acknowledgement', async () => {
+    vi.useFakeTimers()
+    const recording = { ...richPreviewStatus(), phase: 'Recording', recordingSessionId: 'session-a', recordingRevision: 2 } satisfies AppStatus
+    const oldPoll = deferred<AppStatus>()
+    const freshPoll = deferred<AppStatus>()
+    vi.mocked(getAppStatus)
+      .mockResolvedValueOnce(recording)
+      .mockImplementationOnce(() => oldPoll.promise)
+      .mockImplementationOnce(() => freshPoll.promise)
+    vi.mocked(stopCapture).mockResolvedValueOnce({ sessionId: 'session-a', phase: 'Recording', revision: 3, captureStopRequested: true })
+    try {
+      const { result } = renderHook(() => useAppController())
+      await act(async () => vi.advanceTimersByTimeAsync(0))
+      await act(async () => vi.advanceTimersByTimeAsync(400))
+      let request = Promise.resolve()
+      await act(async () => { request = result.current.toggleRecording() })
+      expect(result.current.status.captureStopRequested).toBe(true)
+      await act(async () => oldPoll.resolve(recording))
+      expect(result.current.status.captureStopRequested).toBe(true)
+      await act(async () => freshPoll.resolve({ ...recording, phase: 'Transcribing', recordingRevision: 4 }))
+      expect(result.current.status.phase).toBe('Transcribing')
+      await act(() => request)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it.each(['session-a', 'replacement'])('ignores an old acknowledgement after observing %s progress', async (sessionId) => {
+    vi.useFakeTimers()
+    const recording = { ...richPreviewStatus(), phase: 'Recording', recordingSessionId: 'session-a', recordingRevision: 2 } satisfies AppStatus
+    const progressed = { ...recording, phase: 'Transcribing', recordingSessionId: sessionId, recordingRevision: 4 } satisfies AppStatus
+    const reply = deferred<RecordingSnapshot>()
+    const freshPoll = deferred<AppStatus>()
+    vi.mocked(stopCapture).mockImplementationOnce(() => reply.promise)
+    vi.mocked(getAppStatus).mockResolvedValueOnce(recording).mockResolvedValueOnce(progressed).mockImplementationOnce(() => freshPoll.promise)
+    try {
+      const { result } = renderHook(() => useAppController())
+      await act(async () => vi.advanceTimersByTimeAsync(0))
+      let request = Promise.resolve()
+      await act(async () => { request = result.current.toggleRecording() })
+      await act(async () => vi.advanceTimersByTimeAsync(400))
+      expect(result.current.status.phase).toBe('Transcribing')
+      await act(async () => reply.resolve({ sessionId: 'session-a', phase: 'Recording', revision: 3, captureStopRequested: true }))
+      expect(result.current.status.phase).toBe('Transcribing')
+      expect(result.current.status.recordingSessionId).toBe(sessionId)
+      await act(async () => freshPoll.resolve(progressed))
+      await act(() => request)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('shows the accepted start while the next status read is pending', async () => {
+    vi.useFakeTimers()
+    const initial = richPreviewStatus()
+    const freshPoll = deferred<AppStatus>()
+    vi.mocked(getAppStatus).mockResolvedValueOnce(initial).mockImplementationOnce(() => freshPoll.promise)
+    vi.mocked(startCapture).mockResolvedValueOnce({ sessionId: 'started', phase: 'Recording', revision: 2, captureStopRequested: false })
+    try {
+      const { result } = renderHook(() => useAppController())
+      await act(async () => vi.advanceTimersByTimeAsync(0))
+      let request = Promise.resolve()
+      await act(async () => { request = result.current.toggleRecording() })
+      expect(result.current.status.recordingSessionId).toBe('started')
+      expect(result.current.status.phase).toBe('Recording')
+      await act(async () => freshPoll.resolve({ ...initial, recordingSessionId: 'started', phase: 'Recording', recordingRevision: 2 }))
+      await act(() => request)
+      expect(startCapture).toHaveBeenCalledOnce()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('reports a rejected dictionary entry without clearing the form or leaving it busy', async () => {

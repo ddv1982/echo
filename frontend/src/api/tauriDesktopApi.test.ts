@@ -45,7 +45,9 @@ describe('Tauri desktop adapter contract', () => {
     const capture = await tauriDesktopApi.startDictionaryTrainingSample()
     await tauriDesktopApi.finishDictionaryTrainingSample(String(capture))
     await tauriDesktopApi.cancelDictionaryTrainingSample(String(capture))
-    await tauriDesktopApi.toggleRecording()
+    await tauriDesktopApi.startCapture()
+    await tauriDesktopApi.stopCapture('session')
+    await tauriDesktopApi.cancelTranscription('session')
     await tauriDesktopApi.stopRecording('activation')
     await tauriDesktopApi.getRecordingLevel()
     await tauriDesktopApi.copyText('text')
@@ -84,7 +86,9 @@ describe('Tauri desktop adapter contract', () => {
       ['start_dictionary_training_sample'],
       ['finish_dictionary_training_sample', { captureId: 'undefined' }],
       ['cancel_dictionary_training_sample', { captureId: 'undefined' }],
-      ['toggle_recording'],
+      ['start_capture'],
+      ['stop_capture', { sessionId: 'session' }],
+      ['cancel_transcription', { sessionId: 'session' }],
       ['stop_recording', { activation: 'activation' }],
       ['get_recording_level'],
       ['copy_text', { text: 'text' }],

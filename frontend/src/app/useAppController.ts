@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { useDictionary } from '../dictionary/useDictionary'
-import type { AppStatus } from '../generated/ipc'
+import type { AppStatus, RecordingSnapshot } from '../generated/ipc'
 import { useHistory } from '../history/useHistory'
 import { useSerialPoll } from '../hooks/useSerialPoll'
-import { getAppStatus, quitApp, toggleRecording } from '../tauri'
+import { getAppStatus, quitApp, startCapture, stopCapture } from '../tauri'
 import type { ThemeMode, View } from '../types'
 import { messageFrom } from './formatting'
 import { useElapsedSeconds } from './useElapsedSeconds'
@@ -33,12 +33,13 @@ const initialStatus: AppStatus = {
   lastRun: null,
   languageWarning: null,
   recordingInProcess: false,
+  recordingSessionId: null,
+  captureStopRequested: false,
+  recordingRevision: 0,
   currentExe: '',
   firstPathHit: null,
   staleInstalls: [],
 }
-
-type StopState = 'none' | 'requesting' | 'awaiting-status'
 
 export function useAppController() {
   const [view, setView] = useState<View>('home')
@@ -49,11 +50,11 @@ export function useAppController() {
   })
   const [error, setError] = useState<string | null>(null)
   const [recordingStartedAt, setRecordingStartedAt] = useState<number | null>(null)
-  const previousPhase = useRef<AppStatus['phase']>('Idle')
+  const currentStatus = useRef(initialStatus)
+  const statusEpoch = useRef(0)
   const previousHistoryId = useRef<string | null>(null)
   const toggleInFlight = useRef(false)
-  const stopStateRef = useRef<StopState>('none')
-  const [stopState, setStopState] = useState<StopState>('none')
+  const [recordingRequestPending, setRecordingRequestPending] = useState(false)
   const recordingSeconds = useElapsedSeconds(recordingStartedAt)
   const reportError = useCallback((reason: unknown) => setError(messageFrom(reason)), [])
   const {
@@ -71,28 +72,55 @@ export function useAppController() {
   } = useDictionary(reportError)
 
   const applyStatus = useCallback((next: AppStatus) => {
+    const previous = currentStatus.current
+    if (
+      next.recordingSessionId !== null &&
+      next.recordingSessionId === previous.recordingSessionId &&
+      next.recordingRevision < previous.recordingRevision
+    ) return
+    currentStatus.current = next
     setStatus(next)
-    if (stopStateRef.current === 'awaiting-status' && next.phase !== 'Recording') {
-      stopStateRef.current = 'none'
-      setStopState('none')
-    }
     const observedAt = Date.now()
     setRecordingStartedAt((current) =>
-      next.phase === 'Recording' ? (current ?? observedAt) : null)
+      next.phase === 'Recording'
+        ? (next.recordingSessionId === previous.recordingSessionId ? current ?? observedAt : observedAt)
+        : null)
     if (next.lastHistoryId !== null && next.lastHistoryId !== previousHistoryId.current) {
       previousHistoryId.current = next.lastHistoryId
       void refreshHistory().catch(reportError)
     }
-    if (previousPhase.current !== 'Idle' && ['Idle', 'Failed'].includes(next.phase)) {
+    if (previous.phase !== 'Idle' && ['Idle', 'Failed'].includes(next.phase)) {
       void refreshDictionary().catch(reportError)
     }
-    previousPhase.current = next.phase
   }, [refreshDictionary, refreshHistory, reportError])
+
+  const applyRecordingSnapshot = useCallback((snapshot: RecordingSnapshot, requestedFrom: string | null) => {
+    const current = currentStatus.current
+    if (
+      current.recordingSessionId !== requestedFrom &&
+      current.recordingSessionId !== snapshot.sessionId
+    ) return
+    applyStatus({
+      ...current,
+      phase: snapshot.phase,
+      recordingSessionId: snapshot.sessionId,
+      captureStopRequested: snapshot.captureStopRequested,
+      recordingRevision: snapshot.revision,
+    })
+  }, [applyStatus])
+
+  const readStatus = useCallback(async () => {
+    const epoch = statusEpoch.current
+    return { epoch, snapshot: await getAppStatus() }
+  }, [])
+  const applyStatusObservation = useCallback((result: Awaited<ReturnType<typeof readStatus>>) => {
+    if (result.epoch === statusEpoch.current) applyStatus(result.snapshot)
+  }, [applyStatus])
 
   const pollWhileVisible = useCallback(() => !document.hidden, [])
   const refreshStatus = useSerialPoll({
-    request: getAppStatus,
-    onResult: applyStatus,
+    request: readStatus,
+    onResult: applyStatusObservation,
     onError: reportError,
     intervalMs: 400,
     shouldPoll: pollWhileVisible,
@@ -116,32 +144,31 @@ export function useAppController() {
   }, [view])
 
   const toggle = useCallback(async () => {
-    const phase = previousPhase.current
+    const { phase, recordingSessionId } = currentStatus.current
     const processing = phase === 'Transcribing' || phase === 'Injecting'
-    if (toggleInFlight.current || stopStateRef.current !== 'none' || processing) return
+    if (toggleInFlight.current || recordingRequestPending || processing) return
     const stopping = phase === 'Recording'
-    if (stopping) {
-      stopStateRef.current = 'requesting'
-      setStopState('requesting')
-    }
     toggleInFlight.current = true
+    statusEpoch.current += 1
+    setRecordingRequestPending(true)
     try {
-      await toggleRecording()
+      let snapshot: RecordingSnapshot
       if (stopping) {
-        stopStateRef.current = 'awaiting-status'
-        setStopState('awaiting-status')
+        if (!recordingSessionId) throw new Error('Recording session is no longer available.')
+        snapshot = await stopCapture(recordingSessionId)
+      } else {
+        snapshot = await startCapture()
       }
+      statusEpoch.current += 1
+      applyRecordingSnapshot(snapshot, recordingSessionId)
       await refreshStatus()
     } catch (reason) {
-      if (stopping) {
-        stopStateRef.current = 'none'
-        setStopState('none')
-      }
       reportError(reason)
     } finally {
       toggleInFlight.current = false
+      setRecordingRequestPending(false)
     }
-  }, [refreshStatus, reportError])
+  }, [applyRecordingSnapshot, recordingRequestPending, refreshStatus, reportError])
 
   const quit = useCallback(async () => {
     try {
@@ -164,7 +191,7 @@ export function useAppController() {
     error,
     setError,
     recordingSeconds,
-    stopPending: stopState !== 'none',
+    recordingRequestPending,
     refreshStatus,
     toggleRecording: toggle,
     quitApp: quit,

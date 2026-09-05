@@ -17,7 +17,9 @@ export function createDesktopApiMocks(actual: DesktopApi): DesktopApi {
     startDictionaryTrainingSample: vi.fn(actual.startDictionaryTrainingSample),
     finishDictionaryTrainingSample: vi.fn(actual.finishDictionaryTrainingSample),
     cancelDictionaryTrainingSample: vi.fn(actual.cancelDictionaryTrainingSample),
-    toggleRecording: vi.fn(actual.toggleRecording),
+    startCapture: vi.fn(actual.startCapture),
+    stopCapture: vi.fn(actual.stopCapture),
+    cancelTranscription: vi.fn(actual.cancelTranscription),
     stopRecording: vi.fn(actual.stopRecording),
     getRecordingLevel: vi.fn(actual.getRecordingLevel),
     copyText: vi.fn(actual.copyText),
@@ -58,7 +60,9 @@ export function resetDesktopApiMocks(mocks: DesktopApi, actual: DesktopApi): voi
   vi.mocked(mocks.startDictionaryTrainingSample).mockReset().mockImplementation(actual.startDictionaryTrainingSample)
   vi.mocked(mocks.finishDictionaryTrainingSample).mockReset().mockImplementation(actual.finishDictionaryTrainingSample)
   vi.mocked(mocks.cancelDictionaryTrainingSample).mockReset().mockImplementation(actual.cancelDictionaryTrainingSample)
-  vi.mocked(mocks.toggleRecording).mockReset().mockImplementation(actual.toggleRecording)
+  vi.mocked(mocks.startCapture).mockReset().mockImplementation(actual.startCapture)
+  vi.mocked(mocks.stopCapture).mockReset().mockImplementation(actual.stopCapture)
+  vi.mocked(mocks.cancelTranscription).mockReset().mockImplementation(actual.cancelTranscription)
   vi.mocked(mocks.stopRecording).mockReset().mockImplementation(actual.stopRecording)
   vi.mocked(mocks.getRecordingLevel).mockReset().mockImplementation(actual.getRecordingLevel)
   vi.mocked(mocks.copyText).mockReset().mockImplementation(actual.copyText)

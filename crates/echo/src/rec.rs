@@ -9,6 +9,7 @@ use echo_core::{
     RecordingLimit, ResolvedRecordingLimit, Session, SessionState, SAMPLE_RATE_HZ,
 };
 use fs2::FileExt;
+use sha2::{Digest, Sha256};
 
 use crate::audio::{self, AudioCapture, CancellationToken};
 use crate::hotkey::HotkeyEvent;
@@ -109,14 +110,16 @@ impl StopWhen {
         }
     }
 
-    fn clear_stop_request(&self) {
-        if let Some(session) = self.session() {
-            session.clear_stop_request();
-        }
+    fn cancel_requested(&self) -> bool {
+        self.session().is_some_and(ToggleSession::cancel_requested)
     }
 
-    fn stop_requested(&self) -> bool {
-        self.session().is_some_and(ToggleSession::stop_requested)
+    fn session_id(&self) -> Option<&str> {
+        self.session().map(|session| session.token.as_str())
+    }
+
+    fn next_revision(&self) -> u64 {
+        self.session().map_or(0, ToggleSession::next_revision)
     }
 }
 
@@ -141,7 +144,13 @@ pub fn run_rec_toggle() -> i32 {
             }
             match action {
                 ToggleAction::Start(session) => run_record(StopWhen::ToggleFile(session)),
-                ToggleAction::Stop(_) => 0,
+                ToggleAction::Stop(owner) => {
+                    // Preserve the CLI/hotkey toggle convention after capture:
+                    // its stop gesture means cancel while transcription is live.
+                    // Explicit desktop capture-stop never takes this path.
+                    apply_toggle_stop_intent(&owner);
+                    0
+                }
             }
         }
         Err(err) => {
@@ -165,8 +174,90 @@ pub fn toggle_managed_recording() -> Result<Option<String>, String> {
                 .map(|_| Some(recording_token))
                 .map_err(|err| err.to_string())
         }
-        ToggleAction::Stop(owner) => Ok(owner.token),
+        ToggleAction::Stop(owner) => {
+            apply_toggle_stop_intent(&owner);
+            Ok(owner.token)
+        }
     }
+}
+
+fn apply_toggle_stop_intent(owner: &LockOwner) {
+    if status::read().state == "Transcribing" {
+        if let Some(token) = owner.token.as_deref() {
+            let _ = ToggleSession::request_cancel_for_token_in(&echo_core::data_dir(), token);
+        }
+    }
+}
+
+/// The identity and revision acknowledged by the owner when capture starts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartedRecording {
+    pub session_id: String,
+    pub revision: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordingControlAck {
+    pub session_id: String,
+    pub revision: u64,
+}
+
+pub fn start_managed_recording() -> Result<StartedRecording, String> {
+    let session = match ToggleSession::acquire_in(&echo_core::data_dir())? {
+        LockAcquisition::Started(session) => session,
+        LockAcquisition::Busy(_) => return Err("Another recording is already active.".to_string()),
+    };
+    let token = session.token.clone();
+    let (send, receive) = std::sync::mpsc::sync_channel(1);
+    std::thread::Builder::new()
+        .name("echo-record-start".to_string())
+        .spawn(move || {
+            let _ = run_record_started(StopWhen::ToggleFile(session), Some(send));
+        })
+        .map_err(|err| err.to_string())?;
+    let revision = receive
+        .recv()
+        .map_err(|_| "recording worker exited before starting".to_string())??;
+    Ok(StartedRecording {
+        session_id: token,
+        revision,
+    })
+}
+
+pub fn request_capture_stop(session_id: &str) -> Result<bool, String> {
+    Ok(request_capture_stop_ack(session_id)?.is_some())
+}
+
+pub fn request_capture_stop_ack(session_id: &str) -> Result<Option<RecordingControlAck>, String> {
+    let current = status::read();
+    if current.state != "Recording" || current.session_id.as_deref() != Some(session_id) {
+        return Ok(None);
+    }
+    ToggleSession::request_stop_for_token_in(&echo_core::data_dir(), session_id).map(|accepted| {
+        accepted.then(|| RecordingControlAck {
+            session_id: session_id.to_string(),
+            revision: current.revision + 1,
+        })
+    })
+}
+
+pub fn request_transcription_cancel(session_id: &str) -> Result<bool, String> {
+    Ok(request_transcription_cancel_ack(session_id)?.is_some())
+}
+
+pub fn request_transcription_cancel_ack(
+    session_id: &str,
+) -> Result<Option<RecordingControlAck>, String> {
+    let current = status::read();
+    if current.state != "Transcribing" || current.session_id.as_deref() != Some(session_id) {
+        return Ok(None);
+    }
+    ToggleSession::request_cancel_for_token_in(&echo_core::data_dir(), session_id).map(|accepted| {
+        accepted.then(|| RecordingControlAck {
+            session_id: session_id.to_string(),
+            revision: current.revision + 1,
+        })
+    })
 }
 
 pub fn stop_shortcut_recording(activation: &str) -> Result<bool, String> {
@@ -181,14 +272,24 @@ pub fn stop_shortcut_recording(activation: &str) -> Result<bool, String> {
 }
 
 fn run_record(stop: StopWhen) -> i32 {
+    run_record_started(stop, None)
+}
+
+fn run_record_started(
+    stop: StopWhen,
+    started: Option<std::sync::mpsc::SyncSender<Result<u64, String>>>,
+) -> i32 {
     let config = match crate::settings::runtime_config() {
         Ok(config) => config,
         Err(error) => {
+            if let Some(sender) = started {
+                let _ = sender.send(Err(error.clone()));
+            }
             eprintln!("{error}");
             let state = SessionState::Failed {
                 reason: FailReason::EngineError,
             };
-            let _ = status::write_status(state, None, Some(&error), None);
+            let _ = write_session_status(&stop, state, None, Some(&error), None);
             crate::notify::notify_session_failure(FailReason::EngineError, Some(&error));
             return 1;
         }
@@ -196,19 +297,24 @@ fn run_record(stop: StopWhen) -> i32 {
     let environment = std::env::var("ECHO_RECORD_SECONDS").ok();
     let limit =
         echo_core::resolve_recording_limit(environment.as_deref(), config.record_seconds).limit;
-    run_record_with_limit(stop, limit, &config)
+    run_record_with_limit(stop, limit, &config, started)
 }
 
 fn run_record_with_limit(
     mut stop: StopWhen,
     limit: RecordingLimit,
     config: &echo_core::Config,
+    started: Option<std::sync::mpsc::SyncSender<Result<u64, String>>>,
 ) -> i32 {
     let mut session = Session::new();
-    log_state(&session);
-    let _ = status::write_status(session.state(), None, None, None);
     apply_edge(&mut session, HotkeyEvent::Down);
-    let _ = status::write_recording(limit);
+    let initial = write_session_recording(&stop, limit);
+    if let Some(sender) = started {
+        let _ = sender.send(initial.clone());
+    }
+    if initial.is_err() {
+        return 1;
+    }
     // The HUD lives until after injection: the longest wait in the session
     // (transcription) gets an indicator, and the outcome gets a state.
     let _in_process = InProcessSession::start();
@@ -222,7 +328,7 @@ fn run_record_with_limit(
                 hud.set_state(crate::ui::hud::HudState::Failed);
                 let _ = session.fail(reason);
                 log_state(&session);
-                let _ = status::write_status(session.state(), None, None, None);
+                let _ = write_session_status(&stop, session.state(), None, None, None);
                 crate::notify::notify_session_failure(reason, None);
                 return 1;
             }
@@ -234,16 +340,15 @@ fn run_record_with_limit(
         let target = injector.focus();
         (injector, target)
     });
-    stop.clear_stop_request();
     hud.set_state(crate::ui::hud::HudState::Transcribing);
     apply_edge(&mut session, HotkeyEvent::Up);
-    let _ = status::write_status(session.state(), None, None, None);
+    let _ = write_session_status(&stop, session.state(), None, None, None);
 
     let (dict, dictionary_warning) = dictionary_for_transcription(Dictionary::load());
     let mut persistence_warnings = Vec::new();
     if let Some(warning) = dictionary_warning {
         eprintln!("{warning}");
-        let _ = status::write_status(session.state(), None, Some(&warning), None);
+        let _ = write_session_status(&stop, session.state(), None, Some(&warning), None);
         crate::notify::notify_persistence_failure(&warning);
         persistence_warnings.push(warning);
     }
@@ -262,7 +367,13 @@ fn run_record_with_limit(
             log_state(&session);
             let detail = err.to_string();
             let visible_detail = joined_details(&persistence_warnings, Some(&detail));
-            let _ = status::write_status(session.state(), None, visible_detail.as_deref(), None);
+            let _ = write_session_status(
+                &stop,
+                session.state(),
+                None,
+                visible_detail.as_deref(),
+                None,
+            );
             eprintln!("{detail}");
             crate::notify::notify_session_failure(reason, Some(&detail));
             return 1;
@@ -272,7 +383,7 @@ fn run_record_with_limit(
         &capture.pcm,
         crate::transcribe::TranscriptionPurpose::Dictation(&dict),
         Instant::now() + Duration::from_secs(15 * 60),
-        &|| stop.stop_requested(),
+        &|| stop.cancel_requested(),
     ) {
         Ok(transcript) => transcript,
         Err(err) => {
@@ -288,7 +399,13 @@ fn run_record_with_limit(
             let _ = session.fail(reason);
             log_state(&session);
             let visible_detail = joined_details(&persistence_warnings, detail);
-            let _ = status::write_status(session.state(), None, visible_detail.as_deref(), None);
+            let _ = write_session_status(
+                &stop,
+                session.state(),
+                None,
+                visible_detail.as_deref(),
+                None,
+            );
             crate::notify::notify_session_failure(reason, detail);
             return 1;
         }
@@ -338,7 +455,8 @@ fn run_record_with_limit(
     let persistence_detail = joined_details(&persistence_warnings, None);
     if failed {
         // Leave the Failed state visible; the next session overwrites it.
-        let _ = status::write_status(
+        let _ = write_session_status(
+            &stop,
             session.state(),
             Some(&transcript.text),
             persistence_detail.as_deref(),
@@ -346,7 +464,8 @@ fn run_record_with_limit(
         );
         return 1;
     }
-    let _ = status::write_status(
+    let _ = write_session_status(
+        &stop,
         session.state(),
         Some(&transcript.text),
         persistence_detail.as_deref(),
@@ -368,6 +487,40 @@ fn capture_with_started_at<T, E>(
 
 fn new_history_id() -> String {
     uuid::Uuid::new_v4().to_string()
+}
+
+fn write_session_recording(stop: &StopWhen, limit: RecordingLimit) -> Result<u64, String> {
+    match stop.session_id() {
+        Some(session_id) => {
+            let revision = stop.next_revision();
+            status::write_recording_for_session(session_id, revision, limit)?;
+            Ok(revision)
+        }
+        None => {
+            status::write_recording(limit)?;
+            Ok(0)
+        }
+    }
+}
+
+fn write_session_status(
+    stop: &StopWhen,
+    state: SessionState,
+    last: Option<&str>,
+    error: Option<&str>,
+    last_history_id: Option<&str>,
+) -> Result<(), String> {
+    match stop.session_id() {
+        Some(session_id) => status::write_status_for_session(
+            session_id,
+            stop.next_revision(),
+            state,
+            last,
+            error,
+            last_history_id,
+        ),
+        None => status::write_status(state, last, error, last_history_id),
+    }
 }
 
 fn dictionary_for_transcription(
@@ -534,6 +687,7 @@ struct ToggleSession {
     directory: PrivateDir,
     _gate: std::fs::File,
     token: String,
+    revision: AtomicU64,
 }
 
 pub struct RecordingSession(ToggleSession);
@@ -565,6 +719,7 @@ struct LockOwner {
     pid: u32,
     token: Option<String>,
     start_time_ticks: Option<u64>,
+    scoped_intents: bool,
 }
 
 impl ToggleSession {
@@ -576,7 +731,7 @@ impl ToggleSession {
         match Self::acquire_in(dir)? {
             LockAcquisition::Started(session) => Ok(ToggleAction::Start(session)),
             LockAcquisition::Busy(owner) => {
-                write_stop_request(&dir.join("recording.stop"), &owner)?;
+                write_stop_request(&intent_path(dir, "stop", &owner), &owner)?;
                 Ok(ToggleAction::Stop(owner))
             }
         }
@@ -585,7 +740,6 @@ impl ToggleSession {
     #[cfg(test)]
     fn request_stop_if_active_in(dir: &Path) -> Result<bool, String> {
         let lock_path = dir.join("recording.lock");
-        let stop_path = dir.join("recording.stop");
         let Some(owner) = live_lock_owner(&lock_path) else {
             if let Ok(directory) = PrivateDir::open(dir) {
                 let _ = directory.remove_file("recording.lock".as_ref());
@@ -593,7 +747,7 @@ impl ToggleSession {
             }
             return Ok(false);
         };
-        write_stop_request(&stop_path, &owner)?;
+        write_stop_request(&intent_path(dir, "stop", &owner), &owner)?;
         Ok(true)
     }
 
@@ -605,7 +759,19 @@ impl ToggleSession {
         if owner.token.as_deref() != Some(token) {
             return Ok(false);
         }
-        write_stop_request(&dir.join("recording.stop"), &owner)?;
+        write_stop_request(&intent_path(dir, "stop", &owner), &owner)?;
+        Ok(true)
+    }
+
+    fn request_cancel_for_token_in(dir: &Path, token: &str) -> Result<bool, String> {
+        let lock_path = dir.join("recording.lock");
+        let Some(owner) = live_lock_owner(&lock_path) else {
+            return Ok(false);
+        };
+        if owner.token.as_deref() != Some(token) {
+            return Ok(false);
+        }
+        write_stop_request(&intent_path(dir, "cancel", &owner), &owner)?;
         Ok(true)
     }
 
@@ -647,7 +813,7 @@ impl ToggleSession {
                 Ok(mut lock) => {
                     writeln!(
                         lock,
-                        "{}\n{token}\n{}",
+                        "{}\n{token}\n{}\nscoped-intents-v1",
                         std::process::id(),
                         process.start_time_ticks
                     )
@@ -674,6 +840,7 @@ impl ToggleSession {
                         directory,
                         _gate: gate,
                         token,
+                        revision: AtomicU64::new(0),
                     }));
                 }
                 Err(err) => return Err(err.to_string()),
@@ -683,15 +850,62 @@ impl ToggleSession {
     }
 
     fn stop_requested(&self) -> bool {
-        self.directory
-            .read_to_string("recording.stop".as_ref())
+        let scoped = self
+            .directory
+            .read_to_string(self.intent_name("stop").as_ref())
             .ok()
-            .is_some_and(|request| stop_request_matches(Some(&self.token), &request))
+            .is_some_and(|request| stop_request_matches(Some(&self.token), &request));
+        scoped
+            || self
+                .directory
+                .read_to_string("recording.stop".as_ref())
+                .ok()
+                .is_some_and(|request| stop_request_matches(Some(&self.token), &request))
+    }
+
+    fn cancel_requested(&self) -> bool {
+        let scoped = self
+            .directory
+            .read_to_string(self.intent_name("cancel").as_ref())
+            .ok()
+            .is_some_and(|request| stop_request_matches(Some(&self.token), &request));
+        scoped
+            || self
+                .directory
+                .read_to_string("recording.cancel".as_ref())
+                .ok()
+                .is_some_and(|request| stop_request_matches(Some(&self.token), &request))
+    }
+
+    fn next_revision(&self) -> u64 {
+        self.revision.fetch_add(2, Ordering::SeqCst) + 2
+    }
+
+    fn intent_name(&self, kind: &str) -> String {
+        self.directory
+            .read_to_string("recording.lock".as_ref())
+            .ok()
+            .and_then(|raw| parse_lock_owner(&raw))
+            .filter(|owner| {
+                owner.token.as_deref() == Some(self.token.as_str()) || owner.token.is_none()
+            })
+            .map(|owner| intent_file_name(kind, &owner))
+            .unwrap_or_else(|| scoped_intent_name(kind, &self.token))
     }
 
     fn clear_stop_request(&self) {
         if self.stop_requested() {
-            let _ = self.directory.remove_file("recording.stop".as_ref());
+            let _ = self
+                .directory
+                .remove_file(scoped_intent_name("stop", &self.token).as_ref());
+            if self
+                .directory
+                .read_to_string("recording.stop".as_ref())
+                .ok()
+                .is_some_and(|request| stop_request_matches(Some(&self.token), &request))
+            {
+                let _ = self.directory.remove_file("recording.stop".as_ref());
+            }
         }
     }
 }
@@ -706,6 +920,13 @@ impl Drop for ToggleSession {
             .is_some_and(|owner| owner.token.as_deref() == Some(self.token.as_str()));
         if still_owned {
             let _ = self.directory.remove_file("recording.stop".as_ref());
+            let _ = self.directory.remove_file("recording.cancel".as_ref());
+            let _ = self
+                .directory
+                .remove_file(scoped_intent_name("stop", &self.token).as_ref());
+            let _ = self
+                .directory
+                .remove_file(scoped_intent_name("cancel", &self.token).as_ref());
             let _ = self.directory.remove_file("recording.lock".as_ref());
         }
     }
@@ -747,11 +968,35 @@ fn parse_lock_owner(raw: &str) -> Option<LockOwner> {
         .map(str::parse)
         .transpose()
         .ok()?;
+    let scoped_intents = lines
+        .next()
+        .is_some_and(|marker| marker.trim() == "scoped-intents-v1");
     Some(LockOwner {
         pid,
         token,
         start_time_ticks,
+        scoped_intents,
     })
+}
+
+fn scoped_intent_name(kind: &str, token: &str) -> String {
+    let digest = Sha256::digest(token.as_bytes());
+    let digest = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("recording.{kind}.{digest}")
+}
+
+fn intent_path(dir: &Path, kind: &str, owner: &LockOwner) -> PathBuf {
+    dir.join(intent_file_name(kind, owner))
+}
+
+fn intent_file_name(kind: &str, owner: &LockOwner) -> String {
+    match (owner.scoped_intents, owner.token.as_deref()) {
+        (true, Some(token)) => scoped_intent_name(kind, token),
+        _ => format!("recording.{kind}"),
+    }
 }
 
 fn live_lock_owner(path: &Path) -> Option<LockOwner> {
@@ -835,6 +1080,31 @@ fn legacy_token_timestamp(owner: &LockOwner) -> Option<u128> {
 #[must_use]
 pub fn session_active() -> bool {
     session_active_at(&echo_core::data_dir().join("recording.lock"))
+}
+
+#[must_use]
+pub fn capture_stop_requested_for(session_id: Option<&str>) -> bool {
+    let Some(session_id) = session_id else {
+        return false;
+    };
+    let dir = echo_core::data_dir();
+    let owner = live_lock_owner(&dir.join("recording.lock"));
+    let Some(owner) = owner.filter(|owner| owner.token.as_deref() == Some(session_id)) else {
+        return false;
+    };
+    let scoped = PrivateDir::open(&dir)
+        .ok()
+        .and_then(|directory| {
+            directory
+                .read_to_string(intent_path(&dir, "stop", &owner).file_name()?.as_ref())
+                .ok()
+        })
+        .is_some_and(|request| stop_request_matches(Some(session_id), &request));
+    scoped
+        || PrivateDir::open(&dir)
+            .ok()
+            .and_then(|directory| directory.read_to_string("recording.stop".as_ref()).ok())
+            .is_some_and(|request| stop_request_matches(Some(session_id), &request))
 }
 
 pub(crate) fn session_active_at(path: &Path) -> bool {
@@ -1157,15 +1427,16 @@ mod tests {
         assert!(!dir.join("recording.stop").exists());
 
         let session = ToggleSession::try_start_in(&dir).unwrap().unwrap();
+        let stop = dir.join(scoped_intent_name("stop", &session.token));
         assert!(ToggleSession::request_stop_if_active_in(&dir).unwrap());
         assert!(ToggleSession::request_stop_if_active_in(&dir).unwrap());
         assert!(dir.join("recording.lock").exists());
-        assert!(dir.join("recording.stop").exists());
+        assert!(stop.exists());
 
         drop(session);
         assert!(!ToggleSession::request_stop_if_active_in(&dir).unwrap());
         assert!(!dir.join("recording.lock").exists());
-        assert!(!dir.join("recording.stop").exists());
+        assert!(!stop.exists());
     }
 
     #[cfg(unix)]
@@ -1223,6 +1494,18 @@ mod tests {
     }
 
     #[test]
+    fn clearing_a_matching_legacy_stop_removes_the_flat_signal() {
+        let dir = std::env::temp_dir().join(format!("echo-clear-flat-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let session = ToggleSession::try_start_in(&dir).unwrap().unwrap();
+        fs::write(dir.join("recording.stop"), format!("{}\n", session.token)).unwrap();
+        assert!(session.stop_requested());
+        session.clear_stop_request();
+        assert!(!session.stop_requested());
+        assert!(!dir.join("recording.stop").exists());
+    }
+
+    #[test]
     fn live_pid_only_lock_receives_an_observable_legacy_stop_request() {
         let dir = std::env::temp_dir().join(format!(
             "echo-legacy-stop-{}-{}",
@@ -1267,7 +1550,58 @@ mod tests {
     }
 
     #[test]
-    fn a_new_stop_request_can_cancel_transcription_after_capture_stop_is_cleared() {
+    fn stale_cancel_request_cannot_cancel_a_replacement_session() {
+        let dir = std::env::temp_dir().join(format!("echo-cancel-token-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let first = ToggleSession::try_start_in(&dir).unwrap().unwrap();
+        let first_owner = lock_owner(&dir.join("recording.lock")).unwrap();
+        drop(first);
+        let second = ToggleSession::try_start_in(&dir).unwrap().unwrap();
+        write_stop_request(&dir.join("recording.cancel"), &first_owner).unwrap();
+        assert!(!second.cancel_requested());
+        assert!(!ToggleSession::request_cancel_for_token_in(&dir, "old-token").unwrap());
+    }
+
+    #[test]
+    fn scoped_owner_accepts_only_its_token_in_a_legacy_flat_request() {
+        let directory = tempfile::tempdir().unwrap();
+        let session = ToggleSession::try_start_in(directory.path())
+            .unwrap()
+            .unwrap();
+        let stop = directory.path().join("recording.stop");
+        fs::write(&stop, "stop\n").unwrap();
+        assert!(!session.stop_requested());
+        fs::write(&stop, "replaced-session\n").unwrap();
+        assert!(!session.stop_requested());
+        fs::write(&stop, format!("{}\n", session.token)).unwrap();
+        assert!(session.stop_requested());
+        assert!(!session.cancel_requested());
+        fs::write(
+            directory.path().join("recording.cancel"),
+            format!("{}\n", session.token),
+        )
+        .unwrap();
+        assert!(session.cancel_requested());
+    }
+
+    #[test]
+    fn delayed_old_session_intent_cannot_replace_new_session_intent() {
+        let dir = std::env::temp_dir().join(format!("echo-scoped-intent-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let first = ToggleSession::try_start_in(&dir).unwrap().unwrap();
+        let old = lock_owner(&dir.join("recording.lock")).unwrap();
+        drop(first);
+        let second = ToggleSession::try_start_in(&dir).unwrap().unwrap();
+        assert!(ToggleSession::request_stop_for_token_in(&dir, &second.token).unwrap());
+        assert!(ToggleSession::request_cancel_for_token_in(&dir, &second.token).unwrap());
+        write_stop_request(&intent_path(&dir, "stop", &old), &old).unwrap();
+        write_stop_request(&intent_path(&dir, "cancel", &old), &old).unwrap();
+        assert!(second.stop_requested());
+        assert!(second.cancel_requested());
+    }
+
+    #[test]
+    fn duplicate_capture_stop_cannot_become_a_transcription_cancel() {
         let dir = std::env::temp_dir().join(format!(
             "echo-transcription-stop-{}-{}",
             std::process::id(),
@@ -1277,10 +1611,14 @@ mod tests {
 
         assert!(ToggleSession::request_stop_if_active_in(&dir).unwrap());
         assert!(session.stop_requested());
+        assert!(!session.cancel_requested());
         session.clear_stop_request();
         assert!(!session.stop_requested());
         assert!(ToggleSession::request_stop_if_active_in(&dir).unwrap());
         assert!(session.stop_requested());
+        assert!(!session.cancel_requested());
+        assert!(ToggleSession::request_cancel_for_token_in(&dir, &session.token).unwrap());
+        assert!(session.cancel_requested());
 
         drop(session);
         let _ = fs::remove_dir_all(dir);
@@ -1408,16 +1746,17 @@ mod tests {
             ToggleAction::Start(session) => session,
             ToggleAction::Stop(_) => panic!("first toggle should start"),
         };
+        let stop = dir.join(scoped_intent_name("stop", &first.token));
         assert!(dir.join("recording.lock").is_file());
         assert!(matches!(
             ToggleSession::start_or_stop_in(&dir).unwrap(),
             ToggleAction::Stop(_)
         ));
-        assert!(dir.join("recording.stop").is_file());
+        assert!(stop.is_file());
 
         drop(first);
         assert!(!dir.join("recording.lock").exists());
-        assert!(!dir.join("recording.stop").exists());
+        assert!(!stop.exists());
         assert!(matches!(
             ToggleSession::start_or_stop_in(&dir).unwrap(),
             ToggleAction::Start(_)

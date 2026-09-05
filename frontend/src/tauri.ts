@@ -43,7 +43,9 @@ export const finishDictionaryTrainingSample: DesktopApi['finishDictionaryTrainin
   api().finishDictionaryTrainingSample(captureId)
 export const cancelDictionaryTrainingSample: DesktopApi['cancelDictionaryTrainingSample'] = (captureId) =>
   api().cancelDictionaryTrainingSample(captureId)
-export const toggleRecording: DesktopApi['toggleRecording'] = () => api().toggleRecording()
+export const startCapture: DesktopApi['startCapture'] = () => api().startCapture()
+export const stopCapture: DesktopApi['stopCapture'] = (sessionId) => api().stopCapture(sessionId)
+export const cancelTranscription: DesktopApi['cancelTranscription'] = (sessionId) => api().cancelTranscription(sessionId)
 export const stopRecording: DesktopApi['stopRecording'] = (activation) => api().stopRecording(activation)
 export const getRecordingLevel: DesktopApi['getRecordingLevel'] = () => api().getRecordingLevel()
 export const copyText: DesktopApi['copyText'] = (text) => api().copyText(text)
