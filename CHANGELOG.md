@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.14.19
+
+- Settings reuse speech-engine and model observations within each response, avoiding repeated model-directory scans and managed-component checks while preserving engine, model, and language selections.
+- Desktop status uses one health cache while retaining background refresh and invalidation behavior.
+- Managed speech paths keep their filesystem representation internally, including non-UTF-8 paths, while preserving existing display values and runtime lease validation.
+- CI now checks settings projection behavior and filesystem collection counts across ten isolated engine and language scenarios.
+
 ## v0.14.18
 
 - Recording now publishes the text-insertion phase before insertion begins, keeping visible progress aligned with the worker.
