@@ -242,11 +242,22 @@ pub fn request_capture_stop_ack(session_id: &str) -> Result<Option<RecordingCont
 }
 
 pub fn request_transcription_cancel(session_id: &str) -> Result<bool, String> {
+    Ok(request_transcription_cancel_ack(session_id)?.is_some())
+}
+
+pub fn request_transcription_cancel_ack(
+    session_id: &str,
+) -> Result<Option<RecordingControlAck>, String> {
     let current = status::read();
     if current.state != "Transcribing" || current.session_id.as_deref() != Some(session_id) {
-        return Ok(false);
+        return Ok(None);
     }
-    ToggleSession::request_cancel_for_token_in(&echo_core::data_dir(), session_id)
+    ToggleSession::request_cancel_for_token_in(&echo_core::data_dir(), session_id).map(|accepted| {
+        accepted.then(|| RecordingControlAck {
+            session_id: session_id.to_string(),
+            revision: current.revision + 1,
+        })
+    })
 }
 
 pub fn stop_shortcut_recording(activation: &str) -> Result<bool, String> {

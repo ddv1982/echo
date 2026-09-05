@@ -1,9 +1,5 @@
 use echo_desktop::ipc::RecordingSnapshot;
 
-fn snapshot() -> RecordingSnapshot {
-    crate::status::recording_snapshot(&echo::status::read())
-}
-
 /// Explicit GUI start. The recording owner publishes status; this command
 /// only starts that owner and returns its identity acknowledgement.
 #[tauri::command]
@@ -24,14 +20,13 @@ pub(crate) async fn start_capture() -> Result<RecordingSnapshot, String> {
 pub(crate) async fn stop_capture(session_id: String) -> Result<RecordingSnapshot, String> {
     crate::blocking::run_blocking("stop capture", move || {
         let ack = echo::rec::request_capture_stop_ack(&session_id)?;
-        Ok(match ack {
-            Some(ack) => RecordingSnapshot {
-                session_id: Some(ack.session_id),
-                phase: echo_desktop::ipc::AppPhase::Recording,
-                capture_stop_requested: true,
-                revision: ack.revision,
-            },
-            None => snapshot(),
+        let ack =
+            ack.ok_or_else(|| "recording session changed before stop was accepted".to_string())?;
+        Ok(RecordingSnapshot {
+            session_id: Some(ack.session_id),
+            phase: echo_desktop::ipc::AppPhase::Recording,
+            capture_stop_requested: true,
+            revision: ack.revision,
         })
     })
     .await?
@@ -40,8 +35,16 @@ pub(crate) async fn stop_capture(session_id: String) -> Result<RecordingSnapshot
 #[tauri::command]
 pub(crate) async fn cancel_transcription(session_id: String) -> Result<RecordingSnapshot, String> {
     crate::blocking::run_blocking("cancel transcription", move || {
-        let _ = echo::rec::request_transcription_cancel(&session_id)?;
-        Ok(snapshot())
+        let ack = echo::rec::request_transcription_cancel_ack(&session_id)?;
+        let ack = ack.ok_or_else(|| {
+            "recording session changed before cancellation was accepted".to_string()
+        })?;
+        Ok(RecordingSnapshot {
+            session_id: Some(ack.session_id),
+            phase: echo_desktop::ipc::AppPhase::Transcribing,
+            capture_stop_requested: false,
+            revision: ack.revision,
+        })
     })
     .await?
 }
