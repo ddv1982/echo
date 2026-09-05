@@ -189,8 +189,7 @@ fn apply_toggle_stop_intent(owner: &LockOwner) {
     }
 }
 
-/// Start a desktop capture. Unlike the CLI toggle this never converts a busy
-/// session into a stop request: GUI controls name the session they intend.
+/// The identity and revision acknowledged by the owner when capture starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StartedRecording {
     pub session_id: String,
@@ -1515,6 +1514,28 @@ mod tests {
         write_stop_request(&dir.join("recording.cancel"), &first_owner).unwrap();
         assert!(!second.cancel_requested());
         assert!(!ToggleSession::request_cancel_for_token_in(&dir, "old-token").unwrap());
+    }
+
+    #[test]
+    fn scoped_owner_accepts_only_its_token_in_a_legacy_flat_request() {
+        let directory = tempfile::tempdir().unwrap();
+        let session = ToggleSession::try_start_in(directory.path())
+            .unwrap()
+            .unwrap();
+        let stop = directory.path().join("recording.stop");
+        fs::write(&stop, "stop\n").unwrap();
+        assert!(!session.stop_requested());
+        fs::write(&stop, "replaced-session\n").unwrap();
+        assert!(!session.stop_requested());
+        fs::write(&stop, format!("{}\n", session.token)).unwrap();
+        assert!(session.stop_requested());
+        assert!(!session.cancel_requested());
+        fs::write(
+            directory.path().join("recording.cancel"),
+            format!("{}\n", session.token),
+        )
+        .unwrap();
+        assert!(session.cancel_requested());
     }
 
     #[test]

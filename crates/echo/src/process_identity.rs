@@ -11,6 +11,7 @@ pub struct ProcessObservation {
     pub pid: u32,
     pub start_time_ticks: u64,
     pub state: char,
+    /// Earliest plausible start time, accounting for `/proc/uptime` precision.
     pub start_unix_nanos: Option<u128>,
 }
 
@@ -63,17 +64,27 @@ fn process_start_unix_nanos(start_time_ticks: u64) -> Option<u128> {
     if ticks_per_second == 0 {
         return None;
     }
-    let uptime = std::fs::read_to_string("/proc/uptime").ok()?;
-    let uptime_nanos = decimal_seconds_to_nanos(uptime.split_whitespace().next()?)?;
     let now_nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .ok()?
         .as_nanos();
+    let uptime = std::fs::read_to_string("/proc/uptime").ok()?;
+    let uptime_nanos = decimal_seconds_to_nanos(uptime.split_whitespace().next()?)?;
     let started_since_boot = (start_time_ticks as u128)
         .checked_mul(1_000_000_000)?
         .checked_div(ticks_per_second)?;
-    now_nanos
-        .checked_sub(uptime_nanos)?
+    earliest_start_time(now_nanos, uptime_nanos, started_since_boot)
+}
+
+fn earliest_start_time(
+    now_before_read: u128,
+    uptime_floor: u128,
+    started_since_boot: u128,
+) -> Option<u128> {
+    // Linux truncates uptime to hundredths. Use its upper bound so a fresh
+    // legacy lock is not mistaken for a lock from before the process existed.
+    now_before_read
+        .checked_sub(uptime_floor.checked_add(10_000_000)?)?
         .checked_add(started_since_boot)
 }
 
@@ -119,6 +130,15 @@ fn native_word(raw: &[u8]) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uptime_precision_cannot_place_a_live_process_after_its_new_lock() {
+        let wall_before_read = 10_005_000_000;
+        let lock_created = 10_001_000_000;
+        let earliest = earliest_start_time(wall_before_read, 1_000_000_000, 1_000_000_000).unwrap();
+        assert_eq!(earliest, 9_995_000_000);
+        assert!(earliest <= lock_created);
+    }
 
     #[test]
     fn stat_parser_handles_spaces_and_parentheses_in_comm() {

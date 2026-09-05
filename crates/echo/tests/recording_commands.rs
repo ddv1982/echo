@@ -66,7 +66,7 @@ fn control(root: &Path, action: &str, session: &str, accepted: bool) {
     assert!(wait(&mut child).success());
 }
 
-fn exercise_transcription(cancel: bool) {
+fn exercise_transcription(cancel: bool, legacy_stop: bool) {
     use std::os::unix::fs::PermissionsExt;
     let root = tempfile::tempdir().unwrap();
     for name in ["bin", "models", "data", "config"] {
@@ -95,7 +95,15 @@ printf '%s\n' '{"model":{"type":"small","multilingual":true},"result":{"language
     wait_for(&token_path);
     let session = std::fs::read_to_string(&token_path).unwrap();
     control(root.path(), "stop", "replaced-session", false);
-    control(root.path(), "stop", &session, true);
+    if legacy_stop {
+        std::fs::write(
+            root.path().join("data/recording.stop"),
+            format!("{session}\n"),
+        )
+        .unwrap();
+    } else {
+        control(root.path(), "stop", &session, true);
+    }
     wait_for(&root.path().join("engine-ready"));
     control(root.path(), "stop", &session, false);
     let status = std::fs::read_to_string(root.path().join("data/status")).unwrap();
@@ -133,12 +141,17 @@ printf '%s\n' '{"model":{"type":"small","multilingual":true},"result":{"language
 
 #[test]
 fn duplicate_capture_stop_preserves_the_running_transcription() {
-    exercise_transcription(false);
+    exercise_transcription(false, false);
 }
 
 #[test]
 fn explicit_cancel_terminates_the_running_transcription() {
-    exercise_transcription(true);
+    exercise_transcription(true, false);
+}
+
+#[test]
+fn legacy_flat_capture_stop_preserves_transcription() {
+    exercise_transcription(false, true);
 }
 
 #[test]
@@ -149,6 +162,12 @@ fn owner_helper() {
     };
     let root = PathBuf::from(root);
     let session = echo::rec::start_managed_recording().unwrap();
+    let status = echo::status::read();
+    assert_eq!(
+        status.session_id.as_deref(),
+        Some(session.session_id.as_str())
+    );
+    assert!(session.revision > 0 && status.revision >= session.revision);
     echo_core::write_atomic_private(&root.join("session"), session.session_id.as_bytes()).unwrap();
     let deadline = Instant::now() + Duration::from_secs(15);
     while echo::rec::session_active() && Instant::now() < deadline {
