@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.14.17
+
+- Recording controls now identify the active session. Delayed stop or cancellation requests cannot affect a replacement recording, and duplicate capture-stop requests no longer cancel transcription.
+- Existing CLI and shortcut commands retain compatible stop behavior, including dictionary-training captures.
+- Settings, microphone selection, tray language changes, and setup activation share one ordered configuration path. Delayed responses no longer replace newer selections.
+- Cancelling setup while activation is queued prevents it from changing the configured engine or model.
+- Shared frontend test helpers and streamlined CI reduce maintenance overhead without removing application features.
+
 ## v0.14.16
 
 - Home no longer suggests an unsafe terminal command to remove old Echo copies. Use the existing **Remove old copies** action.

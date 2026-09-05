@@ -10,6 +10,8 @@ export type AppStatus = { phase: AppPhase, lastTranscript: string | null, lastHi
 
 export type AudioHost = "pipe-wire" | "pulse-audio" | "alsa" | "core-audio" | "wasapi" | "other";
 
+export type ChannelReply<T> = { "kind": "ok", value: T, } | { "kind": "err", error: string, };
+
 export type ComponentId = "whisper-runtime" | "whisper-vulkan-runtime" | "whisper-base-q51" | "whisper-small" | "whisper-large-v3-turbo-q50" | "silero-vad" | "sherpa-runtime" | "parakeet-tdt06b-v3-int8";
 
 export type ComponentOrigin = "system" | "external";
@@ -68,7 +70,7 @@ export type MicrophoneFailure = "disconnected" | "selection" | "permission" | "b
 
 export type MicrophoneSelection = { "kind": "system-default", active: InputDevice | null, } | { "kind": "selected", device: InputDevice, } | { "kind": "legacy-match", name: string, device: InputDevice, } | { "kind": "missing-with-fallback", requestedId: string, requestedLabel: string, fallback: InputDevice, } | { "kind": "missing-without-fallback", requestedId: string, requestedLabel: string, } | { "kind": "ambiguous-legacy-name", name: string, matches: Array<InputDevice>, fallback: InputDevice | null, };
 
-export type MicrophoneSnapshot = { host: AudioHost, source: MicrophoneSource, systemDefault: InputDevice | null, systemDefaultIsProxy: boolean, devices: Array<InputDevice>, selection: MicrophoneSelection, enumerationWarning: string | null, };
+export type MicrophoneSnapshot = { revision: number, host: AudioHost, source: MicrophoneSource, systemDefault: InputDevice | null, systemDefaultIsProxy: boolean, devices: Array<InputDevice>, selection: MicrophoneSelection, enumerationWarning: string | null, };
 
 export type MicrophoneSource = "environment" | "config" | "default";
 
@@ -106,7 +108,7 @@ export type Settings = { engine: SettingField<string>, whisperModel: SettingFiel
 
 export type SettingsChange = { "kind": "engine", value: string | null, } | { "kind": "whisperModel", value: string | null, } | { "kind": "hud", value: boolean | null, } | { "kind": "recordSeconds", value: number | null, } | { "kind": "language", value: string | null, } | { "kind": "whisperAcceleration", value: string | null, } | { "kind": "whisperGpuDevice", value: string | null, } | { "kind": "enableWhisperGpu" };
 
-export type SettingsSnapshot = { preferences: Settings, transcription: TranscriptionSnapshot, readiness: Readiness, };
+export type SettingsSnapshot = { revision: number, preferences: Settings, transcription: TranscriptionSnapshot, readiness: Readiness, };
 
 export type SetupEvent = { "kind": "progress", progress: InstallProgress, } | { "kind": "finished", operationId: string, } | { "kind": "cancelled", operationId: string, } | { "kind": "failed", operationId: string, error: string, };
 

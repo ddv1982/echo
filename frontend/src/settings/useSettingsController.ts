@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { messageFrom } from '../app/formatting'
 import { useAsyncSubscription } from '../hooks/useAsyncSubscription'
 import { useSerialPoll } from '../hooks/useSerialPoll'
+import { newestSnapshot } from './snapshotFreshness'
 import { applySetupProgress, classifySetupEvent } from '../setup'
 import {
   getMicrophones,
@@ -32,20 +33,12 @@ interface UseSettingsControllerArgs {
   onError: (message: string) => void
 }
 
-interface SettingsReadResult {
-  snapshot: SettingsSnapshot
-  mutationVersion: number
-  readVersion: number
-}
-
 export function useSettingsController({
   onStatusChange,
   onError,
 }: UseSettingsControllerArgs) {
   const [snapshot, setSnapshot] = useState<SettingsSnapshot | null>(null)
-  const writeChainRef = useRef(Promise.resolve())
-  const settingsMutationVersion = useRef(0)
-  const settingsReadVersion = useRef(0)
+  const pendingSettingsWrites = useRef(0)
   const active = useRef(true)
   const [microphones, setMicrophones] = useState<MicrophoneSnapshot | null>(null)
   const [micTest, setMicTest] = useState<MicrophoneTestResult | null>(null)
@@ -59,24 +52,13 @@ export function useSettingsController({
     if (active.current) onError(messageFrom(reason))
   }, [onError])
 
-  const loadSettingsSnapshot = useCallback(async (): Promise<SettingsReadResult | null> => {
-    const readVersion = ++settingsReadVersion.current
-    const mutationVersion = settingsMutationVersion.current
-    const queuedWrites = writeChainRef.current
-    await queuedWrites
-    if (!active.current || settingsMutationVersion.current !== mutationVersion) return null
-    return { snapshot: await getSettings(), mutationVersion, readVersion }
+  const loadSettingsSnapshot = useCallback(async (): Promise<SettingsSnapshot | null> => {
+    const next = await getSettings()
+    return active.current ? next : null
   }, [])
 
-  const applySettingsSnapshot = useCallback((result: SettingsReadResult | null) => {
-    if (
-      result != null &&
-      active.current &&
-      settingsMutationVersion.current === result.mutationVersion &&
-      settingsReadVersion.current === result.readVersion
-    ) {
-      setSnapshot(result.snapshot)
-    }
+  const applySettingsSnapshot = useCallback((next: SettingsSnapshot | null) => {
+    if (next != null && active.current) setSnapshot((current) => newestSnapshot(current, next))
   }, [])
 
   useEffect(() => {
@@ -118,9 +100,13 @@ export function useSettingsController({
     }
   }, [wantsGpu, gpuRuntimeReady, reportSettingsError])
 
+  const applyMicrophoneSnapshot = useCallback((next: MicrophoneSnapshot) => {
+    if (active.current) setMicrophones((current) => newestSnapshot(current, next))
+  }, [])
+
   const refreshMicrophones = useSerialPoll({
     request: getMicrophones,
-    onResult: setMicrophones,
+    onResult: applyMicrophoneSnapshot,
     onError: reportSettingsError,
     intervalMs: 3_000,
   })
@@ -177,30 +163,28 @@ export function useSettingsController({
     try {
       const written = await setSettings(change)
       if (!active.current) return
-      setSnapshot(written)
+      applySettingsSnapshot(written)
       await onStatusChange()
     } catch (reason) {
       reportSettingsError(reason)
       throw reason
     }
-  }, [onStatusChange, reportSettingsError])
+  }, [applySettingsSnapshot, onStatusChange, reportSettingsError])
 
   const updateSettings = useCallback(async (change: SettingsChange) => {
     setSettingsWritePending(true)
-    settingsMutationVersion.current += 1
-    const queued = writeChainRef.current.then(() => commit(change))
-    const continuing = queued.catch(() => undefined)
-    writeChainRef.current = continuing
+    pendingSettingsWrites.current += 1
     try {
-      await queued
+      await commit(change)
     } catch {
-      const result = await loadSettingsSnapshot().catch((reason: unknown) => {
+      const next = await loadSettingsSnapshot().catch((reason: unknown) => {
         reportSettingsError(reason)
         return null
       })
-      applySettingsSnapshot(result)
+      applySettingsSnapshot(next)
     } finally {
-      if (active.current && writeChainRef.current === continuing) setSettingsWritePending(false)
+      pendingSettingsWrites.current = Math.max(0, pendingSettingsWrites.current - 1)
+      if (active.current && pendingSettingsWrites.current === 0) setSettingsWritePending(false)
     }
   }, [applySettingsSnapshot, commit, loadSettingsSnapshot, reportSettingsError])
 
@@ -259,11 +243,11 @@ export function useSettingsController({
     void setMicrophone(id)
       .then((next) => {
         if (!active.current) return null
-        setMicrophones(next)
+        applyMicrophoneSnapshot(next)
         return onStatusChange()
       })
       .catch(reportSettingsError)
-  }, [onStatusChange, reportSettingsError])
+  }, [applyMicrophoneSnapshot, onStatusChange, reportSettingsError])
 
   const testMicrophone = useCallback((id: string | null, fallback: boolean) => {
     const version = ++micTestVersion.current

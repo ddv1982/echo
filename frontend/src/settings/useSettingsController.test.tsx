@@ -4,16 +4,19 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPreviewDesktopApi } from '../api/previewDesktopApi'
 import type {
   ComponentId,
+  MicrophoneSnapshot,
   SettingsChange,
   SettingsSnapshot,
   SetupEvent,
 } from '../generated/ipc'
 import {
   configureDesktopApi,
+  getMicrophones,
   getSettings,
   onSettingsEvent,
   onSetupEvent,
   repairManaged,
+  setMicrophone,
   setSettings,
 } from '../tauri'
 import { useSettingsController } from './useSettingsController'
@@ -24,13 +27,20 @@ vi.mock('../tauri', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../tauri')>()
   return {
     ...actual,
+    getMicrophones: vi.fn(() => actual.getMicrophones()),
     getSettings: vi.fn(() => actual.getSettings()),
     onSettingsEvent: vi.fn((handler: () => void) => actual.onSettingsEvent(handler)),
     onSetupEvent: vi.fn((handler: (event: SetupEvent) => void) => actual.onSetupEvent(handler)),
     repairManaged: vi.fn((component: ComponentId) => actual.repairManaged(component)),
+    setMicrophone: vi.fn((id: string | null) => actual.setMicrophone(id)),
     setSettings: vi.fn((change: SettingsChange) => actual.setSettings(change)),
   }
 })
+
+function requireFixture<T>(value: T | null | undefined, description: string): T {
+  if (value == null) throw new Error(`missing test fixture: ${description}`)
+  return value
+}
 
 function deferred<T>() {
   let resolvePromise: ((value: T | PromiseLike<T>) => void) | null = null
@@ -51,6 +61,8 @@ describe('useSettingsController', () => {
     configureDesktopApi(previewDesktopApi)
     previewDesktopApi.resetPreviewSettings()
     const actual = await vi.importActual<typeof import('../tauri')>('../tauri')
+    vi.mocked(getMicrophones).mockReset()
+    vi.mocked(getMicrophones).mockImplementation(() => actual.getMicrophones())
     vi.mocked(getSettings).mockReset()
     vi.mocked(getSettings).mockImplementation(() => actual.getSettings())
     vi.mocked(onSettingsEvent).mockReset()
@@ -59,11 +71,13 @@ describe('useSettingsController', () => {
     vi.mocked(onSetupEvent).mockImplementation((handler) => actual.onSetupEvent(handler))
     vi.mocked(repairManaged).mockReset()
     vi.mocked(repairManaged).mockImplementation((component) => actual.repairManaged(component))
+    vi.mocked(setMicrophone).mockReset()
+    vi.mocked(setMicrophone).mockImplementation((id) => actual.setMicrophone(id))
     vi.mocked(setSettings).mockReset()
     vi.mocked(setSettings).mockImplementation((change) => actual.setSettings(change))
   })
 
-  it('applies queued field changes in call order', async () => {
+  it('delegates rapid field changes in call order', async () => {
     const actual = await vi.importActual<typeof import('../tauri')>('../tauri')
     const firstWriteStarted = deferred<void>()
     const releaseFirstWrite = deferred<void>()
@@ -88,21 +102,21 @@ describe('useSettingsController', () => {
       hudWrite = result.current.updateHud(false)
     })
     await firstWriteStarted.promise
-    expect(setSettings).toHaveBeenCalledOnce()
-
-    await act(async () => releaseFirstWrite.resolve())
-    await act(async () => Promise.all([languageWrite, hudWrite]))
-
     expect(setSettings).toHaveBeenCalledTimes(2)
     expect(vi.mocked(setSettings).mock.calls.map(([change]) => change)).toEqual([
       { kind: 'language', value: 'en' },
       { kind: 'hud', value: false },
     ])
+
+    await act(async () => releaseFirstWrite.resolve())
+    await act(async () => Promise.all([languageWrite, hudWrite]))
+
+    expect(setSettings).toHaveBeenCalledTimes(2)
     expect(result.current.settings?.language.value).toBe('en')
     expect(result.current.settings?.hud.value).toBe(false)
   })
 
-  it('continues the settings write chain after a rejected write', async () => {
+  it('continues settings writes after a rejected write', async () => {
     const actual = await vi.importActual<typeof import('../tauri')>('../tauri')
     vi.mocked(setSettings)
       .mockRejectedValueOnce(new Error('first write failed'))
@@ -130,6 +144,47 @@ describe('useSettingsController', () => {
     ])
     expect(result.current.settings?.hud.value).toBe(false)
     expect(result.current.settingsWritePending).toBe(false)
+  })
+
+  it('does not let a delayed microphone read replace a newer selection', async () => {
+    const actual = await vi.importActual<typeof import('../tauri')>('../tauri')
+    const initial = await actual.getMicrophones()
+    const selectedDevice = requireFixture(initial.devices.find((device) => !device.isDefault), 'selectable microphone')
+    const staleRefresh = deferred<MicrophoneSnapshot>()
+    const selection = deferred<MicrophoneSnapshot>()
+    const onStatusChange = vi.fn().mockResolvedValue(undefined)
+    const onError = vi.fn()
+    const { result } = renderHook(() => useSettingsController({
+      onStatusChange,
+      onError,
+    }))
+    await waitFor(() => expect(result.current.microphones).not.toBeNull())
+    vi.mocked(getMicrophones).mockImplementationOnce(() => staleRefresh.promise)
+    vi.mocked(setMicrophone).mockImplementationOnce(() => selection.promise)
+
+    let refresh: Promise<void>
+    act(() => {
+      refresh = result.current.refreshMicrophones()
+      result.current.selectMicrophone(selectedDevice.id)
+    })
+    await waitFor(() => expect(setMicrophone).toHaveBeenCalledWith(selectedDevice.id))
+    const selected = await actual.setMicrophone(selectedDevice.id)
+    selection.resolve(selected)
+    await act(async () => selection.promise)
+    expect(result.current.microphones?.selection).toMatchObject({
+      kind: 'selected',
+      device: { id: selectedDevice.id },
+    })
+
+    staleRefresh.resolve({
+      ...initial,
+      revision: selected.revision - 1,
+    })
+    await act(async () => refresh)
+    expect(result.current.microphones?.selection).toMatchObject({
+      kind: 'selected',
+      device: { id: selectedDevice.id },
+    })
   })
 
   it('does not let the initial settings read replace a newer settings write', async () => {
@@ -307,7 +362,7 @@ describe('useSettingsController', () => {
     expect(onError).not.toHaveBeenCalled()
   })
 
-  it('waits for an already queued settings write before refreshing readiness', async () => {
+  it('delegates readiness refreshes while a backend settings write is queued', async () => {
     const actual = await vi.importActual<typeof import('../tauri')>('../tauri')
     const writeStarted = deferred<void>()
     const releaseWrite = deferred<void>()
@@ -335,15 +390,14 @@ describe('useSettingsController', () => {
       await Promise.resolve()
     })
 
-    expect(getSettings).toHaveBeenCalledOnce()
+    expect(getSettings).toHaveBeenCalledTimes(2)
 
     await act(async () => releaseWrite.resolve())
     await act(async () => write)
-    await waitFor(() => expect(getSettings).toHaveBeenCalledTimes(2))
     expect(result.current.settings?.hud.value).toBe(false)
   })
 
-  it('waits for an already queued settings write before the GPU repair refresh', async () => {
+  it('delegates GPU repair refreshes while a backend settings write is queued', async () => {
     const actual = await vi.importActual<typeof import('../tauri')>('../tauri')
     const initialSettings = await previewDesktopApi.getSettings()
     const component = initialSettings.readiness.components.find(
@@ -393,12 +447,42 @@ describe('useSettingsController', () => {
     })
 
     expect(repairManaged).toHaveBeenCalledWith('whisper-vulkan-runtime')
-    expect(getSettings).toHaveBeenCalledOnce()
+    expect(getSettings).toHaveBeenCalledTimes(2)
 
     await act(async () => releaseWrite.resolve())
     await act(async () => write)
-    await waitFor(() => expect(getSettings).toHaveBeenCalledTimes(2))
     expect(result.current.settings?.hud.value).toBe(false)
+  })
+
+  it('does not let a snapshot without a revision replace a newer settings write', async () => {
+    let setupEvent: ((event: SetupEvent) => void) | null = null
+    vi.mocked(onSetupEvent).mockImplementation((handler) => {
+      setupEvent = handler
+      return Promise.resolve(vi.fn())
+    })
+    const onStatusChange = vi.fn().mockResolvedValue(undefined)
+    const onError = vi.fn()
+    const { result } = renderHook(() => useSettingsController({
+      onStatusChange,
+      onError,
+    }))
+    await waitFor(() => {
+      expect(result.current.settings).not.toBeNull()
+      expect(setupEvent).not.toBeNull()
+    })
+    const staleSettings = await previewDesktopApi.getSettings()
+    const missingRevision = { ...staleSettings }
+    Object.defineProperty(missingRevision, 'revision', { value: undefined })
+    const staleRefresh = deferred<Awaited<ReturnType<typeof getSettings>>>()
+    vi.mocked(getSettings).mockImplementationOnce(() => staleRefresh.promise)
+
+    act(() => setupEvent?.({ kind: 'finished', operationId: 'setup' }))
+    await waitFor(() => expect(getSettings).toHaveBeenCalledTimes(2))
+    await act(async () => result.current.updateHud(false))
+
+    staleRefresh.resolve(missingRevision)
+    await act(async () => staleRefresh.promise)
+    await waitFor(() => expect(result.current.settings?.hud.value).toBe(false))
   })
 
   it('does not let a stale setup refresh replace a newer settings write', async () => {

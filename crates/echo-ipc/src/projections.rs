@@ -260,6 +260,7 @@ impl From<echo::microphone::SelectionSource> for MicrophoneSource {
 impl From<echo::microphone::MicrophoneSnapshot> for MicrophoneSnapshot {
     fn from(value: echo::microphone::MicrophoneSnapshot) -> Self {
         Self {
+            revision: 0,
             host: value.host.into(),
             source: value.source.into(),
             system_default: value.system_default.map(Into::into),

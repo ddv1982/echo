@@ -15,6 +15,7 @@ import {
 } from '../tauri'
 import { deferred, resetDesktopApiMocks } from '../test/desktopApiHarness'
 import type {
+  MicrophoneSnapshot,
   SetupEvent,
 } from '../generated/ipc'
 
@@ -124,6 +125,42 @@ describe('Echo desktop shell', () => {
     expect(screen.queryByText(
       'Some microphones could not be listed: stale microphone inventory',
     )).not.toBeInTheDocument()
+  })
+
+
+  it('does not let a delayed SetupChecklist microphone read replace a newer selection', async () => {
+    const actual = await vi.importActual<typeof import('../tauri')>('../tauri')
+    seedPreviewReadiness({
+      ...await actual.getReadiness(),
+      microphoneReady: false,
+      speechReady: true,
+      hasSuccessfulDictation: false,
+      firstRunComplete: false,
+    })
+    const initial = await actual.getMicrophones()
+    const selectedDevice = requireFixture(initial.devices.find((device) => !device.isDefault), 'selectable microphone')
+    const staleRefresh = deferred<MicrophoneSnapshot>()
+    const selection = deferred<MicrophoneSnapshot>()
+
+    render(<App />)
+    const selectedChoice = await screen.findByRole('radio', { name: new RegExp(selectedDevice.label) })
+    vi.mocked(getMicrophones).mockImplementationOnce(() => staleRefresh.promise)
+    vi.mocked(setMicrophone).mockImplementationOnce(() => selection.promise)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+    fireEvent.click(selectedChoice)
+    await waitFor(() => expect(setMicrophone).toHaveBeenCalledWith(selectedDevice.id))
+    const selected = await actual.setMicrophone(selectedDevice.id)
+    selection.resolve(selected)
+    await act(async () => selection.promise)
+    await waitFor(() => expect(selectedChoice).toBeChecked())
+
+    staleRefresh.resolve({
+      ...initial,
+      revision: selected.revision - 1,
+    })
+    await act(async () => staleRefresh.promise)
+    expect(selectedChoice).toBeChecked()
   })
 
 

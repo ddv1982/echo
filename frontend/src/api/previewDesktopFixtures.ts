@@ -169,7 +169,7 @@ export function defaultPreviewSystemDefault(): InputDevice {
 
 export function defaultPreviewMicrophones(devices: InputDevice[]): MicrophoneSnapshot {
   const systemDefault = defaultPreviewSystemDefault()
-  return { host: 'pipe-wire', source: 'default', systemDefault, systemDefaultIsProxy: true, devices, selection: { kind: 'system-default', active: systemDefault }, enumerationWarning: null }
+  return { revision: 0, host: 'pipe-wire', source: 'default', systemDefault, systemDefaultIsProxy: true, devices, selection: { kind: 'system-default', active: systemDefault }, enumerationWarning: null }
 }
 
 export function defaultPreviewReadiness(): Readiness {

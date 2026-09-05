@@ -1,8 +1,8 @@
-use std::env;
 use std::sync::{Mutex, OnceLock};
 
 use echo::audio::AudioCapture;
-use echo_desktop::ipc::{LanguageOptions, ModelInventory};
+use echo_desktop::ipc::{ChannelReply, LanguageOptions, ModelInventory};
+use tauri::ipc::Channel;
 
 #[tauri::command]
 pub(crate) fn list_languages() -> LanguageOptions {
@@ -51,60 +51,21 @@ pub(crate) async fn list_models() -> Result<ModelInventory, String> {
 }
 
 #[tauri::command]
-pub(crate) async fn get_microphones() -> Result<echo_desktop::ipc::MicrophoneSnapshot, String> {
-    crate::blocking::run_blocking("microphone enumeration", || {
-        echo::audio::microphone_snapshot().into()
-    })
-    .await
+pub(crate) fn get_microphones(
+    owner: tauri::State<'_, crate::settings::ConfigMutationService>,
+    reply: Channel<ChannelReply<echo_desktop::ipc::MicrophoneSnapshot>>,
+) -> Result<(), String> {
+    owner.request_microphone_snapshot(reply)
 }
 
 #[tauri::command]
-pub(crate) async fn set_microphone(
+pub(crate) fn set_microphone(
     id: Option<String>,
-) -> Result<echo_desktop::ipc::MicrophoneSnapshot, String> {
-    crate::blocking::run_blocking("microphone selection", move || {
-        if env::var("ECHO_MICROPHONE")
-            .ok()
-            .is_some_and(|value| !value.trim().is_empty())
-        {
-            return Err("ECHO_MICROPHONE controls the microphone in this process".to_string());
-        }
-        let snapshot = echo::audio::microphone_snapshot();
-        let selection = match id {
-            None => None,
-            Some(raw) => {
-                let id = echo::microphone::MicrophoneId::parse(raw)?;
-                let device = snapshot
-                    .devices
-                    .iter()
-                    .find(|device| device.id == id)
-                    .ok_or_else(|| {
-                        "that microphone is no longer connected; refresh and choose again"
-                            .to_string()
-                    })?;
-                Some((id, device.label.clone()))
-            }
-        };
-        crate::settings::update_file_config(|config| {
-            update_microphone_config(config, selection);
-            Ok(())
-        })?;
-        Ok(echo::audio::microphone_snapshot().into())
-    })
-    .await?
-}
-
-fn update_microphone_config(
-    config: &mut echo_core::Config,
-    selection: Option<(echo::microphone::MicrophoneId, String)>,
-) {
-    config.microphone =
-        selection.map(
-            |(id, last_seen_label)| echo_core::MicrophoneSelection::Device {
-                id: id.as_str().to_string(),
-                last_seen_label,
-            },
-        );
+    owner: tauri::State<'_, crate::settings::ConfigMutationService>,
+    app: tauri::AppHandle,
+    reply: Channel<ChannelReply<echo_desktop::ipc::MicrophoneSnapshot>>,
+) -> Result<(), String> {
+    owner.request_microphone_selection(id, app, reply)
 }
 
 fn microphone_test(
@@ -188,24 +149,9 @@ mod tests {
     ) {
     }
 
-    fn assert_async_microphones(
-        _: impl Future<Output = Result<echo_desktop::ipc::MicrophoneSnapshot, String>>,
-    ) {
-    }
-
     #[test]
     fn gpu_device_listing_yields_before_detection() {
         assert_async_gpu_devices(list_gpu_devices(false));
-    }
-
-    #[test]
-    fn microphone_listing_yields_before_detection() {
-        assert_async_microphones(get_microphones());
-    }
-
-    #[test]
-    fn microphone_selection_yields_before_detection_and_config_write() {
-        assert_async_microphones(set_microphone(None));
     }
 
     #[test]
@@ -259,31 +205,5 @@ mod tests {
             assert_eq!(option.english_name, language.english_name());
             assert_eq!(option.group, echo_desktop::ipc::LanguageGroup::All);
         }
-    }
-
-    #[test]
-    fn dedicated_microphone_update_writes_id_and_clears_legacy_name() {
-        let mut config = echo_core::Config {
-            microphone: Some(echo_core::MicrophoneSelection::LegacyName {
-                name: "USB Mic".into(),
-            }),
-            ..echo_core::Config::default()
-        };
-        update_microphone_config(
-            &mut config,
-            Some((
-                echo::microphone::MicrophoneId::parse("alsa:usb-one").unwrap(),
-                "USB Mic".into(),
-            )),
-        );
-        assert_eq!(
-            config.microphone,
-            Some(echo_core::MicrophoneSelection::Device {
-                id: "alsa:usb-one".into(),
-                last_seen_label: "USB Mic".into(),
-            })
-        );
-        update_microphone_config(&mut config, None);
-        assert_eq!(config.microphone, None);
     }
 }

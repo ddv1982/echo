@@ -83,19 +83,16 @@ fn tray_menu_is_retained_in_managed_state() {
 fn settings_changes_publish_an_ordered_tray_snapshot() {
     let settings_command = include_str!("../src/commands/settings.rs");
     let setup_runtime = include_str!("../src/setup.rs");
+    let settings_owner = include_str!("../src/settings.rs");
     let tray_runtime = include_str!("../src/tray.rs");
 
-    assert!(settings_command.contains("crate::settings::snapshot_with_revision"));
     let request = settings_command
         .find("let tray_request = crate::tray::request();")
-        .expect("Settings reserves a tray update before detached work");
-    let detached_work = settings_command
-        .find("crate::blocking::run_blocking(\"settings change\"")
-        .expect("Settings change uses detached work");
-    assert!(request < detached_work);
-    assert!(
-        settings_command.contains("crate::tray::sync(&app, tray_request, revision, &snapshot);")
-    );
+        .expect("Settings reserves a tray update before enqueueing work");
+    let enqueue = settings_command
+        .find("owner.request_settings_change(")
+        .expect("Settings change enters the config owner");
+    assert!(request < enqueue);
     let setup_completion = setup_runtime
         .find("let mut active = lock_active_operation(&worker_state);")
         .expect("setup completion clears its active operation");
@@ -108,17 +105,20 @@ fn settings_changes_publish_an_ordered_tray_snapshot() {
         .expect("setup releases its active-operation lock");
     assert!(setup_request < setup_unlock);
     assert!(setup_completion.contains("crate::tray::refresh_requested(&app, tray_request);"));
+    assert!(settings_owner.contains("struct ConfigJobQueue"));
+    assert!(settings_owner.contains("snapshot_with_revision"));
+    assert!(settings_owner.contains("crate::tray::sync(&app, tray_request, revision, &snapshot);"));
     assert!(tray_runtime.contains("app.run_on_main_thread(move ||"));
-    assert!(tray_runtime.contains("LanguageWriteQueue"));
+    assert!(tray_runtime.contains("owner.request_tray_language(value, app.clone(), request)"));
     assert!(tray_runtime.contains("language_menu.set_enabled(true)"));
 }
 
 #[test]
 fn tray_language_changes_notify_the_settings_ui() {
-    let tray_runtime = include_str!("../src/tray.rs");
+    let settings_owner = include_str!("../src/settings.rs");
     let settings_controller = include_str!("../../frontend/src/settings/useSettingsController.ts");
 
-    assert!(tray_runtime.contains("app.emit(\"settings-event\", ())"));
+    assert!(settings_owner.contains("app.emit(\"settings-event\", ())"));
     assert!(settings_controller.contains("onSettingsEvent"));
 }
 

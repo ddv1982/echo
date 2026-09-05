@@ -5,6 +5,7 @@ import { SectionHeading } from '../app/chrome'
 import { messageFrom } from '../app/formatting'
 import { useAsyncSubscription } from '../hooks/useAsyncSubscription'
 import { MicrophoneChooser } from '../settings/MicrophoneChooser'
+import { newestSnapshot } from '../settings/snapshotFreshness'
 import { SpeechSetupSection } from '../settings/SpeechSetupSection'
 import { applySetupProgress, classifySetupEvent } from '../setup'
 import { presentShortcut } from '../shortcut'
@@ -42,6 +43,9 @@ export function SetupChecklist({
   const reportSetupError = useCallback((reason: unknown) => {
     if (mountedRef.current) setSetupError(messageFrom(reason))
   }, [])
+  const applyMicrophoneSnapshot = useCallback((next: MicrophoneSnapshot) => {
+    if (mountedRef.current) setMicrophones((current) => newestSnapshot(current, next))
+  }, [])
 
   useEffect(() => {
     let current = true
@@ -52,7 +56,7 @@ export function SetupChecklist({
       if (current && mountedRef.current) reportSetupError(reason)
     })
     void getMicrophones().then((next) => {
-      if (current && mountedRef.current) setMicrophones(next)
+      if (current && mountedRef.current) applyMicrophoneSnapshot(next)
     }).catch((reason: unknown) => {
       if (current && mountedRef.current) reportSetupError(reason)
     })
@@ -61,7 +65,7 @@ export function SetupChecklist({
       mountedRef.current = false
       micTestVersion.current += 1
     }
-  }, [reportSetupError])
+  }, [applyMicrophoneSnapshot, reportSetupError])
 
   const handleSetupEvent = useCallback((event: SetupEvent) => {
     if (!mountedRef.current) return
@@ -119,7 +123,7 @@ export function SetupChecklist({
               void Promise.all([getMicrophones(), getReadiness()])
                 .then(([nextMicrophones, nextReadiness]) => {
                   if (!mountedRef.current) return
-                  setMicrophones(nextMicrophones)
+                  applyMicrophoneSnapshot(nextMicrophones)
                   setReadiness(nextReadiness)
                 })
                 .catch(reportSetupError)
@@ -131,7 +135,7 @@ export function SetupChecklist({
               void setMicrophone(id)
                 .then((nextMicrophones) => {
                   if (!mountedRef.current) return null
-                  setMicrophones(nextMicrophones)
+                  applyMicrophoneSnapshot(nextMicrophones)
                   return getReadiness()
                 })
                 .then((next) => {
