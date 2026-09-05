@@ -21,3 +21,7 @@ Final verification artifacts supersede the initial temporary log pointers throug
 ## Settings review
 
 An independent read-only agent reviewed the settings diff against `ba0edc9` after implementation. It found no blocking issue. External and managed facts stay separate, custom model lookup retains per-path checks, and execution still collects an inventory and leases its selected inputs. The reviewer checked the non-UTF-8 path conversion, unavailable-engine language projections, and the ten-case verifier's source-stability checks. It found no actionable new comments or suppressions. This review did not rerun tests.
+
+## Final evidence audit
+
+GPT-5.6-sol checked the final evidence and found the completion counts consistent. It requested clarification of the earlier nine-case settings checkpoint and the omitted native timing samples. The append-only trail now identifies that checkpoint as interim; the final suite has ten cases after adding the English-only rejection case. Native artifact notes now specify that per-lane IPC latency samples are omitted while stage measurements remain. No application-code change followed this audit.

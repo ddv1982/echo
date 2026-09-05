@@ -552,6 +552,6 @@
       }
     ]
   },
-  "artifactNote": "Native probe output with individual timing samples omitted; source identity, binary identity, summaries and contracts retained.",
+  "artifactNote": "Native probe output with per-lane IPC latency samples omitted; native stage measurements, source identity, binary identity, summaries and contracts retained.",
   "baselineWorkingTreeNote": "At capture, application source matched a00be5e; git status showed only the untracked docs/plans/22-complexity-containment.md plan."
 }

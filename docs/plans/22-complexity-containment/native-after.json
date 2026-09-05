@@ -552,5 +552,5 @@
       }
     ]
   },
-  "artifactNote": "Native probe output with individual timing samples omitted; source identity, binary identity, summaries and contracts retained. Only documentation and evidence were added after the tested application commit."
+  "artifactNote": "Native probe output with per-lane IPC latency samples omitted; native stage measurements, source identity, binary identity, summaries and contracts retained. Only documentation and evidence were added after the tested application commit."
 }
