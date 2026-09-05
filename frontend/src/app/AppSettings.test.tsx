@@ -30,6 +30,7 @@ import {
   testInputDevice,
   testMicrophoneFallback,
 } from '../tauri'
+import { deferred } from '../test/desktopApiHarness'
 import type {
   ComponentId,
   ComponentStatus,
@@ -97,28 +98,6 @@ vi.mock('../tauri', async (importOriginal) => {
     testMicrophoneFallback: vi.fn(() => actual.testMicrophoneFallback()),
   }
 })
-
-function deferred<T>() {
-  const state: {
-    resolve: ((value: T | PromiseLike<T>) => void) | null
-    reject: ((reason?: unknown) => void) | null
-  } = { resolve: null, reject: null }
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    state.resolve = resolvePromise
-    state.reject = rejectPromise
-  })
-  return {
-    promise,
-    resolve(value: T | PromiseLike<T>) {
-      if (!state.resolve) throw new Error('deferred promise is not initialized')
-      state.resolve(value)
-    },
-    reject(reason?: unknown) {
-      if (!state.reject) throw new Error('deferred promise is not initialized')
-      state.reject(reason)
-    },
-  }
-}
 
 const nextRunEngineCases: Record<ResolvedSpeechEngine['kind'], {
   engine: ResolvedSpeechEngine
