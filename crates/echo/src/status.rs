@@ -71,9 +71,27 @@ pub fn write_status_for_session(
     error: Option<&str>,
     last_history_id: Option<&str>,
 ) -> Result<(), String> {
-    write_atomic_private(
+    write_status_for_session_at(
         &status_path(),
-        render_for_session(session_id, revision, state, last, error, last_history_id).as_bytes(),
+        (session_id, revision),
+        state,
+        last,
+        error,
+        last_history_id,
+    )
+}
+
+pub(crate) fn write_status_for_session_at(
+    path: &Path,
+    identity: (&str, u64),
+    state: SessionState,
+    last: Option<&str>,
+    error: Option<&str>,
+    last_history_id: Option<&str>,
+) -> Result<(), String> {
+    write_atomic_private(
+        path,
+        render_for_session(identity.0, identity.1, state, last, error, last_history_id).as_bytes(),
     )
 }
 
@@ -86,11 +104,20 @@ pub fn write_recording_for_session(
     revision: u64,
     limit: RecordingLimit,
 ) -> Result<(), String> {
+    write_recording_for_session_at(&status_path(), session_id, revision, limit)
+}
+
+pub(crate) fn write_recording_for_session_at(
+    path: &Path,
+    session_id: &str,
+    revision: u64,
+    limit: RecordingLimit,
+) -> Result<(), String> {
     let mut body = render_writer("Recording");
     body.push_str(&format!("session_id={session_id}\n"));
     body.push_str(&format!("session_revision={revision}\n"));
     body.push_str(&format!("recording_limit_seconds={}\n", limit.seconds()));
-    write_atomic_private(&status_path(), body.as_bytes())
+    write_atomic_private(path, body.as_bytes())
 }
 
 fn render_for_session(
@@ -155,14 +182,33 @@ fn render_writer(state: &str) -> String {
 /// next session overwrites them.
 #[must_use]
 pub fn read() -> Status {
-    let path = status_path();
+    read_from(&status_path())
+}
+
+pub(crate) fn read_from(path: &Path) -> Status {
     let Some(parent) = path.parent() else {
         return Status::idle();
     };
-    PrivateDir::open(parent)
+    let status = PrivateDir::open(parent)
         .and_then(|directory| directory.read_to_string(path.file_name().unwrap_or_default()))
         .map(|raw| parse(&raw, process_identity::alive))
-        .unwrap_or_else(|_| Status::idle())
+        .unwrap_or_else(|_| Status::idle());
+    if status.state != "Idle"
+        && !status.state.starts_with("Failed")
+        && status
+            .session_id
+            .as_deref()
+            .is_some_and(|id| !crate::rec::session_matches_at(parent, id))
+    {
+        return Status {
+            state: "Idle".to_string(),
+            session_id: None,
+            revision: 0,
+            recording_limit: None,
+            ..status
+        };
+    }
+    status
 }
 
 #[must_use]
@@ -282,6 +328,62 @@ fn parse(raw: &str, alive: impl Fn(ProcessIdentity) -> bool) -> Status {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn scoped_active_status_requires_the_same_live_lease() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("status");
+        let lock = dir.path().join("recording.lock");
+        let process = process_identity::current().unwrap();
+        let owner = |token: &str, pid: u32| {
+            fs::write(
+                &lock,
+                format!(
+                    "{pid}\n{token}\n{}\nscoped-intents-v1",
+                    process.start_time_ticks
+                ),
+            )
+            .unwrap();
+        };
+        write_recording_for_session_at(&path, "session-a", 2, RecordingLimit::DEFAULT).unwrap();
+        owner("session-a", process.pid);
+        assert_eq!(read_from(&path).state, "Recording");
+
+        owner("session-b", process.pid);
+        let replaced = read_from(&path);
+        assert_eq!(replaced.state, "Idle");
+        assert_eq!(replaced.session_id, None);
+
+        owner("session-a", u32::MAX);
+        assert_eq!(read_from(&path).state, "Idle");
+        fs::remove_file(lock).unwrap();
+        assert_eq!(read_from(&path).state, "Idle");
+
+        write_status_for_session_at(
+            &path,
+            ("session-a", 4),
+            SessionState::Failed {
+                reason: echo_core::FailReason::EngineError,
+            },
+            Some("saved text"),
+            Some("engine failed"),
+            None,
+        )
+        .unwrap();
+        let failed = read_from(&path);
+        assert!(failed.state.starts_with("Failed"));
+        assert_eq!(failed.last.as_deref(), Some("saved text"));
+    }
+
+    #[test]
+    fn legacy_active_status_keeps_process_identity_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("status");
+        fs::write(&path, render_recording(RecordingLimit::DEFAULT)).unwrap();
+        let observed = read_from(&path);
+        assert_eq!(observed.state, "Recording");
+        assert_eq!(observed.session_id, None);
+    }
 
     #[test]
     fn live_recording_is_reported() {

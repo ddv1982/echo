@@ -42,7 +42,11 @@ pub(super) fn recording_snapshot(
         session_id: status.session_id.clone(),
         phase: app_phase(&status.state),
         capture_stop_requested,
-        revision: status.revision + u64::from(capture_stop_requested),
+        revision: if capture_stop_requested {
+            echo::rec::RecordingControlAck::after_revision(status.revision)
+        } else {
+            status.revision
+        },
     }
 }
 
