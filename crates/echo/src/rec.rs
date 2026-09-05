@@ -191,7 +191,13 @@ fn apply_toggle_stop_intent(owner: &LockOwner) {
 
 /// Start a desktop capture. Unlike the CLI toggle this never converts a busy
 /// session into a stop request: GUI controls name the session they intend.
-pub fn start_managed_recording() -> Result<String, String> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartedRecording {
+    pub session_id: String,
+    pub revision: u64,
+}
+
+pub fn start_managed_recording() -> Result<StartedRecording, String> {
     let session = match ToggleSession::acquire_in(&echo_core::data_dir())? {
         LockAcquisition::Started(session) => session,
         LockAcquisition::Busy(_) => return Err("Another recording is already active.".to_string()),
@@ -204,10 +210,13 @@ pub fn start_managed_recording() -> Result<String, String> {
             let _ = run_record_started(StopWhen::ToggleFile(session), Some(send));
         })
         .map_err(|err| err.to_string())?;
-    receive
+    let revision = receive
         .recv()
         .map_err(|_| "recording worker exited before starting".to_string())??;
-    Ok(token)
+    Ok(StartedRecording {
+        session_id: token,
+        revision,
+    })
 }
 
 pub fn request_capture_stop(session_id: &str) -> Result<bool, String> {
@@ -243,7 +252,7 @@ fn run_record(stop: StopWhen) -> i32 {
 
 fn run_record_started(
     stop: StopWhen,
-    started: Option<std::sync::mpsc::SyncSender<Result<(), String>>>,
+    started: Option<std::sync::mpsc::SyncSender<Result<u64, String>>>,
 ) -> i32 {
     let config = match crate::settings::runtime_config() {
         Ok(config) => config,
@@ -270,7 +279,7 @@ fn run_record_with_limit(
     mut stop: StopWhen,
     limit: RecordingLimit,
     config: &echo_core::Config,
-    started: Option<std::sync::mpsc::SyncSender<Result<(), String>>>,
+    started: Option<std::sync::mpsc::SyncSender<Result<u64, String>>>,
 ) -> i32 {
     let mut session = Session::new();
     apply_edge(&mut session, HotkeyEvent::Down);
@@ -455,12 +464,17 @@ fn new_history_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-fn write_session_recording(stop: &StopWhen, limit: RecordingLimit) -> Result<(), String> {
+fn write_session_recording(stop: &StopWhen, limit: RecordingLimit) -> Result<u64, String> {
     match stop.session_id() {
         Some(session_id) => {
-            status::write_recording_for_session(session_id, stop.next_revision(), limit)
+            let revision = stop.next_revision();
+            status::write_recording_for_session(session_id, revision, limit)?;
+            Ok(revision)
         }
-        None => status::write_recording(limit),
+        None => {
+            status::write_recording(limit)?;
+            Ok(0)
+        }
     }
 }
 
@@ -811,17 +825,31 @@ impl ToggleSession {
     }
 
     fn stop_requested(&self) -> bool {
-        self.directory
+        let scoped = self
+            .directory
             .read_to_string(self.intent_name("stop").as_ref())
             .ok()
-            .is_some_and(|request| stop_request_matches(Some(&self.token), &request))
+            .is_some_and(|request| stop_request_matches(Some(&self.token), &request));
+        scoped
+            || self
+                .directory
+                .read_to_string("recording.stop".as_ref())
+                .ok()
+                .is_some_and(|request| stop_request_matches(Some(&self.token), &request))
     }
 
     fn cancel_requested(&self) -> bool {
-        self.directory
+        let scoped = self
+            .directory
             .read_to_string(self.intent_name("cancel").as_ref())
             .ok()
-            .is_some_and(|request| stop_request_matches(Some(&self.token), &request))
+            .is_some_and(|request| stop_request_matches(Some(&self.token), &request));
+        scoped
+            || self
+                .directory
+                .read_to_string("recording.cancel".as_ref())
+                .ok()
+                .is_some_and(|request| stop_request_matches(Some(&self.token), &request))
     }
 
     fn next_revision(&self) -> u64 {
@@ -1031,14 +1059,19 @@ pub fn capture_stop_requested_for(session_id: Option<&str>) -> bool {
     let Some(owner) = owner.filter(|owner| owner.token.as_deref() == Some(session_id)) else {
         return false;
     };
-    PrivateDir::open(&dir)
+    let scoped = PrivateDir::open(&dir)
         .ok()
         .and_then(|directory| {
             directory
                 .read_to_string(intent_path(&dir, "stop", &owner).file_name()?.as_ref())
                 .ok()
         })
-        .is_some_and(|request| stop_request_matches(Some(session_id), &request))
+        .is_some_and(|request| stop_request_matches(Some(session_id), &request));
+    scoped
+        || PrivateDir::open(&dir)
+            .ok()
+            .and_then(|directory| directory.read_to_string("recording.stop".as_ref()).ok())
+            .is_some_and(|request| stop_request_matches(Some(session_id), &request))
 }
 
 pub(crate) fn session_active_at(path: &Path) -> bool {

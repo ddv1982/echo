@@ -149,7 +149,7 @@ fn owner_helper() {
     };
     let root = PathBuf::from(root);
     let session = echo::rec::start_managed_recording().unwrap();
-    echo_core::write_atomic_private(&root.join("session"), session.as_bytes()).unwrap();
+    echo_core::write_atomic_private(&root.join("session"), session.session_id.as_bytes()).unwrap();
     let deadline = Instant::now() + Duration::from_secs(15);
     while echo::rec::session_active() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));

@@ -9,8 +9,13 @@ fn snapshot() -> RecordingSnapshot {
 #[tauri::command]
 pub(crate) async fn start_capture() -> Result<RecordingSnapshot, String> {
     crate::blocking::run_blocking("start recording", || {
-        echo::rec::start_managed_recording()?;
-        Ok(snapshot())
+        let started = echo::rec::start_managed_recording()?;
+        Ok(RecordingSnapshot {
+            session_id: Some(started.session_id),
+            phase: echo_desktop::ipc::AppPhase::Recording,
+            capture_stop_requested: false,
+            revision: started.revision,
+        })
     })
     .await?
 }
