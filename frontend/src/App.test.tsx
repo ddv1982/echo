@@ -30,6 +30,7 @@ import {
   stopRecording,
   testInputDevice,
   testMicrophoneFallback,
+  toggleRecording,
 } from './tauri'
 import type {
   AppStatus,
@@ -79,6 +80,7 @@ vi.mock('./tauri', async (importOriginal) => {
     stopRecording: vi.fn((activation: string) => actual.stopRecording(activation)),
     testInputDevice: vi.fn((id: string | null) => actual.testInputDevice(id)),
     testMicrophoneFallback: vi.fn(() => actual.testMicrophoneFallback()),
+    toggleRecording: vi.fn(() => actual.toggleRecording()),
   }
 })
 
@@ -148,6 +150,8 @@ describe('Echo desktop shell', () => {
     vi.mocked(retryShortcut).mockImplementation(() => actual.retryShortcut())
     vi.mocked(stopRecording).mockReset()
     vi.mocked(stopRecording).mockImplementation((activation) => actual.stopRecording(activation))
+    vi.mocked(toggleRecording).mockReset()
+    vi.mocked(toggleRecording).mockImplementation(() => actual.toggleRecording())
     vi.mocked(getSettings).mockReset()
     vi.mocked(getSettings).mockImplementation(() => actual.getSettings())
     vi.mocked(getMicrophones).mockReset()
@@ -333,6 +337,55 @@ describe('Echo desktop shell', () => {
       expect(await screen.findByRole('button', { name: 'Stop and transcribe' })).toBeEnabled()
     },
   )
+
+  it('keeps a successful stop pending through stale statuses and polling errors', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const recording = { ...richPreviewStatus(), phase: 'Recording' } satisfies AppStatus
+    const transcribing = { ...recording, phase: 'Transcribing', recordingInProcess: false } satisfies AppStatus
+    const idle = { ...recording, phase: 'Idle', recordingInProcess: false } satisfies AppStatus
+    vi.mocked(toggleRecording).mockResolvedValueOnce(undefined)
+    vi.mocked(getAppStatus)
+      .mockResolvedValueOnce(recording)
+      .mockResolvedValueOnce(recording)
+      .mockRejectedValueOnce(new Error('temporary status error'))
+      .mockResolvedValueOnce(transcribing)
+      .mockResolvedValueOnce(idle)
+    try {
+      render(<App />)
+      const stop = await screen.findByRole('button', { name: 'Stop and transcribe' })
+      fireEvent.click(stop)
+      await act(async () => {})
+      expect(toggleRecording).toHaveBeenCalledOnce()
+
+      const stopping = screen.getByRole('button', { name: 'Stopping recording' })
+      expect(stopping).toBeDisabled()
+      fireEvent.click(stopping)
+      expect(toggleRecording).toHaveBeenCalledOnce()
+
+      await act(async () => vi.advanceTimersByTimeAsync(400))
+      expect(screen.getByRole('button', { name: 'Stopping recording' })).toBeDisabled()
+      await act(async () => vi.advanceTimersByTimeAsync(400))
+      expect(screen.getByRole('button', { name: 'Processing recording' })).toBeDisabled()
+      await act(async () => vi.advanceTimersByTimeAsync(400))
+      expect(screen.getByRole('button', { name: 'Start recording' })).toBeEnabled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('releases a rejected stop request for retry', async () => {
+    const recording = { ...richPreviewStatus(), phase: 'Recording' } satisfies AppStatus
+    vi.mocked(getAppStatus).mockResolvedValue(recording)
+    vi.mocked(toggleRecording)
+      .mockRejectedValueOnce(new Error('stop was rejected'))
+      .mockResolvedValueOnce(undefined)
+    render(<App />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop and transcribe' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('stop was rejected')
+    fireEvent.click(screen.getByRole('button', { name: 'Stop and transcribe' }))
+    await waitFor(() => expect(toggleRecording).toHaveBeenCalledTimes(2))
+  })
 
   it('reports a rejected dictionary entry without clearing the form or leaving it busy', async () => {
     vi.mocked(addDictionaryEntry).mockRejectedValueOnce(new Error('could not add dictionary entry'))
