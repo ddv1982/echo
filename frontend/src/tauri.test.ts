@@ -15,6 +15,8 @@ const {
   setSettings,
   stopRecording,
   startCapture,
+  stopCapture,
+  cancelTranscription,
 } = createPreviewDesktopApi()
 
 function deferred<T>() {
@@ -40,6 +42,12 @@ function deferred<T>() {
 }
 
 describe('settings preview wrappers', () => {
+  it('rejects stale stop and cancellation requests without returning another session', async () => {
+    const started = await startCapture()
+    await expect(stopCapture(`${started.sessionId}-stale`)).rejects.toThrow('session changed')
+    await stopCapture(String(started.sessionId))
+    await expect(cancelTranscription(`${started.sessionId}-stale`)).rejects.toThrow('session changed')
+  })
   beforeEach(() => resetPreviewSettings())
 
   it('mirrors the Rust recording policy in one preview fixture', async () => {

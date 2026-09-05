@@ -294,18 +294,22 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
   }
 
   function stopCapture(sessionId: string): Promise<RecordingSnapshot> {
-    if (previewStatus.recordingSessionId === sessionId) stopPreviewRecording()
+    if (previewStatus.recordingSessionId !== sessionId || previewStatus.phase !== 'Recording') {
+      return Promise.reject(new Error('Recording session changed before stop was accepted.'))
+    }
+    stopPreviewRecording()
     return Promise.resolve(recordingSnapshot())
   }
 
   function cancelTranscription(sessionId: string): Promise<RecordingSnapshot> {
-    if (previewStatus.recordingSessionId === sessionId && previewStatus.phase === 'Transcribing') {
-      previewStatus = {
-        ...previewStatus,
-        phase: 'Failed',
-        recordingRevision: previewStatus.recordingRevision + 2,
-        lastError: 'Transcription cancelled.',
-      }
+    if (previewStatus.recordingSessionId !== sessionId || previewStatus.phase !== 'Transcribing') {
+      return Promise.reject(new Error('Recording session changed before cancellation was accepted.'))
+    }
+    previewStatus = {
+      ...previewStatus,
+      phase: 'Failed',
+      recordingRevision: previewStatus.recordingRevision + 2,
+      lastError: 'Transcription cancelled.',
     }
     return Promise.resolve(recordingSnapshot())
   }
