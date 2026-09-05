@@ -299,6 +299,41 @@ describe('Echo desktop shell', () => {
     expect(screen.getByPlaceholderText('Search transcripts…')).toBeInTheDocument()
   })
 
+  it.each([
+    ['Transcribing', 'Transcribing locally…', 'Whisper · small · VAD on is turning your recording into text.'],
+    ['Injecting', 'Inserting transcript…', 'ydotool · Wayland is sending your transcript to the active app.'],
+  ] satisfies Array<[AppStatus['phase'], string, string]>)(
+    'prevents a second recording toggle while %s',
+    async (phase, heading, description) => {
+      seedPreviewStatus({ phase, recordingInProcess: false })
+      render(<App />)
+
+      const orb = await screen.findByRole('button', { name: 'Processing recording' })
+      expect(orb).toBeDisabled()
+      expect(screen.getByRole('heading', { name: heading })).toBeInTheDocument()
+      expect(screen.getByText(description)).toBeInTheDocument()
+      fireEvent.click(orb)
+      expect((await previewDesktopApi.getAppStatus()).phase).toBe(phase)
+    },
+  )
+
+  it.each(['Idle', 'Failed'] as const)(
+    'allows recording to start again from %s',
+    async (phase) => {
+      seedPreviewStatus({
+        phase,
+        recordingInProcess: false,
+      })
+      render(<App />)
+
+      const orb = await screen.findByRole('button', { name: 'Start recording' })
+      expect(orb).toBeEnabled()
+      fireEvent.click(orb)
+      fireEvent.click(orb)
+      expect(await screen.findByRole('button', { name: 'Stop and transcribe' })).toBeEnabled()
+    },
+  )
+
   it('reports a rejected dictionary entry without clearing the form or leaving it busy', async () => {
     vi.mocked(addDictionaryEntry).mockRejectedValueOnce(new Error('could not add dictionary entry'))
     render(<App />)
@@ -398,14 +433,15 @@ describe('Echo desktop shell', () => {
   it('warns when a stale install shadows the running binary', async () => {
     seedPreviewStatus({
       currentExe: '/usr/bin/echo-desktop',
-      firstPathHit: '/home/user/.local/bin/echo-desktop',
-      staleInstalls: ['/home/user/.local/bin/echo-desktop'],
+      firstPathHit: '/home/user/.local/bin/echo desktop; keep-me',
+      staleInstalls: ['/home/user/.local/bin/echo desktop; keep-me'],
     })
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     const warning = await screen.findByRole('alert')
-    expect(warning).toHaveTextContent('/home/user/.local/bin/echo-desktop')
-    expect(warning).toHaveTextContent('rm -f /home/user/.local/bin/echo-desktop')
+    expect(warning).toHaveTextContent('/home/user/.local/bin/echo desktop; keep-me')
+    expect(warning).not.toHaveTextContent('rm -f')
+    expect(within(warning).getByRole('button', { name: 'Remove old copies' })).toBeEnabled()
   })
 
   it('shows no stale-install warning when PATH is clean', async () => {
@@ -425,8 +461,7 @@ describe('Echo desktop shell', () => {
     await screen.findByRole('button', { name: 'Start recording' })
     const warning = await screen.findByRole('alert')
     expect(warning).toHaveTextContent('/home/user/.local/bin/echo-desktop')
-    // The manual command stays visible as secondary text.
-    expect(warning).toHaveTextContent('rm -f /home/user/.local/bin/echo-desktop')
+    expect(warning).not.toHaveTextContent('rm -f')
 
     fireEvent.click(within(warning).getByRole('button', { name: 'Remove old copies' }))
     expect(vi.mocked(removeStaleInstalls)).toHaveBeenCalledTimes(1)

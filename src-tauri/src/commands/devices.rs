@@ -181,9 +181,24 @@ mod tests {
     ) {
     }
 
+    fn assert_async_microphones(
+        _: impl Future<Output = Result<echo_desktop::ipc::MicrophoneSnapshot, String>>,
+    ) {
+    }
+
     #[test]
     fn gpu_device_listing_yields_before_detection() {
         assert_async_gpu_devices(list_gpu_devices(false));
+    }
+
+    #[test]
+    fn microphone_listing_yields_before_detection() {
+        assert_async_microphones(get_microphones());
+    }
+
+    #[test]
+    fn microphone_selection_yields_before_detection_and_config_write() {
+        assert_async_microphones(set_microphone(None));
     }
 
     #[test]
