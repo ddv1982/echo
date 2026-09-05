@@ -28,9 +28,21 @@ pub struct AppStatus {
     pub last_run: Option<LastRun>,
     pub language_warning: Option<String>,
     pub recording_in_process: bool,
+    pub recording_session_id: Option<String>,
+    pub capture_stop_requested: bool,
+    pub recording_revision: u64,
     pub current_exe: String,
     pub first_path_hit: Option<String>,
     pub stale_installs: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordingSnapshot {
+    pub session_id: Option<String>,
+    pub phase: AppPhase,
+    pub capture_stop_requested: bool,
+    pub revision: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
@@ -846,6 +858,7 @@ macro_rules! schema_types {
             schema::NextSpeechRun => schema::NextSpeechRun,
             schema::Readiness => schema::Readiness,
             schema::RecordingPolicy => schema::RecordingPolicy,
+            schema::RecordingSnapshot => schema::RecordingSnapshot,
             schema::RecoveryReason => schema::RecoveryReason,
             schema::RecoveryTelemetry => schema::RecoveryTelemetry,
             schema::ResolvedSpeechEngine => schema::ResolvedSpeechEngine,

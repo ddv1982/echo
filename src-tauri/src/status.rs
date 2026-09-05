@@ -33,6 +33,19 @@ fn app_phase(state: &str) -> AppPhase {
     }
 }
 
+pub(super) fn recording_snapshot(
+    status: &echo::status::Status,
+) -> echo_desktop::ipc::RecordingSnapshot {
+    let capture_stop_requested = status.state == "Recording"
+        && echo::rec::capture_stop_requested_for(status.session_id.as_deref());
+    echo_desktop::ipc::RecordingSnapshot {
+        session_id: status.session_id.clone(),
+        phase: app_phase(&status.state),
+        capture_stop_requested,
+        revision: status.revision + u64::from(capture_stop_requested),
+    }
+}
+
 fn recording_policy_dto() -> RecordingPolicy {
     RecordingPolicy {
         minimum_seconds: echo_core::RecordingLimit::MIN.seconds(),
@@ -726,8 +739,9 @@ pub(super) fn app_status() -> AppStatus {
     let settings_path = echo_core::config_path().to_string_lossy().into_owned();
     #[cfg(feature = "status-perf-probe")]
     timer.mark(crate::perf::StatusStage::Presentation);
+    let recording = recording_snapshot(&status);
     let app_status = AppStatus {
-        phase: app_phase(&status.state),
+        phase: recording.phase,
         last_transcript: status.last,
         last_history_id: status.last_history_id,
         microphone_ready: health.microphone_ready,
@@ -745,6 +759,9 @@ pub(super) fn app_status() -> AppStatus {
         last_run,
         language_warning: health.language_warning,
         recording_in_process,
+        recording_session_id: recording.session_id,
+        capture_stop_requested: recording.capture_stop_requested,
+        recording_revision: recording.revision,
         current_exe: health.current_exe,
         first_path_hit: health.first_path_hit,
         stale_installs: health.stale_installs,
@@ -1391,6 +1408,8 @@ mod tests {
             last_history_id: None,
             error: None,
             recording_limit: echo_core::RecordingLimit::new(120),
+            session_id: None,
+            revision: 0,
         };
         assert_eq!(
             project_recording_limit(&active, echo_core::RecordingLimit::MAX)

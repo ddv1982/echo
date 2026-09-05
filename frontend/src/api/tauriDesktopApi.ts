@@ -13,6 +13,7 @@ import type {
   MicrophoneTestResult,
   ModelInventory,
   Readiness,
+  RecordingSnapshot,
   SettingsChange,
   SettingsSnapshot,
   SetupEvent,
@@ -42,7 +43,9 @@ export function createTauriDesktopApi(): DesktopApi {
       invoke<DictionaryTrainingSample>('finish_dictionary_training_sample', { captureId }),
     cancelDictionaryTrainingSample: (captureId) =>
       invoke<boolean>('cancel_dictionary_training_sample', { captureId }),
-    toggleRecording: () => invoke<void>('toggle_recording'),
+    startCapture: () => invoke<RecordingSnapshot>('start_capture'),
+    stopCapture: (sessionId) => invoke<RecordingSnapshot>('stop_capture', { sessionId }),
+    cancelTranscription: (sessionId) => invoke<RecordingSnapshot>('cancel_transcription', { sessionId }),
     stopRecording: (activation) => invoke<boolean>('stop_recording', { activation }),
     getRecordingLevel: () => invoke<number>('get_recording_level'),
     copyText: (text) => invoke<void>('copy_text', { text }),

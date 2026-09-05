@@ -20,7 +20,8 @@ pub(super) use library::{
     delete_history_item, get_dictionary, get_history, remove_dictionary_entry,
 };
 pub(super) use recording::{
-    get_recording_level, start_recording_thread, stop_recording, toggle_recording,
+    cancel_transcription, get_recording_level, start_capture, start_recording_thread, stop_capture,
+    stop_recording,
 };
 #[cfg(feature = "status-perf-probe")]
 pub(super) use settings::run_test_hook;

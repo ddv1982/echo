@@ -1,5 +1,6 @@
 import type {
   AppStatus,
+  RecordingSnapshot,
   ComponentId,
   DictionaryBatchResult,
   DictionaryItem,
@@ -34,7 +35,9 @@ export interface DesktopApi {
   startDictionaryTrainingSample(): Promise<string>
   finishDictionaryTrainingSample(captureId: string): Promise<DictionaryTrainingSample>
   cancelDictionaryTrainingSample(captureId: string): Promise<boolean>
-  toggleRecording(): Promise<void>
+  startCapture(): Promise<RecordingSnapshot>
+  stopCapture(sessionId: string): Promise<RecordingSnapshot>
+  cancelTranscription(sessionId: string): Promise<RecordingSnapshot>
   stopRecording(activation: string): Promise<boolean>
   getRecordingLevel(): Promise<number>
   copyText(text: string): Promise<void>

@@ -4,12 +4,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use commands::{
     add_dictionary_entries_batch, add_dictionary_entry, cancel_dictionary_training_sample,
-    clear_history, copy_text, delete_history_item, finish_dictionary_training_sample,
-    get_app_status, get_dictionary, get_history, get_microphones, get_recording_level,
-    get_settings, get_shortcut_status, list_gpu_devices, list_languages, list_models, quit_app,
-    remove_dictionary_entry, remove_stale_installs, repair_legacy_shortcut, retry_shortcut,
-    set_microphone, set_settings, start_dictionary_training_sample, stop_recording,
-    test_input_device, test_microphone_fallback, toggle_recording, DictionaryTrainingCaptures,
+    cancel_transcription, clear_history, copy_text, delete_history_item,
+    finish_dictionary_training_sample, get_app_status, get_dictionary, get_history,
+    get_microphones, get_recording_level, get_settings, get_shortcut_status, list_gpu_devices,
+    list_languages, list_models, quit_app, remove_dictionary_entry, remove_stale_installs,
+    repair_legacy_shortcut, retry_shortcut, set_microphone, set_settings, start_capture,
+    start_dictionary_training_sample, stop_capture, stop_recording, test_input_device,
+    test_microphone_fallback, DictionaryTrainingCaptures,
 };
 use tauri::{Manager, WindowEvent};
 
@@ -206,7 +207,9 @@ fn run_desktop() -> Result<(), String> {
             start_dictionary_training_sample,
             finish_dictionary_training_sample,
             cancel_dictionary_training_sample,
-            toggle_recording,
+            start_capture,
+            stop_capture,
+            cancel_transcription,
             stop_recording,
             get_recording_level,
             copy_text,

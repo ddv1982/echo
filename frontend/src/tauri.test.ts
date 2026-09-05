@@ -14,7 +14,7 @@ const {
   seedPreviewStatus,
   setSettings,
   stopRecording,
-  toggleRecording,
+  startCapture,
 } = createPreviewDesktopApi()
 
 function deferred<T>() {
@@ -71,27 +71,33 @@ describe('settings preview wrappers', () => {
   })
 
   it('snapshots the effective limit when preview recording starts', async () => {
-    await toggleRecording()
-    expect((await getAppStatus()).recordingLimitSeconds).toBe(600)
+    vi.useFakeTimers()
+    try {
+      await startCapture()
+      expect((await getAppStatus()).recordingLimitSeconds).toBe(600)
 
-    await setSettings({ kind: 'recordSeconds', value: 120 })
-    expect((await getAppStatus()).recordingLimitSeconds).toBe(600)
-    const shortcut = (await getAppStatus()).shortcut
-    if (shortcut.kind !== 'active') throw new Error('active preview shortcut')
-    seedPreviewStatus({
-      shortcut: { ...shortcut, activation: 'native-toggle:preview-test' },
-    })
-    expect(await stopRecording('native-toggle:preview-test')).toBe(true)
+      await setSettings({ kind: 'recordSeconds', value: 120 })
+      expect((await getAppStatus()).recordingLimitSeconds).toBe(600)
+      const shortcut = (await getAppStatus()).shortcut
+      if (shortcut.kind !== 'active') throw new Error('active preview shortcut')
+      seedPreviewStatus({
+        shortcut: { ...shortcut, activation: 'native-toggle:preview-test' },
+      })
+      expect(await stopRecording('native-toggle:preview-test')).toBe(true)
 
-    await toggleRecording()
-    expect((await getAppStatus()).recordingLimitSeconds).toBe(120)
+      await vi.advanceTimersByTimeAsync(900)
+      await startCapture()
+      expect((await getAppStatus()).recordingLimitSeconds).toBe(120)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('stops preview recording at the snapped deadline', async () => {
     vi.useFakeTimers()
     try {
       await setSettings({ kind: 'recordSeconds', value: 1 })
-      await toggleRecording()
+      await startCapture()
       expect((await getAppStatus()).phase).toBe('Recording')
 
       await vi.advanceTimersByTimeAsync(1_001)

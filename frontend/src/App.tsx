@@ -36,7 +36,7 @@ function App() {
     error,
     setError,
     recordingSeconds,
-    stopPending,
+    recordingRequestPending,
     refreshStatus,
     toggleRecording,
     quitApp,
@@ -115,7 +115,7 @@ function App() {
               status={status}
               history={history}
               recordingSeconds={recordingSeconds}
-              stopPending={stopPending}
+              recordingRequestPending={recordingRequestPending}
               onToggleRecording={toggleRecording}
               onOpenSettings={() => setView('settings')}
             />
