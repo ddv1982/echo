@@ -189,8 +189,15 @@ pub fn toggle_managed_recording() -> Result<Option<String>, String> {
 /// token check prevents an observation of an earlier owner from authorizing a
 /// cancellation for a replacement owner.
 fn start_or_stop_with_intent() -> Result<(ToggleAction, bool), String> {
-    let observed = status::read();
-    let action = ToggleSession::start_or_stop()?;
+    decide_toggle_intent(status::read, ToggleSession::start_or_stop)
+}
+
+fn decide_toggle_intent(
+    read_status: impl FnOnce() -> status::Status,
+    start_or_stop: impl FnOnce() -> Result<ToggleAction, String>,
+) -> Result<(ToggleAction, bool), String> {
+    let observed = read_status();
+    let action = start_or_stop()?;
     let cancel_transcription =
         matches!(&action, ToggleAction::Stop(owner) if should_cancel_toggle(&observed, owner));
     Ok((action, cancel_transcription))
@@ -201,10 +208,8 @@ fn should_cancel_toggle(observed: &status::Status, owner: &LockOwner) -> bool {
 }
 
 fn apply_toggle_stop_intent(owner: &LockOwner) {
-    if status::read().state == "Transcribing" {
-        if let Some(token) = owner.token.as_deref() {
-            let _ = ToggleSession::request_cancel_for_token_in(&echo_core::data_dir(), token);
-        }
+    if let Some(token) = owner.token.as_deref() {
+        let _ = ToggleSession::request_cancel_for_token_in(&echo_core::data_dir(), token);
     }
 }
 
@@ -1660,13 +1665,43 @@ mod tests {
             session_id: Some("capture-a".to_string()),
             revision: 2,
         };
-        assert!(!should_cancel_toggle(&recording, &owner));
+        let read_happened = Cell::new(false);
+        let (_, cancel) = decide_toggle_intent(
+            || {
+                read_happened.set(true);
+                recording.clone()
+            },
+            || {
+                assert!(
+                    read_happened.get(),
+                    "status must be observed before stop writes its signal"
+                );
+                // This callback represents capture ending and the owner
+                // immediately publishing Transcribing.
+                Ok(ToggleAction::Stop(owner.clone()))
+            },
+        )
+        .unwrap();
+        assert!(!cancel);
+        let transcribing = status::Status {
+            state: "Transcribing".to_string(),
+            ..recording.clone()
+        };
+        let (_, cancel) =
+            decide_toggle_intent(|| transcribing, || Ok(ToggleAction::Stop(owner.clone())))
+                .unwrap();
+        assert!(cancel);
         let transcribing_replacement = status::Status {
             state: "Transcribing".to_string(),
             session_id: Some("capture-b".to_string()),
             ..recording
         };
-        assert!(!should_cancel_toggle(&transcribing_replacement, &owner));
+        let (_, cancel) = decide_toggle_intent(
+            || transcribing_replacement,
+            || Ok(ToggleAction::Stop(owner)),
+        )
+        .unwrap();
+        assert!(!cancel);
     }
 
     #[test]
