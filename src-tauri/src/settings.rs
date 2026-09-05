@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::env;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use echo_desktop::ipc::{
@@ -235,15 +235,31 @@ impl ConfigMutationService {
     pub(crate) fn apply_setup_plan_blocking(
         &self,
         plan_id: echo::install::SetupPlanId,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<(), echo::install::InstallError> {
+        self.apply_setup_plan_blocking_with(plan_id, cancel, move |plan_id| {
+            update_file_config(|config| apply_plan_config(config, plan_id))
+        })
+    }
+
+    fn apply_setup_plan_blocking_with(
+        &self,
+        plan_id: echo::install::SetupPlanId,
+        cancel: Arc<AtomicBool>,
+        activate: impl FnOnce(echo::install::SetupPlanId) -> Result<(), String> + Send + 'static,
     ) -> Result<(), echo::install::InstallError> {
         let (sender, receiver) = std::sync::mpsc::channel();
         let fail_sender = sender.clone();
         self.enqueue(ConfigJob {
             run: Box::new(move || {
                 let result = match panic::catch_unwind(AssertUnwindSafe(|| {
-                    update_file_config(|config| apply_plan_config(config, plan_id))
+                    if cancel.load(Ordering::Relaxed) {
+                        Err(echo::install::InstallError::Cancelled)
+                    } else {
+                        activate(plan_id).map_err(echo::install::InstallError::IoMessage)
+                    }
                 })) {
-                    Ok(result) => result.map_err(echo::install::InstallError::IoMessage),
+                    Ok(result) => result,
                     Err(_) => Err(echo::install::InstallError::IoMessage(
                         "configuration request failed unexpectedly".to_string(),
                     )),
@@ -740,7 +756,7 @@ fn nonempty(value: Option<String>) -> Option<String> {
 mod tests {
     use super::*;
     use echo_core::{Config, EngineChoice};
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::mpsc;
 
     fn scratch_path(label: &str) -> std::path::PathBuf {
@@ -855,6 +871,59 @@ mod tests {
         );
         update_microphone_config(&mut config, None);
         assert_eq!(config.microphone, None);
+    }
+
+    #[test]
+    fn setup_plan_activation_cancelled_while_queued_does_not_write_config() {
+        let owner = ConfigMutationService::default();
+        let path = scratch_path("cancelled-queued-setup-activation");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (blocked_sender, blocked_receiver) = mpsc::channel();
+        let (release_sender, release_receiver) = mpsc::channel();
+
+        owner
+            .enqueue(ConfigJob::fire_and_forget(move || {
+                blocked_sender.send(()).unwrap();
+                release_receiver.recv().unwrap();
+            }))
+            .unwrap();
+        blocked_receiver.recv().unwrap();
+
+        let worker_owner = owner.clone();
+        let worker_cancel = Arc::clone(&cancel);
+        let worker_path = path.clone();
+        let activation = std::thread::spawn(move || {
+            worker_owner.apply_setup_plan_blocking_with(
+                echo::install::SetupPlanId::Parakeet,
+                worker_cancel,
+                move |plan_id| {
+                    update_file_config_at(&worker_path, |config| apply_plan_config(config, plan_id))
+                },
+            )
+        });
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while owner
+            .queue
+            .lock()
+            .map(|queue| queue.pending.is_empty())
+            .unwrap_or(false)
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "activation was not queued"
+            );
+            std::thread::yield_now();
+        }
+
+        cancel.store(true, Ordering::Relaxed);
+        release_sender.send(()).unwrap();
+
+        assert!(matches!(
+            activation.join().unwrap(),
+            Err(echo::install::InstallError::Cancelled)
+        ));
+        assert!(!path.exists());
     }
 
     #[test]

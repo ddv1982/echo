@@ -421,7 +421,8 @@ impl SetupService {
                                 if cancel.load(Ordering::Relaxed) {
                                     Err(echo::install::InstallError::Cancelled)
                                 } else {
-                                    config_service.apply_setup_plan_blocking(plan_id)
+                                    config_service
+                                        .apply_setup_plan_blocking(plan_id, Arc::clone(&cancel))
                                 }
                             })
                     }
