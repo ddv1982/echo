@@ -125,8 +125,17 @@ impl WhisperEngine {
         let WhisperFiles::Discover(cache) = &self.files else {
             return None;
         };
+        self.selected_model_from_inventory(&cache.inventory())
+    }
+
+    pub(crate) fn selected_model_from_inventory(
+        &self,
+        inventory: &super::ModelInventory,
+    ) -> Option<(PathBuf, bool)> {
+        let WhisperFiles::Discover(cache) = &self.files else {
+            return self.selected_model();
+        };
         let model = self.model.as_str();
-        let inventory = cache.inventory();
         if let Some(installed) = inventory.whisper.iter().find(|m| m.name == model) {
             return Some((installed.path.clone(), installed.multilingual));
         }

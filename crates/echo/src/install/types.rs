@@ -178,7 +178,8 @@ pub enum ManagedComponentState {
     Ready {
         version: String,
         bytes: u64,
-        root: String,
+        #[serde(serialize_with = "serialize_display_path")]
+        root: PathBuf,
     },
     NeedsRepair {
         reason: String,
@@ -201,4 +202,11 @@ impl Drop for ComponentLease {
     fn drop(&mut self) {
         let _ = FileExt::unlock(&self.file);
     }
+}
+
+fn serialize_display_path<S: serde::Serializer>(
+    path: &std::path::Path,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(&path.to_string_lossy())
 }

@@ -6,8 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use echo_desktop::ipc::{
-    ChannelReply, Readiness, SettingField, SettingSource, Settings, SettingsChange,
-    SettingsSnapshot,
+    ChannelReply, SettingField, SettingSource, Settings, SettingsChange, SettingsSnapshot,
 };
 use tauri::ipc::Channel;
 use tauri::{Emitter, Manager};
@@ -138,25 +137,25 @@ impl ConfigMutationService {
 
     pub(crate) fn request_settings_snapshot(
         &self,
-        mut readiness: impl FnMut() -> Readiness + Send + 'static,
+        service: crate::setup::SetupService,
         reply: Channel<ChannelReply<SettingsSnapshot>>,
     ) -> Result<(), String> {
         self.enqueue(ConfigJob::reply(reply, move || {
-            snapshot_with_revision(&mut readiness).map(|(_, snapshot)| snapshot)
+            snapshot_with_revision(&service).map(|(_, snapshot)| snapshot)
         }))
     }
 
     pub(crate) fn request_settings_change(
         &self,
         settings_change: SettingsChange,
-        mut readiness: impl FnMut() -> Readiness + Send + 'static,
+        service: crate::setup::SetupService,
         app: tauri::AppHandle,
         tray_request: crate::tray::LanguageMenuRequest,
         reply: Channel<ChannelReply<SettingsSnapshot>>,
     ) -> Result<(), String> {
         self.enqueue(ConfigJob::reply(reply, move || {
             change(settings_change)
-                .and_then(|_| snapshot_with_revision(&mut readiness))
+                .and_then(|_| snapshot_with_revision(&service))
                 .map(|(revision, snapshot)| {
                     crate::tray::sync(&app, tray_request, revision, &snapshot);
                     snapshot
@@ -197,7 +196,7 @@ impl ConfigMutationService {
         let service = app.state::<crate::setup::SetupService>().inner().clone();
         self.enqueue(ConfigJob::fire_and_forget(move || {
             let outcome = change(SettingsChange::Language { value: Some(value) })
-                .and_then(|_| snapshot_with_revision(|| service.snapshot()));
+                .and_then(|_| snapshot_with_revision(&service));
             match outcome {
                 Ok((revision, snapshot)) => {
                     crate::tray::sync(&app, tray_request, revision, &snapshot);
@@ -218,7 +217,7 @@ impl ConfigMutationService {
     ) -> Result<(), String> {
         let service = app.state::<crate::setup::SetupService>().inner().clone();
         self.enqueue(ConfigJob::fire_and_forget(
-            move || match snapshot_with_revision(|| service.snapshot()) {
+            move || match snapshot_with_revision(&service) {
                 Ok((settings, snapshot)) => crate::tray::sync_requested(
                     &app,
                     crate::tray::LanguageMenuRevision {
@@ -370,21 +369,36 @@ struct SettingsEnv {
     whisper_acceleration: Option<String>,
 }
 
-fn snapshot(readiness: Readiness) -> Result<SettingsSnapshot, String> {
+fn snapshot(service: &crate::setup::SetupService) -> Result<SettingsSnapshot, String> {
     let file = load_preferences_for_update(&echo_core::config_path())?;
-    let preferences = read_from_file(&file)?;
-    Ok(crate::speech::snapshot(preferences, &file, readiness))
+    let runtime = echo::stt::SpeechRuntimeInventory::from_cache(&echo::stt::ModelCache::from_env());
+    let env = echo::transcribe::EnvOptions::read();
+    let available =
+        echo::transcribe::EngineAvailabilitySnapshot::for_process(&env, &file, &runtime);
+    let catalog = echo::transcribe::language_catalog_from_available(None, &env, &file, &available);
+    let resolved = echo::transcribe::resolve_run(&Default::default(), &env, &file, &available);
+    let readiness = service.snapshot_from(&file, &runtime, resolved.as_ref().ok());
+    let preferences = read_from_file(&file, &catalog)?;
+    Ok(crate::speech::snapshot(
+        preferences,
+        &runtime,
+        &catalog,
+        resolved,
+        readiness,
+    ))
 }
 
 fn snapshot_with_revision(
-    mut readiness: impl FnMut() -> Readiness,
+    service: &crate::setup::SetupService,
 ) -> Result<(u64, SettingsSnapshot), String> {
-    let snapshot = with_snapshot_revision(snapshot(readiness())?);
+    let snapshot = with_snapshot_revision(snapshot(service)?);
     Ok((snapshot.revision, snapshot))
 }
 
-fn read_from_file(file: &echo_core::Config) -> Result<Settings, String> {
-    let catalog = echo::transcribe::language_catalog(None, file);
+fn read_from_file(
+    file: &echo_core::Config,
+    catalog: &echo::transcribe::LanguageCatalog,
+) -> Result<Settings, String> {
     let language_default = match catalog.selection {
         echo::transcribe::LanguageSelection::EnglishOnly => "en",
         echo::transcribe::LanguageSelection::AutoOrPinned if catalog.model.is_none() => "en",
@@ -758,6 +772,17 @@ mod tests {
     use echo_core::{Config, EngineChoice};
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::mpsc;
+
+    #[test]
+    #[ignore = "requires isolated model and config environment"]
+    fn settings_collection_probe() {
+        let service = crate::setup::SetupService::default();
+        let result = snapshot_with_revision(&service).unwrap();
+        eprintln!(
+            "SETTINGS_SNAPSHOT {}",
+            serde_json::to_string(&result.1).unwrap()
+        );
+    }
 
     fn scratch_path(label: &str) -> std::path::PathBuf {
         static SEQ: AtomicU64 = AtomicU64::new(0);
