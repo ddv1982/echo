@@ -49,6 +49,7 @@ export function useAppController() {
   const [recordingStartedAt, setRecordingStartedAt] = useState<number | null>(null)
   const previousPhase = useRef('Idle')
   const previousHistoryId = useRef<string | null>(null)
+  const toggleInFlight = useRef(false)
   const recordingSeconds = useElapsedSeconds(recordingStartedAt)
   const reportError = useCallback((reason: unknown) => setError(messageFrom(reason)), [])
   const {
@@ -107,11 +108,15 @@ export function useAppController() {
   }, [view])
 
   const toggle = useCallback(async () => {
+    if (toggleInFlight.current) return
+    toggleInFlight.current = true
     try {
       await toggleRecording()
       await refreshStatus()
     } catch (reason) {
       reportError(reason)
+    } finally {
+      toggleInFlight.current = false
     }
   }, [refreshStatus, reportError])
 

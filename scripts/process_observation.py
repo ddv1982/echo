@@ -88,14 +88,18 @@ def _read_status(root: Path, pid: int) -> dict[str, int] | None:
 
 def _read_children(root: Path, pid: int) -> list[int] | None:
     try:
-        return [
-            int(value)
-            for value in (root / str(pid) / "task" / str(pid) / "children")
-            .read_text()
-            .split()
-        ]
-    except (FileNotFoundError, PermissionError, ValueError, OSError):
+        tasks = list((root / str(pid) / "task").iterdir())
+    except (FileNotFoundError, PermissionError, OSError):
         return None
+    children: set[int] = set()
+    for task in tasks:
+        if not task.name.isdigit():
+            continue
+        try:
+            children.update(int(value) for value in (task / "children").read_text().split())
+        except (ValueError, OSError):
+            return None
+    return sorted(children)
 
 
 def _parent_snapshot(root: Path) -> tuple[dict[int, list[int]], set[int]] | None:

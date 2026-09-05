@@ -25,16 +25,19 @@ export function HomeView({
 }) {
   const shortcut = presentShortcut(status.shortcut)
   const recording = status.phase === 'Recording'
+  const processing = status.phase === 'Transcribing' || status.phase === 'Injecting'
   const heroState = recording
     ? 'recording'
-    : status.phase === 'Transcribing'
+    : processing
       ? 'transcribing'
       : 'idle'
-  const stateCopy = recording
-    ? ['Listening…', 'Speak naturally, then press the shortcut again.']
+  const [readout, title, description] = recording
+    ? ['Listening', 'Listening…', 'Speak naturally, then press the shortcut again.']
     : status.phase === 'Transcribing'
-      ? ['Transcribing locally…', `${status.engineName} is turning your recording into text.`]
-      : ['Ready when you are', 'Your audio stays on this machine.']
+      ? ['Processing', 'Transcribing locally…', `${status.engineName} is turning your recording into text.`]
+      : status.phase === 'Injecting'
+        ? ['Processing', 'Inserting transcript…', `${status.injectionName} is sending your transcript to the active app.`]
+        : ['Ready', 'Ready when you are', 'Your audio stays on this machine.']
   return (
     <div className="view-stack">
       <section className="record-hero" data-state={heroState}>
@@ -44,14 +47,16 @@ export function HomeView({
             className="record-orb"
             type="button"
             onClick={() => void onToggleRecording()}
-            aria-label={recording ? 'Stop and transcribe' : 'Start recording'}
+            aria-label={recording ? 'Stop and transcribe' : processing ? 'Processing recording' : 'Start recording'}
+            aria-busy={processing || undefined}
+            disabled={processing}
           >
             <span className="record-ring" aria-hidden="true" />
             {recording ? <Waves size={26} /> : <Mic size={26} />}
           </button>
           <div className="hero-copy">
             <div className="readout">
-              <span>{recording ? 'Listening' : status.phase === 'Transcribing' ? 'Transcribing' : 'Ready'}</span>
+              <span>{readout}</span>
               {recording ? (
                 <span className="readout-timer">
                   {status.recordingLimitSeconds == null
@@ -60,8 +65,8 @@ export function HomeView({
                 </span>
               ) : null}
             </div>
-            <h2>{stateCopy[0]}</h2>
-            <p>{stateCopy[1]}</p>
+            <h2>{title}</h2>
+            <p>{description}</p>
             {recording ? <LevelBars live={status.recordingInProcess} /> : null}
             <div className="record-actions">
               <div className="shortcut-hint">
@@ -189,10 +194,7 @@ function StaleInstallWarning({ status }: { status: AppStatus }) {
             <code>{path}</code>
           </span>
         ))}
-        .{' '}
-        <small>
-          Or from a terminal: <code>rm -f {paths.join(' ')}</code>, then relaunch.
-        </small>
+        .
         {error ? <span className="stale-install-error">{error}</span> : null}
       </span>
       <button type="button" className="compact-button" disabled={busy} onClick={() => void remove()}>

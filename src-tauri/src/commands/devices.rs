@@ -51,40 +51,47 @@ pub(crate) async fn list_models() -> Result<ModelInventory, String> {
 }
 
 #[tauri::command]
-pub(crate) fn get_microphones() -> echo_desktop::ipc::MicrophoneSnapshot {
-    echo::audio::microphone_snapshot().into()
+pub(crate) async fn get_microphones() -> Result<echo_desktop::ipc::MicrophoneSnapshot, String> {
+    crate::blocking::run_blocking("microphone enumeration", || {
+        echo::audio::microphone_snapshot().into()
+    })
+    .await
 }
 
 #[tauri::command]
-pub(crate) fn set_microphone(
+pub(crate) async fn set_microphone(
     id: Option<String>,
 ) -> Result<echo_desktop::ipc::MicrophoneSnapshot, String> {
-    if env::var("ECHO_MICROPHONE")
-        .ok()
-        .is_some_and(|value| !value.trim().is_empty())
-    {
-        return Err("ECHO_MICROPHONE controls the microphone in this process".to_string());
-    }
-    let snapshot = echo::audio::microphone_snapshot();
-    let selection = match id {
-        None => None,
-        Some(raw) => {
-            let id = echo::microphone::MicrophoneId::parse(raw)?;
-            let device = snapshot
-                .devices
-                .iter()
-                .find(|device| device.id == id)
-                .ok_or_else(|| {
-                    "that microphone is no longer connected; refresh and choose again".to_string()
-                })?;
-            Some((id, device.label.clone()))
+    crate::blocking::run_blocking("microphone selection", move || {
+        if env::var("ECHO_MICROPHONE")
+            .ok()
+            .is_some_and(|value| !value.trim().is_empty())
+        {
+            return Err("ECHO_MICROPHONE controls the microphone in this process".to_string());
         }
-    };
-    crate::settings::update_file_config(|config| {
-        update_microphone_config(config, selection);
-        Ok(())
-    })?;
-    Ok(echo::audio::microphone_snapshot().into())
+        let snapshot = echo::audio::microphone_snapshot();
+        let selection = match id {
+            None => None,
+            Some(raw) => {
+                let id = echo::microphone::MicrophoneId::parse(raw)?;
+                let device = snapshot
+                    .devices
+                    .iter()
+                    .find(|device| device.id == id)
+                    .ok_or_else(|| {
+                        "that microphone is no longer connected; refresh and choose again"
+                            .to_string()
+                    })?;
+                Some((id, device.label.clone()))
+            }
+        };
+        crate::settings::update_file_config(|config| {
+            update_microphone_config(config, selection);
+            Ok(())
+        })?;
+        Ok(echo::audio::microphone_snapshot().into())
+    })
+    .await?
 }
 
 fn update_microphone_config(
