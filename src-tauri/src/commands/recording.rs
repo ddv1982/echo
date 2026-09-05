@@ -23,8 +23,16 @@ pub(crate) async fn start_capture() -> Result<RecordingSnapshot, String> {
 #[tauri::command]
 pub(crate) async fn stop_capture(session_id: String) -> Result<RecordingSnapshot, String> {
     crate::blocking::run_blocking("stop capture", move || {
-        let _ = echo::rec::request_capture_stop(&session_id)?;
-        Ok(snapshot())
+        let ack = echo::rec::request_capture_stop_ack(&session_id)?;
+        Ok(match ack {
+            Some(ack) => RecordingSnapshot {
+                session_id: Some(ack.session_id),
+                phase: echo_desktop::ipc::AppPhase::Recording,
+                capture_stop_requested: true,
+                revision: ack.revision,
+            },
+            None => snapshot(),
+        })
     })
     .await?
 }

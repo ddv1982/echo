@@ -196,6 +196,12 @@ pub struct StartedRecording {
     pub revision: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordingControlAck {
+    pub session_id: String,
+    pub revision: u64,
+}
+
 pub fn start_managed_recording() -> Result<StartedRecording, String> {
     let session = match ToggleSession::acquire_in(&echo_core::data_dir())? {
         LockAcquisition::Started(session) => session,
@@ -219,11 +225,20 @@ pub fn start_managed_recording() -> Result<StartedRecording, String> {
 }
 
 pub fn request_capture_stop(session_id: &str) -> Result<bool, String> {
+    Ok(request_capture_stop_ack(session_id)?.is_some())
+}
+
+pub fn request_capture_stop_ack(session_id: &str) -> Result<Option<RecordingControlAck>, String> {
     let current = status::read();
     if current.state != "Recording" || current.session_id.as_deref() != Some(session_id) {
-        return Ok(false);
+        return Ok(None);
     }
-    ToggleSession::request_stop_for_token_in(&echo_core::data_dir(), session_id)
+    ToggleSession::request_stop_for_token_in(&echo_core::data_dir(), session_id).map(|accepted| {
+        accepted.then(|| RecordingControlAck {
+            session_id: session_id.to_string(),
+            revision: current.revision + 1,
+        })
+    })
 }
 
 pub fn request_transcription_cancel(session_id: &str) -> Result<bool, String> {
@@ -872,6 +887,14 @@ impl ToggleSession {
             let _ = self
                 .directory
                 .remove_file(scoped_intent_name("stop", &self.token).as_ref());
+            if self
+                .directory
+                .read_to_string("recording.stop".as_ref())
+                .ok()
+                .is_some_and(|request| stop_request_matches(Some(&self.token), &request))
+            {
+                let _ = self.directory.remove_file("recording.stop".as_ref());
+            }
         }
     }
 }
@@ -1457,6 +1480,18 @@ mod tests {
         assert!(!dir.join("recording.stop").exists());
         assert!(ToggleSession::request_stop_for_token_in(&dir, &session.token).unwrap());
         assert!(session.stop_requested());
+    }
+
+    #[test]
+    fn clearing_a_matching_legacy_stop_removes_the_flat_signal() {
+        let dir = std::env::temp_dir().join(format!("echo-clear-flat-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let session = ToggleSession::try_start_in(&dir).unwrap().unwrap();
+        fs::write(dir.join("recording.stop"), format!("{}\n", session.token)).unwrap();
+        assert!(session.stop_requested());
+        session.clear_stop_request();
+        assert!(!session.stop_requested());
+        assert!(!dir.join("recording.stop").exists());
     }
 
     #[test]
