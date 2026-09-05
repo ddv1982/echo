@@ -134,8 +134,8 @@ pub fn run_rec_once() -> i32 {
 }
 
 pub fn run_rec_toggle() -> i32 {
-    match ToggleSession::start_or_stop() {
-        Ok(action) => {
+    match start_or_stop_with_intent() {
+        Ok((action, cancel_transcription)) => {
             let recording_token = action.recording_token().map(str::to_string);
             if let Err(err) =
                 status::mark_shortcut_activation("toggle-command", recording_token.as_deref())
@@ -148,7 +148,9 @@ pub fn run_rec_toggle() -> i32 {
                     // Preserve the CLI/hotkey toggle convention after capture:
                     // its stop gesture means cancel while transcription is live.
                     // Explicit desktop capture-stop never takes this path.
-                    apply_toggle_stop_intent(&owner);
+                    if cancel_transcription {
+                        apply_toggle_stop_intent(&owner);
+                    }
                     0
                 }
             }
@@ -163,8 +165,8 @@ pub fn run_rec_toggle() -> i32 {
 /// Toggle an in-process recording after synchronously acquiring or stopping
 /// the cross-process session. Recording work continues on a background thread.
 pub fn toggle_managed_recording() -> Result<Option<String>, String> {
-    match ToggleSession::start_or_stop()? {
-        ToggleAction::Start(session) => {
+    match start_or_stop_with_intent()? {
+        (ToggleAction::Start(session), _) => {
             let recording_token = session.token.clone();
             std::thread::Builder::new()
                 .name("echo-record-toggle".to_string())
@@ -174,11 +176,28 @@ pub fn toggle_managed_recording() -> Result<Option<String>, String> {
                 .map(|_| Some(recording_token))
                 .map_err(|err| err.to_string())
         }
-        ToggleAction::Stop(owner) => {
-            apply_toggle_stop_intent(&owner);
+        (ToggleAction::Stop(owner), cancel_transcription) => {
+            if cancel_transcription {
+                apply_toggle_stop_intent(&owner);
+            }
             Ok(owner.token)
         }
     }
+}
+
+/// Decide the meaning of a toggle before writing a capture-stop signal. The
+/// token check prevents an observation of an earlier owner from authorizing a
+/// cancellation for a replacement owner.
+fn start_or_stop_with_intent() -> Result<(ToggleAction, bool), String> {
+    let observed = status::read();
+    let action = ToggleSession::start_or_stop()?;
+    let cancel_transcription =
+        matches!(&action, ToggleAction::Stop(owner) if should_cancel_toggle(&observed, owner));
+    Ok((action, cancel_transcription))
+}
+
+fn should_cancel_toggle(observed: &status::Status, owner: &LockOwner) -> bool {
+    observed.state == "Transcribing" && observed.session_id.as_deref() == owner.token.as_deref()
 }
 
 fn apply_toggle_stop_intent(owner: &LockOwner) {
@@ -1622,6 +1641,32 @@ mod tests {
 
         drop(session);
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn capture_toggle_observed_before_transition_never_becomes_cancel() {
+        let owner = LockOwner {
+            pid: 1,
+            token: Some("capture-a".to_string()),
+            start_time_ticks: Some(1),
+            scoped_intents: true,
+        };
+        let recording = status::Status {
+            state: "Recording".to_string(),
+            last: None,
+            last_history_id: None,
+            error: None,
+            recording_limit: None,
+            session_id: Some("capture-a".to_string()),
+            revision: 2,
+        };
+        assert!(!should_cancel_toggle(&recording, &owner));
+        let transcribing_replacement = status::Status {
+            state: "Transcribing".to_string(),
+            session_id: Some("capture-b".to_string()),
+            ..recording
+        };
+        assert!(!should_cancel_toggle(&transcribing_replacement, &owner));
     }
 
     #[test]
