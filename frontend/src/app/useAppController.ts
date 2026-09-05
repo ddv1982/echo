@@ -38,6 +38,8 @@ const initialStatus: AppStatus = {
   staleInstalls: [],
 }
 
+type StopState = 'none' | 'requesting' | 'awaiting-status'
+
 export function useAppController() {
   const [view, setView] = useState<View>('home')
   const [status, setStatus] = useState<AppStatus>(initialStatus)
@@ -47,9 +49,11 @@ export function useAppController() {
   })
   const [error, setError] = useState<string | null>(null)
   const [recordingStartedAt, setRecordingStartedAt] = useState<number | null>(null)
-  const previousPhase = useRef('Idle')
+  const previousPhase = useRef<AppStatus['phase']>('Idle')
   const previousHistoryId = useRef<string | null>(null)
   const toggleInFlight = useRef(false)
+  const stopStateRef = useRef<StopState>('none')
+  const [stopState, setStopState] = useState<StopState>('none')
   const recordingSeconds = useElapsedSeconds(recordingStartedAt)
   const reportError = useCallback((reason: unknown) => setError(messageFrom(reason)), [])
   const {
@@ -68,6 +72,10 @@ export function useAppController() {
 
   const applyStatus = useCallback((next: AppStatus) => {
     setStatus(next)
+    if (stopStateRef.current === 'awaiting-status' && next.phase !== 'Recording') {
+      stopStateRef.current = 'none'
+      setStopState('none')
+    }
     const observedAt = Date.now()
     setRecordingStartedAt((current) =>
       next.phase === 'Recording' ? (current ?? observedAt) : null)
@@ -108,12 +116,27 @@ export function useAppController() {
   }, [view])
 
   const toggle = useCallback(async () => {
-    if (toggleInFlight.current) return
+    const phase = previousPhase.current
+    const processing = phase === 'Transcribing' || phase === 'Injecting'
+    if (toggleInFlight.current || stopStateRef.current !== 'none' || processing) return
+    const stopping = phase === 'Recording'
+    if (stopping) {
+      stopStateRef.current = 'requesting'
+      setStopState('requesting')
+    }
     toggleInFlight.current = true
     try {
       await toggleRecording()
+      if (stopping) {
+        stopStateRef.current = 'awaiting-status'
+        setStopState('awaiting-status')
+      }
       await refreshStatus()
     } catch (reason) {
+      if (stopping) {
+        stopStateRef.current = 'none'
+        setStopState('none')
+      }
       reportError(reason)
     } finally {
       toggleInFlight.current = false
@@ -141,6 +164,7 @@ export function useAppController() {
     error,
     setError,
     recordingSeconds,
+    stopPending: stopState !== 'none',
     refreshStatus,
     toggleRecording: toggle,
     quitApp: quit,

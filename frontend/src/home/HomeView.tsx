@@ -14,30 +14,35 @@ export function HomeView({
   status,
   history,
   recordingSeconds,
+  stopPending,
   onToggleRecording,
   onOpenSettings,
 }: {
   status: AppStatus
   history: HistoryItem[]
   recordingSeconds: number
+  stopPending: boolean
   onToggleRecording: () => Promise<void>
   onOpenSettings: () => void
 }) {
   const shortcut = presentShortcut(status.shortcut)
   const recording = status.phase === 'Recording'
   const processing = status.phase === 'Transcribing' || status.phase === 'Injecting'
-  const heroState = recording
+  const busy = processing || stopPending
+  const heroState = recording && !stopPending
     ? 'recording'
-    : processing
+    : busy
       ? 'transcribing'
       : 'idle'
-  const [readout, title, description] = recording
-    ? ['Listening', 'Listening…', 'Speak naturally, then press the shortcut again.']
-    : status.phase === 'Transcribing'
-      ? ['Processing', 'Transcribing locally…', `${status.engineName} is turning your recording into text.`]
-      : status.phase === 'Injecting'
-        ? ['Processing', 'Inserting transcript…', `${status.injectionName} is sending your transcript to the active app.`]
-        : ['Ready', 'Ready when you are', 'Your audio stays on this machine.']
+  const [readout, title, description] = stopPending
+    ? ['Stopping', 'Finishing recording…', 'Waiting for Echo to finish recording.']
+    : recording
+      ? ['Listening', 'Listening…', 'Speak naturally, then press the shortcut again.']
+      : status.phase === 'Transcribing'
+        ? ['Processing', 'Transcribing locally…', `${status.engineName} is turning your recording into text.`]
+        : status.phase === 'Injecting'
+          ? ['Processing', 'Inserting transcript…', `${status.injectionName} is sending your transcript to the active app.`]
+          : ['Ready', 'Ready when you are', 'Your audio stays on this machine.']
   return (
     <div className="view-stack">
       <section className="record-hero" data-state={heroState}>
@@ -47,9 +52,9 @@ export function HomeView({
             className="record-orb"
             type="button"
             onClick={() => void onToggleRecording()}
-            aria-label={recording ? 'Stop and transcribe' : processing ? 'Processing recording' : 'Start recording'}
-            aria-busy={processing || undefined}
-            disabled={processing}
+            aria-label={stopPending ? 'Stopping recording' : recording ? 'Stop and transcribe' : processing ? 'Processing recording' : 'Start recording'}
+            aria-busy={busy || undefined}
+            disabled={busy}
           >
             <span className="record-ring" aria-hidden="true" />
             {recording ? <Waves size={26} /> : <Mic size={26} />}
