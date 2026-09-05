@@ -183,14 +183,19 @@ fn control_helper() {
         return;
     };
     let session = std::env::var("ECHO_CONTROL_TEST_SESSION").unwrap();
-    let accepted = match action.as_str() {
-        "stop" => echo::rec::request_capture_stop(&session),
-        "cancel" => echo::rec::request_transcription_cancel(&session),
+    let before = echo::status::read();
+    let ack = match action.as_str() {
+        "stop" => echo::rec::request_capture_stop_ack(&session),
+        "cancel" => echo::rec::request_transcription_cancel_ack(&session),
         _ => panic!("unknown test command"),
     }
     .unwrap();
     assert_eq!(
-        accepted,
+        ack.is_some(),
         std::env::var("ECHO_CONTROL_TEST_ACCEPTED").unwrap() == "true"
     );
+    if let Some(ack) = ack {
+        assert_eq!(ack.session_id, session);
+        assert_eq!(ack.revision, before.revision + 1);
+    }
 }
