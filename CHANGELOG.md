@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.14.18
+
+- Recording now publishes the text-insertion phase before insertion begins, keeping visible progress aligned with the worker.
+- Active status checks the matching recording lease, so a stopped worker no longer leaves Echo appearing active solely because the desktop process is still running.
+- Recording control receipts and frontend observation ordering share explicit policies while retaining stale-session protection and legacy shortcut compatibility.
+- Automated checks now exercise real CLI stop, cancellation, restart, owner-death recovery, and History write failures. CI also verifies native Tauri commands and isolated shortcut lifecycles.
+
 ## v0.14.17
 
 - Recording controls now identify the active session. Delayed stop or cancellation requests cannot affect a replacement recording, and duplicate capture-stop requests no longer cancel transcription.
