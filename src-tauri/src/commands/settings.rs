@@ -12,7 +12,7 @@ pub(crate) fn get_settings(
     reply: Channel<ChannelReply<SettingsSnapshot>>,
 ) -> Result<(), String> {
     let service = state.inner().clone();
-    owner.request_settings_snapshot(move || service.snapshot(), reply)
+    owner.request_settings_snapshot(service, reply)
 }
 
 #[tauri::command]
@@ -25,7 +25,7 @@ pub(crate) fn set_settings(
 ) -> Result<(), String> {
     let service = state.inner().clone();
     let tray_request = crate::tray::request();
-    owner.request_settings_change(change, move || service.snapshot(), app, tray_request, reply)
+    owner.request_settings_change(change, service, app, tray_request, reply)
 }
 
 #[cfg(feature = "status-perf-probe")]
@@ -41,7 +41,7 @@ pub(crate) fn run_test_hook(app: &AppHandle) {
     let tray_request = crate::tray::request();
     if let Err(error) = owner.request_settings_change(
         SettingsChange::Language { value: Some(value) },
-        move || service.snapshot(),
+        service,
         app,
         tray_request,
         Channel::new(|body| {

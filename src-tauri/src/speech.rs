@@ -7,7 +7,12 @@ use echo_desktop::ipc::{
 #[must_use]
 pub(crate) fn model_inventory() -> ModelInventory {
     let cache = echo::stt::ModelCache::from_env();
-    let inventory = echo::stt::SpeechRuntimeInventory::from_cache(&cache).models;
+    let runtime = echo::stt::SpeechRuntimeInventory::from_cache(&cache);
+    model_inventory_from(&runtime)
+}
+
+fn model_inventory_from(runtime: &echo::stt::SpeechRuntimeInventory) -> ModelInventory {
+    let inventory = &runtime.models;
     ModelInventory {
         whisper: inventory
             .whisper
@@ -28,8 +33,9 @@ pub(crate) fn model_inventory() -> ModelInventory {
             .collect(),
         parakeet: inventory
             .parakeet
+            .as_ref()
             .map(|path| path.to_string_lossy().into_owned()),
-        engines: echo::stt::engine_availability()
+        engines: echo::stt::engine_availability_from_inventory(runtime)
             .into_iter()
             .map(|engine| EngineAvailability {
                 id: engine.id.to_string(),
@@ -43,11 +49,15 @@ pub(crate) fn model_inventory() -> ModelInventory {
 #[must_use]
 pub(crate) fn snapshot(
     preferences: Settings,
-    file: &echo_core::Config,
+    runtime: &echo::stt::SpeechRuntimeInventory,
+    catalog: &echo::transcribe::LanguageCatalog,
+    resolved: Result<echo::transcribe::ResolvedRun, echo::transcribe::PrepareError>,
     readiness: Readiness,
 ) -> SettingsSnapshot {
-    let resolved = echo::transcribe::resolve_next_run_for_process(file);
-    let languages = language_options(resolved.as_ref().ok());
+    let languages = language_options(
+        resolved.as_ref().ok(),
+        echo::stt::language_support_from_catalog(catalog),
+    );
     let next_run = match resolved {
         Ok(run) => NextSpeechRun::Ready {
             engine: resolved_engine(&run.engine),
@@ -64,7 +74,7 @@ pub(crate) fn snapshot(
         transcription: TranscriptionSnapshot {
             next_run,
             languages,
-            models: model_inventory(),
+            models: model_inventory_from(runtime),
             whisper,
             last_used: crate::status::last_run(),
         },
@@ -89,10 +99,13 @@ fn resolved_engine(engine: &echo::transcribe::ResolvedEngine) -> ResolvedSpeechE
     }
 }
 
-fn language_options(resolved: Option<&echo::transcribe::ResolvedRun>) -> LanguageOptions {
+fn language_options(
+    resolved: Option<&echo::transcribe::ResolvedRun>,
+    fallback: echo::stt::LanguageSupport,
+) -> LanguageOptions {
     let projection = resolved
         .and_then(|run| projection_for_resolved_engine(&run.engine))
-        .unwrap_or_else(|| projection_for_support(echo::stt::language_support()));
+        .unwrap_or_else(|| projection_for_support(fallback));
     build_language_options(projection)
 }
 
@@ -296,7 +309,10 @@ mod tests {
     #[test]
     fn resolved_settings_projection_preserves_language_wire_values() {
         let parakeet = resolved_run(echo::transcribe::ResolvedEngine::ParakeetTdt06bV3);
-        let parakeet_options = language_options(Some(&parakeet));
+        let parakeet_options = language_options(
+            Some(&parakeet),
+            echo::stt::LanguageSupport::WhisperMultilingual,
+        );
         assert_eq!(parakeet_options.mode, LanguageMode::Parakeet);
         assert_eq!(parakeet_options.model.as_deref(), Some("tdt-0.6b-v3"));
         assert_eq!(
@@ -319,7 +335,10 @@ mod tests {
             multilingual: false,
             model_path: None,
         });
-        let english_options = language_options(Some(&english));
+        let english_options = language_options(
+            Some(&english),
+            echo::stt::LanguageSupport::WhisperMultilingual,
+        );
         assert_eq!(english_options.mode, LanguageMode::English);
         assert_eq!(english_options.model.as_deref(), Some("base.en"));
         assert_eq!(english_options.options.len(), 1);
@@ -332,7 +351,10 @@ mod tests {
             multilingual: true,
             model_path: None,
         });
-        let multilingual_options = language_options(Some(&multilingual));
+        let multilingual_options = language_options(
+            Some(&multilingual),
+            echo::stt::LanguageSupport::WhisperMultilingual,
+        );
         assert_eq!(multilingual_options.mode, LanguageMode::Multilingual);
         assert_eq!(multilingual_options.model.as_deref(), Some("large-v3"));
         let expected_languages = echo_core::Language::all().collect::<Vec<_>>();

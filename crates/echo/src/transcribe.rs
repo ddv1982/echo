@@ -79,6 +79,14 @@ pub struct EngineAvailabilitySnapshot {
 }
 
 impl EngineAvailabilitySnapshot {
+    pub fn for_process(env: &EnvOptions, file: &Config, runtime: &SpeechRuntimeInventory) -> Self {
+        let candidates = [env.whisper_model.clone(), file.whisper_model.clone()]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        Self::from_process(&runtime.cache, runtime, &candidates)
+    }
+
     fn from_process(
         cache: &ModelCache,
         runtime: &SpeechRuntimeInventory,
@@ -95,19 +103,19 @@ impl EngineAvailabilitySnapshot {
                 path: Some(model.path.clone()),
             })
             .collect::<Vec<_>>();
-        for name in model_candidates {
-            if whisper_models.iter().any(|model| model.name == *name) {
+        for (index, name) in model_candidates.iter().enumerate() {
+            if model_candidates[..index].contains(name)
+                || whisper_models.iter().any(|model| model.name == *name)
+            {
                 continue;
             }
-            if let Some((_, multilingual)) =
-                WhisperEngine::configured(cache.clone(), name).selected_model()
+            if let Some((path, multilingual)) = WhisperEngine::configured(cache.clone(), name)
+                .selected_model_from_inventory(&runtime.external_models)
             {
                 whisper_models.push(WhisperModelCapability {
                     name: name.clone(),
                     multilingual,
-                    path: WhisperEngine::configured(cache.clone(), name)
-                        .selected_model()
-                        .map(|(path, _)| path),
+                    path: Some(path),
                 });
             }
         }
@@ -461,7 +469,7 @@ pub fn prepare_with_config(
     let cache = ModelCache::from_env();
     let runtime = SpeechRuntimeInventory::from_cache(&cache);
     let resolved = resolve_with_process_inventory(&overrides, &env, file, &cache, &runtime)?;
-    prepare_resolved(overrides, file, resolved, runtime)
+    prepare_resolved(overrides, file, resolved, &runtime)
 }
 
 pub fn resolve_next_run_for_process(file: &Config) -> Result<ResolvedRun, PrepareError> {
@@ -491,11 +499,11 @@ fn resolve_with_process_inventory(
     resolve_run(overrides, env, file, &available)
 }
 
-fn prepare_resolved(
+pub fn prepare_resolved(
     overrides: RunOverrides,
     file: &Config,
     resolved: ResolvedRun,
-    runtime: SpeechRuntimeInventory,
+    runtime: &SpeechRuntimeInventory,
 ) -> Result<PreparedTranscription, PrepareError> {
     if (overrides.whisper_tuning.is_some()
         || overrides.whisper_force_cpu
@@ -727,16 +735,25 @@ pub fn language_catalog(engine: Option<EngineChoice>, file: &Config) -> Language
     let cache = ModelCache::from_env();
     let runtime = SpeechRuntimeInventory::from_cache(&cache);
     let env = EnvOptions::read();
+    let available = EngineAvailabilitySnapshot::for_process(&env, file, &runtime);
+    language_catalog_from_available(engine, &env, file, &available)
+}
+
+pub fn language_catalog_from_available(
+    engine: Option<EngineChoice>,
+    env: &EnvOptions,
+    file: &Config,
+    available: &EngineAvailabilitySnapshot,
+) -> LanguageCatalog {
     let requested = RequestedRun::new(
         &RunOverrides {
             engine,
             ..RunOverrides::default()
         },
-        &env,
+        env,
         file,
     );
-    let parakeet_available = runtime.models.parakeet.is_some() && runtime.parakeet_binary.is_some();
-    let parakeet = projects_parakeet(&requested, parakeet_available);
+    let parakeet = projects_parakeet(&requested, available.parakeet);
     if parakeet {
         return LanguageCatalog {
             engine: "parakeet",
@@ -748,24 +765,15 @@ pub fn language_catalog(engine: Option<EngineChoice>, file: &Config) -> Language
                 .collect(),
         };
     }
-    let model = requested.whisper_model.or_else(|| {
-        runtime
-            .models
-            .best_whisper()
-            .map(|model| model.name.clone())
-    });
+    let model = requested
+        .whisper_model
+        .or_else(|| available.best_whisper().map(|model| model.name.clone()));
     let multilingual = model.as_deref().and_then(|name| {
-        runtime
-            .models
-            .whisper
+        available
+            .whisper_models
             .iter()
             .find(|model| model.name == name)
             .map(|model| model.multilingual)
-            .or_else(|| {
-                WhisperEngine::configured(cache.clone(), name)
-                    .selected_model()
-                    .map(|(_, multilingual)| multilingual)
-            })
     });
     if multilingual == Some(false) {
         LanguageCatalog {
@@ -1134,5 +1142,57 @@ mod tests {
             &Config::default(),
         );
         assert!(projects_parakeet(&unconstrained, true));
+    }
+    #[test]
+    fn presentation_catalog_preserves_requested_model_and_unavailable_engine_semantics() {
+        let env = EnvOptions::default();
+        let absent = EngineAvailabilitySnapshot::default();
+        let defaults = language_catalog_from_available(None, &env, &Config::default(), &absent);
+        assert_eq!(defaults.selection, LanguageSelection::AutoOrPinned);
+        assert_eq!(defaults.model, None);
+        let pinned = Config {
+            whisper_model: Some("missing.en".into()),
+            ..Config::default()
+        };
+        let missing = language_catalog_from_available(None, &env, &pinned, &absent);
+        assert_eq!(missing.model.as_deref(), Some("missing.en"));
+        assert_eq!(missing.selection, LanguageSelection::AutoOrPinned);
+        let parakeet = Config {
+            engine: Some(EngineChoice::Parakeet),
+            ..Config::default()
+        };
+        let catalog = language_catalog_from_available(None, &env, &parakeet, &absent);
+        assert_eq!(catalog.selection, LanguageSelection::AutomaticOnly);
+        assert!(resolve_run(&RunOverrides::default(), &env, &parakeet, &absent).is_err());
+    }
+
+    #[test]
+    fn presentation_resolves_custom_configured_model_from_shared_inventory() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("personal.bin");
+        std::fs::write(&path, []).unwrap();
+        let runtime = SpeechRuntimeInventory::from_cache(&ModelCache::at(root.path()));
+        assert!(runtime.models.whisper.is_empty());
+        let file = Config {
+            whisper_model: Some("missing".into()),
+            ..Config::default()
+        };
+        let env = EnvOptions {
+            whisper_model: Some("personal".into()),
+            ..EnvOptions::default()
+        };
+        let mut available = EngineAvailabilitySnapshot::for_process(&env, &file, &runtime);
+        available.whisper_binary = true;
+        let catalog = language_catalog_from_available(None, &env, &file, &available);
+        assert_eq!(catalog.model.as_deref(), Some("personal"));
+        assert_eq!(catalog.selection, LanguageSelection::AutoOrPinned);
+        let run = resolve_run(&RunOverrides::default(), &env, &file, &available).unwrap();
+        assert!(
+            matches!(run.engine, ResolvedEngine::Whisper { model_path: Some(model), .. } if model == path)
+        );
+        std::fs::remove_file(&path).unwrap();
+        let refreshed = SpeechRuntimeInventory::from_cache(&ModelCache::at(root.path()));
+        let available = EngineAvailabilitySnapshot::for_process(&env, &file, &refreshed);
+        assert!(available.whisper_models.is_empty());
     }
 }

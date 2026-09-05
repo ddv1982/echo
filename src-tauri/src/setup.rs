@@ -159,8 +159,27 @@ fn plan_space(components: impl IntoIterator<Item = (u64, u64, u64)>) -> (u64, u6
 impl SetupService {
     #[must_use]
     pub(crate) fn snapshot(&self) -> Readiness {
-        let cache = ModelCache::from_env();
-        let store = ManagedStore::new(cache.dir());
+        let runtime = echo::stt::SpeechRuntimeInventory::from_cache(&ModelCache::from_env());
+        let (file, config_error) = echo::settings::config_for_display();
+        let env = echo::transcribe::EnvOptions::read();
+        let available =
+            echo::transcribe::EngineAvailabilitySnapshot::for_process(&env, &file, &runtime);
+        let resolved = echo::transcribe::resolve_run(&Default::default(), &env, &file, &available);
+        let resolved = if config_error.is_none() {
+            resolved.as_ref().ok()
+        } else {
+            None
+        };
+        self.snapshot_from(&file, &runtime, resolved)
+    }
+
+    pub(crate) fn snapshot_from(
+        &self,
+        file: &echo_core::Config,
+        runtime: &echo::stt::SpeechRuntimeInventory,
+        resolved: Option<&echo::transcribe::ResolvedRun>,
+    ) -> Readiness {
+        let cache = &runtime.cache;
         let (active_operation, active_cancellable, activity) = {
             let active = lock_active_operation(&self.active);
             (
@@ -178,26 +197,19 @@ impl SetupService {
                     .and_then(|operation| operation.progress.clone()),
             )
         };
-        let external_inventory = cache.inventory();
-        let whisper_runtime = ["whisper-cli", "whisper-cpp", "whisper"]
-            .into_iter()
-            .find_map(echo::which::path_of);
-        let sherpa_runtime = ["sherpa-onnx-offline", "sherpa-onnx"]
-            .into_iter()
-            .find_map(echo::which::path_of);
         let mut components = Vec::new();
         for spec in echo::install::catalog::COMPONENTS {
             let managed = if managed_platform_supported() {
-                store.status(spec.id, false)
+                runtime.managed[&spec.id].clone()
             } else {
                 CoreManagedComponentState::Unsupported {
                     reason: "Echo-managed speech setup supports Linux x86_64 only".to_string(),
                 }
             };
             let external = external_components(
-                &external_inventory,
-                whisper_runtime.as_deref(),
-                sherpa_runtime.as_deref(),
+                &runtime.external_models,
+                runtime.system_whisper.as_deref(),
+                runtime.system_sherpa.as_deref(),
                 spec.id,
             );
             let active_origin = if managed_ready(&managed) {
@@ -292,7 +304,10 @@ impl SetupService {
             })
             .collect();
         let microphone_ready = echo::audio::AudioCapture::default_input_ready().is_ok();
-        let speech_ready = echo::stt::engine_summary().1;
+        let speech_ready = resolved.is_some_and(|run| {
+            echo::transcribe::prepare_resolved(Default::default(), file, run.clone(), runtime)
+                .is_ok()
+        });
         let has_successful_dictation =
             echo_core::History::load_read_only()
                 .ok()

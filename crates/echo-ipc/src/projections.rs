@@ -389,7 +389,7 @@ impl From<echo::install::ManagedComponentState> for ManagedComponentState {
             } => Self::Ready {
                 version,
                 bytes,
-                root,
+                root: root.to_string_lossy().into_owned(),
             },
             echo::install::ManagedComponentState::NeedsRepair {
                 reason,

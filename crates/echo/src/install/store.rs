@@ -159,18 +159,10 @@ impl ManagedStore {
     }
 
     pub fn candidate_root(&self, id: ComponentId) -> Option<PathBuf> {
-        if !matches!(self.status(id, false), ManagedComponentState::Ready { .. }) {
-            return None;
+        match self.status(id, false) {
+            ManagedComponentState::Ready { root, .. } => Some(root),
+            _ => None,
         }
-        self.read_active(id).ok().flatten().and_then(|record| {
-            validate_release_name(id, &record.release).ok()?;
-            Some(
-                self.component_dir(id)
-                    .join("releases")
-                    .join(record.release)
-                    .join("payload"),
-            )
-        })
     }
 
     pub fn active_root_leased(&self, id: ComponentId) -> Result<Option<ManagedPath>, InstallError> {
@@ -266,7 +258,7 @@ impl ManagedStore {
         ManagedComponentState::Ready {
             version: record.version,
             bytes: record.files.iter().map(|file| file.size).sum(),
-            root: release.join("payload").to_string_lossy().into_owned(),
+            root: release.join("payload"),
         }
     }
 

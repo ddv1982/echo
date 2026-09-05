@@ -115,10 +115,17 @@ pub enum LanguageSupport {
 pub fn language_support() -> LanguageSupport {
     let (file, _) = crate::settings::config_for_display();
     let catalog = crate::transcribe::language_catalog(None, &file);
+    language_support_from_catalog(&catalog)
+}
+
+#[must_use]
+pub fn language_support_from_catalog(
+    catalog: &crate::transcribe::LanguageCatalog,
+) -> LanguageSupport {
     match catalog.selection {
         crate::transcribe::LanguageSelection::AutoOrPinned => LanguageSupport::WhisperMultilingual,
         crate::transcribe::LanguageSelection::EnglishOnly => LanguageSupport::WhisperEnglishOnly {
-            model: catalog.model.unwrap_or_default(),
+            model: catalog.model.clone().unwrap_or_default(),
         },
         crate::transcribe::LanguageSelection::AutomaticOnly => LanguageSupport::Parakeet,
     }
@@ -210,6 +217,14 @@ fn show_fake_engine(show_fake_env: Option<&str>, engine_env: Option<&str>) -> bo
 pub fn engine_availability() -> Vec<EngineAvailability> {
     let cache = ModelCache::from_env();
     let runtime = SpeechRuntimeInventory::from_cache(&cache);
+    engine_availability_from_inventory(&runtime)
+}
+
+#[must_use]
+pub fn engine_availability_from_inventory(
+    runtime: &SpeechRuntimeInventory,
+) -> Vec<EngineAvailability> {
+    let cache = &runtime.cache;
     let whisper_reason = match (
         !runtime.whisper_runtimes.is_empty(),
         runtime.models.whisper.is_empty(),

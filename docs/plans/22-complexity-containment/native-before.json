@@ -1,0 +1,557 @@
+{
+  "schemaVersion": 1,
+  "valid": true,
+  "source": {
+    "commit": "a00be5e6697d58ba701d53b965d4e2c3ee359b61",
+    "dirty": true,
+    "sourceFingerprint": "41bcf2678d25e1c2a0afcd9d982d152f91092b89d25041efa7a25e6065012d32",
+    "probeSourceSha256": {
+      "frontend/src/verification/nativeRecordingProbe.ts": "99b5ca9d001ffa11f0baee2d67190cddf07eac8dca94de8dd8633e3924c8a9d9",
+      "frontend/src/api/tauriDesktopApi.ts": "cc3e202f942dd9cde22f5271adde78e2a307c4934b152f3319223e316e8fe35a",
+      "frontend/src/perf/statusPerf.ts": "fb0c237aad4f2cf5c28a8d17cb7caf8a18a62fd3590f762a007be3fdace41cd8"
+    }
+  },
+  "sourceAtEnd": {
+    "commit": "a00be5e6697d58ba701d53b965d4e2c3ee359b61",
+    "dirty": true,
+    "sourceFingerprint": "41bcf2678d25e1c2a0afcd9d982d152f91092b89d25041efa7a25e6065012d32",
+    "probeSourceSha256": {
+      "frontend/src/verification/nativeRecordingProbe.ts": "99b5ca9d001ffa11f0baee2d67190cddf07eac8dca94de8dd8633e3924c8a9d9",
+      "frontend/src/api/tauriDesktopApi.ts": "cc3e202f942dd9cde22f5271adde78e2a307c4934b152f3319223e316e8fe35a",
+      "frontend/src/perf/statusPerf.ts": "fb0c237aad4f2cf5c28a8d17cb7caf8a18a62fd3590f762a007be3fdace41cd8"
+    }
+  },
+  "sourceChangedDuringRun": false,
+  "binary": {
+    "path": "/home/vriesd/projects/echo/target/recording-native-probe/debug/echo-desktop",
+    "sha256": "453397c9f8052ea260b129dc551897c906af4c5be00064f9c01a959ebbbce141",
+    "profile": "debug"
+  },
+  "environment": {
+    "desktop": "dbus-run-session + Xvfb",
+    "audio": "synthetic fixture",
+    "engine": "fake",
+    "injection": "disabled",
+    "microphone": "not used"
+  },
+  "command": [
+    "dbus-run-session",
+    "--",
+    "xvfb-run",
+    "-a",
+    "/home/vriesd/projects/echo/target/recording-native-probe/debug/echo-desktop"
+  ],
+  "startedAtUnixMs": 1788633304877,
+  "durationMs": 27270,
+  "exitCode": 0,
+  "statusPerf": {
+    "commit": "a00be5e6697d58ba701d53b965d4e2c3ee359b61",
+    "report": {
+      "schemaVersion": 1,
+      "appVersion": "0.14.18",
+      "platform": "Linux x86_64",
+      "lanes": [
+        {
+          "name": "noop",
+          "summary": {
+            "count": 500,
+            "minMs": 0.0,
+            "p50Ms": 0.0,
+            "p95Ms": 1.0,
+            "maxMs": 1.0000000000000568
+          }
+        },
+        {
+          "name": "fixed-status",
+          "summary": {
+            "count": 500,
+            "minMs": 0.0,
+            "p50Ms": 0.0,
+            "p95Ms": 1.0,
+            "maxMs": 3.0
+          }
+        },
+        {
+          "name": "current-status",
+          "summary": {
+            "count": 40,
+            "minMs": 0.0,
+            "p50Ms": 1.0,
+            "p95Ms": 1.0,
+            "maxMs": 1.0000000000001137
+          }
+        }
+      ],
+      "verification": {
+        "checks": [
+          {
+            "name": "settings mutations retain their own saved values",
+            "passed": true
+          },
+          {
+            "name": "settings and microphone mutations are FIFO",
+            "passed": true
+          },
+          {
+            "name": "invalid setting rejects through its completion channel",
+            "passed": true
+          },
+          {
+            "name": "settings queue recovers after rejection",
+            "passed": true
+          },
+          {
+            "name": "start receipt identifies the active recording",
+            "passed": true
+          },
+          {
+            "name": "stale stop is rejected",
+            "passed": true
+          },
+          {
+            "name": "stale stop leaves the active recording unchanged",
+            "passed": true
+          },
+          {
+            "name": "normal stop receipt retains its session identity",
+            "passed": true
+          },
+          {
+            "name": "normal stop reaches an idle terminal observation with History",
+            "passed": true
+          },
+          {
+            "name": "completed recording is present in History",
+            "passed": true
+          }
+        ],
+        "timingsMs": {
+          "staleStopReceipt": 2.0,
+          "startReceipt": 19.0,
+          "stopReceipt": 13.0,
+          "terminalObservation": 147.0
+        },
+        "settingsRevisions": [
+          2,
+          3,
+          4,
+          5
+        ]
+      }
+    },
+    "coldStatusStage": {
+      "statusFileUs": 115,
+      "recordingLimitUs": 8,
+      "healthUs": 9,
+      "shortcutUs": 30,
+      "historyUs": 7,
+      "presentationUs": 4,
+      "composeUs": 5,
+      "totalUs": 181
+    },
+    "statusStages": [
+      {
+        "statusFileUs": 94,
+        "recordingLimitUs": 2,
+        "healthUs": 4,
+        "shortcutUs": 23,
+        "historyUs": 9,
+        "presentationUs": 3,
+        "composeUs": 4,
+        "totalUs": 142
+      },
+      {
+        "statusFileUs": 52,
+        "recordingLimitUs": 2,
+        "healthUs": 4,
+        "shortcutUs": 23,
+        "historyUs": 3,
+        "presentationUs": 2,
+        "composeUs": 1,
+        "totalUs": 90
+      },
+      {
+        "statusFileUs": 52,
+        "recordingLimitUs": 4,
+        "healthUs": 11,
+        "shortcutUs": 25,
+        "historyUs": 3,
+        "presentationUs": 2,
+        "composeUs": 2,
+        "totalUs": 103
+      },
+      {
+        "statusFileUs": 51,
+        "recordingLimitUs": 4,
+        "healthUs": 5,
+        "shortcutUs": 22,
+        "historyUs": 4,
+        "presentationUs": 2,
+        "composeUs": 1,
+        "totalUs": 92
+      },
+      {
+        "statusFileUs": 49,
+        "recordingLimitUs": 2,
+        "healthUs": 3,
+        "shortcutUs": 21,
+        "historyUs": 3,
+        "presentationUs": 2,
+        "composeUs": 1,
+        "totalUs": 85
+      },
+      {
+        "statusFileUs": 50,
+        "recordingLimitUs": 2,
+        "healthUs": 3,
+        "shortcutUs": 22,
+        "historyUs": 3,
+        "presentationUs": 2,
+        "composeUs": 1,
+        "totalUs": 86
+      },
+      {
+        "statusFileUs": 50,
+        "recordingLimitUs": 2,
+        "healthUs": 3,
+        "shortcutUs": 25,
+        "historyUs": 4,
+        "presentationUs": 4,
+        "composeUs": 2,
+        "totalUs": 94
+      },
+      {
+        "statusFileUs": 50,
+        "recordingLimitUs": 2,
+        "healthUs": 3,
+        "shortcutUs": 22,
+        "historyUs": 3,
+        "presentationUs": 2,
+        "composeUs": 1,
+        "totalUs": 87
+      },
+      {
+        "statusFileUs": 51,
+        "recordingLimitUs": 2,
+        "healthUs": 3,
+        "shortcutUs": 22,
+        "historyUs": 3,
+        "presentationUs": 2,
+        "composeUs": 1,
+        "totalUs": 88
+      },
+      {
+        "statusFileUs": 155,
+        "recordingLimitUs": 4,
+        "healthUs": 5,
+        "shortcutUs": 26,
+        "historyUs": 5,
+        "presentationUs": 3,
+        "composeUs": 2,
+        "totalUs": 203
+      },
+      {
+        "statusFileUs": 42,
+        "recordingLimitUs": 1,
+        "healthUs": 6,
+        "shortcutUs": 25,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 1,
+        "totalUs": 81
+      },
+      {
+        "statusFileUs": 38,
+        "recordingLimitUs": 0,
+        "healthUs": 1,
+        "shortcutUs": 19,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 0,
+        "totalUs": 65
+      },
+      {
+        "statusFileUs": 29,
+        "recordingLimitUs": 0,
+        "healthUs": 1,
+        "shortcutUs": 19,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 0,
+        "totalUs": 55
+      },
+      {
+        "statusFileUs": 29,
+        "recordingLimitUs": 0,
+        "healthUs": 1,
+        "shortcutUs": 18,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 0,
+        "totalUs": 54
+      },
+      {
+        "statusFileUs": 29,
+        "recordingLimitUs": 7,
+        "healthUs": 1,
+        "shortcutUs": 47,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 0,
+        "totalUs": 89
+      },
+      {
+        "statusFileUs": 30,
+        "recordingLimitUs": 1,
+        "healthUs": 1,
+        "shortcutUs": 19,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 0,
+        "totalUs": 58
+      },
+      {
+        "statusFileUs": 29,
+        "recordingLimitUs": 0,
+        "healthUs": 1,
+        "shortcutUs": 18,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 0,
+        "totalUs": 55
+      },
+      {
+        "statusFileUs": 39,
+        "recordingLimitUs": 1,
+        "healthUs": 4,
+        "shortcutUs": 21,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 0,
+        "totalUs": 72
+      },
+      {
+        "statusFileUs": 30,
+        "recordingLimitUs": 0,
+        "healthUs": 1,
+        "shortcutUs": 18,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 0,
+        "totalUs": 55
+      },
+      {
+        "statusFileUs": 29,
+        "recordingLimitUs": 0,
+        "healthUs": 1,
+        "shortcutUs": 21,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 0,
+        "totalUs": 58
+      },
+      {
+        "statusFileUs": 61,
+        "recordingLimitUs": 3,
+        "healthUs": 4,
+        "shortcutUs": 23,
+        "historyUs": 4,
+        "presentationUs": 2,
+        "composeUs": 2,
+        "totalUs": 102
+      },
+      {
+        "statusFileUs": 32,
+        "recordingLimitUs": 0,
+        "healthUs": 1,
+        "shortcutUs": 19,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 0,
+        "totalUs": 58
+      },
+      {
+        "statusFileUs": 30,
+        "recordingLimitUs": 0,
+        "healthUs": 1,
+        "shortcutUs": 18,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 0,
+        "totalUs": 55
+      },
+      {
+        "statusFileUs": 29,
+        "recordingLimitUs": 0,
+        "healthUs": 1,
+        "shortcutUs": 18,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 0,
+        "totalUs": 55
+      },
+      {
+        "statusFileUs": 29,
+        "recordingLimitUs": 0,
+        "healthUs": 1,
+        "shortcutUs": 18,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 0,
+        "totalUs": 54
+      },
+      {
+        "statusFileUs": 29,
+        "recordingLimitUs": 0,
+        "healthUs": 1,
+        "shortcutUs": 18,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 0,
+        "totalUs": 54
+      },
+      {
+        "statusFileUs": 57,
+        "recordingLimitUs": 2,
+        "healthUs": 4,
+        "shortcutUs": 23,
+        "historyUs": 4,
+        "presentationUs": 2,
+        "composeUs": 2,
+        "totalUs": 96
+      },
+      {
+        "statusFileUs": 30,
+        "recordingLimitUs": 0,
+        "healthUs": 1,
+        "shortcutUs": 18,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 0,
+        "totalUs": 56
+      },
+      {
+        "statusFileUs": 29,
+        "recordingLimitUs": 0,
+        "healthUs": 1,
+        "shortcutUs": 18,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 0,
+        "totalUs": 55
+      },
+      {
+        "statusFileUs": 30,
+        "recordingLimitUs": 0,
+        "healthUs": 1,
+        "shortcutUs": 19,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 0,
+        "totalUs": 56
+      },
+      {
+        "statusFileUs": 100,
+        "recordingLimitUs": 4,
+        "healthUs": 6,
+        "shortcutUs": 45,
+        "historyUs": 7,
+        "presentationUs": 5,
+        "composeUs": 3,
+        "totalUs": 173
+      },
+      {
+        "statusFileUs": 95,
+        "recordingLimitUs": 4,
+        "healthUs": 6,
+        "shortcutUs": 45,
+        "historyUs": 7,
+        "presentationUs": 5,
+        "composeUs": 3,
+        "totalUs": 168
+      },
+      {
+        "statusFileUs": 95,
+        "recordingLimitUs": 4,
+        "healthUs": 6,
+        "shortcutUs": 45,
+        "historyUs": 7,
+        "presentationUs": 5,
+        "composeUs": 3,
+        "totalUs": 169
+      },
+      {
+        "statusFileUs": 95,
+        "recordingLimitUs": 4,
+        "healthUs": 6,
+        "shortcutUs": 45,
+        "historyUs": 7,
+        "presentationUs": 5,
+        "composeUs": 3,
+        "totalUs": 168
+      },
+      {
+        "statusFileUs": 104,
+        "recordingLimitUs": 4,
+        "healthUs": 6,
+        "shortcutUs": 45,
+        "historyUs": 7,
+        "presentationUs": 5,
+        "composeUs": 3,
+        "totalUs": 178
+      },
+      {
+        "statusFileUs": 96,
+        "recordingLimitUs": 5,
+        "healthUs": 6,
+        "shortcutUs": 45,
+        "historyUs": 7,
+        "presentationUs": 5,
+        "composeUs": 3,
+        "totalUs": 170
+      },
+      {
+        "statusFileUs": 103,
+        "recordingLimitUs": 5,
+        "healthUs": 6,
+        "shortcutUs": 45,
+        "historyUs": 7,
+        "presentationUs": 5,
+        "composeUs": 3,
+        "totalUs": 177
+      },
+      {
+        "statusFileUs": 80,
+        "recordingLimitUs": 3,
+        "healthUs": 5,
+        "shortcutUs": 44,
+        "historyUs": 7,
+        "presentationUs": 5,
+        "composeUs": 2,
+        "totalUs": 149
+      },
+      {
+        "statusFileUs": 98,
+        "recordingLimitUs": 4,
+        "healthUs": 6,
+        "shortcutUs": 45,
+        "historyUs": 7,
+        "presentationUs": 5,
+        "composeUs": 3,
+        "totalUs": 172
+      },
+      {
+        "statusFileUs": 98,
+        "recordingLimitUs": 4,
+        "healthUs": 6,
+        "shortcutUs": 45,
+        "historyUs": 7,
+        "presentationUs": 5,
+        "composeUs": 3,
+        "totalUs": 172
+      }
+    ]
+  },
+  "artifactNote": "Native probe output with per-lane IPC latency samples omitted; native stage measurements, source identity, binary identity, summaries and contracts retained.",
+  "baselineWorkingTreeNote": "At capture, application source matched a00be5e; git status showed only the untracked docs/plans/22-complexity-containment.md plan."
+}
