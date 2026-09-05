@@ -1,0 +1,556 @@
+{
+  "schemaVersion": 1,
+  "valid": true,
+  "source": {
+    "commit": "ffb4f176b3d1121243032c9b8c6769a6e600d290",
+    "dirty": true,
+    "sourceFingerprint": "b3975edd6b8ee11e1bf4e79aaa9d4a01b980c04af415e1361091face98e74c3b",
+    "probeSourceSha256": {
+      "frontend/src/verification/nativeRecordingProbe.ts": "99b5ca9d001ffa11f0baee2d67190cddf07eac8dca94de8dd8633e3924c8a9d9",
+      "frontend/src/api/tauriDesktopApi.ts": "cc3e202f942dd9cde22f5271adde78e2a307c4934b152f3319223e316e8fe35a",
+      "frontend/src/perf/statusPerf.ts": "fb0c237aad4f2cf5c28a8d17cb7caf8a18a62fd3590f762a007be3fdace41cd8"
+    }
+  },
+  "sourceAtEnd": {
+    "commit": "ffb4f176b3d1121243032c9b8c6769a6e600d290",
+    "dirty": true,
+    "sourceFingerprint": "b3975edd6b8ee11e1bf4e79aaa9d4a01b980c04af415e1361091face98e74c3b",
+    "probeSourceSha256": {
+      "frontend/src/verification/nativeRecordingProbe.ts": "99b5ca9d001ffa11f0baee2d67190cddf07eac8dca94de8dd8633e3924c8a9d9",
+      "frontend/src/api/tauriDesktopApi.ts": "cc3e202f942dd9cde22f5271adde78e2a307c4934b152f3319223e316e8fe35a",
+      "frontend/src/perf/statusPerf.ts": "fb0c237aad4f2cf5c28a8d17cb7caf8a18a62fd3590f762a007be3fdace41cd8"
+    }
+  },
+  "sourceChangedDuringRun": false,
+  "binary": {
+    "path": "/home/vriesd/projects/echo/target/recording-native-probe/debug/echo-desktop",
+    "sha256": "4ff88d4025adc85f92b49aa2329709e328a2b419ec84bdc4b62a8ae3b8068c37",
+    "profile": "debug"
+  },
+  "environment": {
+    "desktop": "dbus-run-session + Xvfb",
+    "audio": "synthetic fixture",
+    "engine": "fake",
+    "injection": "disabled",
+    "microphone": "not used"
+  },
+  "command": [
+    "dbus-run-session",
+    "--",
+    "xvfb-run",
+    "-a",
+    "/home/vriesd/projects/echo/target/recording-native-probe/debug/echo-desktop"
+  ],
+  "startedAtUnixMs": 1788635254738,
+  "durationMs": 26952,
+  "exitCode": 0,
+  "statusPerf": {
+    "commit": "ffb4f176b3d1121243032c9b8c6769a6e600d290",
+    "report": {
+      "schemaVersion": 1,
+      "appVersion": "0.14.18",
+      "platform": "Linux x86_64",
+      "lanes": [
+        {
+          "name": "noop",
+          "summary": {
+            "count": 500,
+            "minMs": 0.0,
+            "p50Ms": 0.0,
+            "p95Ms": 1.0,
+            "maxMs": 2.0
+          }
+        },
+        {
+          "name": "fixed-status",
+          "summary": {
+            "count": 500,
+            "minMs": 0.0,
+            "p50Ms": 0.0,
+            "p95Ms": 1.0,
+            "maxMs": 1.0000000000001137
+          }
+        },
+        {
+          "name": "current-status",
+          "summary": {
+            "count": 40,
+            "minMs": 0.0,
+            "p50Ms": 0.0,
+            "p95Ms": 1.0,
+            "maxMs": 1.0
+          }
+        }
+      ],
+      "verification": {
+        "checks": [
+          {
+            "name": "settings mutations retain their own saved values",
+            "passed": true
+          },
+          {
+            "name": "settings and microphone mutations are FIFO",
+            "passed": true
+          },
+          {
+            "name": "invalid setting rejects through its completion channel",
+            "passed": true
+          },
+          {
+            "name": "settings queue recovers after rejection",
+            "passed": true
+          },
+          {
+            "name": "start receipt identifies the active recording",
+            "passed": true
+          },
+          {
+            "name": "stale stop is rejected",
+            "passed": true
+          },
+          {
+            "name": "stale stop leaves the active recording unchanged",
+            "passed": true
+          },
+          {
+            "name": "normal stop receipt retains its session identity",
+            "passed": true
+          },
+          {
+            "name": "normal stop reaches an idle terminal observation with History",
+            "passed": true
+          },
+          {
+            "name": "completed recording is present in History",
+            "passed": true
+          }
+        ],
+        "timingsMs": {
+          "staleStopReceipt": 3.0,
+          "startReceipt": 13.0,
+          "stopReceipt": 16.0,
+          "terminalObservation": 116.0
+        },
+        "settingsRevisions": [
+          2,
+          3,
+          4,
+          5
+        ]
+      }
+    },
+    "coldStatusStage": {
+      "statusFileUs": 88,
+      "recordingLimitUs": 7,
+      "healthUs": 10,
+      "shortcutUs": 22,
+      "historyUs": 5,
+      "presentationUs": 3,
+      "composeUs": 4,
+      "totalUs": 141
+    },
+    "statusStages": [
+      {
+        "statusFileUs": 39,
+        "recordingLimitUs": 2,
+        "healthUs": 3,
+        "shortcutUs": 15,
+        "historyUs": 2,
+        "presentationUs": 2,
+        "composeUs": 1,
+        "totalUs": 67
+      },
+      {
+        "statusFileUs": 32,
+        "recordingLimitUs": 1,
+        "healthUs": 3,
+        "shortcutUs": 14,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 1,
+        "totalUs": 58
+      },
+      {
+        "statusFileUs": 33,
+        "recordingLimitUs": 1,
+        "healthUs": 2,
+        "shortcutUs": 14,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 1,
+        "totalUs": 58
+      },
+      {
+        "statusFileUs": 33,
+        "recordingLimitUs": 1,
+        "healthUs": 2,
+        "shortcutUs": 14,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 1,
+        "totalUs": 58
+      },
+      {
+        "statusFileUs": 31,
+        "recordingLimitUs": 1,
+        "healthUs": 2,
+        "shortcutUs": 14,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 1,
+        "totalUs": 56
+      },
+      {
+        "statusFileUs": 33,
+        "recordingLimitUs": 1,
+        "healthUs": 2,
+        "shortcutUs": 14,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 1,
+        "totalUs": 57
+      },
+      {
+        "statusFileUs": 31,
+        "recordingLimitUs": 1,
+        "healthUs": 2,
+        "shortcutUs": 14,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 1,
+        "totalUs": 55
+      },
+      {
+        "statusFileUs": 33,
+        "recordingLimitUs": 1,
+        "healthUs": 2,
+        "shortcutUs": 15,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 1,
+        "totalUs": 58
+      },
+      {
+        "statusFileUs": 31,
+        "recordingLimitUs": 1,
+        "healthUs": 2,
+        "shortcutUs": 14,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 1,
+        "totalUs": 55
+      },
+      {
+        "statusFileUs": 31,
+        "recordingLimitUs": 1,
+        "healthUs": 2,
+        "shortcutUs": 14,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 1,
+        "totalUs": 55
+      },
+      {
+        "statusFileUs": 32,
+        "recordingLimitUs": 1,
+        "healthUs": 2,
+        "shortcutUs": 14,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 1,
+        "totalUs": 57
+      },
+      {
+        "statusFileUs": 31,
+        "recordingLimitUs": 1,
+        "healthUs": 2,
+        "shortcutUs": 14,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 1,
+        "totalUs": 55
+      },
+      {
+        "statusFileUs": 31,
+        "recordingLimitUs": 1,
+        "healthUs": 2,
+        "shortcutUs": 14,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 1,
+        "totalUs": 55
+      },
+      {
+        "statusFileUs": 31,
+        "recordingLimitUs": 1,
+        "healthUs": 2,
+        "shortcutUs": 18,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 1,
+        "totalUs": 59
+      },
+      {
+        "statusFileUs": 31,
+        "recordingLimitUs": 1,
+        "healthUs": 2,
+        "shortcutUs": 14,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 1,
+        "totalUs": 55
+      },
+      {
+        "statusFileUs": 34,
+        "recordingLimitUs": 1,
+        "healthUs": 2,
+        "shortcutUs": 15,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 1,
+        "totalUs": 61
+      },
+      {
+        "statusFileUs": 31,
+        "recordingLimitUs": 1,
+        "healthUs": 2,
+        "shortcutUs": 14,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 5,
+        "totalUs": 59
+      },
+      {
+        "statusFileUs": 32,
+        "recordingLimitUs": 1,
+        "healthUs": 2,
+        "shortcutUs": 14,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 1,
+        "totalUs": 56
+      },
+      {
+        "statusFileUs": 31,
+        "recordingLimitUs": 1,
+        "healthUs": 2,
+        "shortcutUs": 14,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 1,
+        "totalUs": 54
+      },
+      {
+        "statusFileUs": 30,
+        "recordingLimitUs": 1,
+        "healthUs": 2,
+        "shortcutUs": 14,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 1,
+        "totalUs": 54
+      },
+      {
+        "statusFileUs": 35,
+        "recordingLimitUs": 1,
+        "healthUs": 2,
+        "shortcutUs": 15,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 1,
+        "totalUs": 61
+      },
+      {
+        "statusFileUs": 32,
+        "recordingLimitUs": 1,
+        "healthUs": 2,
+        "shortcutUs": 14,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 1,
+        "totalUs": 57
+      },
+      {
+        "statusFileUs": 32,
+        "recordingLimitUs": 1,
+        "healthUs": 2,
+        "shortcutUs": 14,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 1,
+        "totalUs": 57
+      },
+      {
+        "statusFileUs": 31,
+        "recordingLimitUs": 1,
+        "healthUs": 2,
+        "shortcutUs": 14,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 1,
+        "totalUs": 55
+      },
+      {
+        "statusFileUs": 32,
+        "recordingLimitUs": 1,
+        "healthUs": 2,
+        "shortcutUs": 14,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 1,
+        "totalUs": 56
+      },
+      {
+        "statusFileUs": 33,
+        "recordingLimitUs": 1,
+        "healthUs": 2,
+        "shortcutUs": 15,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 1,
+        "totalUs": 58
+      },
+      {
+        "statusFileUs": 32,
+        "recordingLimitUs": 1,
+        "healthUs": 3,
+        "shortcutUs": 15,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 1,
+        "totalUs": 58
+      },
+      {
+        "statusFileUs": 33,
+        "recordingLimitUs": 1,
+        "healthUs": 2,
+        "shortcutUs": 15,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 2,
+        "totalUs": 59
+      },
+      {
+        "statusFileUs": 33,
+        "recordingLimitUs": 1,
+        "healthUs": 2,
+        "shortcutUs": 14,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 1,
+        "totalUs": 57
+      },
+      {
+        "statusFileUs": 31,
+        "recordingLimitUs": 1,
+        "healthUs": 2,
+        "shortcutUs": 14,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 1,
+        "totalUs": 55
+      },
+      {
+        "statusFileUs": 31,
+        "recordingLimitUs": 1,
+        "healthUs": 2,
+        "shortcutUs": 14,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 1,
+        "totalUs": 55
+      },
+      {
+        "statusFileUs": 31,
+        "recordingLimitUs": 1,
+        "healthUs": 2,
+        "shortcutUs": 14,
+        "historyUs": 2,
+        "presentationUs": 1,
+        "composeUs": 1,
+        "totalUs": 55
+      },
+      {
+        "statusFileUs": 75,
+        "recordingLimitUs": 3,
+        "healthUs": 4,
+        "shortcutUs": 38,
+        "historyUs": 5,
+        "presentationUs": 4,
+        "composeUs": 2,
+        "totalUs": 135
+      },
+      {
+        "statusFileUs": 53,
+        "recordingLimitUs": 1,
+        "healthUs": 2,
+        "shortcutUs": 34,
+        "historyUs": 4,
+        "presentationUs": 3,
+        "composeUs": 1,
+        "totalUs": 101
+      },
+      {
+        "statusFileUs": 59,
+        "recordingLimitUs": 2,
+        "healthUs": 3,
+        "shortcutUs": 33,
+        "historyUs": 5,
+        "presentationUs": 3,
+        "composeUs": 2,
+        "totalUs": 110
+      },
+      {
+        "statusFileUs": 58,
+        "recordingLimitUs": 2,
+        "healthUs": 3,
+        "shortcutUs": 33,
+        "historyUs": 5,
+        "presentationUs": 3,
+        "composeUs": 2,
+        "totalUs": 109
+      },
+      {
+        "statusFileUs": 58,
+        "recordingLimitUs": 2,
+        "healthUs": 3,
+        "shortcutUs": 33,
+        "historyUs": 5,
+        "presentationUs": 3,
+        "composeUs": 1,
+        "totalUs": 109
+      },
+      {
+        "statusFileUs": 59,
+        "recordingLimitUs": 2,
+        "healthUs": 3,
+        "shortcutUs": 33,
+        "historyUs": 4,
+        "presentationUs": 3,
+        "composeUs": 1,
+        "totalUs": 109
+      },
+      {
+        "statusFileUs": 65,
+        "recordingLimitUs": 2,
+        "healthUs": 4,
+        "shortcutUs": 35,
+        "historyUs": 5,
+        "presentationUs": 3,
+        "composeUs": 1,
+        "totalUs": 118
+      },
+      {
+        "statusFileUs": 58,
+        "recordingLimitUs": 2,
+        "healthUs": 3,
+        "shortcutUs": 104,
+        "historyUs": 7,
+        "presentationUs": 4,
+        "composeUs": 2,
+        "totalUs": 183
+      }
+    ]
+  },
+  "artifactNote": "Native probe output with per-lane IPC latency samples omitted; native stage measurements, source identity, binary identity, summaries and contracts retained. Only documentation and evidence were added after the tested application commit."
+}

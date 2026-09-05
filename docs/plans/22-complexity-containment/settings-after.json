@@ -1,0 +1,166 @@
+{
+  "source_revision": "ba0edc9d15a0c320a56792d0e4f8225afc4637d0",
+  "source_sha256": "100348e545c431cca79d109c44c8eb575f68764304ed0d79df6fd8a5bc6baf11",
+  "script_sha256": "867f0c30b20a4462cf9e7dced6d449e337a326470303ebcd14c4365985e6ef9e",
+  "binary": "/home/vriesd/projects/echo/target/debug/deps/echo_desktop-626c5431eb523bdb",
+  "binary_sha256": "caabb602fb8f86be43b0d3d42c848c572008aae2f4b8af2e4a2bcab87eced320",
+  "cases": [
+    {
+      "name": "unavailable",
+      "collections": {
+        "model_directory": 1,
+        "managed_status_checks": 8,
+        "whisper_identity_open": 0
+      },
+      "next_run": {
+        "kind": "unavailable",
+        "reason": "whisper-cli is not on PATH"
+      },
+      "language_mode": "multilingual"
+    },
+    {
+      "name": "english",
+      "collections": {
+        "model_directory": 1,
+        "managed_status_checks": 8,
+        "whisper_identity_open": 2
+      },
+      "next_run": {
+        "kind": "ready",
+        "engine": {
+          "kind": "whisper",
+          "model": "base.en",
+          "multilingual": false
+        },
+        "language": "en"
+      },
+      "language_mode": "english"
+    },
+    {
+      "name": "english-rejects-german",
+      "collections": {
+        "model_directory": 1,
+        "managed_status_checks": 8,
+        "whisper_identity_open": 1
+      },
+      "next_run": {
+        "kind": "unavailable",
+        "reason": "base.en is an English-only model; choose English or a multilingual model"
+      },
+      "language_mode": "english"
+    },
+    {
+      "name": "multilingual",
+      "collections": {
+        "model_directory": 1,
+        "managed_status_checks": 8,
+        "whisper_identity_open": 2
+      },
+      "next_run": {
+        "kind": "ready",
+        "engine": {
+          "kind": "whisper",
+          "model": "small",
+          "multilingual": true
+        },
+        "language": "auto"
+      },
+      "language_mode": "multilingual"
+    },
+    {
+      "name": "parakeet",
+      "collections": {
+        "model_directory": 1,
+        "managed_status_checks": 8,
+        "whisper_identity_open": 0
+      },
+      "next_run": {
+        "kind": "ready",
+        "engine": {
+          "kind": "parakeet",
+          "model": "tdt-0.6b-v3"
+        },
+        "language": "auto"
+      },
+      "language_mode": "parakeet"
+    },
+    {
+      "name": "missing-pinned",
+      "collections": {
+        "model_directory": 1,
+        "managed_status_checks": 8,
+        "whisper_identity_open": 1
+      },
+      "next_run": {
+        "kind": "unavailable",
+        "reason": "Whisper model missing.en is not installed"
+      },
+      "language_mode": "multilingual"
+    },
+    {
+      "name": "custom-override",
+      "collections": {
+        "model_directory": 1,
+        "managed_status_checks": 8,
+        "whisper_identity_open": 2
+      },
+      "next_run": {
+        "kind": "ready",
+        "engine": {
+          "kind": "whisper",
+          "model": "personal",
+          "multilingual": true
+        },
+        "language": "auto"
+      },
+      "language_mode": "multilingual"
+    },
+    {
+      "name": "language-override",
+      "collections": {
+        "model_directory": 1,
+        "managed_status_checks": 8,
+        "whisper_identity_open": 2
+      },
+      "next_run": {
+        "kind": "ready",
+        "engine": {
+          "kind": "whisper",
+          "model": "small",
+          "multilingual": true
+        },
+        "language": "de"
+      },
+      "language_mode": "multilingual"
+    },
+    {
+      "name": "engine-override",
+      "collections": {
+        "model_directory": 1,
+        "managed_status_checks": 8,
+        "whisper_identity_open": 1
+      },
+      "next_run": {
+        "kind": "unavailable",
+        "reason": "Parakeet engine or model is missing"
+      },
+      "language_mode": "parakeet"
+    },
+    {
+      "name": "fake",
+      "collections": {
+        "model_directory": 1,
+        "managed_status_checks": 8,
+        "whisper_identity_open": 0
+      },
+      "next_run": {
+        "kind": "ready",
+        "engine": {
+          "kind": "fake"
+        },
+        "language": "en"
+      },
+      "language_mode": "multilingual"
+    }
+  ]
+}

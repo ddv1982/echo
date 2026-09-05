@@ -1,0 +1,271 @@
+{
+  "application_commit": "ffb4f176b3d1121243032c9b8c6769a6e600d290",
+  "rust": {
+    "command": "RUST_TEST_THREADS=2 timeout --signal=TERM --kill-after=30s 20m xvfb-run -a cargo test --workspace",
+    "passed": 530,
+    "failed": 0,
+    "ignored": 17,
+    "targets": [
+      {
+        "target": "unittests src/lib.rs (target/debug/deps/echo-994788b0cb7b62dd)",
+        "status": "ok",
+        "passed": 291,
+        "failed": 0,
+        "ignored": 4
+      },
+      {
+        "target": "tests/compare_engines.rs (target/debug/deps/compare_engines-c0ae491b74f9416d)",
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 1
+      },
+      {
+        "target": "tests/inject_linux.rs (target/debug/deps/inject_linux-83d81bbb13a1c482)",
+        "status": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "tests/record_device.rs (target/debug/deps/record_device-94e23818cd5448f1)",
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 1
+      },
+      {
+        "target": "tests/record_once.rs (target/debug/deps/record_once-53812d59cf94b496)",
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 1
+      },
+      {
+        "target": "tests/recording_commands.rs (target/debug/deps/recording_commands-2f7c20f8a0ba1e13)",
+        "status": "ok",
+        "passed": 3,
+        "failed": 0,
+        "ignored": 2
+      },
+      {
+        "target": "tests/transcribe_fixture.rs (target/debug/deps/transcribe_fixture-070262ebe9f730a4)",
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 1
+      },
+      {
+        "target": "tests/transcribe_whisper_json.rs (target/debug/deps/transcribe_whisper_json-273138f4c1d322db)",
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 1
+      },
+      {
+        "target": "unittests src/lib.rs (target/debug/deps/echo_core-d152a6cc8d2cfab2)",
+        "status": "ok",
+        "passed": 102,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "unittests src/lib.rs (target/debug/deps/echo_desktop-68ed07049dabaf9e)",
+        "status": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "unittests src/main.rs (target/debug/deps/echo_desktop-b12d50402182cd67)",
+        "status": "ok",
+        "passed": 83,
+        "failed": 0,
+        "ignored": 6
+      },
+      {
+        "target": "tests/cli_hud_demo.rs (target/debug/deps/cli_hud_demo-415ec742e074b42d)",
+        "status": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "tests/cli_languages.rs (target/debug/deps/cli_languages-3f921c2ed9289cf0)",
+        "status": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "tests/cli_rec.rs (target/debug/deps/cli_rec-6708eecfdef68543)",
+        "status": "ok",
+        "passed": 11,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "tests/cli_transcribe.rs (target/debug/deps/cli_transcribe-b9fbebb0c86653ed)",
+        "status": "ok",
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "tests/cli_version.rs (target/debug/deps/cli_version-5fc3921566d45cfb)",
+        "status": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "tests/cli_whisper_args.rs (target/debug/deps/cli_whisper_args-96025816cad82152)",
+        "status": "ok",
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "tests/desktop_entry.rs (target/debug/deps/desktop_entry-9266ffd4be4a043f)",
+        "status": "ok",
+        "passed": 8,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "tests/rec_once_stores.rs (target/debug/deps/rec_once_stores-c4dd995294c1901b)",
+        "status": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "unittests src/lib.rs (target/debug/deps/echo_ipc-acd73443f075d0cd)",
+        "status": "ok",
+        "passed": 12,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "unittests src/main.rs (target/debug/deps/echo_ipc_gen-f188ea1c25f73aa4)",
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "unittests src/main.rs (target/debug/deps/xtask-5a6c701002fd8a74)",
+        "status": "ok",
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "echo",
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "echo_core",
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "echo_desktop",
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "target": "echo_ipc",
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      }
+    ]
+  },
+  "timing_rerun": {
+    "test": "stt::whisper_recovery::tests::fallback_inherits_the_original_global_deadline",
+    "initial_result": "Failed elapsed < 3s assertion during concurrent checks. No code or assertion changed.",
+    "isolated_result": "ok",
+    "workspace_rerun": "passed with two test threads after other builds completed"
+  },
+  "frontend": {
+    "build": "passed",
+    "lint": "passed",
+    "unit_tests": 275,
+    "browser_tests": 6
+  },
+  "checks": {
+    "cargo fmt --all --check": "passed",
+    "cargo clippy --workspace --all-targets -- -D warnings": "passed",
+    "npm run ipc:check --prefix frontend": "passed",
+    "isolated X11 registration": "passed",
+    "private-bus portal registration/routing": "passed",
+    "ten-case settings collection/projection probe": "passed",
+    "native ten recording/configuration contracts": "passed",
+    "verify-stt-benchmark.sh": "passed",
+    "verify-stt-corpus.sh": "passed",
+    "verify-whisper-runtime-archive.sh": "passed",
+    "cargo build --release": "passed",
+    "workflow pinning": "passed",
+    "release cleanup policy": "passed",
+    "public documentation links": "passed",
+    "changelog notes": "passed",
+    "native verifier self-tests": "passed",
+    "Ruff scripts": "passed",
+    "icon raster drift": "passed",
+    "packaging desktop entry": "passed"
+  },
+  "audits": {
+    "cargo": "passed with 17 existing allowed warnings",
+    "npm": "zero vulnerabilities"
+  },
+  "native_status": {
+    "noop": {
+      "count": 500,
+      "minMs": 0.0,
+      "p50Ms": 0.0,
+      "p95Ms": 1.0,
+      "maxMs": 2.0
+    },
+    "fixed-status": {
+      "count": 500,
+      "minMs": 0.0,
+      "p50Ms": 0.0,
+      "p95Ms": 1.0,
+      "maxMs": 1.0000000000001137
+    },
+    "current-status": {
+      "count": 40,
+      "minMs": 0.0,
+      "p50Ms": 0.0,
+      "p95Ms": 1.0,
+      "maxMs": 1.0
+    }
+  },
+  "log_sha256": {
+    "native.log": "f44ed3cfb4810f4eaf84b838ba32fb0fd66f05f2072fd222c28dbfab7477ac7d",
+    "policy.log": "ba3ba4bed3c8f1aa4590ffbeb4798e5897a7795fe502f1042020f22f5c75f6cd",
+    "rust.log": "b47643e8ef3249e7c3078eb541d77acaf4efc60cc6d37d5236820cd50d4e063d",
+    "browser.log": "9e9584755d729f1279e48cbe68f2e12050fb9762e8868d3bb655059c4259adb9",
+    "audit.log": "84357a6c7778515a7c5f99168760f54e2b41d7ece0f43e054fee06811780e665",
+    "frontend.log": "3869f05868628dcc5e80fe81ba6f329a8b07ef385c23049afdf79bcb411f3c27",
+    "rust-final.log": "749864e8f2ac7572284c554829d89eaee7a43ca3c85e7659452fc0f515b501a4",
+    "assets.log": "5a3ed09fee134067c4cf7e7693dbc53b156a1cb8156b5d255dcbe175467d8464",
+    "contracts.log": "ee6605dab2f9d230fb7cf4604f4497ef53f6707e70cd5fdac145fc40e14973bd"
+  },
+  "remaining_acceptance": [
+    "physical microphone and keyboard delivery",
+    "real compositor permissions and target-application insertion",
+    "one to two weeks of routine use",
+    "desktop-mutating GNOME repair fixture remains ignored",
+    "Registry-absent portal path has no end-to-end private-bus fixture"
+  ]
+}

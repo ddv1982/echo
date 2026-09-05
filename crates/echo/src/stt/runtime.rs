@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use echo_core::{WhisperRuntimeBackend, WhisperRuntimeSource};
 use sha2::{Digest, Sha256};
 
-use crate::install::{ComponentId, ManagedPath, ManagedStore};
+use crate::install::{ComponentId, ManagedComponentState, ManagedPath, ManagedStore};
 use crate::which::path_of;
 
 use super::{
@@ -101,6 +101,11 @@ pub struct ManagedSelection {
 }
 
 pub struct SpeechRuntimeInventory {
+    pub cache: ModelCache,
+    pub external_models: ModelInventory,
+    pub system_whisper: Option<PathBuf>,
+    pub system_sherpa: Option<PathBuf>,
+    pub managed: BTreeMap<ComponentId, ManagedComponentState>,
     pub models: ModelInventory,
     pub whisper_runtimes: Vec<WhisperRuntimeCandidate>,
     /// The GPU runtime's CLI, when one is installed. Exposed from the same
@@ -118,10 +123,24 @@ impl SpeechRuntimeInventory {
     #[must_use]
     pub fn from_cache(cache: &ModelCache) -> Self {
         let store = ManagedStore::new(cache.dir());
+        let external_models = cache.inventory();
+        let system_whisper = ["whisper-cli", "whisper-cpp", "whisper"]
+            .into_iter()
+            .find_map(path_of);
+        let system_sherpa = ["sherpa-onnx-offline", "sherpa-onnx"]
+            .into_iter()
+            .find_map(path_of);
+        let managed = crate::install::catalog::COMPONENTS
+            .iter()
+            .map(|spec| (spec.id, store.status(spec.id, false)))
+            .collect::<BTreeMap<_, _>>();
         let mut managed_roots = BTreeMap::new();
         let mut provenance = BTreeMap::new();
         let mut active = |id| {
-            let root = store.candidate_root(id)?;
+            let ManagedComponentState::Ready { root, .. } = managed.get(&id)? else {
+                return None;
+            };
+            let root = root.clone();
             managed_roots.insert(id, root.clone());
             Some(root)
         };
@@ -160,10 +179,7 @@ impl SpeechRuntimeInventory {
                 vulkan_cli = Some(cli);
             }
         }
-        if let Some(cli) = ["whisper-cli", "whisper-cpp", "whisper"]
-            .into_iter()
-            .find_map(path_of)
-        {
+        if let Some(cli) = system_whisper.clone() {
             let sibling = cli.parent().map(|parent| parent.join("whisper-server"));
             let server = sibling
                 .filter(|path| path.is_file())
@@ -188,12 +204,8 @@ impl SpeechRuntimeInventory {
                 path
             })
             .filter(|path| path.is_file())
-            .or_else(|| {
-                ["sherpa-onnx-offline", "sherpa-onnx"]
-                    .into_iter()
-                    .find_map(path_of)
-            });
-        let mut models = cache.inventory();
+            .or_else(|| system_sherpa.clone());
+        let mut models = external_models.clone();
         for (id, name, family, quantisation) in [
             (
                 ComponentId::WhisperBaseQ51,
@@ -244,6 +256,11 @@ impl SpeechRuntimeInventory {
             }
         }
         Self {
+            cache: cache.clone(),
+            external_models,
+            system_whisper,
+            system_sherpa,
+            managed,
             models,
             whisper_runtimes,
             vulkan_cli,
@@ -441,6 +458,10 @@ mod tests {
         let inventory = SpeechRuntimeInventory::from_cache(&ModelCache::at(&root));
         assert_eq!(inventory.models.best_whisper().unwrap().path, managed);
         assert_eq!(
+            inventory.external_models.best_whisper().unwrap().path,
+            manual
+        );
+        assert_eq!(
             inventory
                 .models
                 .whisper
@@ -465,5 +486,58 @@ mod tests {
             .unwrap();
         let inventory = SpeechRuntimeInventory::from_cache(&ModelCache::at(&root));
         assert_eq!(inventory.models.best_whisper().unwrap().path, manual);
+    }
+    #[test]
+    fn new_inventory_observes_external_model_addition_and_removal() {
+        let root = tempfile::tempdir().unwrap();
+        let cache = ModelCache::at(root.path());
+        let before = SpeechRuntimeInventory::from_cache(&cache);
+        assert!(before.models.whisper.is_empty());
+        let model = root.path().join("ggml-base.en.bin");
+        std::fs::write(&model, []).unwrap();
+        let added = SpeechRuntimeInventory::from_cache(&cache);
+        assert_eq!(added.models.whisper[0].path, model);
+        assert!(!added.models.whisper[0].multilingual);
+        std::fs::remove_file(model).unwrap();
+        assert!(SpeechRuntimeInventory::from_cache(&cache)
+            .models
+            .whisper
+            .is_empty());
+        assert_eq!(added.models.whisper.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_inventory_preserves_non_utf8_root_and_leases() {
+        use std::os::unix::ffi::OsStringExt;
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch
+            .path()
+            .join(std::ffi::OsString::from_vec(b"models-\xff".to_vec()));
+        std::fs::create_dir_all(&root).unwrap();
+        let model = install_sparse_managed_model(&root, ComponentId::WhisperSmall);
+        let runtime = SpeechRuntimeInventory::from_cache(&ModelCache::at(&root));
+        assert_eq!(runtime.models.best_whisper().unwrap().path, model);
+        let state = &runtime.managed[&ComponentId::WhisperSmall];
+        let ManagedComponentState::Ready {
+            root: managed_root, ..
+        } = state
+        else {
+            panic!("managed model is not ready");
+        };
+        assert_eq!(managed_root, model.parent().unwrap());
+        assert_eq!(
+            ManagedStore::new(&root)
+                .candidate_root(ComponentId::WhisperSmall)
+                .as_deref(),
+            model.parent()
+        );
+        assert_eq!(
+            serde_json::to_value(state).unwrap()["root"],
+            managed_root.to_string_lossy().as_ref()
+        );
+        let selected = runtime.lock_selected(std::slice::from_ref(&model)).unwrap();
+        assert_eq!(selected.paths, vec![model]);
+        assert_eq!(selected.leases.len(), 1);
     }
 }

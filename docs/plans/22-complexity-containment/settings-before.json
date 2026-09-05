@@ -1,0 +1,10 @@
+{
+  "source_revision": "a00be5e6697d58ba701d53b965d4e2c3ee359b61",
+  "scenario": "unavailable engine; isolated model, runtime, and configuration directories",
+  "method": "Temporary function-entry trace through settings snapshot including readiness, captured before Phase 2 edits. This is the recorded aggregate, not the raw trace.",
+  "collections": {
+    "runtime_inventory": 6,
+    "model_directory": 7,
+    "managed_status": 56
+  }
+}
