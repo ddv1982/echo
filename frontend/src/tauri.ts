@@ -1,14 +1,26 @@
 import type { DesktopApi } from './api/DesktopApi'
+import type { MicrophoneSnapshot } from './generated/ipc'
 
 let desktopApi: DesktopApi | undefined
+let microphoneQueue: Promise<void> = Promise.resolve()
 
 export function configureDesktopApi(api: DesktopApi): void {
   desktopApi = api
+  microphoneQueue = Promise.resolve()
 }
 
 function api(): DesktopApi {
   if (!desktopApi) throw new Error('desktop adapter is not configured')
   return desktopApi
+}
+
+function queueMicrophoneOperation(operation: () => Promise<MicrophoneSnapshot>): Promise<MicrophoneSnapshot> {
+  const request = microphoneQueue.then(operation)
+  microphoneQueue = request.then(
+    () => undefined,
+    () => undefined,
+  )
+  return request
 }
 
 export const getAppStatus: DesktopApi['getAppStatus'] = () => api().getAppStatus()
@@ -42,9 +54,14 @@ export const listModels: DesktopApi['listModels'] = () => api().listModels()
 export const listLanguages: DesktopApi['listLanguages'] = () => api().listLanguages()
 export const setSettings: DesktopApi['setSettings'] = (settings) => api().setSettings(settings)
 export const listGpuDevices: DesktopApi['listGpuDevices'] = (refresh = false) => api().listGpuDevices(refresh)
-export const getMicrophones: DesktopApi['getMicrophones'] = () => api().getMicrophones()
-export const setMicrophone: DesktopApi['setMicrophone'] = (id) =>
-  api().setMicrophone(id)
+export const getMicrophones: DesktopApi['getMicrophones'] = () => {
+  const configuredApi = api()
+  return queueMicrophoneOperation(() => configuredApi.getMicrophones())
+}
+export const setMicrophone: DesktopApi['setMicrophone'] = (id) => {
+  const configuredApi = api()
+  return queueMicrophoneOperation(() => configuredApi.setMicrophone(id))
+}
 export const testInputDevice: DesktopApi['testInputDevice'] = (id) =>
   api().testInputDevice(id)
 export const testMicrophoneFallback: DesktopApi['testMicrophoneFallback'] = () =>
