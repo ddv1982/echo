@@ -1,43 +1,31 @@
-use echo_desktop::ipc::{SettingsChange, SettingsSnapshot};
+use echo_desktop::ipc::{ChannelReply, SettingsChange, SettingsSnapshot};
+use tauri::ipc::Channel;
 use tauri::{AppHandle, State};
 
 #[cfg(feature = "status-perf-probe")]
 use tauri::Manager;
 
 #[tauri::command]
-pub(crate) async fn get_settings(
+pub(crate) fn get_settings(
     state: State<'_, crate::setup::SetupService>,
-) -> Result<SettingsSnapshot, String> {
+    owner: State<'_, crate::settings::ConfigMutationService>,
+    reply: Channel<ChannelReply<SettingsSnapshot>>,
+) -> Result<(), String> {
     let service = state.inner().clone();
-    crate::blocking::run_blocking("settings snapshot", move || {
-        crate::settings::snapshot(service.snapshot())
-    })
-    .await?
+    owner.request_settings_snapshot(move || service.snapshot(), reply)
 }
 
 #[tauri::command]
-pub(crate) async fn set_settings(
+pub(crate) fn set_settings(
     change: SettingsChange,
     state: State<'_, crate::setup::SetupService>,
+    owner: State<'_, crate::settings::ConfigMutationService>,
     app: AppHandle,
-) -> Result<SettingsSnapshot, String> {
+    reply: Channel<ChannelReply<SettingsSnapshot>>,
+) -> Result<(), String> {
     let service = state.inner().clone();
-    apply_settings_change(change, service, app).await
-}
-
-async fn apply_settings_change(
-    change: SettingsChange,
-    service: crate::setup::SetupService,
-    app: AppHandle,
-) -> Result<SettingsSnapshot, String> {
     let tray_request = crate::tray::request();
-    let (revision, snapshot) = crate::blocking::run_blocking("settings change", move || {
-        crate::settings::change(change)?;
-        crate::settings::snapshot_with_revision(|| service.snapshot())
-    })
-    .await??;
-    crate::tray::sync(&app, tray_request, revision, &snapshot);
-    Ok(snapshot)
+    owner.request_settings_change(change, move || service.snapshot(), app, tray_request, reply)
 }
 
 #[cfg(feature = "status-perf-probe")]
@@ -46,16 +34,24 @@ pub(crate) fn run_test_hook(app: &AppHandle) {
         return;
     };
     let service = app.state::<crate::setup::SetupService>().inner().clone();
+    let Some(owner) = app.try_state::<crate::settings::ConfigMutationService>() else {
+        return;
+    };
     let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        if let Err(error) = apply_settings_change(
-            SettingsChange::Language { value: Some(value) },
-            service,
-            app,
-        )
-        .await
-        {
-            eprintln!("tray settings test hook: {error}");
-        }
-    });
+    let tray_request = crate::tray::request();
+    if let Err(error) = owner.request_settings_change(
+        SettingsChange::Language { value: Some(value) },
+        move || service.snapshot(),
+        app,
+        tray_request,
+        Channel::new(|body| {
+            let message: serde_json::Value = body.deserialize()?;
+            if let Some(error) = message.get("error").and_then(serde_json::Value::as_str) {
+                eprintln!("tray settings test hook: {error}");
+            }
+            Ok(())
+        }),
+    ) {
+        eprintln!("tray settings test hook: {error}");
+    }
 }

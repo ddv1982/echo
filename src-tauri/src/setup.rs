@@ -14,7 +14,7 @@ use echo_desktop::ipc::{
     ActiveComponentOrigin, ComponentId, ComponentOrigin, ComponentStatus, ExternalComponent,
     InstallProgress, ManagedComponentState, Readiness, SetupEvent, SetupPlan, SetupPlanId,
 };
-use tauri::{Emitter, State};
+use tauri::{Emitter, Manager, State};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SetupAction {
@@ -357,6 +357,10 @@ impl SetupService {
                     disk: &disk,
                     probe: &probe,
                 };
+                let config_service = app
+                    .state::<crate::settings::ConfigMutationService>()
+                    .inner()
+                    .clone();
                 let mut last_progress_phase = None;
                 let mut last_progress_emit = Instant::now() - Duration::from_secs(1);
                 let mut emit_progress = |progress: CoreInstallProgress| {
@@ -417,7 +421,7 @@ impl SetupService {
                                 if cancel.load(Ordering::Relaxed) {
                                     Err(echo::install::InstallError::Cancelled)
                                 } else {
-                                    activate_plan_config(plan_id)
+                                    config_service.apply_setup_plan_blocking(plan_id)
                                 }
                             })
                     }
@@ -467,46 +471,6 @@ impl SetupService {
         }
         Ok(id)
     }
-}
-
-fn activate_plan_config(plan_id: CoreSetupPlanId) -> Result<(), echo::install::InstallError> {
-    crate::settings::update_file_config(|config| apply_plan_config(config, plan_id))
-        .map_err(echo::install::InstallError::IoMessage)
-}
-
-fn apply_plan_config(
-    config: &mut echo_core::Config,
-    plan_id: CoreSetupPlanId,
-) -> Result<(), String> {
-    match plan_id {
-        CoreSetupPlanId::Parakeet => {
-            config.engine = Some(echo_core::EngineChoice::Parakeet);
-            config.whisper_model = None;
-        }
-        CoreSetupPlanId::Recommended
-        | CoreSetupPlanId::WhisperBase
-        | CoreSetupPlanId::WhisperSmall
-        | CoreSetupPlanId::WhisperLargeV3Turbo => {
-            config.engine = Some(echo_core::EngineChoice::Whisper);
-            let model = match plan_id {
-                CoreSetupPlanId::Recommended => recommended_model(),
-                CoreSetupPlanId::WhisperBase => CoreComponentId::WhisperBaseQ51,
-                CoreSetupPlanId::WhisperSmall => CoreComponentId::WhisperSmall,
-                CoreSetupPlanId::WhisperLargeV3Turbo => CoreComponentId::WhisperLargeV3TurboQ50,
-                CoreSetupPlanId::Parakeet => unreachable!(),
-            };
-            config.whisper_model = Some(
-                match model {
-                    CoreComponentId::WhisperBaseQ51 => "base-q5_1",
-                    CoreComponentId::WhisperSmall => "small",
-                    CoreComponentId::WhisperLargeV3TurboQ50 => "large-v3-turbo-q5_0",
-                    _ => return Err("invalid Whisper model plan".to_string()),
-                }
-                .to_string(),
-            );
-        }
-    }
-    Ok(())
 }
 
 #[tauri::command]
@@ -574,10 +538,8 @@ pub fn cancel_setup(operation: String, state: State<'_, SetupService>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        apply_plan_config, get_readiness, lock_active_operation, plan_space, Readiness,
-        SetupService,
-    };
+    use super::{get_readiness, lock_active_operation, plan_space, Readiness, SetupService};
+    use crate::settings::apply_plan_config;
     use echo::install::SetupPlanId;
     use echo_core::{Config, EngineChoice};
     use std::future::Future;

@@ -1,42 +1,304 @@
+use std::collections::VecDeque;
 use std::env;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use echo_desktop::ipc::{
-    Readiness, SettingField, SettingSource, Settings, SettingsChange, SettingsSnapshot,
+    ChannelReply, Readiness, SettingField, SettingSource, Settings, SettingsChange,
+    SettingsSnapshot,
 };
+use tauri::ipc::Channel;
+use tauri::{Emitter, Manager};
 
-static CONFIG_WRITE_LOCK: Mutex<()> = Mutex::new(());
-static SETTINGS_REVISION: AtomicU64 = AtomicU64::new(0);
+static SNAPSHOT_RESPONSE_REVISION: AtomicU64 = AtomicU64::new(0);
 
-struct SettingsWriteRevision;
+struct ConfigJob {
+    run: Box<dyn FnOnce() + Send>,
+    fail: Box<dyn FnOnce(String) + Send>,
+}
 
-impl SettingsWriteRevision {
-    fn begin() -> Self {
-        SETTINGS_REVISION.fetch_add(1, Ordering::SeqCst);
-        Self
+impl ConfigJob {
+    fn fire_and_forget(run: impl FnOnce() + Send + 'static) -> Self {
+        Self {
+            run: Box::new(run),
+            fail: Box::new(|error| eprintln!("configuration queue: {error}")),
+        }
+    }
+
+    fn reply<T>(
+        reply: Channel<ChannelReply<T>>,
+        work: impl FnOnce() -> Result<T, String> + Send + 'static,
+    ) -> Self
+    where
+        T: serde::Serialize + Send + 'static,
+    {
+        let reply = Arc::new(Mutex::new(Some(reply)));
+        let run_reply = Arc::clone(&reply);
+        let fail_reply = Arc::clone(&reply);
+        Self {
+            run: Box::new(move || {
+                let result = match panic::catch_unwind(AssertUnwindSafe(work)) {
+                    Ok(result) => result,
+                    Err(_) => Err("configuration request failed unexpectedly".to_string()),
+                };
+                send_reply_once(&run_reply, result);
+            }),
+            fail: Box::new(move |error| {
+                send_reply_once(&fail_reply, Err(error));
+            }),
+        }
     }
 }
 
-impl Drop for SettingsWriteRevision {
-    fn drop(&mut self) {
-        SETTINGS_REVISION.fetch_add(1, Ordering::SeqCst);
+#[derive(Default)]
+struct ConfigJobQueue {
+    active: bool,
+    pending: VecDeque<ConfigJob>,
+}
+
+impl ConfigJobQueue {
+    fn enqueue(&mut self, job: ConfigJob) -> bool {
+        self.pending.push_back(job);
+        if self.active {
+            false
+        } else {
+            self.active = true;
+            true
+        }
+    }
+
+    fn next(&mut self) -> Option<ConfigJob> {
+        let next = self.pending.pop_front();
+        if next.is_none() {
+            self.active = false;
+        }
+        next
     }
 }
 
-fn lock_config_writes(lock: &Mutex<()>) -> Result<std::sync::MutexGuard<'_, ()>, String> {
-    lock.lock().map_err(|_| {
-        "Preferences changes are unavailable because the configuration write lock is poisoned."
-            .to_string()
-    })
+#[derive(Clone, Default)]
+pub(crate) struct ConfigMutationService {
+    queue: Arc<Mutex<ConfigJobQueue>>,
 }
 
-pub(super) fn update_file_config(
+impl ConfigMutationService {
+    fn enqueue(&self, job: ConfigJob) -> Result<(), String> {
+        let start_worker = self
+            .queue
+            .lock()
+            .map(|mut queue| queue.enqueue(job))
+            .map_err(|_| "configuration queue is unavailable".to_string())?;
+        if start_worker {
+            let service = self.clone();
+            if let Err(error) = std::thread::Builder::new()
+                .name("echo-config-owner".to_string())
+                .spawn(move || service.drain())
+            {
+                let message = format!("configuration worker could not start: {error}");
+                self.fail_pending_jobs(message.clone());
+                return Err(message);
+            }
+        }
+        Ok(())
+    }
+
+    fn fail_pending_jobs(&self, error: String) {
+        let jobs = match self.queue.lock() {
+            Ok(mut queue) => {
+                queue.active = false;
+                queue.pending.drain(..).collect::<Vec<_>>()
+            }
+            Err(_) => return,
+        };
+        for job in jobs {
+            (job.fail)(error.clone());
+        }
+    }
+
+    fn drain(self) {
+        loop {
+            let job = match self.queue.lock() {
+                Ok(mut queue) => queue.next(),
+                Err(_) => {
+                    eprintln!("configuration queue is unavailable");
+                    return;
+                }
+            };
+            let Some(job) = job else {
+                return;
+            };
+            let fail = job.fail;
+            if panic::catch_unwind(AssertUnwindSafe(job.run)).is_err() {
+                fail("configuration request failed unexpectedly".to_string());
+            }
+        }
+    }
+
+    pub(crate) fn request_settings_snapshot(
+        &self,
+        mut readiness: impl FnMut() -> Readiness + Send + 'static,
+        reply: Channel<ChannelReply<SettingsSnapshot>>,
+    ) -> Result<(), String> {
+        self.enqueue(ConfigJob::reply(reply, move || {
+            snapshot_with_revision(&mut readiness).map(|(_, snapshot)| snapshot)
+        }))
+    }
+
+    pub(crate) fn request_settings_change(
+        &self,
+        settings_change: SettingsChange,
+        mut readiness: impl FnMut() -> Readiness + Send + 'static,
+        app: tauri::AppHandle,
+        tray_request: crate::tray::LanguageMenuRequest,
+        reply: Channel<ChannelReply<SettingsSnapshot>>,
+    ) -> Result<(), String> {
+        self.enqueue(ConfigJob::reply(reply, move || {
+            change(settings_change)
+                .and_then(|_| snapshot_with_revision(&mut readiness))
+                .map(|(revision, snapshot)| {
+                    crate::tray::sync(&app, tray_request, revision, &snapshot);
+                    snapshot
+                })
+        }))
+    }
+
+    pub(crate) fn request_microphone_snapshot(
+        &self,
+        reply: Channel<ChannelReply<echo_desktop::ipc::MicrophoneSnapshot>>,
+    ) -> Result<(), String> {
+        self.enqueue(ConfigJob::reply(reply, move || {
+            Ok(revisioned_microphone_snapshot())
+        }))
+    }
+
+    pub(crate) fn request_microphone_selection(
+        &self,
+        id: Option<String>,
+        app: tauri::AppHandle,
+        reply: Channel<ChannelReply<echo_desktop::ipc::MicrophoneSnapshot>>,
+    ) -> Result<(), String> {
+        self.enqueue(ConfigJob::reply(reply, move || {
+            set_microphone_selection(id).map(|()| {
+                let snapshot = revisioned_microphone_snapshot();
+                let _ = app.emit("settings-event", ());
+                snapshot
+            })
+        }))
+    }
+
+    pub(crate) fn request_tray_language(
+        &self,
+        value: String,
+        app: tauri::AppHandle,
+        tray_request: crate::tray::LanguageMenuRequest,
+    ) -> Result<(), String> {
+        let service = app.state::<crate::setup::SetupService>().inner().clone();
+        self.enqueue(ConfigJob::fire_and_forget(move || {
+            let outcome = change(SettingsChange::Language { value: Some(value) })
+                .and_then(|_| snapshot_with_revision(|| service.snapshot()));
+            match outcome {
+                Ok((revision, snapshot)) => {
+                    crate::tray::sync(&app, tray_request, revision, &snapshot);
+                    let _ = app.emit("settings-event", ());
+                }
+                Err(error) => {
+                    eprintln!("tray language: {error}");
+                    crate::tray::restore(&app);
+                }
+            }
+        }))
+    }
+
+    pub(crate) fn request_tray_refresh(
+        &self,
+        app: tauri::AppHandle,
+        tray_request: crate::tray::LanguageMenuRequest,
+    ) -> Result<(), String> {
+        let service = app.state::<crate::setup::SetupService>().inner().clone();
+        self.enqueue(ConfigJob::fire_and_forget(
+            move || match snapshot_with_revision(|| service.snapshot()) {
+                Ok((settings, snapshot)) => crate::tray::sync_requested(
+                    &app,
+                    crate::tray::LanguageMenuRevision {
+                        settings,
+                        request: tray_request.0,
+                    },
+                    &snapshot,
+                ),
+                Err(error) => eprintln!("tray language: failed to read settings: {error}"),
+            },
+        ))
+    }
+
+    pub(crate) fn apply_setup_plan_blocking(
+        &self,
+        plan_id: echo::install::SetupPlanId,
+    ) -> Result<(), echo::install::InstallError> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let fail_sender = sender.clone();
+        self.enqueue(ConfigJob {
+            run: Box::new(move || {
+                let result = match panic::catch_unwind(AssertUnwindSafe(|| {
+                    update_file_config(|config| apply_plan_config(config, plan_id))
+                })) {
+                    Ok(result) => result.map_err(echo::install::InstallError::IoMessage),
+                    Err(_) => Err(echo::install::InstallError::IoMessage(
+                        "configuration request failed unexpectedly".to_string(),
+                    )),
+                };
+                let _ = sender.send(result);
+            }),
+            fail: Box::new(move |error| {
+                let _ = fail_sender.send(Err(echo::install::InstallError::IoMessage(error)));
+            }),
+        })
+        .map_err(echo::install::InstallError::IoMessage)?;
+        receiver
+            .recv()
+            .map_err(|error| echo::install::InstallError::IoMessage(error.to_string()))?
+    }
+}
+
+fn send_reply_once<T>(
+    reply: &Arc<Mutex<Option<Channel<ChannelReply<T>>>>>,
+    result: Result<T, String>,
+) where
+    T: serde::Serialize,
+{
+    let Ok(mut reply) = reply.lock() else {
+        return;
+    };
+    let Some(reply) = reply.take() else {
+        return;
+    };
+    let message = match result {
+        Ok(value) => ChannelReply::Ok { value },
+        Err(error) => ChannelReply::Err { error },
+    };
+    let _ = reply.send(message);
+}
+
+fn next_snapshot_response_revision() -> u64 {
+    SNAPSHOT_RESPONSE_REVISION.fetch_add(1, Ordering::SeqCst) + 1
+}
+
+fn with_snapshot_revision(mut snapshot: SettingsSnapshot) -> SettingsSnapshot {
+    snapshot.revision = next_snapshot_response_revision();
+    snapshot
+}
+
+fn revisioned_microphone_snapshot() -> echo_desktop::ipc::MicrophoneSnapshot {
+    let mut snapshot: echo_desktop::ipc::MicrophoneSnapshot =
+        echo::audio::microphone_snapshot().into();
+    snapshot.revision = next_snapshot_response_revision();
+    snapshot
+}
+
+fn update_file_config(
     update: impl FnOnce(&mut echo_core::Config) -> Result<(), String>,
 ) -> Result<(), String> {
-    let _write = lock_config_writes(&CONFIG_WRITE_LOCK)?;
-    let _revision = SettingsWriteRevision::begin();
     update_file_config_at(&echo_core::config_path(), update)?;
     echo::settings::reload();
     crate::status::health_invalidate();
@@ -92,33 +354,17 @@ struct SettingsEnv {
     whisper_acceleration: Option<String>,
 }
 
-pub(super) fn snapshot(readiness: Readiness) -> Result<SettingsSnapshot, String> {
+fn snapshot(readiness: Readiness) -> Result<SettingsSnapshot, String> {
     let file = load_preferences_for_update(&echo_core::config_path())?;
     let preferences = read_from_file(&file)?;
     Ok(crate::speech::snapshot(preferences, &file, readiness))
 }
 
-pub(super) fn snapshot_with_revision(
+fn snapshot_with_revision(
     mut readiness: impl FnMut() -> Readiness,
 ) -> Result<(u64, SettingsSnapshot), String> {
-    read_at_stable_revision(&SETTINGS_REVISION, || snapshot(readiness()))
-}
-
-fn read_at_stable_revision<T>(
-    revision_source: &AtomicU64,
-    mut read: impl FnMut() -> Result<T, String>,
-) -> Result<(u64, T), String> {
-    loop {
-        let revision = revision_source.load(Ordering::SeqCst);
-        if revision % 2 != 0 {
-            std::thread::yield_now();
-            continue;
-        }
-        let value = read()?;
-        if revision == revision_source.load(Ordering::SeqCst) {
-            return Ok((revision, value));
-        }
-    }
+    let snapshot = with_snapshot_revision(snapshot(readiness())?);
+    Ok((snapshot.revision, snapshot))
 }
 
 fn read_from_file(file: &echo_core::Config) -> Result<Settings, String> {
@@ -132,7 +378,7 @@ fn read_from_file(file: &echo_core::Config) -> Result<Settings, String> {
     settings_from(&process_settings_env(), file, language_default)
 }
 
-pub(super) fn change(change: SettingsChange) -> Result<(), String> {
+fn change(change: SettingsChange) -> Result<(), String> {
     if matches!(&change, SettingsChange::EnableWhisperGpu) {
         if let Some(variable) = whisper_gpu_environment_override(&process_settings_env()) {
             return Err(format!(
@@ -141,6 +387,90 @@ pub(super) fn change(change: SettingsChange) -> Result<(), String> {
         }
     }
     update_file_config(|config| apply_change(config, change))
+}
+
+fn set_microphone_selection(id: Option<String>) -> Result<(), String> {
+    if env::var("ECHO_MICROPHONE")
+        .ok()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        return Err("ECHO_MICROPHONE controls the microphone in this process".to_string());
+    }
+    let snapshot = echo::audio::microphone_snapshot();
+    let selection = match id {
+        None => None,
+        Some(raw) => {
+            let id = echo::microphone::MicrophoneId::parse(raw)?;
+            let device = snapshot
+                .devices
+                .iter()
+                .find(|device| device.id == id)
+                .ok_or_else(|| {
+                    "that microphone is no longer connected; refresh and choose again".to_string()
+                })?;
+            Some((id, device.label.clone()))
+        }
+    };
+    update_file_config(|config| {
+        update_microphone_config(config, selection);
+        Ok(())
+    })
+}
+
+fn update_microphone_config(
+    config: &mut echo_core::Config,
+    selection: Option<(echo::microphone::MicrophoneId, String)>,
+) {
+    config.microphone =
+        selection.map(
+            |(id, last_seen_label)| echo_core::MicrophoneSelection::Device {
+                id: id.as_str().to_string(),
+                last_seen_label,
+            },
+        );
+}
+
+pub(crate) fn apply_plan_config(
+    config: &mut echo_core::Config,
+    plan_id: echo::install::SetupPlanId,
+) -> Result<(), String> {
+    match plan_id {
+        echo::install::SetupPlanId::Parakeet => {
+            config.engine = Some(echo_core::EngineChoice::Parakeet);
+            config.whisper_model = None;
+        }
+        echo::install::SetupPlanId::Recommended
+        | echo::install::SetupPlanId::WhisperBase
+        | echo::install::SetupPlanId::WhisperSmall
+        | echo::install::SetupPlanId::WhisperLargeV3Turbo => {
+            config.engine = Some(echo_core::EngineChoice::Whisper);
+            let model = match plan_id {
+                echo::install::SetupPlanId::Recommended => {
+                    echo::install::catalog::recommended_model()
+                }
+                echo::install::SetupPlanId::WhisperBase => {
+                    echo::install::ComponentId::WhisperBaseQ51
+                }
+                echo::install::SetupPlanId::WhisperSmall => {
+                    echo::install::ComponentId::WhisperSmall
+                }
+                echo::install::SetupPlanId::WhisperLargeV3Turbo => {
+                    echo::install::ComponentId::WhisperLargeV3TurboQ50
+                }
+                echo::install::SetupPlanId::Parakeet => unreachable!(),
+            };
+            config.whisper_model = Some(
+                match model {
+                    echo::install::ComponentId::WhisperBaseQ51 => "base-q5_1",
+                    echo::install::ComponentId::WhisperSmall => "small",
+                    echo::install::ComponentId::WhisperLargeV3TurboQ50 => "large-v3-turbo-q5_0",
+                    _ => return Err("invalid Whisper model plan".to_string()),
+                }
+                .to_string(),
+            );
+        }
+    }
+    Ok(())
 }
 
 fn whisper_gpu_environment_override(env: &SettingsEnv) -> Option<&'static str> {
@@ -411,6 +741,7 @@ mod tests {
     use super::*;
     use echo_core::{Config, EngineChoice};
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::mpsc;
 
     fn scratch_path(label: &str) -> std::path::PathBuf {
         static SEQ: AtomicU64 = AtomicU64::new(0);
@@ -425,24 +756,113 @@ mod tests {
     }
 
     #[test]
-    fn revisioned_read_retries_when_a_write_spans_the_snapshot() {
-        let revision = AtomicU64::new(0);
-        let mut reads = 0;
+    fn config_owner_runs_delayed_jobs_in_enqueue_order() {
+        let owner = ConfigMutationService::default();
+        let (started_sender, started_receiver) = mpsc::channel();
+        let (release_sender, release_receiver) = mpsc::channel();
+        let (order_sender, order_receiver) = mpsc::channel();
+        let first_order = order_sender.clone();
 
-        let result = read_at_stable_revision(&revision, || {
-            reads += 1;
-            if reads == 1 {
-                revision.store(1, Ordering::SeqCst);
-                revision.store(2, Ordering::SeqCst);
-                Ok("stale")
-            } else {
-                Ok("fresh")
-            }
-        })
-        .unwrap();
+        owner
+            .enqueue(ConfigJob::fire_and_forget(move || {
+                started_sender.send(()).unwrap();
+                release_receiver.recv().unwrap();
+                first_order.send(1).unwrap();
+            }))
+            .unwrap();
+        started_receiver.recv().unwrap();
+        owner
+            .enqueue(ConfigJob::fire_and_forget(move || {
+                order_sender.send(2).unwrap();
+            }))
+            .unwrap();
 
-        assert_eq!(result, (2, "fresh"));
-        assert_eq!(reads, 2);
+        release_sender.send(()).unwrap();
+
+        assert_eq!(order_receiver.recv().unwrap(), 1);
+        assert_eq!(order_receiver.recv().unwrap(), 2);
+    }
+
+    #[test]
+    fn config_owner_continues_after_failed_job_result() {
+        let owner = ConfigMutationService::default();
+        let (sender, receiver) = mpsc::channel();
+        let first_sender = sender.clone();
+
+        owner
+            .enqueue(ConfigJob::fire_and_forget(move || {
+                first_sender
+                    .send(Result::<(), &str>::Err("failed"))
+                    .unwrap();
+            }))
+            .unwrap();
+        owner
+            .enqueue(ConfigJob::fire_and_forget(move || {
+                sender.send(Ok(())).unwrap();
+            }))
+            .unwrap();
+
+        assert_eq!(receiver.recv().unwrap(), Err("failed"));
+        assert_eq!(receiver.recv().unwrap(), Ok(()));
+    }
+
+    #[test]
+    fn config_owner_continues_after_panicked_job() {
+        let owner = ConfigMutationService::default();
+        let (sender, receiver) = mpsc::channel();
+        let healthy_sender = sender.clone();
+
+        owner
+            .enqueue(ConfigJob {
+                run: Box::new(move || panic!("boom")),
+                fail: Box::new(move |error| sender.send(error).unwrap()),
+            })
+            .unwrap();
+        owner
+            .enqueue(ConfigJob::fire_and_forget(move || {
+                healthy_sender.send("healthy".to_string()).unwrap();
+            }))
+            .unwrap();
+
+        assert_eq!(
+            receiver.recv().unwrap(),
+            "configuration request failed unexpectedly"
+        );
+        assert_eq!(receiver.recv().unwrap(), "healthy");
+    }
+
+    #[test]
+    fn dedicated_microphone_update_writes_id_and_clears_legacy_name() {
+        let mut config = echo_core::Config {
+            microphone: Some(echo_core::MicrophoneSelection::LegacyName {
+                name: "USB Mic".into(),
+            }),
+            ..echo_core::Config::default()
+        };
+        update_microphone_config(
+            &mut config,
+            Some((
+                echo::microphone::MicrophoneId::parse("alsa:usb-one").unwrap(),
+                "USB Mic".into(),
+            )),
+        );
+        assert_eq!(
+            config.microphone,
+            Some(echo_core::MicrophoneSelection::Device {
+                id: "alsa:usb-one".into(),
+                last_seen_label: "USB Mic".into(),
+            })
+        );
+        update_microphone_config(&mut config, None);
+        assert_eq!(config.microphone, None);
+    }
+
+    #[test]
+    fn snapshot_response_revisions_are_unique_for_reads() {
+        let first = next_snapshot_response_revision();
+        let second = next_snapshot_response_revision();
+
+        assert!(second > first);
     }
 
     #[test]
@@ -545,24 +965,6 @@ mod tests {
         assert_eq!(
             Config::load_from(&path).unwrap().engine,
             Some(EngineChoice::Fake)
-        );
-    }
-
-    #[test]
-    fn poisoned_config_write_protocol_returns_an_explicit_error() {
-        let lock = std::sync::Arc::new(Mutex::new(()));
-        let poison = std::sync::Arc::clone(&lock);
-        assert!(std::thread::spawn(move || {
-            let _guard = poison.lock().unwrap();
-            panic!("poison config write protocol");
-        })
-        .join()
-        .is_err());
-
-        let error = lock_config_writes(&lock).unwrap_err();
-        assert!(
-            error.contains("configuration write lock is poisoned"),
-            "{error}"
         );
     }
 

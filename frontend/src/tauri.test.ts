@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPreviewDesktopApi } from './api/previewDesktopApi'
-import type { MicrophoneSnapshot } from './generated/ipc'
 import {
   configureDesktopApi,
   getMicrophones as getConfiguredMicrophones,
@@ -18,28 +17,6 @@ const {
   stopCapture,
   cancelTranscription,
 } = createPreviewDesktopApi()
-
-function deferred<T>() {
-  const state: {
-    resolve: ((value: T | PromiseLike<T>) => void) | null
-    reject: ((reason?: unknown) => void) | null
-  } = { resolve: null, reject: null }
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    state.resolve = resolvePromise
-    state.reject = rejectPromise
-  })
-  return {
-    promise,
-    resolve(value: T | PromiseLike<T>) {
-      if (!state.resolve) throw new Error('deferred promise is not initialized')
-      state.resolve(value)
-    },
-    reject(reason?: unknown) {
-      if (!state.reject) throw new Error('deferred promise is not initialized')
-      state.reject(reason)
-    },
-  }
-}
 
 describe('settings preview wrappers', () => {
   it('rejects stale stop and cancellation requests without returning another session', async () => {
@@ -75,7 +52,11 @@ describe('settings preview wrappers', () => {
     expect(written.preferences.engine).toEqual({ value: 'fake', effective: 'fake', source: 'file' })
     expect(written.preferences.hud).toEqual({ value: false, effective: false, source: 'file' })
     expect(written.preferences.recordSeconds).toEqual({ value: 12, effective: 12, source: 'file' })
-    expect(await getSettings()).toEqual(written)
+    const reread = await getSettings()
+    expect(reread.revision).toBeGreaterThan(written.revision)
+    expect(reread.preferences).toEqual(written.preferences)
+    expect(reread.transcription).toEqual(written.transcription)
+    expect(reread.readiness).toEqual(written.readiness)
   })
 
   it('snapshots the effective limit when preview recording starts', async () => {
@@ -118,42 +99,11 @@ describe('settings preview wrappers', () => {
     }
   })
 
-  it('serializes microphone selections so the final choice wins', async () => {
+  it('delegates microphone operations directly to the configured adapter', async () => {
     const preview = createPreviewDesktopApi()
     const initial = await preview.getMicrophones()
-    const first = deferred<MicrophoneSnapshot>()
     const set = preview.setMicrophone.bind(preview)
     const select = vi.spyOn(preview, 'setMicrophone')
-      .mockImplementationOnce(() => first.promise)
-      .mockImplementation((id) => set(id))
-    configureDesktopApi(preview)
-
-    const firstChoice = initial.devices[0]
-    const finalChoice = initial.devices[1]
-    if (!firstChoice || !finalChoice) throw new Error('preview needs two microphones')
-    const firstRequest = setConfiguredMicrophone(firstChoice.id)
-    const finalRequest = setConfiguredMicrophone(finalChoice.id)
-    await Promise.resolve()
-    expect(select).toHaveBeenCalledOnce()
-
-    first.resolve(initial)
-    await firstRequest
-    await finalRequest
-    expect(select).toHaveBeenNthCalledWith(1, firstChoice.id)
-    expect(select).toHaveBeenNthCalledWith(2, finalChoice.id)
-    expect((await getConfiguredMicrophones()).selection).toMatchObject({
-      kind: 'selected',
-      device: { id: finalChoice.id },
-    })
-  })
-
-  it('continues microphone operations after a rejected selection and keeps reads ordered', async () => {
-    const preview = createPreviewDesktopApi()
-    const initial = await preview.getMicrophones()
-    const reject = deferred<MicrophoneSnapshot>()
-    const set = preview.setMicrophone.bind(preview)
-    const select = vi.spyOn(preview, 'setMicrophone')
-      .mockImplementationOnce(() => reject.promise)
       .mockImplementation((id) => set(id))
     const read = vi.spyOn(preview, 'getMicrophones')
     configureDesktopApi(preview)
@@ -161,39 +111,53 @@ describe('settings preview wrappers', () => {
     const firstChoice = initial.devices[0]
     const finalChoice = initial.devices[1]
     if (!firstChoice || !finalChoice) throw new Error('preview needs two microphones')
-    const rejected = setConfiguredMicrophone(firstChoice.id)
-    const finalRequest = setConfiguredMicrophone(finalChoice.id)
-    const readRequest = getConfiguredMicrophones()
-    await Promise.resolve()
-    expect(select).toHaveBeenCalledOnce()
-    expect(read).not.toHaveBeenCalled()
+    await Promise.all([
+      setConfiguredMicrophone(firstChoice.id),
+      setConfiguredMicrophone(finalChoice.id),
+    ])
+    await getConfiguredMicrophones()
 
-    reject.reject(new Error('device disconnected'))
-    await expect(rejected).rejects.toThrow('device disconnected')
-    await finalRequest
-    await readRequest
     expect(select).toHaveBeenCalledTimes(2)
+    expect(select).toHaveBeenNthCalledWith(1, firstChoice.id)
+    expect(select).toHaveBeenNthCalledWith(2, finalChoice.id)
     expect(read).toHaveBeenCalledOnce()
+    expect((await getConfiguredMicrophones()).selection).toMatchObject({
+      kind: 'selected',
+      device: { id: finalChoice.id },
+    })
   })
 
-  it('keeps queued microphone work with the adapter that accepted it', async () => {
+  it('continues microphone operations after a rejected selection', async () => {
+    const preview = createPreviewDesktopApi()
+    const initial = await preview.getMicrophones()
+    const set = preview.setMicrophone.bind(preview)
+    const select = vi.spyOn(preview, 'setMicrophone')
+      .mockRejectedValueOnce(new Error('device disconnected'))
+      .mockImplementation((id) => set(id))
+    configureDesktopApi(preview)
+
+    const firstChoice = initial.devices[0]
+    const finalChoice = initial.devices[1]
+    if (!firstChoice || !finalChoice) throw new Error('preview needs two microphones')
+    const rejected = setConfiguredMicrophone(firstChoice.id)
+    const finalRequest = setConfiguredMicrophone(finalChoice.id)
+
+    await expect(rejected).rejects.toThrow('device disconnected')
+    await finalRequest
+    expect(select).toHaveBeenCalledTimes(2)
+  })
+
+  it('uses the current adapter for each microphone call', async () => {
     const firstAdapter = createPreviewDesktopApi()
     const secondAdapter = createPreviewDesktopApi()
-    const initial = await firstAdapter.getMicrophones()
-    const pending = deferred<MicrophoneSnapshot>()
-    const firstSet = vi.spyOn(firstAdapter, 'setMicrophone').mockImplementation(() => pending.promise)
+    const firstSet = vi.spyOn(firstAdapter, 'setMicrophone')
     const secondRead = vi.spyOn(secondAdapter, 'getMicrophones')
-    const choice = initial.devices[0]
-    if (!choice) throw new Error('preview needs a microphone')
 
     configureDesktopApi(firstAdapter)
-    const firstRequest = setConfiguredMicrophone(choice.id)
+    await setConfiguredMicrophone(null)
     configureDesktopApi(secondAdapter)
     await getConfiguredMicrophones()
     expect(firstSet).toHaveBeenCalledOnce()
     expect(secondRead).toHaveBeenCalledOnce()
-
-    pending.resolve(initial)
-    await firstRequest
   })
 })

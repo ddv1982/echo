@@ -59,6 +59,7 @@ pub(crate) fn snapshot(
     };
     let whisper = whisper_applicability(&preferences, &next_run, &readiness);
     SettingsSnapshot {
+        revision: 0,
         preferences,
         transcription: TranscriptionSnapshot {
             next_run,

@@ -60,11 +60,18 @@ flat control-file protocol.
 
 ## Desktop boundary
 
-Tauri command functions are thin adapters. Settings owns serialized config
-writes and invalidates the status cache after a successful save. Status owns
-health caching and the `AppStatus` projection. Focused command modules own
-devices, library data, recording, settings, shortcuts, status, and system
-operations.
+Tauri command functions are thin adapters. `ConfigMutationService` accepts
+settings and microphone requests synchronously, then performs their work in
+FIFO order on a worker. Typed Tauri channels deliver the results without
+blocking the UI thread. Tray language changes and setup-plan configuration
+changes use the same owner. Capture and transcription run independently.
+
+Every settings and microphone response carries a monotonic revision for that
+desktop process. Views retain the newest snapshot, so a delayed response cannot
+replace a newer selection. Successful saves invalidate the status cache.
+Status owns health caching and the `AppStatus` projection. Focused command
+modules own devices, library data, recording, settings, shortcuts, status, and
+system operations.
 
 The Settings boundary returns one `SettingsSnapshot`. The snapshot keeps saved
 preferences, the resolved next transcription, setup readiness, and previous-run
@@ -95,8 +102,11 @@ browser development graph and cannot enter the production bundle.
 
 `App.tsx` composes navigation and feature surfaces. Shared status, theme,
 history, dictionary, and error state live in the app controller. Home and
-Settings own their subscriptions and device/setup lifetimes. Settings changes
-are serialized, and stale setup refreshes cannot replace a newer snapshot.
+Settings own their subscriptions and device/setup lifetimes. Backend responses
+define settings order, and stale setup refreshes cannot replace a newer
+snapshot. Test suites share the typed desktop API harness in
+`frontend/src/test/desktopApiHarness.ts`, with scenario-specific overrides kept
+in each test.
 
 Serial polling never overlaps requests and stops with component disposal.
 Subscriptions await their unlisten handle and dispose it even when unmount

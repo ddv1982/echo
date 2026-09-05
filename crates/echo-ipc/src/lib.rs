@@ -300,9 +300,21 @@ pub enum SettingsChange {
 #[derive(Debug, Clone, PartialEq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsSnapshot {
+    pub revision: u64,
     pub preferences: Settings,
     pub transcription: TranscriptionSnapshot,
     pub readiness: Readiness,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum ChannelReply<T> {
+    Ok { value: T },
+    Err { error: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, TS)]
@@ -581,6 +593,7 @@ pub enum MicrophoneSource {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct MicrophoneSnapshot {
+    pub revision: u64,
     pub host: AudioHost,
     pub source: MicrophoneSource,
     pub system_default: Option<InputDevice>,
@@ -821,6 +834,7 @@ macro_rules! schema_types {
             schema::AppPhase => schema::AppPhase,
             schema::AppStatus => schema::AppStatus,
             schema::AudioHost => schema::AudioHost,
+            schema::ChannelReply => schema::ChannelReply<schema::SettingsSnapshot>,
             schema::ComponentId => schema::ComponentId,
             schema::ComponentOrigin => schema::ComponentOrigin,
             schema::ComponentStatus => schema::ComponentStatus,

@@ -1,7 +1,8 @@
-import { invoke } from '@tauri-apps/api/core'
+import { Channel, invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import type {
   AppStatus,
+  ChannelReply,
   DictionaryBatchResult,
   DictionaryItem,
   DictionaryTrainingSample,
@@ -20,6 +21,19 @@ import type {
   ShortcutStatus,
 } from '../generated/ipc'
 import type { DesktopApi } from './DesktopApi'
+
+function invokeQueued<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const reply = new Channel<ChannelReply<T>>((message) => {
+      if (message.kind === 'ok') {
+        resolve(message.value)
+      } else {
+        reject(new Error(message.error))
+      }
+    })
+    invoke<void>(command, { ...args, reply }).catch(reject)
+  })
+}
 
 export function createTauriDesktopApi(): DesktopApi {
   return {
@@ -51,14 +65,14 @@ export function createTauriDesktopApi(): DesktopApi {
     copyText: (text) => invoke<void>('copy_text', { text }),
     quitApp: () => invoke<void>('quit_app'),
     removeStaleInstalls: () => invoke<string[]>('remove_stale_installs'),
-    getSettings: () => invoke<SettingsSnapshot>('get_settings'),
+    getSettings: () => invokeQueued<SettingsSnapshot>('get_settings'),
     listModels: () => invoke<ModelInventory>('list_models'),
     listLanguages: () => invoke<LanguageOptions>('list_languages'),
     setSettings: (change: SettingsChange) =>
-      invoke<SettingsSnapshot>('set_settings', { change }),
+      invokeQueued<SettingsSnapshot>('set_settings', { change }),
     listGpuDevices: (refresh = false) => invoke<GpuDevice[]>('list_gpu_devices', { refresh }),
-    getMicrophones: () => invoke<MicrophoneSnapshot>('get_microphones'),
-    setMicrophone: (id) => invoke<MicrophoneSnapshot>('set_microphone', { id }),
+    getMicrophones: () => invokeQueued<MicrophoneSnapshot>('get_microphones'),
+    setMicrophone: (id) => invokeQueued<MicrophoneSnapshot>('set_microphone', { id }),
     testInputDevice: (id) => invoke<MicrophoneTestResult>('test_input_device', { id }),
     testMicrophoneFallback: () => invoke<MicrophoneTestResult>('test_microphone_fallback'),
     getReadiness: () => invoke<Readiness>('get_readiness'),

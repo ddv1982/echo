@@ -20,6 +20,7 @@ mod tests {
     const LIBRARY: &str = include_str!("commands/library.rs");
     const RECORDING: &str = include_str!("commands/recording.rs");
     const SETTINGS: &str = include_str!("commands/settings.rs");
+    const SETTINGS_OWNER: &str = include_str!("settings.rs");
     const SHORTCUTS: &str = include_str!("commands/shortcuts.rs");
     const STATUS: &str = include_str!("commands/status.rs");
     const SYSTEM: &str = include_str!("commands/system.rs");
@@ -139,12 +140,12 @@ mod tests {
         CommandContract {
             handler: "get_settings",
             source: SETTINGS,
-            payload_types: &["SettingsSnapshot"],
+            payload_types: &["ChannelReply", "SettingsSnapshot"],
         },
         CommandContract {
             handler: "set_settings",
             source: SETTINGS,
-            payload_types: &["SettingsChange", "SettingsSnapshot"],
+            payload_types: &["ChannelReply", "SettingsChange", "SettingsSnapshot"],
         },
         CommandContract {
             handler: "list_models",
@@ -194,12 +195,12 @@ mod tests {
         CommandContract {
             handler: "get_microphones",
             source: DEVICES,
-            payload_types: &["MicrophoneSnapshot"],
+            payload_types: &["ChannelReply", "MicrophoneSnapshot"],
         },
         CommandContract {
             handler: "set_microphone",
             source: DEVICES,
-            payload_types: &["MicrophoneSnapshot"],
+            payload_types: &["ChannelReply", "MicrophoneSnapshot"],
         },
         CommandContract {
             handler: "test_input_device",
@@ -221,7 +222,7 @@ mod tests {
         },
         EventContract {
             name: "settings-event",
-            source: include_str!("tray.rs"),
+            source: SETTINGS_OWNER,
             payload_types: &[],
         },
     ];
@@ -288,6 +289,6 @@ mod tests {
                 manifest_types.insert((*payload_type).to_string());
             }
         }
-        assert_eq!(manifest_types.len(), 20);
+        assert_eq!(manifest_types.len(), 21);
     }
 }

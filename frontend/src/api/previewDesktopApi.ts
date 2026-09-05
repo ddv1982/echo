@@ -62,6 +62,7 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
   let recordingSequence = 0
 
   let previewSettings: Settings = defaultPreviewSettings()
+  let previewRevision = 0
   let previewRecordingDeadline: number | null = null
   const previewTimers = new Set<number>()
 
@@ -470,6 +471,7 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
     previewRecordingDeadline = null
     previewSettings = defaultPreviewSettings()
     previewStatus = richPreviewStatus()
+    previewRevision = 0
     previewDictionary = defaultPreviewDictionary()
     previewTrainingIndex = 0
     activeTrainingCapture = null
@@ -491,7 +493,7 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
   let previewMicrophones: MicrophoneSnapshot = defaultPreviewMicrophones(previewDevices)
 
   function getMicrophones(): Promise<MicrophoneSnapshot> {
-    return Promise.resolve(ipcSnapshot(previewMicrophones))
+    return Promise.resolve(ipcSnapshot(revisionedMicrophones(previewMicrophones)))
   }
 
   function setMicrophone(id: string | null): Promise<MicrophoneSnapshot> {
@@ -512,7 +514,7 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
       firstRunComplete:
         microphoneReady && previewReadiness.speechReady && previewReadiness.hasSuccessfulDictation,
     }
-    return Promise.resolve(ipcSnapshot(previewMicrophones))
+    return Promise.resolve(ipcSnapshot(revisionedMicrophones(previewMicrophones)))
   }
 
   function previewMicrophoneTest(device: InputDevice | null): MicrophoneTestResult {
@@ -657,6 +659,7 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
   function previewSettingsSnapshot(): SettingsSnapshot {
     const nextRun = previewNextRun()
     return {
+      revision: nextPreviewRevision(),
       preferences: previewSettings,
       transcription: {
         nextRun,
@@ -667,6 +670,15 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
       },
       readiness: previewReadiness,
     }
+  }
+
+  function revisionedMicrophones(snapshot: MicrophoneSnapshot): MicrophoneSnapshot {
+    return { ...snapshot, revision: nextPreviewRevision() }
+  }
+
+  function nextPreviewRevision(): number {
+    previewRevision += 1
+    return previewRevision
   }
 
   function previewNextRun(): SettingsSnapshot['transcription']['nextRun'] {

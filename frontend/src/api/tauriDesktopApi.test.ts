@@ -2,25 +2,61 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SettingsChange, SetupEvent } from '../generated/ipc'
 import { createTauriDesktopApi, tauriDesktopApi } from './tauriDesktopApi'
 
-const { invokeMock, listenMock } = vi.hoisted(() => ({
-  invokeMock: vi.fn((command: string, commandArguments?: unknown) => {
-    void command
-    void commandArguments
-    return Promise.resolve()
-  }),
-  listenMock: vi.fn((event: string, handler: (event: { payload: SetupEvent }) => void) => {
-    void event
-    void handler
-    return Promise.resolve(() => undefined)
-  }),
-}))
+const { TestChannel, invokeMock, listenMock } = vi.hoisted(() => {
+  class HoistedTestChannel<T> {
+    onmessage: (message: T) => void
 
-vi.mock('@tauri-apps/api/core', () => ({ invoke: invokeMock }))
+    constructor(onmessage: (message: T) => void) {
+      this.onmessage = onmessage
+    }
+  }
+  return {
+    TestChannel: HoistedTestChannel,
+    invokeMock: vi.fn<(command: string, commandArguments?: unknown) => Promise<void>>(
+      (command, commandArguments) => {
+        void command
+        void commandArguments
+        return Promise.resolve()
+      },
+    ),
+    listenMock: vi.fn((event: string, handler: (event: { payload: SetupEvent }) => void) => {
+      void event
+      void handler
+      return Promise.resolve(() => undefined)
+    }),
+  }
+})
+
+vi.mock('@tauri-apps/api/core', () => ({ Channel: TestChannel, invoke: invokeMock }))
 vi.mock('@tauri-apps/api/event', () => ({ listen: listenMock }))
 
 function requireFixture<T>(value: T | undefined, description: string): T {
   if (value === undefined) throw new Error(`missing test fixture: ${description}`)
   return value
+}
+
+function resolveLastChannel(message: unknown): void {
+  const call = requireFixture(invokeMock.mock.calls.at(-1), 'queued command invocation')
+  const args = call[1]
+  if (!hasReply(args)) {
+    throw new Error('queued command invocation did not include a reply channel')
+  }
+  args.reply.onmessage(message)
+}
+
+function hasReply(value: unknown): value is { reply: InstanceType<typeof TestChannel> } {
+  return typeof value === 'object' && value != null && 'reply' in value && value.reply instanceof TestChannel
+}
+
+function queuedArgs(command: string): unknown {
+  const call = invokeMock.mock.calls.find(([called]) => called === command)
+  return requireFixture(call, `${command} invocation`)[1]
+}
+
+function queuedReply(command: string): InstanceType<typeof TestChannel> {
+  const args = queuedArgs(command)
+  if (!hasReply(args)) throw new Error(`${command} invocation did not include a reply channel`)
+  return args.reply
 }
 
 describe('Tauri desktop adapter contract', () => {
@@ -53,14 +89,22 @@ describe('Tauri desktop adapter contract', () => {
     await tauriDesktopApi.copyText('text')
     await tauriDesktopApi.quitApp()
     await tauriDesktopApi.removeStaleInstalls()
-    await tauriDesktopApi.getSettings()
+    const settings = tauriDesktopApi.getSettings()
+    resolveLastChannel({ kind: 'ok', value: undefined })
+    await settings
     await tauriDesktopApi.listModels()
     await tauriDesktopApi.listLanguages()
-    await tauriDesktopApi.setSettings(change)
+    const settingsWrite = tauriDesktopApi.setSettings(change)
+    resolveLastChannel({ kind: 'ok', value: undefined })
+    await settingsWrite
     await tauriDesktopApi.listGpuDevices()
     await tauriDesktopApi.listGpuDevices(true)
-    await tauriDesktopApi.getMicrophones()
-    await tauriDesktopApi.setMicrophone('device')
+    const microphones = tauriDesktopApi.getMicrophones()
+    resolveLastChannel({ kind: 'ok', value: undefined })
+    await microphones
+    const microphoneWrite = tauriDesktopApi.setMicrophone('device')
+    resolveLastChannel({ kind: 'ok', value: undefined })
+    await microphoneWrite
     await tauriDesktopApi.testInputDevice('device')
     await tauriDesktopApi.testMicrophoneFallback()
     await tauriDesktopApi.getReadiness()
@@ -94,14 +138,14 @@ describe('Tauri desktop adapter contract', () => {
       ['copy_text', { text: 'text' }],
       ['quit_app'],
       ['remove_stale_installs'],
-      ['get_settings'],
+      ['get_settings', { reply: queuedReply('get_settings') }],
       ['list_models'],
       ['list_languages'],
-      ['set_settings', { change }],
+      ['set_settings', { change, reply: queuedReply('set_settings') }],
       ['list_gpu_devices', { refresh: false }],
       ['list_gpu_devices', { refresh: true }],
-      ['get_microphones'],
-      ['set_microphone', { id: 'device' }],
+      ['get_microphones', { reply: queuedReply('get_microphones') }],
+      ['set_microphone', { id: 'device', reply: queuedReply('set_microphone') }],
       ['test_input_device', { id: 'device' }],
       ['test_microphone_fallback'],
       ['get_readiness'],
@@ -112,6 +156,34 @@ describe('Tauri desktop adapter contract', () => {
       ['remove_managed', { component: 'whisper-small' }],
       ['cancel_setup', { operation: 'operation' }],
     ])
+    expect(invokeMock).toHaveBeenCalledWith('delete_history_item', { id: 'history-id' })
+    expect(invokeMock).toHaveBeenCalledWith('set_settings', {
+      change,
+      reply: queuedReply('set_settings'),
+    })
+    expect(queuedReply('get_settings')).toBeInstanceOf(TestChannel)
+    expect(queuedReply('get_microphones')).toBeInstanceOf(TestChannel)
+    expect(invokeMock).toHaveBeenCalledWith('set_microphone', {
+      id: 'device',
+      reply: queuedReply('set_microphone'),
+    })
+  })
+
+  it('resolves queued command promises from the channel reply', async () => {
+    const pending = tauriDesktopApi.getSettings()
+    expect(hasReply(queuedArgs('get_settings'))).toBe(true)
+
+    resolveLastChannel({ kind: 'ok', value: { revision: 42 } })
+
+    await expect(pending).resolves.toEqual({ revision: 42 })
+  })
+
+  it('rejects queued command promises from the channel reply', async () => {
+    const pending = tauriDesktopApi.setSettings({ kind: 'hud', value: false })
+
+    resolveLastChannel({ kind: 'err', error: 'write failed' })
+
+    await expect(pending).rejects.toThrow('write failed')
   })
 
   it('subscribes to setup-event and unwraps its payload', async () => {

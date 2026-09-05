@@ -100,6 +100,7 @@ fn run_desktop() -> Result<(), String> {
     context.config_mut().app.tray_icon = None;
     let builder = tauri::Builder::default()
         .manage(setup::SetupService::default())
+        .manage(settings::ConfigMutationService::default())
         .manage(DictionaryTrainingCaptures::default());
     #[cfg(not(feature = "status-perf-probe"))]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
