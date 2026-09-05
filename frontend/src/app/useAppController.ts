@@ -7,6 +7,12 @@ import { useSerialPoll } from '../hooks/useSerialPoll'
 import { getAppStatus, quitApp, startCapture, stopCapture } from '../tauri'
 import type { ThemeMode, View } from '../types'
 import { messageFrom } from './formatting'
+import {
+  acceptRecordingObservation,
+  advanceRecordingObservationEpoch,
+  createRecordingObservationState,
+  type RecordingObservation,
+} from './recordingObservation'
 import { useElapsedSeconds } from './useElapsedSeconds'
 
 const initialStatus: AppStatus = {
@@ -50,8 +56,7 @@ export function useAppController() {
   })
   const [error, setError] = useState<string | null>(null)
   const [recordingStartedAt, setRecordingStartedAt] = useState<number | null>(null)
-  const currentStatus = useRef(initialStatus)
-  const statusEpoch = useRef(0)
+  const recordingObservation = useRef(createRecordingObservationState(initialStatus))
   const previousHistoryId = useRef<string | null>(null)
   const toggleInFlight = useRef(false)
   const [recordingRequestPending, setRecordingRequestPending] = useState(false)
@@ -71,14 +76,12 @@ export function useAppController() {
     refresh: refreshDictionary,
   } = useDictionary(reportError)
 
-  const applyStatus = useCallback((next: AppStatus) => {
-    const previous = currentStatus.current
-    if (
-      next.recordingSessionId !== null &&
-      next.recordingSessionId === previous.recordingSessionId &&
-      next.recordingRevision < previous.recordingRevision
-    ) return
-    currentStatus.current = next
+  const setObservedStatus = useCallback((observation: RecordingObservation) => {
+    const previous = recordingObservation.current.snapshot
+    const accepted = acceptRecordingObservation(recordingObservation.current, observation)
+    if (accepted === recordingObservation.current) return
+    recordingObservation.current = accepted
+    const next = accepted.snapshot
     setStatus(next)
     const observedAt = Date.now()
     setRecordingStartedAt((current) =>
@@ -94,28 +97,13 @@ export function useAppController() {
     }
   }, [refreshDictionary, refreshHistory, reportError])
 
-  const applyRecordingSnapshot = useCallback((snapshot: RecordingSnapshot, requestedFrom: string | null) => {
-    const current = currentStatus.current
-    if (
-      current.recordingSessionId !== requestedFrom &&
-      current.recordingSessionId !== snapshot.sessionId
-    ) return
-    applyStatus({
-      ...current,
-      phase: snapshot.phase,
-      recordingSessionId: snapshot.sessionId,
-      captureStopRequested: snapshot.captureStopRequested,
-      recordingRevision: snapshot.revision,
-    })
-  }, [applyStatus])
-
-  const readStatus = useCallback(async () => {
-    const epoch = statusEpoch.current
-    return { epoch, snapshot: await getAppStatus() }
+  const readStatus = useCallback(async (): Promise<Extract<RecordingObservation, { kind: 'poll' }>> => {
+    const epoch = recordingObservation.current.epoch
+    return { kind: 'poll', epoch, snapshot: await getAppStatus() }
   }, [])
   const applyStatusObservation = useCallback((result: Awaited<ReturnType<typeof readStatus>>) => {
-    if (result.epoch === statusEpoch.current) applyStatus(result.snapshot)
-  }, [applyStatus])
+    setObservedStatus(result)
+  }, [setObservedStatus])
 
   const pollWhileVisible = useCallback(() => !document.hidden, [])
   const refreshStatus = useSerialPoll({
@@ -144,12 +132,12 @@ export function useAppController() {
   }, [view])
 
   const toggle = useCallback(async () => {
-    const { phase, recordingSessionId } = currentStatus.current
+    const { phase, recordingSessionId } = recordingObservation.current.snapshot
     const processing = phase === 'Transcribing' || phase === 'Injecting'
     if (toggleInFlight.current || recordingRequestPending || processing) return
     const stopping = phase === 'Recording'
     toggleInFlight.current = true
-    statusEpoch.current += 1
+    recordingObservation.current = advanceRecordingObservationEpoch(recordingObservation.current)
     setRecordingRequestPending(true)
     try {
       let snapshot: RecordingSnapshot
@@ -159,8 +147,8 @@ export function useAppController() {
       } else {
         snapshot = await startCapture()
       }
-      statusEpoch.current += 1
-      applyRecordingSnapshot(snapshot, recordingSessionId)
+      recordingObservation.current = advanceRecordingObservationEpoch(recordingObservation.current)
+      setObservedStatus({ kind: 'acknowledgement', snapshot, requestedFrom: recordingSessionId })
       await refreshStatus()
     } catch (reason) {
       reportError(reason)
@@ -168,7 +156,7 @@ export function useAppController() {
       toggleInFlight.current = false
       setRecordingRequestPending(false)
     }
-  }, [applyRecordingSnapshot, recordingRequestPending, refreshStatus, reportError])
+  }, [recordingRequestPending, refreshStatus, reportError, setObservedStatus])
 
   const quit = useCallback(async () => {
     try {

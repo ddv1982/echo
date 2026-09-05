@@ -369,4 +369,33 @@ mod tests {
             .expect("final capture-state lock")
             .is_none());
     }
+    #[test]
+    fn active_training_rejects_duplicate_start_and_foreign_ids() {
+        let state = CaptureStartupState::default();
+        assert!(state.start_with("capture-a".into(), || Ok(42)).unwrap());
+        assert!(state
+            .start_with("capture-b".into(), || panic!("duplicate opened a device"))
+            .is_err());
+        assert!(state.take_active("capture-b").unwrap().is_none());
+        assert!(!state.cancel("capture-b").unwrap().accepted());
+        assert_eq!(state.take_active("capture-a").unwrap(), Some(42));
+        assert!(!state.cancel("capture-a").unwrap().accepted());
+    }
+
+    #[test]
+    fn cancelling_active_training_releases_its_capture_once() {
+        let (dropped_send, dropped_receive) = mpsc::sync_channel(1);
+        let state = CaptureStartupState::default();
+        assert!(state
+            .start_with("capture-a".into(), || Ok(OpenedCapture(dropped_send)))
+            .unwrap());
+        let cancelled = state.cancel("capture-a").unwrap();
+        assert!(cancelled.accepted());
+        assert!(!state.cancel("capture-a").unwrap().accepted());
+        assert!(state.take_active("capture-a").unwrap().is_none());
+        assert!(dropped_receive.try_recv().is_err());
+        drop(cancelled);
+        dropped_receive.recv().unwrap();
+        assert!(dropped_receive.try_recv().is_err());
+    }
 }

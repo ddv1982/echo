@@ -466,6 +466,38 @@ fn rec_toggle_stops_saves_cancels_and_restarts() {
     complete_toggle_session(&harness, 2);
 }
 
+#[test]
+fn rec_toggle_history_append_failure_keeps_transcript_without_history_id() {
+    let harness = ToggleHarness::new("history-append-failure");
+    std::fs::create_dir(harness.data().join("history.json")).unwrap();
+
+    let owner = harness.start();
+    harness.wait_for_state("Recording");
+    assert!(harness.toggle().status.success());
+    harness.wait_for_engine();
+    harness.release_engine();
+    let output = owner.wait_with_output();
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let status = harness.status();
+    assert!(status.contains("last=preserved transcript\n"), "{status}");
+    assert!(
+        status.contains("error=Echo transcribed but couldn't save the transcript to history:"),
+        "{status}"
+    );
+    assert!(!status.contains("last_history_id="), "{status}");
+    assert!(harness.data().join("history.json").is_dir());
+    assert!(!harness.data().join("recording.lock").exists());
+
+    std::fs::remove_dir(harness.data().join("history.json")).unwrap();
+    harness.reset_engine_barrier();
+    complete_toggle_session(&harness, 1);
+}
+
 #[derive(Clone, Copy)]
 enum OwnerDeathBoundary {
     Capture,

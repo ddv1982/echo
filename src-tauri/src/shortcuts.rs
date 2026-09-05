@@ -204,6 +204,8 @@ impl ShortcutRecordingTestEnv {
             .into_os_string();
         let values = [
             ("ECHO_DATA_DIR", dir.clone().into_os_string()),
+            ("ECHO_CONFIG_DIR", dir.join("config").into_os_string()),
+            ("ECHO_MODEL_DIR", dir.join("models").into_os_string()),
             ("ECHO_AUDIO_FIXTURE", fixture),
             ("ECHO_ENGINE", "fake".into()),
             ("ECHO_SKIP_INJECT", "1".into()),
