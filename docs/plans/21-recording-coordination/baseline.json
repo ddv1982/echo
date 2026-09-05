@@ -1,0 +1,104 @@
+{
+  "scope": "Pre-refactor synthetic native probe, debug build, isolated Xvfb, fake engine, no injection or hardware microphone. A single functional observation, not a production performance claim.",
+  "source": {
+    "commit": "55843805aa71a64910daf0730c7921de2fa8afb3",
+    "dirty": true,
+    "sourceFingerprint": "9642a4d4502ccbb262e226e39ea6e4d574f61cbac05d37d4291b29033dae014e"
+  },
+  "binarySha256": "568edf8394bcb278f4e61be2d368403b8c8dc383362a5acd25ffecd006d79c8f",
+  "environment": {
+    "desktop": "dbus-run-session + Xvfb",
+    "audio": "synthetic fixture",
+    "engine": "fake",
+    "injection": "disabled",
+    "microphone": "not used"
+  },
+  "verification": {
+    "checks": [
+      {
+        "name": "settings mutations retain their own saved values",
+        "passed": true
+      },
+      {
+        "name": "settings and microphone mutations are FIFO",
+        "passed": true
+      },
+      {
+        "name": "invalid setting rejects through its completion channel",
+        "passed": true
+      },
+      {
+        "name": "settings queue recovers after rejection",
+        "passed": true
+      },
+      {
+        "name": "start receipt identifies the active recording",
+        "passed": true
+      },
+      {
+        "name": "stale stop is rejected",
+        "passed": true
+      },
+      {
+        "name": "stale stop leaves the active recording unchanged",
+        "passed": true
+      },
+      {
+        "name": "normal stop receipt retains its session identity",
+        "passed": true
+      },
+      {
+        "name": "normal stop reaches an idle terminal observation with History",
+        "passed": true
+      },
+      {
+        "name": "completed recording is present in History",
+        "passed": true
+      }
+    ],
+    "timingsMs": {
+      "staleStopReceipt": 1.0,
+      "startReceipt": 10.0,
+      "stopReceipt": 13.999999999999972,
+      "terminalObservation": 82.00000000000003
+    },
+    "settingsRevisions": [
+      2,
+      3,
+      4,
+      5
+    ]
+  },
+  "statusLanes": [
+    {
+      "name": "noop",
+      "summary": {
+        "count": 500,
+        "minMs": 0.0,
+        "p50Ms": 0.0,
+        "p95Ms": 1.0,
+        "maxMs": 1.0000000000000568
+      }
+    },
+    {
+      "name": "fixed-status",
+      "summary": {
+        "count": 500,
+        "minMs": 0.0,
+        "p50Ms": 0.0,
+        "p95Ms": 1.0,
+        "maxMs": 1.0000000000001137
+      }
+    },
+    {
+      "name": "current-status",
+      "summary": {
+        "count": 40,
+        "minMs": 0.0,
+        "p50Ms": 1.0,
+        "p95Ms": 1.0,
+        "maxMs": 1.0
+      }
+    }
+  ]
+}

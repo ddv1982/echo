@@ -1,0 +1,6 @@
+ts	phase	decision	why	evidence	result
+2026-09-05	frame	Use one current checkout and disjoint worker files	Avoid temporary worktrees and stale builds from different checkouts	docs/plans/21-recording-coordination.md	Implementation started
+2026-09-05	proof	Maintain actual built-binary CLI toggle tests	Library controls alone missed a toggle regression	src-tauri/tests/cli_rec.rs	10 targeted CLI tests pass
+2026-09-05	proof	Maintain an isolated real Tauri probe	Preview and mocked IPC do not prove native command contracts	scripts/verify-recording-native.py; baseline.json	10 native contract checks pass before recording refactor
+2026-09-05	design	Compose existing Session with the held lease in a private publication owner	Remove separate transition and publication decisions without another phase machine	crates/echo/src/rec.rs	Selected over free transition helpers and larger run facade
+2026-09-05	design	Validate scoped active status against the live lease	Desktop PID outlives a failed worker; PID checks alone leave stale active state	crates/echo/src/status.rs	Implement and verify same-process lease-loss recovery

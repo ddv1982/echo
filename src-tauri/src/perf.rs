@@ -147,6 +147,22 @@ pub(crate) struct PerfReport {
     user_agent: String,
     platform: String,
     lanes: Vec<PerfLane>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    verification: Option<NativeVerificationReport>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NativeVerificationReport {
+    checks: Vec<NativeVerificationCheck>,
+    timings_ms: std::collections::BTreeMap<String, f64>,
+    settings_revisions: Vec<u64>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub(crate) struct NativeVerificationCheck {
+    name: String,
+    passed: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -181,6 +197,24 @@ fn validate_report(report: &PerfReport) -> Result<(), String> {
                 .any(|sample| !sample.is_finite() || *sample < 0.0)
         {
             return Err(format!("status performance lane {name} is invalid"));
+        }
+    }
+    if let Some(verification) = &report.verification {
+        if verification.checks.is_empty()
+            || verification
+                .checks
+                .iter()
+                .any(|check| check.name.is_empty() || !check.passed)
+            || verification
+                .timings_ms
+                .values()
+                .any(|value| !value.is_finite() || *value < 0.0)
+            || verification
+                .settings_revisions
+                .windows(2)
+                .any(|window| window[0] >= window[1])
+        {
+            return Err("native verification report is invalid".to_string());
         }
     }
     Ok(())
@@ -233,6 +267,31 @@ mod tests {
                 lane("fixed-status", 500, 1.0),
                 lane("current-status", 40, 1.0),
             ],
+            verification: None,
+        };
+        assert!(validate_report(&report).is_err());
+    }
+
+    #[test]
+    fn report_validation_rejects_a_failed_native_check() {
+        let report = PerfReport {
+            schema_version: 1,
+            app_version: env!("CARGO_PKG_VERSION").to_string(),
+            user_agent: "test".to_string(),
+            platform: "linux".to_string(),
+            lanes: vec![
+                lane("noop", 500, 1.0),
+                lane("fixed-status", 500, 1.0),
+                lane("current-status", 40, 1.0),
+            ],
+            verification: Some(NativeVerificationReport {
+                checks: vec![NativeVerificationCheck {
+                    name: "stale stop is rejected".to_string(),
+                    passed: false,
+                }],
+                timings_ms: std::collections::BTreeMap::new(),
+                settings_revisions: vec![1, 2],
+            }),
         };
         assert!(validate_report(&report).is_err());
     }
