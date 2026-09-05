@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.14.16
+
+- Home no longer suggests an unsafe terminal command to remove old Echo copies. Use the existing **Remove old copies** action.
+- Home disables the recording control during transcription and text insertion, preventing accidental cancellation while speech is processed.
+- Microphone discovery and selection now run on a worker so audio-device enumeration does not block the desktop UI.
+- Speech benchmark memory measurements now include child processes started by worker threads.
+
 ## v0.14.15
 
 - Dictionary replacements now preserve shorter valid matches when a longer overlapping phrase takes priority. Adding unrelated dictionary entries no longer changes which replacements apply.

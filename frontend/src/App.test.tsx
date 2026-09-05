@@ -30,6 +30,7 @@ import {
   stopRecording,
   testInputDevice,
   testMicrophoneFallback,
+  toggleRecording,
 } from './tauri'
 import type {
   AppStatus,
@@ -79,6 +80,7 @@ vi.mock('./tauri', async (importOriginal) => {
     stopRecording: vi.fn((activation: string) => actual.stopRecording(activation)),
     testInputDevice: vi.fn((id: string | null) => actual.testInputDevice(id)),
     testMicrophoneFallback: vi.fn(() => actual.testMicrophoneFallback()),
+    toggleRecording: vi.fn(() => actual.toggleRecording()),
   }
 })
 
@@ -148,6 +150,8 @@ describe('Echo desktop shell', () => {
     vi.mocked(retryShortcut).mockImplementation(() => actual.retryShortcut())
     vi.mocked(stopRecording).mockReset()
     vi.mocked(stopRecording).mockImplementation((activation) => actual.stopRecording(activation))
+    vi.mocked(toggleRecording).mockReset()
+    vi.mocked(toggleRecording).mockImplementation(() => actual.toggleRecording())
     vi.mocked(getSettings).mockReset()
     vi.mocked(getSettings).mockImplementation(() => actual.getSettings())
     vi.mocked(getMicrophones).mockReset()
@@ -299,6 +303,90 @@ describe('Echo desktop shell', () => {
     expect(screen.getByPlaceholderText('Search transcripts…')).toBeInTheDocument()
   })
 
+  it.each([
+    ['Transcribing', 'Transcribing locally…', 'Whisper · small · VAD on is turning your recording into text.'],
+    ['Injecting', 'Inserting transcript…', 'ydotool · Wayland is sending your transcript to the active app.'],
+  ] satisfies Array<[AppStatus['phase'], string, string]>)(
+    'prevents a second recording toggle while %s',
+    async (phase, heading, description) => {
+      seedPreviewStatus({ phase, recordingInProcess: false })
+      render(<App />)
+
+      const orb = await screen.findByRole('button', { name: 'Processing recording' })
+      expect(orb).toBeDisabled()
+      expect(screen.getByRole('heading', { name: heading })).toBeInTheDocument()
+      expect(screen.getByText(description)).toBeInTheDocument()
+      fireEvent.click(orb)
+      expect((await previewDesktopApi.getAppStatus()).phase).toBe(phase)
+    },
+  )
+
+  it.each(['Idle', 'Failed'] as const)(
+    'allows recording to start again from %s',
+    async (phase) => {
+      seedPreviewStatus({
+        phase,
+        recordingInProcess: false,
+      })
+      render(<App />)
+
+      const orb = await screen.findByRole('button', { name: 'Start recording' })
+      expect(orb).toBeEnabled()
+      fireEvent.click(orb)
+      fireEvent.click(orb)
+      expect(await screen.findByRole('button', { name: 'Stop and transcribe' })).toBeEnabled()
+    },
+  )
+
+  it('keeps a successful stop pending through stale statuses and polling errors', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const recording = { ...richPreviewStatus(), phase: 'Recording' } satisfies AppStatus
+    const transcribing = { ...recording, phase: 'Transcribing', recordingInProcess: false } satisfies AppStatus
+    const idle = { ...recording, phase: 'Idle', recordingInProcess: false } satisfies AppStatus
+    vi.mocked(toggleRecording).mockResolvedValueOnce(undefined)
+    vi.mocked(getAppStatus)
+      .mockResolvedValueOnce(recording)
+      .mockResolvedValueOnce(recording)
+      .mockRejectedValueOnce(new Error('temporary status error'))
+      .mockResolvedValueOnce(transcribing)
+      .mockResolvedValueOnce(idle)
+    try {
+      render(<App />)
+      const stop = await screen.findByRole('button', { name: 'Stop and transcribe' })
+      fireEvent.click(stop)
+      await act(async () => {})
+      expect(toggleRecording).toHaveBeenCalledOnce()
+
+      const stopping = screen.getByRole('button', { name: 'Stopping recording' })
+      expect(stopping).toBeDisabled()
+      fireEvent.click(stopping)
+      expect(toggleRecording).toHaveBeenCalledOnce()
+
+      await act(async () => vi.advanceTimersByTimeAsync(400))
+      expect(screen.getByRole('button', { name: 'Stopping recording' })).toBeDisabled()
+      await act(async () => vi.advanceTimersByTimeAsync(400))
+      expect(screen.getByRole('button', { name: 'Processing recording' })).toBeDisabled()
+      await act(async () => vi.advanceTimersByTimeAsync(400))
+      expect(screen.getByRole('button', { name: 'Start recording' })).toBeEnabled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('releases a rejected stop request for retry', async () => {
+    const recording = { ...richPreviewStatus(), phase: 'Recording' } satisfies AppStatus
+    vi.mocked(getAppStatus).mockResolvedValue(recording)
+    vi.mocked(toggleRecording)
+      .mockRejectedValueOnce(new Error('stop was rejected'))
+      .mockResolvedValueOnce(undefined)
+    render(<App />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop and transcribe' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('stop was rejected')
+    fireEvent.click(screen.getByRole('button', { name: 'Stop and transcribe' }))
+    await waitFor(() => expect(toggleRecording).toHaveBeenCalledTimes(2))
+  })
+
   it('reports a rejected dictionary entry without clearing the form or leaving it busy', async () => {
     vi.mocked(addDictionaryEntry).mockRejectedValueOnce(new Error('could not add dictionary entry'))
     render(<App />)
@@ -398,14 +486,15 @@ describe('Echo desktop shell', () => {
   it('warns when a stale install shadows the running binary', async () => {
     seedPreviewStatus({
       currentExe: '/usr/bin/echo-desktop',
-      firstPathHit: '/home/user/.local/bin/echo-desktop',
-      staleInstalls: ['/home/user/.local/bin/echo-desktop'],
+      firstPathHit: '/home/user/.local/bin/echo desktop; keep-me',
+      staleInstalls: ['/home/user/.local/bin/echo desktop; keep-me'],
     })
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     const warning = await screen.findByRole('alert')
-    expect(warning).toHaveTextContent('/home/user/.local/bin/echo-desktop')
-    expect(warning).toHaveTextContent('rm -f /home/user/.local/bin/echo-desktop')
+    expect(warning).toHaveTextContent('/home/user/.local/bin/echo desktop; keep-me')
+    expect(warning).not.toHaveTextContent('rm -f')
+    expect(within(warning).getByRole('button', { name: 'Remove old copies' })).toBeEnabled()
   })
 
   it('shows no stale-install warning when PATH is clean', async () => {
@@ -425,8 +514,7 @@ describe('Echo desktop shell', () => {
     await screen.findByRole('button', { name: 'Start recording' })
     const warning = await screen.findByRole('alert')
     expect(warning).toHaveTextContent('/home/user/.local/bin/echo-desktop')
-    // The manual command stays visible as secondary text.
-    expect(warning).toHaveTextContent('rm -f /home/user/.local/bin/echo-desktop')
+    expect(warning).not.toHaveTextContent('rm -f')
 
     fireEvent.click(within(warning).getByRole('button', { name: 'Remove old copies' }))
     expect(vi.mocked(removeStaleInstalls)).toHaveBeenCalledTimes(1)
