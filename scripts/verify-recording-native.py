@@ -162,7 +162,8 @@ def run(argv: list[str]) -> int:
         parser.error("--timeout must be greater than zero")
 
     profile = "release" if args.release else "debug"
-    target = Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "target")).resolve()
+    target_base = Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "target")).resolve()
+    target = target_base / "recording-native-probe"
     lock = args.lock_file or Path(
         os.environ.get("ECHO_COORDINATION_LOCK_FILE", target / ".verify-recording-native.lock")
     )

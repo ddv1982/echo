@@ -45,7 +45,7 @@ cargo test -p echo-desktop --bin echo-desktop commands::dictionary_training::tes
 python3 scripts/verify-recording-native.py --output /tmp/echo-native-recording.json
 ```
 
-Use `--release` on the native probe for an optimized measurement. Set `CARGO_TARGET_DIR` to select the build directory. If another command may build into that directory, coordinate the entire build/run with the probe's `--lock-file` or `ECHO_COORDINATION_LOCK_FILE`. Do not share a target with deliberately mutated source tests.
+Use `--release` on the native probe for an optimized measurement. The probe builds below `target/recording-native-probe`, preserving the normal debug executable. Set `CARGO_TARGET_DIR` to select the parent target directory. If another command may build into that directory, coordinate the entire build/run with the probe's `--lock-file` or `ECHO_COORDINATION_LOCK_FILE`. Do not share a target with deliberately mutated source tests.
 
 ## Transport decision
 
