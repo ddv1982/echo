@@ -4,37 +4,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../App'
 import { createPreviewDesktopApi } from '../api/previewDesktopApi'
 import {
-  addDictionaryEntry,
   configureDesktopApi,
-  clearHistory,
-  copyText,
-  deleteHistoryItem,
-  getAppStatus,
-  getHistory,
-  getRecordingLevel,
-  getShortcutStatus,
   getSettings,
   getMicrophones,
   getReadiness,
-  listGpuDevices,
-  listLanguages,
-  listModels,
-  quitApp,
-  repairLegacyShortcut,
-  retryShortcut,
   onSetupEvent,
-  setSettings,
   setMicrophone,
   startSetup,
-  stopRecording,
   testInputDevice,
-  testMicrophoneFallback,
 } from '../tauri'
+import { deferred, resetDesktopApiMocks } from '../test/desktopApiHarness'
 import type {
-  ComponentId,
-  SettingsChange,
   SetupEvent,
-  SetupPlanId,
 } from '../generated/ipc'
 
 const previewDesktopApi = createPreviewDesktopApi()
@@ -50,59 +31,9 @@ function requireFixture<T>(value: T | null | undefined, description: string): T 
 
 vi.mock('../tauri', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../tauri')>()
-  return {
-    ...actual,
-    addDictionaryEntry: vi.fn((spoken: string, written: string) =>
-      actual.addDictionaryEntry(spoken, written)),
-    clearHistory: vi.fn(() => Promise.resolve(0)),
-    copyText: vi.fn((text: string) => actual.copyText(text)),
-    deleteHistoryItem: vi.fn(() => Promise.resolve(false)),
-    getAppStatus: vi.fn(() => actual.getAppStatus()),
-    getHistory: vi.fn(() => actual.getHistory()),
-    getRecordingLevel: vi.fn(() => actual.getRecordingLevel()),
-    getShortcutStatus: vi.fn(() => actual.getShortcutStatus()),
-    getSettings: vi.fn(() => actual.getSettings()),
-    getMicrophones: vi.fn(() => actual.getMicrophones()),
-    getReadiness: vi.fn(() => actual.getReadiness()),
-    listGpuDevices: vi.fn((refresh?: boolean) => actual.listGpuDevices(refresh)),
-    listLanguages: vi.fn(() => actual.listLanguages()),
-    listModels: vi.fn(() => actual.listModels()),
-    quitApp: vi.fn(() => actual.quitApp()),
-    setSettings: vi.fn((settings: SettingsChange) => actual.setSettings(settings)),
-    setMicrophone: vi.fn((id: string | null) => actual.setMicrophone(id)),
-    startSetup: vi.fn((plan: SetupPlanId, managedCopy?: boolean) => actual.startSetup(plan, managedCopy)),
-    removeStaleInstalls: vi.fn(() => actual.removeStaleInstalls()),
-    repairLegacyShortcut: vi.fn(() => actual.repairLegacyShortcut()),
-    repairManaged: vi.fn((component: ComponentId) => actual.repairManaged(component)),
-    onSetupEvent: vi.fn((handler: (event: SetupEvent) => void) => actual.onSetupEvent(handler)),
-    retryShortcut: vi.fn(() => actual.retryShortcut()),
-    stopRecording: vi.fn((activation: string) => actual.stopRecording(activation)),
-    testInputDevice: vi.fn((id: string | null) => actual.testInputDevice(id)),
-    testMicrophoneFallback: vi.fn(() => actual.testMicrophoneFallback()),
-  }
+  const { createDesktopApiMocks } = await import('../test/desktopApiHarness')
+  return { ...actual, ...createDesktopApiMocks(actual) }
 })
-
-function deferred<T>() {
-  const state: {
-    resolve: ((value: T | PromiseLike<T>) => void) | null
-    reject: ((reason?: unknown) => void) | null
-  } = { resolve: null, reject: null }
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    state.resolve = resolvePromise
-    state.reject = rejectPromise
-  })
-  return {
-    promise,
-    resolve(value: T | PromiseLike<T>) {
-      if (!state.resolve) throw new Error('deferred promise is not initialized')
-      state.resolve(value)
-    },
-    reject(reason?: unknown) {
-      if (!state.reject) throw new Error('deferred promise is not initialized')
-      state.reject(reason)
-    },
-  }
-}
 
 describe('Echo desktop shell', () => {
   beforeEach(async () => {
@@ -112,55 +43,8 @@ describe('Echo desktop shell', () => {
     localStorage.removeItem('echo-shortcut-verified-at')
     localStorage.removeItem('echo-shortcut-verified-identity')
     const actual = await vi.importActual<typeof import('../tauri')>('../tauri')
-    vi.mocked(addDictionaryEntry).mockReset()
-    vi.mocked(addDictionaryEntry).mockImplementation((spoken, written) =>
-      actual.addDictionaryEntry(spoken, written))
-    vi.mocked(clearHistory).mockReset()
-    vi.mocked(clearHistory).mockResolvedValue(3)
-    vi.mocked(copyText).mockReset()
-    vi.mocked(copyText).mockImplementation((text) => actual.copyText(text))
-    vi.mocked(deleteHistoryItem).mockReset()
-    vi.mocked(deleteHistoryItem).mockResolvedValue(true)
-    vi.mocked(getAppStatus).mockReset()
-    vi.mocked(getAppStatus).mockImplementation(() => actual.getAppStatus())
-    vi.mocked(getHistory).mockReset()
-    vi.mocked(getHistory).mockImplementation(() => actual.getHistory())
-    vi.mocked(getRecordingLevel).mockReset()
-    vi.mocked(getRecordingLevel).mockImplementation(() => actual.getRecordingLevel())
-    vi.mocked(getShortcutStatus).mockReset()
-    vi.mocked(getShortcutStatus).mockImplementation(() => actual.getShortcutStatus())
-    vi.mocked(setSettings).mockReset()
-    vi.mocked(setSettings).mockImplementation((settings) => actual.setSettings(settings))
-    vi.mocked(repairLegacyShortcut).mockReset()
-    vi.mocked(repairLegacyShortcut).mockImplementation(() => actual.repairLegacyShortcut())
-    vi.mocked(retryShortcut).mockReset()
-    vi.mocked(retryShortcut).mockImplementation(() => actual.retryShortcut())
-    vi.mocked(stopRecording).mockReset()
-    vi.mocked(stopRecording).mockImplementation((activation) => actual.stopRecording(activation))
-    vi.mocked(getSettings).mockReset()
-    vi.mocked(getSettings).mockImplementation(() => actual.getSettings())
-    vi.mocked(getMicrophones).mockReset()
-    vi.mocked(getMicrophones).mockImplementation(() => actual.getMicrophones())
-    vi.mocked(getReadiness).mockReset()
-    vi.mocked(getReadiness).mockImplementation(() => actual.getReadiness())
-    vi.mocked(listGpuDevices).mockReset()
-    vi.mocked(listGpuDevices).mockImplementation((refresh) => actual.listGpuDevices(refresh))
-    vi.mocked(listLanguages).mockReset()
-    vi.mocked(listLanguages).mockImplementation(() => actual.listLanguages())
-    vi.mocked(setMicrophone).mockReset()
-    vi.mocked(setMicrophone).mockImplementation((id) => actual.setMicrophone(id))
-    vi.mocked(startSetup).mockReset()
-    vi.mocked(startSetup).mockImplementation((plan, managedCopy) => actual.startSetup(plan, managedCopy))
-    vi.mocked(listModels).mockReset()
-    vi.mocked(listModels).mockImplementation(() => actual.listModels())
-    vi.mocked(quitApp).mockReset()
-    vi.mocked(quitApp).mockImplementation(() => actual.quitApp())
-    vi.mocked(onSetupEvent).mockReset()
-    vi.mocked(onSetupEvent).mockImplementation((handler) => actual.onSetupEvent(handler))
-    vi.mocked(testInputDevice).mockReset()
-    vi.mocked(testInputDevice).mockImplementation((id) => actual.testInputDevice(id))
-    vi.mocked(testMicrophoneFallback).mockReset()
-    vi.mocked(testMicrophoneFallback).mockImplementation(() => actual.testMicrophoneFallback())
+    const mocks = await import('../tauri')
+    resetDesktopApiMocks(mocks, actual)
   })
 
   it('unlistens when SetupChecklist subscription setup resolves after unmount', async () => {
