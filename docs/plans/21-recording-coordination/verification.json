@@ -1,0 +1,125 @@
+{
+  "scope": "Integrated local verification; synthetic debug native probe, not physical-desktop or routine-use sign-off.",
+  "source": {
+    "commit": "1f8cda3d8f391a977afdbcabe43034f27598f45c",
+    "dirty": true,
+    "sourceFingerprint": "6db44922fbc3bc71c816295d84881b27c26c819279d946b15b560e1fc791680c",
+    "probeSourceSha256": {
+      "frontend/src/verification/nativeRecordingProbe.ts": "99b5ca9d001ffa11f0baee2d67190cddf07eac8dca94de8dd8633e3924c8a9d9",
+      "frontend/src/api/tauriDesktopApi.ts": "cc3e202f942dd9cde22f5271adde78e2a307c4934b152f3319223e316e8fe35a",
+      "frontend/src/perf/statusPerf.ts": "fb0c237aad4f2cf5c28a8d17cb7caf8a18a62fd3590f762a007be3fdace41cd8"
+    }
+  },
+  "sourceChangedDuringRun": false,
+  "valid": true,
+  "binarySha256": "068523adb29ac59fdcfe06f2bb19b6d8b102c0eda6e95552e80d31a92adf7aa5",
+  "profile": "debug",
+  "environment": {
+    "desktop": "dbus-run-session + Xvfb",
+    "audio": "synthetic fixture",
+    "engine": "fake",
+    "injection": "disabled",
+    "microphone": "not used"
+  },
+  "nativeContracts": {
+    "checks": [
+      {
+        "name": "settings mutations retain their own saved values",
+        "passed": true
+      },
+      {
+        "name": "settings and microphone mutations are FIFO",
+        "passed": true
+      },
+      {
+        "name": "invalid setting rejects through its completion channel",
+        "passed": true
+      },
+      {
+        "name": "settings queue recovers after rejection",
+        "passed": true
+      },
+      {
+        "name": "start receipt identifies the active recording",
+        "passed": true
+      },
+      {
+        "name": "stale stop is rejected",
+        "passed": true
+      },
+      {
+        "name": "stale stop leaves the active recording unchanged",
+        "passed": true
+      },
+      {
+        "name": "normal stop receipt retains its session identity",
+        "passed": true
+      },
+      {
+        "name": "normal stop reaches an idle terminal observation with History",
+        "passed": true
+      },
+      {
+        "name": "completed recording is present in History",
+        "passed": true
+      }
+    ],
+    "timingsMs": {
+      "staleStopReceipt": 2.0,
+      "startReceipt": 22.0,
+      "stopReceipt": 19.0,
+      "terminalObservation": 109.0
+    },
+    "settingsRevisions": [
+      2,
+      3,
+      4,
+      5
+    ]
+  },
+  "statusLanes": [
+    {
+      "name": "noop",
+      "summary": {
+        "count": 500,
+        "minMs": 0.0,
+        "p50Ms": 0.0,
+        "p95Ms": 1.0,
+        "maxMs": 1.0000000000002274
+      }
+    },
+    {
+      "name": "fixed-status",
+      "summary": {
+        "count": 500,
+        "minMs": 0.0,
+        "p50Ms": 0.0,
+        "p95Ms": 1.0,
+        "maxMs": 1.0000000000002274
+      }
+    },
+    {
+      "name": "current-status",
+      "summary": {
+        "count": 40,
+        "minMs": 0.0,
+        "p50Ms": 1.0,
+        "p95Ms": 1.0,
+        "maxMs": 1.0
+      }
+    }
+  ],
+  "checks": {
+    "rustWorkspacePassed": 525,
+    "rustWorkspaceIgnored": 16,
+    "frontendPassed": 275,
+    "browserPassed": 6,
+    "nativeEvidenceGatePassed": 5,
+    "isolatedX11Grab": "passed",
+    "privateBusPortalRouting": "passed",
+    "clippy": "passed",
+    "generatedIpc": "passed",
+    "physicalDesktop": "not performed",
+    "routineUseSoak": "pending"
+  }
+}

@@ -7,6 +7,7 @@ import argparse
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import signal
@@ -41,7 +42,7 @@ def source_paths() -> list[Path]:
     return [Path(path.decode()) for path in listed.split(b"\0") if path]
 
 
-def hash_source_file(digest: hashlib._Hash, relative: Path) -> None:
+def hash_source_file(digest, relative: Path) -> None:
     path = ROOT / relative
     digest.update(str(relative).encode())
     digest.update(b"\0")
@@ -84,6 +85,29 @@ def redact_status_perf(payload: dict[str, object]) -> dict[str, object]:
     if isinstance(report, dict):
         report.pop("userAgent", None)
     return payload
+
+
+def valid_contract_report(payload: dict[str, object] | None, commit: str, version: str) -> bool:
+    if payload is None or payload.get("commit") != commit:
+        return False
+    report = payload.get("report", {})
+    if report.get("appVersion") != version:
+        return False
+    verification = report.get("verification", {})
+    checks = verification.get("checks", [])
+    if len(checks) != 10 or len({check.get("name") for check in checks}) != 10:
+        return False
+    if not all(check.get("passed") is True for check in checks):
+        return False
+    timings = verification.get("timingsMs", {})
+    expected = {"startReceipt", "staleStopReceipt", "stopReceipt", "terminalObservation"}
+    if timings.keys() != expected or not all(
+        isinstance(value, (int, float)) and math.isfinite(value) and value >= 0
+        for value in timings.values()
+    ):
+        return False
+    revisions = verification.get("settingsRevisions", [])
+    return len(revisions) == 4 and all(a < b for a, b in zip(revisions, revisions[1:]))
 
 
 def redacted_stdout(stdout: str) -> tuple[str, dict[str, object] | None]:
@@ -207,9 +231,10 @@ def run(argv: list[str]) -> int:
                 (args.log_dir / "native.stderr.log").write_text(stderr)
             source_at_end = source_identity()
             source_changed = source_at_end != identity
+            contracts_passed = valid_contract_report(status_perf, str(identity["commit"]), version)
             result: dict[str, object] = {
                 "schemaVersion": 1,
-                "valid": not source_changed,
+                "valid": not source_changed and contracts_passed and process.returncode == 0,
                 "source": identity,
                 "sourceAtEnd": source_at_end,
                 "sourceChangedDuringRun": source_changed,
@@ -231,10 +256,13 @@ def run(argv: list[str]) -> int:
             if output:
                 output.parent.mkdir(parents=True, exist_ok=True)
                 output.write_text(json.dumps(result, indent=2) + "\n")
-            print(json.dumps(result, indent=2))
+            if output:
+                print(json.dumps({"valid": result["valid"], "report": str(output), "commit": identity["commit"]}))
+            else:
+                print(json.dumps(result, indent=2))
             if stderr:
                 print(stderr, file=sys.stderr)
-            if process.returncode != 0 or status_perf is None:
+            if process.returncode != 0 or not contracts_passed:
                 print(safe_stdout, file=sys.stderr)
                 raise RuntimeError("native probe failed; see stdout/stderr above")
             if source_changed:

@@ -1,6 +1,6 @@
 # Recording coordination improvement plan
 
-Status: proposed. Research only; none of the phases below has been implemented.
+Status: implementation and automated verification are complete on the recording-coordination branch. Physical-desktop and elapsed routine-use sign-off remain open. See the [implementation record](21-recording-coordination/implementation.md).
 
 Baseline: `55843805aa71a64910daf0730c7921de2fa8afb3`, released as `v0.14.17`.
 Investigated on 2026-09-05 using source traces, existing tests, release-verification evidence, Exa, Ref, and three independent architectural critiques.
