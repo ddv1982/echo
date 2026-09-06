@@ -387,10 +387,7 @@ fn discover_inputs(host_id: cpal::HostId) -> InputDiscovery {
         .map(|id| id.to_string());
     #[cfg(target_os = "linux")]
     let default_id = match &native {
-        Some(native) => native
-            .default_source
-            .as_ref()
-            .map(|id| id.as_str().to_owned()),
+        Some(native) => default_input_id(default_id, native.default_source.as_ref()),
         None => default_id,
     };
     let handles = match host.input_devices() {
@@ -463,6 +460,16 @@ fn discover_inputs(host_id: cpal::HostId) -> InputDiscovery {
             .then_with(|| left.info.id.as_str().cmp(right.info.id.as_str()))
     });
     discovery
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn default_input_id(
+    host_default: Option<String>,
+    native_default: Option<&MicrophoneId>,
+) -> Option<String> {
+    native_default
+        .map(|id| id.as_str().to_owned())
+        .or(host_default)
 }
 
 fn non_source_reason(device: &InputDeviceInfo) -> Option<&'static str> {
@@ -1387,6 +1394,18 @@ mod tests {
         ] {
             assert!(validate_capture_config(2, 48_000, format).is_ok());
         }
+    }
+
+    #[test]
+    fn missing_native_default_preserves_the_host_default() {
+        let host = "pulseaudio:usb-microphone".to_owned();
+        assert_eq!(default_input_id(Some(host.clone()), None), Some(host));
+        let native = MicrophoneId::parse("pulseaudio:native-default").unwrap();
+        assert_eq!(
+            default_input_id(Some("pulseaudio:other".into()), Some(&native)),
+            Some(native.as_str().to_owned())
+        );
+        assert_eq!(default_input_id(None, None), None);
     }
 
     #[test]
