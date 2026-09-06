@@ -128,6 +128,7 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libdbus-1-dev \
             libayatana-appindicator3-dev \
+            pipewire-bin \
             strace \
             xdotool \
             xvfb

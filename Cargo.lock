@@ -1176,6 +1176,8 @@ dependencies = [
  "fs2",
  "hound",
  "notify-rust",
+ "pipewire",
+ "pulseaudio",
  "rustix",
  "serde",
  "serde_json",

@@ -1,6 +1,9 @@
 use echo_core::MicrophoneSelection;
 use serde::Serialize;
 
+#[cfg(target_os = "linux")]
+pub mod availability;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct MicrophoneId(String);
 
