@@ -141,35 +141,18 @@ export function defaultPreviewGpuDevices(): GpuDevice[] {
 }
 
 export function defaultPreviewDevices(): InputDevice[] {
-  const advancedDeviceOptions: Array<readonly [id: string, label: string]> = [
-    ['alsa:pipewire', 'PipeWire Sound Server'],
-    ['alsa:pulse', 'PulseAudio Sound Server'],
-    ['alsa:downmix', 'Plugin for channel downmix'],
-    ['alsa:upmix', 'Plugin for channel upmix'],
-    ['alsa:speex', 'Plugin using Speex DSP'],
-    ['alsa:speexrate', 'Rate Converter Using Speex'],
-    ['alsa:dsnoop:CARD=sofhdadsp,DEV=6', 'sof-hda-dsp,'],
-    ['alsa:dsnoop:CARD=sofhdadsp,DEV=7', 'sof-hda-dsp,'],
-  ]
-  const advancedDevices: InputDevice[] = advancedDeviceOptions.map(([id, label]) => ({
-    id, label, isDefault: false, manufacturer: null, deviceType: 'Virtual', interfaceType: 'Virtual', address: null, driver: 'ALSA', extended: [], host: 'alsa', transport: 'virtual', tier: 'advanced', hint: 'Virtual endpoint',
-  }))
   return [
-    { id: 'pipewire:alsa_input.pci-0000_00_1f.3.analog-stereo', label: 'Built-in Audio', isDefault: false, manufacturer: 'Intel', deviceType: 'Microphone', interfaceType: 'Built-in', address: null, driver: 'PipeWire', extended: [], host: 'pipe-wire', transport: 'built-in', tier: 'primary', hint: 'Built in · Microphone · Intel' },
+    { id: 'pipewire:alsa_input.pci-0000_00_1f.3.analog-stereo', label: 'Built-in Audio', isDefault: true, manufacturer: 'Intel', deviceType: 'Microphone', interfaceType: 'Built-in', address: null, driver: 'PipeWire', extended: [], host: 'pipe-wire', transport: 'built-in', tier: 'primary', hint: 'Built in · Microphone · Intel' },
     { id: 'pipewire:bluez_input.48_5F_99_00_11_22.0', label: 'Jabra Elite 8 Active', isDefault: false, manufacturer: 'Jabra', deviceType: 'Headset', interfaceType: 'Bluetooth', address: '48:5F:99:00:11:22', driver: 'PipeWire', extended: [], host: 'pipe-wire', transport: 'bluetooth', tier: 'primary', hint: 'Bluetooth · Headset · Jabra' },
     { id: 'pipewire:alsa_input.usb-Focusrite_Scarlett_Solo_USB-00.analog-stereo', label: 'USB Microphone', isDefault: false, manufacturer: 'Focusrite', deviceType: 'Microphone', interfaceType: 'USB', address: '1-2', driver: 'PipeWire', extended: [], host: 'pipe-wire', transport: 'usb', tier: 'primary', hint: 'USB · Microphone · Focusrite' },
     { id: 'pipewire:alsa_input.usb-Logitech_USB_Headset-00.mono-fallback', label: 'USB Microphone', isDefault: false, manufacturer: 'Logitech', deviceType: 'Headset', interfaceType: 'USB', address: '1-3', driver: 'PipeWire', extended: [], host: 'pipe-wire', transport: 'usb', tier: 'primary', hint: 'USB · Headset · Logitech' },
-    ...advancedDevices,
+    { id: 'pipewire:echo_denoised_input', label: 'Denoised Microphone', isDefault: false, manufacturer: null, deviceType: 'Virtual', interfaceType: 'Virtual', address: null, driver: 'PipeWire', extended: [], host: 'pipe-wire', transport: 'virtual', tier: 'advanced', hint: 'Virtual microphone input' },
   ]
 }
 
-export function defaultPreviewSystemDefault(): InputDevice {
-  return { id: 'pipewire:input_default', label: 'System default', isDefault: true, manufacturer: null, deviceType: 'Microphone', interfaceType: 'Virtual', address: null, driver: 'PipeWire', extended: [], host: 'pipe-wire', transport: 'virtual', tier: 'advanced', hint: 'Follows the Linux system default' }
-}
-
 export function defaultPreviewMicrophones(devices: InputDevice[]): MicrophoneSnapshot {
-  const systemDefault = defaultPreviewSystemDefault()
-  return { revision: 0, host: 'pipe-wire', source: 'default', systemDefault, systemDefaultIsProxy: true, devices, selection: { kind: 'system-default', active: systemDefault }, enumerationWarning: null }
+  const systemDefault = devices.find((device) => device.isDefault) ?? null
+  return { revision: 0, host: 'pipe-wire', source: 'default', systemDefault, systemDefaultIsProxy: false, devices, selection: { kind: 'system-default', active: systemDefault }, enumerationWarning: null }
 }
 
 export function defaultPreviewReadiness(): Readiness {

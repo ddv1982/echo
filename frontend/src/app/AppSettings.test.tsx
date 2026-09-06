@@ -364,17 +364,17 @@ describe('Echo desktop shell', () => {
 
     expect(await screen.findByRole('radio', { name: /Jabra Elite 8 Active/ })).toBeVisible()
     expect(screen.getByText('Bluetooth · Headset · Jabra')).toBeVisible()
-    expect(screen.getByText('Follows the current Linux input automatically')).toBeVisible()
+    expect(screen.getByText('Currently Built-in Audio')).toBeVisible()
     expect(screen.queryByText('pipewire:input_default')).not.toBeInTheDocument()
     const advanced = requireFixture(
       screen.getByText('Advanced audio endpoints').closest('details'),
       'Advanced audio endpoints disclosure',
     )
     expect(advanced).not.toHaveAttribute('open')
-    expect(screen.getByText('PipeWire Sound Server')).not.toBeVisible()
+    expect(screen.getByText('Denoised Microphone')).not.toBeVisible()
     fireEvent.click(screen.getByText('Advanced audio endpoints'))
-    expect(screen.getByText('PipeWire Sound Server')).toBeVisible()
-    expect(screen.getByText('alsa:pipewire')).toBeVisible()
+    expect(screen.getByRole('radio', { name: /Denoised Microphone/ })).toBeEnabled()
+    expect(screen.getByText('pipewire:echo_denoised_input')).toBeVisible()
   })
 
   it('names the active input when Linux has no declared default', async () => {
@@ -389,7 +389,7 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    expect(await screen.findByText(`Using ${active.label} because Linux has no default input`)).toBeVisible()
+    expect(await screen.findByText(`Using ${active.label} as the fallback input`)).toBeVisible()
   })
 
   it('names a missing selection and tests fallback only through the explicit action', async () => {
@@ -407,13 +407,61 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    expect(await screen.findByText(/Travel Mic is disconnected/)).toBeInTheDocument()
-    expect(screen.getByText(/current input from Linux Sound Settings/)).toBeInTheDocument()
+    expect(await screen.findByText(/Travel Mic is unavailable/)).toBeInTheDocument()
+    expect(screen.getByText(/Recording will use the system fallback, Built-in Audio/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Test selected' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Test system fallback' }))
     expect(await screen.findByRole('status')).toHaveTextContent(
-      'Input heard on System default',
+      'Input heard on Built-in Audio',
     )
+  })
+
+  it.each(['system-default', 'missing-without-fallback'])('offers no capture test for %s with no usable inputs', async (kind) => {
+    const snapshot = await getMicrophones()
+    seedPreviewMicrophones({
+      ...snapshot,
+      devices: [],
+      systemDefault: null,
+      selection: kind === 'system-default'
+        ? { kind: 'system-default', active: null }
+        : { kind: 'missing-without-fallback', requestedId: 'pipewire:unplugged', requestedLabel: 'Travel Mic' },
+    })
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+
+    expect(await screen.findByText('No microphone input is available. Connect a microphone and refresh.')).toBeVisible()
+    const defaultOption = screen.getByRole('radio', { name: /Follow system default/ })
+    expect(defaultOption).toBeEnabled()
+    if (kind === 'system-default') expect(defaultOption).toBeChecked()
+    else expect(screen.getByText('Travel Mic is unavailable.')).toBeVisible()
+    expect(screen.queryByRole('button', { name: 'Test selected' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Test system fallback' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Advanced audio endpoints')).not.toBeInTheDocument()
+    expect(screen.getAllByRole('radio', { name: /Follow system default|Microphone/ })).toHaveLength(1)
+    expect(screen.getByRole('button', { name: /^Refresh$/ })).toBeEnabled()
+    if (kind === 'missing-without-fallback') {
+      fireEvent.click(defaultOption)
+      await waitFor(() => expect(defaultOption).toBeChecked())
+      expect(screen.queryByText('Travel Mic is unavailable.')).not.toBeInTheDocument()
+      expect((await getMicrophones()).selection).toEqual({ kind: 'system-default', active: null })
+      expect(screen.queryByRole('button', { name: 'Test selected' })).not.toBeInTheDocument()
+    }
+  })
+
+  it('keeps a quiet microphone selectable after a successful silent capture', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    const quiet = await screen.findByRole('radio', { name: /Logitech/ })
+    fireEvent.click(quiet)
+    await waitFor(() => expect(quiet).toBeChecked())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Test selected' }))
+
+    expect(await screen.findByRole('status')).toHaveTextContent('No input detected on USB Microphone')
+    expect(quiet).toBeEnabled()
+    expect(quiet).toBeChecked()
   })
 
   it('clears the microphone test result when the selection changes', async () => {

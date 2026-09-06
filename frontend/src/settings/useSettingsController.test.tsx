@@ -5,6 +5,7 @@ import { createPreviewDesktopApi } from '../api/previewDesktopApi'
 import type {
   ComponentId,
   MicrophoneSnapshot,
+  MicrophoneTestResult,
   SettingsChange,
   SettingsSnapshot,
   SetupEvent,
@@ -18,6 +19,7 @@ import {
   repairManaged,
   setMicrophone,
   setSettings,
+  testInputDevice,
 } from '../tauri'
 import { useSettingsController } from './useSettingsController'
 
@@ -34,6 +36,7 @@ vi.mock('../tauri', async (importOriginal) => {
     repairManaged: vi.fn((component: ComponentId) => actual.repairManaged(component)),
     setMicrophone: vi.fn((id: string | null) => actual.setMicrophone(id)),
     setSettings: vi.fn((change: SettingsChange) => actual.setSettings(change)),
+    testInputDevice: vi.fn((id: string | null) => actual.testInputDevice(id)),
   }
 })
 
@@ -75,6 +78,8 @@ describe('useSettingsController', () => {
     vi.mocked(setMicrophone).mockImplementation((id) => actual.setMicrophone(id))
     vi.mocked(setSettings).mockReset()
     vi.mocked(setSettings).mockImplementation((change) => actual.setSettings(change))
+    vi.mocked(testInputDevice).mockReset()
+    vi.mocked(testInputDevice).mockImplementation((id) => actual.testInputDevice(id))
   })
 
   it('delegates rapid field changes in call order', async () => {
@@ -185,6 +190,76 @@ describe('useSettingsController', () => {
       kind: 'selected',
       device: { id: selectedDevice.id },
     })
+  })
+
+  it.each(['failed', 'rejected'])('refreshes microphone availability after a %s test', async (outcome) => {
+    const onError = vi.fn()
+    const onStatusChange = vi.fn().mockResolvedValue(undefined)
+    const { result } = renderHook(() => useSettingsController({
+      onStatusChange,
+      onError,
+    }))
+    await waitFor(() => expect(result.current.microphones).not.toBeNull())
+    const initial = requireFixture(result.current.microphones, 'initial microphones')
+    const reads = vi.mocked(getMicrophones).mock.calls.length
+    const unavailable: MicrophoneSnapshot = {
+      ...initial,
+      revision: initial.revision + 1,
+      systemDefault: null,
+      devices: [],
+      selection: { kind: 'system-default', active: null },
+    }
+    vi.mocked(getMicrophones).mockResolvedValueOnce(unavailable)
+    if (outcome === 'failed') {
+      vi.mocked(testInputDevice).mockResolvedValueOnce({
+        kind: 'failed', device: initial.systemDefault, category: 'disconnected', message: 'Input unavailable',
+      })
+    } else {
+      vi.mocked(testInputDevice).mockRejectedValueOnce(new Error('Input unavailable'))
+    }
+
+    act(() => result.current.testMicrophone(null, false))
+
+    await waitFor(() => expect(result.current.microphones).toEqual(unavailable))
+    await waitFor(() => expect(result.current.testingMic).toBe(false))
+    expect(getMicrophones).toHaveBeenCalledTimes(reads + 1)
+    if (outcome === 'failed') {
+      expect(result.current.micTest).toMatchObject({ kind: 'failed', message: 'Input unavailable' })
+      expect(onError).not.toHaveBeenCalled()
+    } else {
+      expect(onError).toHaveBeenCalledWith('Input unavailable')
+    }
+  })
+
+  it('ignores an old test failure after choosing another microphone', async () => {
+    const test = deferred<MicrophoneTestResult>()
+    vi.mocked(testInputDevice).mockImplementationOnce(() => test.promise)
+    const onError = vi.fn()
+    const onStatusChange = vi.fn().mockResolvedValue(undefined)
+    const { result } = renderHook(() => useSettingsController({
+      onStatusChange,
+      onError,
+    }))
+    await waitFor(() => expect(result.current.microphones).not.toBeNull())
+    const initial = requireFixture(result.current.microphones, 'initial microphones')
+    const next = requireFixture(initial.devices.find((device) => !device.isDefault), 'another microphone')
+    const reads = vi.mocked(getMicrophones).mock.calls.length
+
+    act(() => result.current.testMicrophone(null, false))
+    expect(result.current.testingMic).toBe(true)
+    act(() => result.current.selectMicrophone(next.id))
+    await waitFor(() => expect(result.current.microphones?.selection).toEqual({ kind: 'selected', device: next }))
+    expect(result.current.testingMic).toBe(true)
+
+    await act(async () => test.resolve({
+      kind: 'failed', device: initial.systemDefault, category: 'disconnected', message: 'Old input unavailable',
+    }))
+
+    expect(result.current.microphones?.selection).toEqual({ kind: 'selected', device: next })
+    expect(result.current.micTest).toBeNull()
+    expect(result.current.testingMic).toBe(false)
+    expect(getMicrophones).toHaveBeenCalledTimes(reads)
+    expect(onError).not.toHaveBeenCalled()
   })
 
   it('does not let the initial settings read replace a newer settings write', async () => {

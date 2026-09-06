@@ -33,7 +33,9 @@ describe('preview desktop adapter contract', () => {
     expect(readiness.components.find(({ id }) => id === 'whisper-vulkan-runtime')?.managed)
       .toEqual({ kind: 'absent', resumableBytes: 0 })
     expect(microphones.devices.some(({ label }) => label === 'Jabra Elite 8 Active')).toBe(true)
-    expect(microphones.devices.filter(({ tier }) => tier === 'advanced')).toHaveLength(8)
+    expect(microphones.devices.filter(({ tier }) => tier === 'advanced')).toHaveLength(1)
+    expect(microphones.devices).toContainEqual(microphones.systemDefault)
+    expect(microphones.systemDefaultIsProxy).toBe(false)
   })
 
   it('keeps mutable fixtures isolated per adapter', async () => {
@@ -117,7 +119,7 @@ describe('preview desktop adapter contract', () => {
       .toBe('/usr/bin/whisper-cli')
     expect(requireFixture(freshReadiness.plans[0], 'fresh first setup plan').components)
       .not.toContain('sherpa-runtime')
-    expect((await preview.getMicrophones()).systemDefault?.label).toBe('System default')
+    expect((await preview.getMicrophones()).systemDefault?.label).toBe('Built-in Audio')
     const freshMicrophones = await preview.getMicrophones()
     expect(requireFixture(freshMicrophones.devices[0], 'fresh first microphone').extended).toEqual([])
     const freshInventory = await preview.listModels()
@@ -167,7 +169,7 @@ describe('preview desktop adapter contract', () => {
     )
     expect(requireFixture(seededComponent.external[0], 'seeded first external runtime').path)
       .toBe('/usr/bin/whisper-cli')
-    expect((await preview.getMicrophones()).systemDefault?.label).toBe('System default')
+    expect((await preview.getMicrophones()).systemDefault?.label).toBe('Built-in Audio')
     const seededInventory = await preview.listModels()
     expect(requireFixture(seededInventory.whisper[0], 'seeded first Whisper model').name)
       .toBe('base.en-q5_1')
