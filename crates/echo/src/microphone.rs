@@ -201,9 +201,6 @@ pub fn classify_input(raw: &RawInputDescriptor) -> EndpointTier {
     ) {
         return EndpointTier::Advanced;
     }
-    // ALSA exposes named PCM definitions as devices. Only raw hardware
-    // endpoints earned a primary row above; unknown names remain available
-    // under technical endpoints instead of looking like physical mics.
     EndpointTier::Advanced
 }
 
@@ -423,6 +420,9 @@ pub fn resolve_selection(
     };
     match selection {
         None => InputSelectionStatus::SystemDefault { active: fallback() },
+        Some(MicrophoneSelection::Device { id, .. }) if id == "pipewire:input_default" => {
+            InputSelectionStatus::SystemDefault { active: fallback() }
+        }
         Some(MicrophoneSelection::Device {
             id,
             last_seen_label,
@@ -548,6 +548,25 @@ mod tests {
     }
 
     #[test]
+    fn saved_default_proxy_resolves_to_the_real_input() {
+        let selection = MicrophoneSelection::Device {
+            id: "pipewire:input_default".into(),
+            last_seen_label: "System default".into(),
+        };
+        let input = device("pipewire:digital", "Digital Microphone", true);
+        assert_eq!(
+            resolve_selection(Some(&selection), std::slice::from_ref(&input)),
+            InputSelectionStatus::SystemDefault {
+                active: Some(input)
+            }
+        );
+        assert_eq!(
+            resolve_selection(Some(&selection), &[]),
+            InputSelectionStatus::SystemDefault { active: None }
+        );
+    }
+
+    #[test]
     fn native_playback_sinks_and_monitors_are_advanced() {
         for (id, label, device_type) in [
             ("pipewire:sink_default", "default_sink", None),
@@ -599,6 +618,7 @@ mod tests {
             ),
             ("alsa:upmix", "Plugin for channel upmix (4,6,8)"),
             ("alsa:sysdefault:CARD=PCH", "HDA Intel PCH"),
+            ("alsa:custom_capture", "Custom capture"),
         ] {
             assert_eq!(
                 classify_input(&raw(AudioHost::Alsa, id, label)),

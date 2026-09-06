@@ -436,7 +436,7 @@ fn set_microphone_selection(id: Option<String>) -> Result<(), String> {
                 .iter()
                 .find(|device| device.id == id)
                 .ok_or_else(|| {
-                    "that microphone is no longer connected; refresh and choose again".to_string()
+                    "that microphone is unavailable; refresh and choose again".to_string()
                 })?;
             Some((id, device.label.clone()))
         }
