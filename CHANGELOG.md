@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.14.20
+
+- Microphone choices now exclude unavailable headset routes, speakers, and playback monitors while retaining usable physical and virtual inputs.
+- Settings, saved selections, defaults, and recording share the same eligible microphone inventory. Saved devices recover their selection after reconnect.
+- Settings and first-run setup refresh microphone choices after failed tests and explain unavailable selections. The system-default preference remains configurable even when no microphone is connected.
+- Native microphone discovery uses bounded metadata queries and reports incomplete device information.
+
 ## v0.14.19
 
 - Settings reuse speech-engine and model observations within each response, avoiding repeated model-directory scans and managed-component checks while preserving engine, model, and language selections.
