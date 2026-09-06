@@ -47,6 +47,7 @@ export function useSettingsController({
   const [settingsWritePending, setSettingsWritePending] = useState(false)
   const [gpuDevices, setGpuDevices] = useState<GpuDevice[]>([])
   const micTestVersion = useRef(0)
+  const micTestRun = useRef(0)
 
   const reportSettingsError = useCallback((reason: unknown) => {
     if (active.current) onError(messageFrom(reason))
@@ -251,19 +252,24 @@ export function useSettingsController({
 
   const testMicrophone = useCallback((id: string | null, fallback: boolean) => {
     const version = ++micTestVersion.current
+    micTestRun.current = version
     setTestingMic(true)
     const run = fallback ? testMicrophoneFallback() : testInputDevice(id)
     void run
       .then((result) => {
-        if (micTestVersion.current === version) setMicTest(result)
+        if (micTestVersion.current !== version) return
+        setMicTest(result)
+        return result.kind === 'failed' ? refreshMicrophones() : undefined
       })
       .catch((reason: unknown) => {
-        if (micTestVersion.current === version) reportSettingsError(reason)
+        if (micTestVersion.current !== version) return
+        reportSettingsError(reason)
+        return refreshMicrophones()
       })
       .finally(() => {
-        if (micTestVersion.current === version) setTestingMic(false)
+        if (active.current && micTestRun.current === version) setTestingMic(false)
       })
-  }, [reportSettingsError])
+  }, [refreshMicrophones, reportSettingsError])
 
   const parakeetRuns = nextRun?.kind === 'ready' && nextRun.engine.kind === 'parakeet'
 

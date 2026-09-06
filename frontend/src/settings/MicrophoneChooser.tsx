@@ -19,6 +19,7 @@ export function MicrophoneChooser({
 }: MicrophoneChooserProps) {
   const selectedId = selectedMicrophoneId(snapshot)
   const locked = snapshot.source === 'environment'
+  const hasInput = snapshot.systemDefault != null || snapshot.devices.length > 0
   const fallback =
     snapshot.selection.kind === 'missing-with-fallback'
       ? snapshot.selection.fallback
@@ -65,7 +66,7 @@ export function MicrophoneChooser({
       </div>
       {missing ? (
         <div className="microphone-warning" role="alert">
-          <strong>{missing} is disconnected.</strong>
+          <strong>{missing} is unavailable.</strong>
           <span>
             {fallback
               ? `Recording will use ${fallbackLabel(snapshot, fallback)}.`
@@ -80,11 +81,11 @@ export function MicrophoneChooser({
         </div>
       ) : null}
       <div className="microphone-options" role="radiogroup" aria-label="Microphone">
-        <label className="microphone-option" data-selected={selectedId === null}>
+        <label className="microphone-option" data-selected={snapshot.selection.kind === 'system-default'}>
           <input
             type="radio"
             name="microphone"
-            checked={selectedId === null}
+            checked={snapshot.selection.kind === 'system-default'}
             disabled={locked}
             onChange={() => onSelect(null)}
           />
@@ -123,6 +124,11 @@ export function MicrophoneChooser({
           </details>
         ) : null}
       </div>
+      {!hasInput ? (
+        <span className="status-note" data-tone="attention">
+          No microphone input is available. Connect a microphone and refresh.
+        </span>
+      ) : null}
       {snapshot.enumerationWarning ? (
         <span className="status-note" data-tone="attention">
           Some microphones could not be listed: {snapshot.enumerationWarning}
@@ -135,7 +141,7 @@ export function MicrophoneChooser({
 function selectedMicrophoneId(snapshot: MicrophoneSnapshot): string | null | undefined {
   switch (snapshot.selection.kind) {
     case 'system-default':
-      return null
+      return snapshot.selection.active == null ? undefined : null
     case 'selected':
     case 'legacy-match':
       return snapshot.selection.device.id
@@ -149,7 +155,7 @@ function selectedMicrophoneId(snapshot: MicrophoneSnapshot): string | null | und
 function systemDefaultLabel(snapshot: MicrophoneSnapshot): string {
   if (snapshot.systemDefault == null) {
     return snapshot.selection.kind === 'system-default' && snapshot.selection.active != null
-      ? `Using ${snapshot.selection.active.label} because Linux has no default input`
+      ? `Using ${snapshot.selection.active.label} as the fallback input`
       : 'No default input'
   }
   return snapshot.systemDefaultIsProxy
