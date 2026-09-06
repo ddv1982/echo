@@ -7,8 +7,6 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, SampleFormat, SizedSample, I24, U24};
 use echo_core::{MicrophoneSelection, Pcm16kMono, SAMPLE_RATE_HZ};
 
-#[cfg(any(target_os = "linux", test))]
-use crate::microphone::EndpointTier;
 use crate::microphone::{
     is_system_default_proxy, resolve_selection, selectable_inputs, selection_from_sources,
     AudioHost, InputDeviceInfo, InputSelectionStatus, MicrophoneFailure, MicrophoneId,
@@ -132,6 +130,23 @@ struct InputDiscovery {
     host: AudioHost,
     devices: Vec<DiscoveredInput>,
     warning: Option<String>,
+    authoritative: bool,
+    native_seen: bool,
+    diagnostics: Vec<InputDiagnostic>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InputDiagnostic {
+    pub device: InputDeviceInfo,
+    pub rejection: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MicrophoneInventory {
+    pub snapshot: MicrophoneSnapshot,
+    pub diagnostics: Vec<InputDiagnostic>,
 }
 
 #[derive(Debug, Clone)]
@@ -335,45 +350,108 @@ fn merge_default_handle<T>(
     enumerated
 }
 
-fn discover_inputs(host: &cpal::Host) -> InputDiscovery {
-    let audio_host = AudioHost::from_cpal_name(host.id().name());
+fn discover_inputs(host_id: cpal::HostId) -> InputDiscovery {
+    let audio_host = AudioHost::from_cpal_name(host_id.name());
+    let mut discovery = InputDiscovery {
+        host: audio_host,
+        devices: Vec::new(),
+        warning: None,
+        authoritative: false,
+        native_seen: false,
+        diagnostics: Vec::new(),
+    };
+    #[cfg(target_os = "linux")]
+    let native = crate::microphone::availability::snapshot(audio_host);
+    #[cfg(target_os = "linux")]
+    if let Some(native) = &native {
+        use crate::microphone::availability::BackendHealth;
+        discovery.warning.clone_from(&native.warning);
+        discovery.native_seen = native.health != BackendHealth::Unreachable;
+        if native.health != BackendHealth::Reachable || native.endpoints.is_empty() {
+            discovery.authoritative =
+                native.health == BackendHealth::Reachable && native.warning.is_none();
+            return discovery;
+        }
+    }
+    let host = match cpal::host_from_id(host_id) {
+        Ok(host) => host,
+        Err(error) => {
+            discovery.warning = Some(error.to_string());
+            return discovery;
+        }
+    };
     let default = host.default_input_device();
     let default_id = default
         .as_ref()
         .and_then(|device| device.id().ok())
         .map(|id| id.to_string());
-    let mut warning = None;
+    #[cfg(target_os = "linux")]
+    let default_id = match &native {
+        Some(native) => default_input_id(default_id, native.default_source.as_ref()),
+        None => default_id,
+    };
     let handles = match host.input_devices() {
-        Ok(devices) => devices.collect::<Vec<_>>(),
+        Ok(devices) => {
+            discovery.authoritative = true;
+            devices.collect::<Vec<_>>()
+        }
         Err(error) => {
-            warning = Some(error.to_string());
-            Vec::new()
+            discovery.warning = Some(error.to_string());
+            return discovery;
         }
     };
     let handles = merge_default_handle(handles, default, |device| {
         device.id().ok().map(|id| id.to_string())
     });
-    let mut devices = Vec::new();
     for handle in handles {
         let is_default = handle
             .id()
             .ok()
             .is_some_and(|id| default_id.as_deref() == Some(id.to_string().as_str()));
-        match describe_device(&handle, audio_host, is_default) {
-            Ok(info)
-                if !devices
-                    .iter()
-                    .any(|known: &DiscoveredInput| known.info.id == info.id) =>
-            {
-                devices.push(DiscoveredInput { info, handle });
-            }
-            Ok(_) => {}
+        let info = match describe_device(&handle, audio_host, is_default) {
+            Ok(info) => info,
             Err(error) => {
-                warning.get_or_insert_with(|| error.to_string());
+                discovery.warning.get_or_insert_with(|| error.to_string());
+                continue;
+            }
+        };
+        if discovery
+            .diagnostics
+            .iter()
+            .any(|known| known.device.id == info.id)
+        {
+            continue;
+        }
+        let mut rejection = non_source_reason(&info).map(str::to_owned);
+        #[cfg(target_os = "linux")]
+        if rejection.is_none() {
+            if let Some(native) = &native {
+                rejection = match native.endpoints.get(&info.id) {
+                    Some(metadata) => metadata.rejection().map(str::to_owned),
+                    None => {
+                        let reason =
+                            "microphone metadata is unavailable; refresh and try again".to_owned();
+                        discovery.warning.get_or_insert_with(|| reason.clone());
+                        Some(reason)
+                    }
+                };
             }
         }
+        if rejection.is_none() {
+            rejection = capture_config(&handle).err().map(|error| error.to_string());
+            if let Some(reason) = &rejection {
+                discovery.warning.get_or_insert_with(|| reason.clone());
+            }
+        }
+        discovery.diagnostics.push(InputDiagnostic {
+            device: info.clone(),
+            rejection: rejection.clone(),
+        });
+        if rejection.is_none() {
+            discovery.devices.push(DiscoveredInput { info, handle });
+        }
     }
-    devices.sort_by(|left, right| {
+    discovery.devices.sort_by(|left, right| {
         right
             .info
             .is_default
@@ -381,10 +459,66 @@ fn discover_inputs(host: &cpal::Host) -> InputDiscovery {
             .then_with(|| left.info.label.cmp(&right.info.label))
             .then_with(|| left.info.id.as_str().cmp(right.info.id.as_str()))
     });
-    InputDiscovery {
-        host: audio_host,
-        devices,
-        warning,
+    discovery
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn default_input_id(
+    host_default: Option<String>,
+    native_default: Option<&MicrophoneId>,
+) -> Option<String> {
+    native_default
+        .map(|id| id.as_str().to_owned())
+        .or(host_default)
+}
+
+fn non_source_reason(device: &InputDeviceInfo) -> Option<&'static str> {
+    if is_system_default_proxy(device) {
+        return Some("system default is a preference, not a microphone device");
+    }
+    let id = device.id.as_str();
+    if id == "pipewire:sink_default" || id == "pipewire:output_default" || id == "alsa:null" {
+        return Some("not a microphone source");
+    }
+    None
+}
+
+fn capture_config(device: &cpal::Device) -> Result<cpal::SupportedStreamConfig, AudioError> {
+    let config = device.default_input_config().map_err(map_cpal_error)?;
+    validate_capture_config(
+        config.channels(),
+        config.sample_rate(),
+        config.sample_format(),
+    )?;
+    Ok(config)
+}
+
+fn validate_capture_config(
+    channels: u16,
+    sample_rate: u32,
+    format: SampleFormat,
+) -> Result<(), AudioError> {
+    if channels == 0 || sample_rate == 0 {
+        return Err(AudioError::Unsupported(
+            "microphone has no valid capture channels or sample rate".to_owned(),
+        ));
+    }
+    match format {
+        SampleFormat::I8
+        | SampleFormat::I16
+        | SampleFormat::I24
+        | SampleFormat::I32
+        | SampleFormat::I64
+        | SampleFormat::U8
+        | SampleFormat::U16
+        | SampleFormat::U24
+        | SampleFormat::U32
+        | SampleFormat::U64
+        | SampleFormat::F32
+        | SampleFormat::F64 => Ok(()),
+        other => Err(AudioError::Unsupported(format!(
+            "unsupported microphone sample format {other:?}"
+        ))),
     }
 }
 
@@ -440,27 +574,31 @@ fn linux_host_priority(name: &str) -> usize {
     }
 }
 
-#[cfg(any(target_os = "linux", test))]
-fn first_usable_or_first<T>(
-    candidates: impl IntoIterator<Item = T>,
-    mut is_usable: impl FnMut(&T) -> bool,
-) -> Option<T> {
-    let mut candidates = candidates.into_iter();
-    let first = candidates.next()?;
-    if is_usable(&first) {
-        return Some(first);
+#[cfg(target_os = "linux")]
+fn choose_discovery(
+    hosts: impl IntoIterator<Item = cpal::HostId>,
+    mut discover: impl FnMut(cpal::HostId) -> InputDiscovery,
+) -> Option<InputDiscovery> {
+    let mut first: Option<InputDiscovery> = None;
+    let mut native_seen = false;
+    for host in hosts {
+        if host == cpal::HostId::Alsa && native_seen {
+            break;
+        }
+        let candidate = discover(host);
+        native_seen |= candidate.native_seen;
+        if candidate.authoritative && (candidate.warning.is_none() || !candidate.devices.is_empty())
+        {
+            return Some(candidate);
+        }
+        if first
+            .as_ref()
+            .is_none_or(|previous| !previous.native_seen && candidate.native_seen)
+        {
+            first = Some(candidate);
+        }
     }
-    candidates
-        .find(|candidate| is_usable(candidate))
-        .or(Some(first))
-}
-
-#[cfg(any(target_os = "linux", test))]
-fn has_usable_input<'a>(devices: impl IntoIterator<Item = &'a InputDeviceInfo>) -> bool {
-    devices.into_iter().any(|device| {
-        !is_system_default_proxy(device)
-            && (device.host == AudioHost::Alsa || device.tier == EndpointTier::Primary)
-    })
+    first
 }
 
 fn preferred_discovery() -> InputDiscovery {
@@ -468,18 +606,23 @@ fn preferred_discovery() -> InputDiscovery {
     {
         let mut available = cpal::available_hosts();
         available.sort_by_key(|host| linux_host_priority(host.name()));
-        let discoveries = available
+        let available = available
             .into_iter()
-            .filter(|host| linux_host_priority(host.name()) != usize::MAX)
-            .filter_map(|host| cpal::host_from_id(host).ok())
-            .map(|host| discover_inputs(&host));
-        if let Some(discovery) = first_usable_or_first(discoveries, |candidate| {
-            has_usable_input(candidate.devices.iter().map(|device| &device.info))
-        }) {
+            .filter(|host| linux_host_priority(host.name()) != usize::MAX);
+        if let Some(discovery) = choose_discovery(available, discover_inputs) {
             return discovery;
         }
     }
-    discover_inputs(&cpal::default_host())
+    discover_inputs(cpal::default_host().id())
+}
+
+#[must_use]
+pub fn microphone_inventory() -> MicrophoneInventory {
+    let discovery = preferred_discovery();
+    MicrophoneInventory {
+        snapshot: process_snapshot_from(&discovery),
+        diagnostics: discovery.diagnostics,
+    }
 }
 
 #[must_use]
@@ -490,11 +633,7 @@ pub fn microphone_snapshot() -> MicrophoneSnapshot {
 impl AudioCapture {
     pub fn default_input_ready() -> Result<(), AudioError> {
         let capture = Self::open_default()?;
-        capture
-            .device
-            .default_input_config()
-            .map(|_| ())
-            .map_err(map_cpal_error)
+        capture_config(&capture.device).map(|_| ())
     }
 
     pub fn open_default() -> Result<Self, AudioError> {
@@ -606,7 +745,7 @@ impl AudioCapture {
         max: Duration,
         meter: Option<&LevelMeter>,
     ) -> Result<CaptureResult, AudioError> {
-        let config = self.device.default_input_config().map_err(map_cpal_error)?;
+        let config = capture_config(&self.device)?;
         let src_hz = config.sample_rate();
         let channels = config.channels();
         let collected = Arc::new(CaptureBuffer::with_capacity(capture_sample_capacity(
@@ -723,6 +862,11 @@ impl AudioCapture {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
+        if samples.is_empty() {
+            return Err(AudioError::Stream(
+                "microphone did not deliver any audio frames".to_owned(),
+            ));
+        }
         Ok(CaptureResult::from_pcm_with_dropped_samples(
             resample_to_16k_mono(&samples, src_hz, channels),
             dropped_samples,
@@ -1187,77 +1331,81 @@ mod tests {
         assert_eq!(linux_host_priority("JACK"), usize::MAX);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
-    fn linux_host_falls_through_empty_discoveries() {
-        assert_eq!(
-            first_usable_or_first([0, 0, 3], |device_count| *device_count > 0),
-            Some(3)
-        );
-        assert_eq!(
-            first_usable_or_first([0, 0, 0], |device_count| *device_count > 0),
-            Some(0)
-        );
+    fn native_host_failures_can_fall_back_without_reviving_alsa_aliases() {
+        let hosts = [
+            cpal::HostId::PipeWire,
+            cpal::HostId::PulseAudio,
+            cpal::HostId::Alsa,
+        ];
+        let empty = |host: cpal::HostId, authoritative, native_seen| InputDiscovery {
+            host: AudioHost::from_cpal_name(host.name()),
+            devices: Vec::new(),
+            warning: None,
+            authoritative,
+            native_seen,
+            diagnostics: Vec::new(),
+        };
+        let healthy_empty = choose_discovery(hosts, |host| {
+            assert_eq!(host, cpal::HostId::PipeWire);
+            empty(host, true, true)
+        })
+        .unwrap();
+        assert_eq!(healthy_empty.host, AudioHost::PipeWire);
+        assert!(healthy_empty.devices.is_empty());
+        let native_fallback = choose_discovery(hosts, |host| {
+            assert_ne!(host, cpal::HostId::Alsa);
+            empty(host, host == cpal::HostId::PulseAudio, true)
+        })
+        .unwrap();
+        assert_eq!(native_fallback.host, AudioHost::PulseAudio);
+        let incomplete_metadata = choose_discovery(hosts, |host| {
+            assert_ne!(host, cpal::HostId::Alsa);
+            let mut discovery = empty(host, true, true);
+            if host == cpal::HostId::PipeWire {
+                discovery.warning = Some("route metadata query failed".into());
+            }
+            discovery
+        })
+        .unwrap();
+        assert_eq!(incomplete_metadata.host, AudioHost::PulseAudio);
+        let failed_native = choose_discovery(hosts, |host| {
+            assert_ne!(host, cpal::HostId::Alsa);
+            empty(host, false, host == cpal::HostId::PipeWire)
+        })
+        .unwrap();
+        assert_eq!(failed_native.host, AudioHost::PipeWire);
+        let alsa_only =
+            choose_discovery(hosts, |host| empty(host, host == cpal::HostId::Alsa, false)).unwrap();
+        assert_eq!(alsa_only.host, AudioHost::Alsa);
     }
 
     #[test]
-    fn synthetic_default_alone_does_not_stop_host_fallback() {
-        let proxy: InputDeviceInfo = RawInputDescriptor {
-            id: MicrophoneId::parse("pipewire:input_default").unwrap(),
-            host: AudioHost::PipeWire,
-            label: "System default".to_string(),
-            is_default: true,
-            manufacturer: None,
-            device_type: None,
-            interface_type: None,
-            address: None,
-            driver: None,
-            extended: Vec::new(),
+    fn capture_configuration_rejects_non_capture_formats() {
+        assert!(validate_capture_config(0, 48_000, SampleFormat::F32).is_err());
+        assert!(validate_capture_config(2, 0, SampleFormat::F32).is_err());
+        assert!(validate_capture_config(2, 48_000, SampleFormat::DsdU8).is_err());
+        for format in [
+            SampleFormat::I16,
+            SampleFormat::I24,
+            SampleFormat::F32,
+            SampleFormat::U24,
+        ] {
+            assert!(validate_capture_config(2, 48_000, format).is_ok());
         }
-        .into();
-        let playback: InputDeviceInfo = RawInputDescriptor {
-            id: MicrophoneId::parse("pipewire:alsa_output.pci-card.analog-stereo").unwrap(),
-            host: AudioHost::PipeWire,
-            label: "Built-in Audio".to_string(),
-            is_default: false,
-            manufacturer: None,
-            device_type: Some("Speaker".to_string()),
-            interface_type: None,
-            address: None,
-            driver: None,
-            extended: Vec::new(),
-        }
-        .into();
-        let real: InputDeviceInfo = RawInputDescriptor {
-            id: MicrophoneId::parse("alsa:hw:CARD=USB,DEV=0").unwrap(),
-            host: AudioHost::Alsa,
-            label: "USB Microphone".to_string(),
-            is_default: true,
-            manufacturer: None,
-            device_type: None,
-            interface_type: None,
-            address: None,
-            driver: None,
-            extended: Vec::new(),
-        }
-        .into();
-        let alsa_alias: InputDeviceInfo = RawInputDescriptor {
-            id: MicrophoneId::parse("alsa:default").unwrap(),
-            host: AudioHost::Alsa,
-            label: "Default ALSA input".to_string(),
-            is_default: true,
-            manufacturer: None,
-            device_type: None,
-            interface_type: None,
-            address: None,
-            driver: None,
-            extended: Vec::new(),
-        }
-        .into();
+    }
 
-        assert!(!has_usable_input([&proxy]));
-        assert!(!has_usable_input([&proxy, &playback]));
-        assert!(has_usable_input([&proxy, &real]));
-        assert!(has_usable_input([&alsa_alias]));
+    #[test]
+    fn missing_native_default_preserves_the_host_default() {
+        let host = "pulseaudio:usb-microphone".to_owned();
+        assert_eq!(default_input_id(Some(host.clone()), None), Some(host));
+        let native = MicrophoneId::parse("pulseaudio:native-default").unwrap();
+        assert_eq!(
+            default_input_id(Some("pulseaudio:other".into()), Some(&native)),
+            Some(native.as_str().to_owned())
+        );
+        assert_eq!(default_input_id(None, None), None);
     }
 
     #[test]
