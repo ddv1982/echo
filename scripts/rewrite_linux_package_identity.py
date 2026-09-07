@@ -302,16 +302,22 @@ def rewrite_rpm_with_rpmbuild(package: Path) -> Path:
             (top / name).mkdir(parents=True)
         payload = top / "SOURCES" / "payload"
         payload.mkdir()
-        extractor = subprocess.Popen([rpm2cpio, str(package)], stdout=subprocess.PIPE)
-        assert extractor.stdout is not None
-        subprocess.run(
-            [cpio, "-idmu", "--quiet"],
-            stdin=extractor.stdout,
-            cwd=payload,
-            check=True,
-        )
-        if extractor.wait() != 0:
-            raise ValueError(f"rpm2cpio failed on {package}")
+        converted = tmp / "rpm.cpio"
+        with converted.open("wb") as handle:
+            extracted = subprocess.run(
+                [rpm2cpio, str(package)],
+                stdout=handle,
+                stderr=subprocess.DEVNULL,
+            )
+        if converted.stat().st_size == 0:
+            raise ValueError(f"rpm2cpio produced no payload from {package} (exit {extracted.returncode})")
+        with converted.open("rb") as handle:
+            subprocess.run(
+                [cpio, "-idmu", "--quiet"],
+                stdin=handle,
+                cwd=payload,
+                check=True,
+            )
         files = sorted(
             "/" + str(path.relative_to(payload))
             for path in payload.rglob("*")
