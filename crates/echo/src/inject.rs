@@ -233,13 +233,14 @@ impl<C: Pasteboard> LinuxInjector<C> {
 
         match self.session {
             DesktopSession::Wayland => {
-                if self
-                    .runner
-                    .run("ydotool", &["type", "--file", "-"], Some(text))
-                {
+                if self.runner.run(
+                    "ydotool",
+                    &["type", "--key-delay", "0", "--file", "-"],
+                    Some(text),
+                ) {
                     return Some(InjectBackend::Ydotool);
                 }
-                if self.runner.run("wtype", &["--", text], None) {
+                if self.runner.run("wtype", &["-d", "0", "--", text], None) {
                     return Some(InjectBackend::Wtype);
                 }
                 run_xdotool_type(self.runner.as_ref(), text, None).then_some(InjectBackend::Xdotool)
@@ -248,14 +249,15 @@ impl<C: Pasteboard> LinuxInjector<C> {
                 if run_xdotool_type(self.runner.as_ref(), text, None) {
                     return Some(InjectBackend::Xdotool);
                 }
-                if self
-                    .runner
-                    .run("ydotool", &["type", "--file", "-"], Some(text))
-                {
+                if self.runner.run(
+                    "ydotool",
+                    &["type", "--key-delay", "0", "--file", "-"],
+                    Some(text),
+                ) {
                     return Some(InjectBackend::Ydotool);
                 }
                 self.runner
-                    .run("wtype", &["--", text], None)
+                    .run("wtype", &["-d", "0", "--", text], None)
                     .then_some(InjectBackend::Wtype)
             }
         }
@@ -372,7 +374,7 @@ impl<C: Pasteboard> Injector for LinuxInjector<C> {
 }
 
 fn run_xdotool_type(runner: &dyn CommandRunner, text: &str, window: Option<&str>) -> bool {
-    let mut args = vec!["type", "--clearmodifiers"];
+    let mut args = vec!["type", "--clearmodifiers", "--delay", "0"];
     if let Some(id) = window {
         args.extend(["--window", id]);
     }
@@ -648,9 +650,16 @@ mod tests {
         assert_eq!(
             runner.calls(),
             vec![
-                call_with_stdin("ydotool", &["type", "--file", "-"], text),
-                call("wtype", &["--", text]),
-                call("xdotool", &["type", "--clearmodifiers", "--", text]),
+                call_with_stdin(
+                    "ydotool",
+                    &["type", "--key-delay", "0", "--file", "-"],
+                    text
+                ),
+                call("wtype", &["-d", "0", "--", text]),
+                call(
+                    "xdotool",
+                    &["type", "--clearmodifiers", "--delay", "0", "--", text]
+                ),
             ]
         );
         assert!(board.ops().is_empty());
@@ -669,9 +678,16 @@ mod tests {
         assert_eq!(
             runner.calls(),
             vec![
-                call("xdotool", &["type", "--clearmodifiers", "--", "-leading"]),
-                call_with_stdin("ydotool", &["type", "--file", "-"], "-leading"),
-                call("wtype", &["--", "-leading"]),
+                call(
+                    "xdotool",
+                    &["type", "--clearmodifiers", "--delay", "0", "--", "-leading"]
+                ),
+                call_with_stdin(
+                    "ydotool",
+                    &["type", "--key-delay", "0", "--file", "-"],
+                    "-leading"
+                ),
+                call("wtype", &["-d", "0", "--", "-leading"]),
             ]
         );
     }
@@ -689,9 +705,16 @@ mod tests {
         assert_eq!(
             runner.calls(),
             vec![
-                call("xdotool", &["type", "--clearmodifiers", "--", "text"]),
-                call_with_stdin("ydotool", &["type", "--file", "-"], "text"),
-                call("wtype", &["--", "text"]),
+                call(
+                    "xdotool",
+                    &["type", "--clearmodifiers", "--delay", "0", "--", "text"]
+                ),
+                call_with_stdin(
+                    "ydotool",
+                    &["type", "--key-delay", "0", "--file", "-"],
+                    "text"
+                ),
+                call("wtype", &["-d", "0", "--", "text"]),
             ]
         );
     }
@@ -749,6 +772,8 @@ mod tests {
                     &[
                         "type",
                         "--clearmodifiers",
+                        "--delay",
+                        "0",
                         "--window",
                         "4242",
                         "--",
@@ -924,6 +949,8 @@ mod tests {
                     &[
                         "type",
                         "--clearmodifiers",
+                        "--delay",
+                        "0",
                         "--window",
                         "4242",
                         "--",
