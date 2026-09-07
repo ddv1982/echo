@@ -41,6 +41,8 @@ RELEASE_PERMISSIONS = {
         "id-token": "write",
     },
     "github-release": {"contents": "write"},
+    "apt-repository": {"contents": "write"},
+    "publish-apt": {"pages": "write", "id-token": "write"},
 }
 CHECK_SHARDS = {"policy", "frontend", "rust", "assets"}
 
@@ -820,6 +822,25 @@ jobs:
       contents: write
     steps:
       - run: echo release
+  apt-repository:
+    if: github.ref_type == 'tag'
+    needs: [linux-packages, github-release]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - run: echo apt
+  publish-apt:
+    if: github.ref_type == 'tag'
+    needs: apt-repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - run: echo pages
 """
 
 

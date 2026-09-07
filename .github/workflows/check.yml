@@ -39,6 +39,16 @@ jobs:
           package_version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')
           python3 scripts/changelog-notes.py "v$package_version-alpha.1" > /dev/null \
             || python3 scripts/changelog-notes.py "v$package_version" > /dev/null
+          python3 scripts/check_metainfo.py
+
+      - name: Check Linux packaging tools
+        run: |
+          python3 scripts/rewrite_linux_package_identity.py --self-test
+          python3 scripts/test_rewrite_linux_package_identity.py
+          python3 scripts/test_linux_package_metadata.py
+          python3 scripts/check_apt_installer.py
+          python3 scripts/test_apt_repository.py
+          python3 scripts/check_apt_repository.py
 
   frontend:
     runs-on: ubuntu-latest

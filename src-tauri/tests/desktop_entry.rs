@@ -42,7 +42,34 @@ fn packaged_desktop_basename_matches_the_portal_app_id() {
 
     assert_eq!(config["productName"], config["identifier"]);
     assert_eq!(config["identifier"], "io.github.ddv1982.echo");
+    assert_eq!(config["mainBinaryName"], "echo-desktop");
     assert!(desktop_runtime.contains("const APP_ID: &str = \"io.github.ddv1982.echo\";"));
+
+    let old_package = serde_json::json!(["io.github.ddv1982.echo"]);
+    let deb = &config["bundle"]["linux"]["deb"];
+    let rpm = &config["bundle"]["linux"]["rpm"];
+    assert_eq!(deb["replaces"], old_package);
+    assert_eq!(deb["conflicts"], old_package);
+    assert_eq!(deb["provides"], old_package);
+    assert_eq!(rpm["conflicts"], old_package);
+    assert_eq!(rpm["provides"], old_package);
+    assert_eq!(rpm["obsoletes"], old_package);
+    assert_eq!(
+        deb["files"]["/usr/share/doc/echo/copyright"],
+        "../packaging/debian/copyright"
+    );
+    assert_eq!(
+        deb["files"]["/usr/share/metainfo/io.github.ddv1982.echo.metainfo.xml"],
+        "../packaging/io.github.ddv1982.echo.metainfo.xml"
+    );
+    assert_eq!(
+        rpm["files"]["/usr/share/licenses/echo/LICENSE"],
+        "../LICENSE-MIT"
+    );
+    assert_eq!(
+        rpm["files"]["/usr/share/metainfo/io.github.ddv1982.echo.metainfo.xml"],
+        "../packaging/io.github.ddv1982.echo.metainfo.xml"
+    );
 }
 
 #[test]

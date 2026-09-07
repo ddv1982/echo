@@ -1,25 +1,39 @@
 # Echo
 
+[![Latest release](https://img.shields.io/github/v/release/ddv1982/echo?display_name=tag&sort=semver)](https://github.com/ddv1982/echo/releases/latest)
+[![CI](https://github.com/ddv1982/echo/actions/workflows/check.yml/badge.svg)](https://github.com/ddv1982/echo/actions/workflows/check.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE-MIT)
+[![Platforms](https://img.shields.io/badge/platforms-Linux-555.svg)](https://github.com/ddv1982/echo/releases/latest)
+
 Echo is private, local dictation for Linux. Press **Super+Alt+Space**, speak,
 then press it again. Echo transcribes the recording on your machine and inserts
 the transcribed text at the active cursor.
 
 ## Install
 
-Echo publishes Linux x86-64 packages on
-[GitHub Releases](https://github.com/ddv1982/echo/releases). Use the `.deb` on
-Debian or Ubuntu, the `.rpm` on Fedora, or the AppImage on other distributions.
+Debian and Ubuntu users can enable the signed package repository
+(recommended; updates through apt and Software Updater):
 
 ```sh
-sudo apt install ./FILE.deb
-# or
-sudo dnf install ./FILE.rpm
-# or
-chmod +x FILE.AppImage && ./FILE.AppImage
+bash <(curl -fsSL https://ddv1982.github.io/echo/install-apt-repo.sh)
+sudo apt update
+sudo apt install echo
 ```
 
-The raw `echo-desktop` binary is also available for systems that already have
-its desktop libraries. Packages and the AppImage are the recommended installs.
+The bootstrap authenticates the setup package with the archive keyring.
+
+You can also download the latest Linux x86-64 installer from
+[GitHub Releases](https://github.com/ddv1982/echo/releases/latest):
+
+- `.deb` for Debian and Ubuntu (`sudo apt install ./echo_VERSION_amd64.deb`)
+- `.rpm` for Fedora, RHEL, and compatible distributions
+- `.AppImage` for a portable application
+
+GitHub Release files include `SHA256SUMS` and GitHub attestations.
+
+The raw `echo-desktop` binary is a last-resort option for systems that already
+have its desktop libraries. The APT repository, packages, and AppImage are the
+recommended installs.
 
 ## Make your first dictation
 

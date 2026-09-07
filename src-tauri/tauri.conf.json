@@ -52,11 +52,25 @@
     "linux": {
       "deb": {
         "depends": ["libpipewire-0.3-0", "libpulse0"],
-        "desktopTemplate": "templates/Echo.desktop"
+        "desktopTemplate": "templates/Echo.desktop",
+        "replaces": ["io.github.ddv1982.echo"],
+        "conflicts": ["io.github.ddv1982.echo"],
+        "provides": ["io.github.ddv1982.echo"],
+        "files": {
+          "/usr/share/doc/echo/copyright": "../packaging/debian/copyright",
+          "/usr/share/metainfo/io.github.ddv1982.echo.metainfo.xml": "../packaging/io.github.ddv1982.echo.metainfo.xml"
+        }
       },
       "rpm": {
         "depends": ["pipewire-libs", "pulseaudio-libs"],
-        "desktopTemplate": "templates/Echo.desktop"
+        "desktopTemplate": "templates/Echo.desktop",
+        "conflicts": ["io.github.ddv1982.echo"],
+        "provides": ["io.github.ddv1982.echo"],
+        "obsoletes": ["io.github.ddv1982.echo"],
+        "files": {
+          "/usr/share/licenses/echo/LICENSE": "../LICENSE-MIT",
+          "/usr/share/metainfo/io.github.ddv1982.echo.metainfo.xml": "../packaging/io.github.ddv1982.echo.metainfo.xml"
+        }
       }
     }
   },
