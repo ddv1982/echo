@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.ddv1982.echo</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Echo</name>
+  <summary>Private local dictation</summary>
+  <description>
+    <p>Echo records speech, transcribes it locally, and inserts it at the active cursor.</p>
+  </description>
+  <launchable type="desktop-id">io.github.ddv1982.echo.desktop</launchable>
+  <provides>
+    <binary>echo-desktop</binary>
+  </provides>
+  <url type="homepage">https://github.com/ddv1982/echo</url>
+  <categories>
+    <category>Utility</category>
+  </categories>
+  <releases>
+    <release version="1.0.0" date="2026-09-07" />
+  </releases>
+</component>

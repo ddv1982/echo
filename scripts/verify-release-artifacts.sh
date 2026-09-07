@@ -14,6 +14,9 @@ set -euo pipefail
 
 DESKTOP_ENTRY=io.github.ddv1982.echo.desktop
 BINARY=usr/bin/echo-desktop
+
+# Package filenames are echo_*.deb / echo-*.rpm after identity rewrite.
+# This check does not require an io.github.ddv1982.echo_* artifact name.
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
 # One root for every scratch tree, so cleanup cannot miss one. Allocating

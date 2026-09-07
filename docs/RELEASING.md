@@ -2,8 +2,10 @@
 
 The release workflow runs its policy checks for every pull request. Package
 proof runs for pushes to `main` and `v*` tags, the nightly schedule, and manual
-workflow dispatches, not for pull requests. GitHub Releases are the supported
-downloads. A Git tag without a corresponding GitHub Release marks source
+workflow dispatches, not for pull requests. GitHub Releases are the verified
+downloads. Debian and Ubuntu can also install from a signed APT repository on
+GitHub Pages; that channel is tag-only and does not replace SHA256SUMS or
+attestations. A Git tag without a corresponding GitHub Release marks source
 history only.
 
 ## Repository gate
@@ -38,7 +40,7 @@ repository ruleset.
 ## Prepare the release
 
 1. Bump `workspace.package.version` in `Cargo.toml`.
-2. Add a `## vX.Y.Z` or `## vX.Y.Z-alpha.1` section to `CHANGELOG.md`.
+2. Add a `## vX.Y.Z` or `## vX.Y.Z - YYYY-MM-DD` section to `CHANGELOG.md`, and set the matching `<release>` in `packaging/io.github.ddv1982.echo.metainfo.xml`.
 3. When changing an entry in `crates/echo/src/install/catalog.rs`, update its
    URL, digest, license, supplier/source provenance, and the corresponding
    attribution in [`THIRD_PARTY.md`](../THIRD_PARTY.md) in the same pull
@@ -140,6 +142,13 @@ exactly one Debian package, one RPM, one AppImage, and one raw binary. The
 workflow checks package metadata and contents. It also checks the final
 AppImage desktop entry, executable, and reported version.
 
+After the Tauri `.deb` and `.rpm` bundles, a post-bundle rewrite sets the
+Debian `Package` and RPM `Name` to `echo` and renames the artifacts. The
+desktop file stays `io.github.ddv1982.echo.desktop` and the binary stays
+`echo-desktop`. The rewritten control includes `Replaces`, `Conflicts`, and
+`Provides` for `io.github.ddv1982.echo`. The first cutover is `v1.0.0`
+(major). Do not retag `0.14.24`.
+
 The workflow stages those four application files, the MIT license,
 `THIRD_PARTY.md`, and `echo-desktop.cdx.json` in one directory. The CycloneDX
 SBOM lists every Cargo package in the locked workspace graph, every npm package
@@ -181,12 +190,58 @@ for asset in $(awk '{print $2}' "$release_dir/SHA256SUMS"); do
     --repo ddv1982/echo \
     --signer-workflow ddv1982/echo/.github/workflows/release.yml
 done
-dpkg-deb -f "$release_dir"/*.deb Version
+dpkg-deb -f "$release_dir"/echo_*.deb Package
+dpkg-deb -f "$release_dir"/echo_*.deb Version
 chmod +x "$release_dir/echo-desktop"
 "$release_dir/echo-desktop" --version
 chmod +x "$release_dir"/*.AppImage
 APPIMAGE_EXTRACT_AND_RUN=1 "$release_dir"/*.AppImage --version
 ```
+
+`Package` must be `echo`. Do not GPG-sign application GitHub assets; those
+files stay on `SHA256SUMS` and GitHub attestations.
+
+## APT repository
+
+APT is an operator path on top of the existing tag policy. It does not replace
+annotated tags, main-only tags, SHA256SUMS, or attestations. GPG signs APT
+metadata and the setup-package checksum only.
+
+The Debian and RPM package name is `echo`. Users install with `apt install
+echo`. Confirm a built package with:
+
+```sh
+dpkg-deb -f echo_*.deb Package
+```
+
+That field must be `echo`. The GitHub application publish directory stays the
+same eight files. The APT setup package `echo-repository-setup` is not in that
+directory.
+
+APT publishes only from `v*` tags. Do not publish the repository from `main`
+nightlies or `workflow_dispatch`.
+
+### Operator setup
+
+1. Generate one APT signing key (ed25519 or RSA 4096). Store private material
+   only in Actions secrets.
+2. Configure secrets `DEB_SIGNING_PRIVATE_KEY`,
+   `DEB_SIGNING_KEY_FINGERPRINT`, and `DEB_SIGNING_KEY_PASSPHRASE`.
+3. Configure repository variable `DEB_SIGNING_PUBLIC_KEY`.
+4. Set Pages source to GitHub Actions (Settings → Pages).
+5. Create the `github-pages` environment.
+
+Users enable the repository with:
+
+```sh
+bash <(curl -fsSL https://ddv1982.github.io/echo/install-apt-repo.sh)
+sudo apt update
+sudo apt install echo
+```
+
+The bootstrap authenticates the setup package with the archive keyring.
+Rotate the key by bumping `echo-repository-setup` beyond `1.0` so clients
+replace `/usr/share/keyrings/echo-archive-keyring.pgp`.
 
 ## If a tag run fails
 

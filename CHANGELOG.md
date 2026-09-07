@@ -1,5 +1,11 @@
 # Changelog
 
+
+## v1.0.0 - 2026-09-07
+
+- The Debian and RPM package is now `echo`. Existing `io.github.ddv1982.echo` installs upgrade in place. The desktop id and `echo-desktop` binary are unchanged.
+- Debian and Ubuntu can enable a signed APT repository and update Echo through `apt` and Software Updater.
+
 ## v0.14.24
 
 - Typed transcripts no longer wait 12 ms between keystrokes, so long dictation lands quickly instead of trickling in.

@@ -1,6 +1,17 @@
 #!/usr/bin/env python3
+import re
 import sys
 from pathlib import Path
+
+
+HEADING = re.compile(r"^## (?P<tag>\S+)(?: - (?P<date>\d{4}-\d{2}-\d{2}))?$")
+
+
+def parse_heading(line):
+    match = HEADING.fullmatch(line)
+    if not match:
+        return None
+    return match.group("tag"), match.group("date")
 
 
 def section(text, tag):
@@ -8,7 +19,8 @@ def section(text, tag):
     lines = text.splitlines()
     start = None
     for i, line in enumerate(lines):
-        if line == heading:
+        parsed = parse_heading(line)
+        if parsed and parsed[0] == tag:
             start = i + 1
             break
     if start is None:
@@ -24,6 +36,14 @@ def section(text, tag):
     return body
 
 
+def heading_date(text, tag):
+    for line in text.splitlines():
+        parsed = parse_heading(line)
+        if parsed and parsed[0] == tag:
+            return parsed[1]
+    raise ValueError("missing changelog heading: ## " + tag)
+
+
 def main(argv):
     if len(argv) != 2:
         print("usage: changelog-notes.py <tag>", file=sys.stderr)
@@ -34,6 +54,16 @@ def main(argv):
         two = "# Changelog\n\n## v1.0.0\n\nFirst.\n\n## v0.9.0\n\nOlder.\n"
         if section(two, "v1.0.0") != "First.":
             print("self-test: first section extract failed", file=sys.stderr)
+            return 1
+        dated = "# Changelog\n\n## v1.0.0 - 2026-01-02\n\nDated notes.\n\n## v0.9.0\n\nOlder.\n"
+        if section(dated, "v1.0.0") != "Dated notes.":
+            print("self-test: dated heading extract failed", file=sys.stderr)
+            return 1
+        if heading_date(dated, "v1.0.0") != "2026-01-02":
+            print("self-test: dated heading date extract failed", file=sys.stderr)
+            return 1
+        if heading_date(two, "v1.0.0") is not None:
+            print("self-test: undated heading should have no date", file=sys.stderr)
             return 1
         cases = (
             (two, "v9.9.9"),
