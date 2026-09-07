@@ -95,10 +95,7 @@ fn file_sha256(path: &Path) -> std::io::Result<[u8; 32]> {
     Ok(hasher.finalize().into())
 }
 
-fn hashed_system_path(
-    digests: &mut BTreeMap<PathBuf, [u8; 32]>,
-    path: PathBuf,
-) -> Option<PathBuf> {
+fn hashed_system_path(digests: &mut BTreeMap<PathBuf, [u8; 32]>, path: PathBuf) -> Option<PathBuf> {
     let digest = file_sha256(&path).ok()?;
     digests.insert(path.clone(), digest);
     Some(path)
@@ -313,9 +310,7 @@ impl SpeechRuntimeInventory {
                 let Some(component) = self.provenance.get(path) else {
                     if let Some(expected) = self.system_digests.get(path) {
                         if file_sha256(path).ok().as_ref() != Some(expected) {
-                            return Err(
-                                "system runtime changed during resolution".to_string(),
-                            );
+                            return Err("system runtime changed during resolution".to_string());
                         }
                     }
                     return Ok(path.clone());

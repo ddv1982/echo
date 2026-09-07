@@ -805,13 +805,9 @@ mod tests {
         );
         fallback.model.name = "base-q5_1".to_string();
         let identity_key = key();
-        let decision = WhisperPlanDecision::qualified(
-            identity_key.clone(),
-            primary,
-            fallback,
-            expected,
-        )
-        .unwrap();
+        let decision =
+            WhisperPlanDecision::qualified(identity_key.clone(), primary, fallback, expected)
+                .unwrap();
         let store = QuarantineStore::at(root.join("quarantine.json"));
         let engine = RecoveringWhisperEngine::with_clock(decision, store, now);
         let transcript = engine

@@ -367,11 +367,7 @@ fn apply_toggle_stop_intent(owner: &LockOwner) -> Result<(), String> {
 
 fn apply_toggle_stop_intent_in(dir: &Path, owner: &LockOwner) -> Result<(), String> {
     apply_toggle_stop_intent_with(owner, |token| {
-        ToggleSession::request_intent_for_token_in(
-            dir,
-            token,
-            ControlIntent::TranscriptionCancel,
-        )
+        ToggleSession::request_intent_for_token_in(dir, token, ControlIntent::TranscriptionCancel)
     })
 }
 
@@ -962,7 +958,10 @@ struct LockOwner {
 }
 
 impl ToggleSession {
-    fn start_or_stop_in(dir: &Path, observed_session: Option<&str>) -> Result<ToggleAction, String> {
+    fn start_or_stop_in(
+        dir: &Path,
+        observed_session: Option<&str>,
+    ) -> Result<ToggleAction, String> {
         match Self::acquire_in(dir)? {
             LockAcquisition::Started(session) => Ok(ToggleAction::Start(session)),
             LockAcquisition::Busy(owner) => {
@@ -1356,13 +1355,13 @@ pub fn recording_limit_from_process() -> ResolvedRecordingLimit {
 }
 
 fn fixture_path() -> Option<PathBuf> {
-    audio_fixture_path(cfg!(debug_assertions), std::env::var_os("ECHO_AUDIO_FIXTURE"))
+    audio_fixture_path(
+        cfg!(debug_assertions),
+        std::env::var_os("ECHO_AUDIO_FIXTURE"),
+    )
 }
 
-fn audio_fixture_path(
-    debug_build: bool,
-    value: Option<std::ffi::OsString>,
-) -> Option<PathBuf> {
+fn audio_fixture_path(debug_build: bool, value: Option<std::ffi::OsString>) -> Option<PathBuf> {
     debug_build.then(|| value.map(PathBuf::from)).flatten()
 }
 

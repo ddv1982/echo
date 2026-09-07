@@ -138,11 +138,9 @@ fn portal_setup_await_is_abortable_via_cancel_token() {
     runtime.block_on(async {
         let cancel = echo::audio::CancellationToken::new();
         cancel.cancel();
-        assert!(
-            race_native_cancel(&cancel, std::future::pending::<()>())
-                .await
-                .is_none()
-        );
+        assert!(race_native_cancel(&cancel, std::future::pending::<()>())
+            .await
+            .is_none());
 
         let cancel = echo::audio::CancellationToken::new();
         assert_eq!(race_native_cancel(&cancel, async { 7 }).await, Some(7));

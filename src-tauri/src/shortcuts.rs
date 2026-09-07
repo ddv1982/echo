@@ -605,20 +605,19 @@ async fn run_portal_shortcuts_async(
     // The Registry attempt above intentionally precedes every portal proxy,
     // session and bind operation. New stacks attribute permissions to APP_ID;
     // legacy stacks without Registry can still expose GlobalShortcuts.
-    let portal = match race_native_cancel(cancel, GlobalShortcuts::with_connection(connection))
-        .await
-    {
-        Some(Ok(portal)) => portal,
-        Some(Err(err)) => {
-            let detail = format!("Wayland GlobalShortcuts interface is unavailable: {err}");
-            if is_global_shortcuts_absence(&err) {
-                set_native_shortcut_state(NativeShortcutState::PortalAbsent { detail });
-                return Ok(());
+    let portal =
+        match race_native_cancel(cancel, GlobalShortcuts::with_connection(connection)).await {
+            Some(Ok(portal)) => portal,
+            Some(Err(err)) => {
+                let detail = format!("Wayland GlobalShortcuts interface is unavailable: {err}");
+                if is_global_shortcuts_absence(&err) {
+                    set_native_shortcut_state(NativeShortcutState::PortalAbsent { detail });
+                    return Ok(());
+                }
+                return Err(detail);
             }
-            return Err(detail);
-        }
-        None => return Ok(()),
-    };
+            None => return Ok(()),
+        };
     let decision = echo::hotkey::select_native_backend(
         echo::hotkey::DesktopSession::Wayland,
         Some(portal.version()),
@@ -650,19 +649,21 @@ async fn run_portal_shortcuts_async(
         Ok(path) => path,
         Err(err) => return Err(close_portal_after_failure(&session, err.to_string()).await),
     };
-    let mut activated = Box::pin(match race_native_cancel(cancel, portal.receive_activated()).await {
-        Some(Ok(stream)) => stream,
-        Some(Err(err)) => {
-            return Err(close_portal_after_failure(
-                &session,
-                format!("cannot listen for portal activations: {err}"),
-            )
-            .await)
-        }
-        None => return close_cancelled_portal_session(&session).await,
-    });
-    let mut deactivated =
-        Box::pin(match race_native_cancel(cancel, portal.receive_deactivated()).await {
+    let mut activated = Box::pin(
+        match race_native_cancel(cancel, portal.receive_activated()).await {
+            Some(Ok(stream)) => stream,
+            Some(Err(err)) => {
+                return Err(close_portal_after_failure(
+                    &session,
+                    format!("cannot listen for portal activations: {err}"),
+                )
+                .await)
+            }
+            None => return close_cancelled_portal_session(&session).await,
+        },
+    );
+    let mut deactivated = Box::pin(
+        match race_native_cancel(cancel, portal.receive_deactivated()).await {
             Some(Ok(stream)) => stream,
             Some(Err(err)) => {
                 return Err(close_portal_after_failure(
@@ -672,7 +673,8 @@ async fn run_portal_shortcuts_async(
                 .await)
             }
             None => return close_cancelled_portal_session(&session).await,
-        });
+        },
+    );
     let mut changed = Box::pin(
         match race_native_cancel(cancel, portal.receive_shortcuts_changed()).await {
             Some(Ok(stream)) => stream,
@@ -686,17 +688,19 @@ async fn run_portal_shortcuts_async(
             None => return close_cancelled_portal_session(&session).await,
         },
     );
-    let mut closed = Box::pin(match race_native_cancel(cancel, session.receive_closed()).await {
-        Some(Ok(stream)) => stream,
-        Some(Err(err)) => {
-            return Err(close_portal_after_failure(
-                &session,
-                format!("cannot listen for portal session closure: {err}"),
-            )
-            .await)
-        }
-        None => return close_cancelled_portal_session(&session).await,
-    });
+    let mut closed = Box::pin(
+        match race_native_cancel(cancel, session.receive_closed()).await {
+            Some(Ok(stream)) => stream,
+            Some(Err(err)) => {
+                return Err(close_portal_after_failure(
+                    &session,
+                    format!("cannot listen for portal session closure: {err}"),
+                )
+                .await)
+            }
+            None => return close_cancelled_portal_session(&session).await,
+        },
+    );
 
     let shortcuts = [
         NewShortcut::new(FixedShortcut::ID, "Start or stop recording")
@@ -704,12 +708,7 @@ async fn run_portal_shortcuts_async(
     ];
     let request = match race_native_cancel(
         cancel,
-        portal.bind_shortcuts(
-            &session,
-            &shortcuts,
-            None,
-            BindShortcutsOptions::default(),
-        ),
+        portal.bind_shortcuts(&session, &shortcuts, None, BindShortcutsOptions::default()),
     )
     .await
     {
