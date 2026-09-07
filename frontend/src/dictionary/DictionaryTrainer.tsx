@@ -46,11 +46,9 @@ function statusText(sample: ReviewedSample): string {
   }
 }
 
-function activeCapture(state: TrainerState): Extract<CaptureState, { kind: 'recording' | 'finishing' }> | null {
+function activeCapture(state: TrainerState): Extract<CaptureState, { kind: 'recording' }> | null {
   if (state.kind !== 'collecting') return null
-  return state.capture.kind === 'recording' || state.capture.kind === 'finishing'
-    ? state.capture
-    : null
+  return state.capture.kind === 'recording' ? state.capture : null
 }
 
 export function DictionaryTrainer({

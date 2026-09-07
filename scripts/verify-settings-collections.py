@@ -3,6 +3,7 @@
 
 Managed status checks count repair-marker reads, attempted once per status call.
 Whisper preparation rereads its launch identity after validating selected leases.
+System PATH runtimes add one open at inventory hash and one at lock_selected.
 """
 
 import argparse
@@ -139,7 +140,7 @@ def main():
             transcription = snapshot["transcription"]
             expected_identities = 0
             if "whisper-cli" in runtimes:
-                expected_identities = 2 if kind == "ready" else 1
+                expected_identities = 4 if kind == "ready" else 2
             assert counts["whisper_identity_open"] == expected_identities, (name, counts)
             assert transcription["nextRun"]["kind"] == kind, (name, transcription["nextRun"])
             assert transcription["languages"]["mode"] == mode, (name, transcription["languages"])

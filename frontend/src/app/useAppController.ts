@@ -26,7 +26,7 @@ const initialStatus: AppStatus = {
   injectionReady: false,
   shortcut: { kind: 'probing', desired: 'Super+Alt+Space' },
   hudEnabled: true,
-  recordingLimitSeconds: 0,
+  recordingLimitSeconds: null,
   recordingPolicy: {
     minimumSeconds: 0,
     defaultSeconds: 0,

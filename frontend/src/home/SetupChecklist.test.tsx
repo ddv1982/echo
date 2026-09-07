@@ -2,7 +2,8 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, expect, it, vi } from 'vitest'
 
 import { createPreviewDesktopApi } from '../api/previewDesktopApi'
-import { configureDesktopApi, getMicrophones, getReadiness, testInputDevice } from '../tauri'
+import type { SetupEvent } from '../generated/ipc'
+import { configureDesktopApi, getMicrophones, getReadiness, onSetupEvent, testInputDevice } from '../tauri'
 import { deferred, resetDesktopApiMocks } from '../test/desktopApiHarness'
 import { SetupChecklist } from './SetupChecklist'
 
@@ -66,4 +67,58 @@ it('ignores an old test result but releases busy state after selecting another i
   await waitFor(() => expect(testButton).toBeEnabled())
   expect(screen.queryByText('Old input failure')).not.toBeInTheDocument()
   expect(vi.mocked(getMicrophones).mock.calls.length).toBe(reads)
+})
+
+it('does not replace in-progress setup with a stale readiness fetch', async () => {
+  let setupEvent: ((event: SetupEvent) => void) | null = null
+  vi.mocked(onSetupEvent).mockImplementation((handler) => {
+    setupEvent = handler
+    return Promise.resolve(vi.fn())
+  })
+  const idle = await getReadiness()
+  preview.seedPreviewReadiness({
+    ...idle,
+    microphoneReady: true,
+    speechReady: false,
+    firstRunComplete: false,
+    activeOperation: null,
+    activeCancellable: false,
+  })
+  render(<SetupChecklist status={preview.richPreviewStatus()} onOpenSettings={vi.fn()} />)
+  expect(await screen.findByText('Speech setup needed')).toBeInTheDocument()
+
+  const stale = deferred<typeof idle>()
+  const readinessCalls = vi.mocked(getReadiness).mock.calls.length
+  vi.mocked(getReadiness).mockImplementationOnce(() => stale.promise)
+  fireEvent.click(screen.getByRole('button', { name: 'Use Small multilingual' }))
+  await waitFor(() => expect(vi.mocked(getReadiness).mock.calls.length).toBeGreaterThan(readinessCalls))
+  act(() => {
+    setupEvent?.({
+      kind: 'progress',
+      progress: {
+        operationId: 'install-1',
+        component: 'whisper-runtime',
+        phase: 'downloading',
+        receivedBytes: 25,
+        totalBytes: 100,
+        resumedFromBytes: 0,
+      },
+    })
+  })
+  expect(screen.getByText('Setting up speech')).toBeInTheDocument()
+
+  await act(async () => {
+    stale.resolve({
+      ...idle,
+      microphoneReady: true,
+      speechReady: false,
+      firstRunComplete: false,
+      activeOperation: null,
+      activeCancellable: false,
+      components: idle.components.map((component) => ({ ...component, activity: null })),
+    })
+    await stale.promise
+  })
+
+  expect(screen.getByText('Setting up speech')).toBeInTheDocument()
 })

@@ -11,6 +11,7 @@ import type { DictionaryItem } from '../generated/ipc'
 export function useDictionary(onError: (reason: unknown) => void) {
   const [items, setItems] = useState<DictionaryItem[]>([])
   const active = useRef(true)
+  const operations = useRef<Promise<void>>(Promise.resolve())
 
   useEffect(() => {
     active.current = true
@@ -19,47 +20,55 @@ export function useDictionary(onError: (reason: unknown) => void) {
     }
   }, [])
 
-  const refresh = useCallback(async () => {
+  const enqueue = useCallback(<T,>(operation: () => Promise<T>) => {
+    const result = operations.current.then(operation)
+    operations.current = result.then(() => undefined, () => undefined)
+    return result
+  }, [])
+
+  const refresh = useCallback(() => enqueue(async () => {
     try {
       const next = await getDictionary()
       if (active.current) setItems(next)
     } catch (reason) {
       if (active.current) onError(reason)
     }
-  }, [onError])
+  }), [enqueue, onError])
 
   useEffect(() => {
-    let current = true
-    void getDictionary().then((next) => {
-      if (current && active.current) setItems(next)
-    }).catch((reason: unknown) => {
-      if (current && active.current) onError(reason)
-    })
-    return () => {
-      current = false
-    }
-  }, [onError])
+    void refresh().catch(onError)
+  }, [onError, refresh])
 
-  const add = useCallback(async (spoken: string, written: string) => {
+  const add = useCallback((spoken: string, written: string) => enqueue(async () => {
     await addDictionaryEntry(spoken, written)
-    await refresh()
-  }, [refresh])
-
-  const remove = useCallback(async (entry: DictionaryItem) => {
     try {
-      const removed = await removeDictionaryEntry(entry.spoken, entry.written)
-      if (!removed && active.current) onError(`"${entry.spoken}" was already removed.`)
-      await refresh()
+      const next = await getDictionary()
+      if (active.current) setItems(next)
     } catch (reason) {
       if (active.current) onError(reason)
     }
-  }, [onError, refresh])
+  }), [enqueue, onError])
 
-  const addBatch = useCallback(async (written: string, spoken: string[]) => {
+  const remove = useCallback((entry: DictionaryItem) => enqueue(async () => {
+    try {
+      const removed = await removeDictionaryEntry(entry.spoken, entry.written)
+      if (!removed && active.current) onError(`"${entry.spoken}" was already removed.`)
+      try {
+        const next = await getDictionary()
+        if (active.current) setItems(next)
+      } catch (reason) {
+        if (active.current) onError(reason)
+      }
+    } catch (reason) {
+      if (active.current) onError(reason)
+    }
+  }), [enqueue, onError])
+
+  const addBatch = useCallback((written: string, spoken: string[]) => enqueue(async () => {
     const result = await addDictionaryEntriesBatch(written, spoken)
     if (active.current) setItems(result.entries)
     return result
-  }, [])
+  }), [enqueue])
 
   return { items, add, addBatch, remove, refresh }
 }

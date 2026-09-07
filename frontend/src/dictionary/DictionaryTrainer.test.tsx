@@ -480,7 +480,7 @@ describe('dictionary voice trainer', () => {
         await finish.promise.catch(() => undefined)
       })
 
-      expect(trainingMocks.cancel).toHaveBeenCalledWith('capture-1')
+      expect(trainingMocks.cancel).not.toHaveBeenCalled()
       expect(onClose).not.toHaveBeenCalled()
     },
   )

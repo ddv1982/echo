@@ -167,22 +167,21 @@ impl RecoveringWhisperEngine {
 
         let accelerated = WhisperEngine::with_plan(plan.primary.clone())
             .transcribe_bounded(pcm, options, deadline, cancelled);
-        let failure = match accelerated {
+        let (failure, gpu_error) = match accelerated {
             Ok(mut transcript) => match validate_accelerated(plan, &transcript) {
                 Ok(()) => {
                     attach_recovery(&mut transcript, &plan.identity_key, true, None);
                     return Ok(transcript);
                 }
-                Err(reason) => reason,
+                Err(reason) => (reason, None),
             },
             Err(error) => {
-                // User cancellation and an exhausted caller deadline are not
-                // accelerator failures. Do not quarantine the device or start
-                // a fallback that inherits the same already-expired bound.
-                if cancelled() || Instant::now() >= deadline {
+                // Skip quarantine only for user cancel or a deadline that had
+                // already expired before the GPU attempt started.
+                if cancelled() || error.as_str().contains("timed out before starting") {
                     return Err(error);
                 }
-                classify_error(&error)
+                (classify_error(&error), Some(error))
             }
         };
         if let Ok(mut keys) = self.process_quarantine.lock() {
@@ -194,6 +193,11 @@ impl RecoveringWhisperEngine {
         let _ = self
             .quarantine
             .record_failure(&plan.identity_key, quarantine_reason(failure), now);
+        if let Some(error) = gpu_error {
+            if Instant::now() >= deadline {
+                return Err(error);
+            }
+        }
         Self::run_fallback(plan, pcm, options, true, failure, deadline, cancelled)
     }
 
@@ -232,11 +236,14 @@ fn validate_accelerated(
     plan: &QualifiedWhisperPlan,
     transcript: &Transcript,
 ) -> Result<(), WhisperRecoveryReason> {
-    if transcript.engine
-        != (EngineId::Whisper {
-            model: plan.primary.model.name.clone(),
-        })
-    {
+    // whisper.cpp JSON `model.type` is a family (`base`/`small`/`large`), not
+    // the Echo catalog stem (`base-q5_1`). Identify the launched file instead.
+    let launched = transcript
+        .detail
+        .model_path
+        .as_deref()
+        .ok_or(WhisperRecoveryReason::IdentityMismatch)?;
+    if std::path::Path::new(launched) != plan.primary.model.path.as_path() {
         return Err(WhisperRecoveryReason::IdentityMismatch);
     }
     let telemetry = transcript
@@ -315,7 +322,7 @@ mod tests {
     use std::time::Duration;
 
     use echo_core::{
-        DecodeOptions, Engine, Language, LanguageChoice, Pcm16kMono, RecognitionHints,
+        DecodeOptions, Engine, EngineId, Language, LanguageChoice, Pcm16kMono, RecognitionHints,
         WhisperRecoveryReason, WhisperRuntimeBackend, WhisperRuntimeSource, WhisperVulkanReceipt,
     };
 
@@ -572,7 +579,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn exhausted_global_deadline_does_not_fallback_or_quarantine() {
+    fn exhausted_caller_deadline_quarantines_without_fallback() {
         let root = scratch("bounded-deadline");
         let gpu_marker = root.join("gpu.marker");
         let cpu_marker = root.join("cpu.marker");
@@ -616,8 +623,9 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(1));
         assert_eq!(fs::read_to_string(&gpu_marker).unwrap(), "run\n");
         assert!(!cpu_marker.exists());
-        assert!(!engine.process_quarantined(&identity_key, NOW).unwrap());
-        assert!(!quarantine_path.exists());
+        assert!(engine.process_quarantined(&identity_key, NOW).unwrap());
+        assert!(engine.quarantine_is_active(NOW).unwrap());
+        assert!(quarantine_path.exists());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -748,6 +756,74 @@ mod tests {
         let recovery = transcript.detail.whisper.unwrap().recovery.unwrap();
         assert!(recovery.accelerated_attempted);
         assert_eq!(recovery.fallback_reason, None);
+    }
+
+    #[test]
+    fn quantized_catalog_model_is_not_json_family_identity() {
+        let root = scratch("catalog-identity");
+        let model = root.join("ggml-base-q5_1.bin");
+        fs::write(&model, []).unwrap();
+        let gpu_marker = root.join("gpu.marker");
+        let cpu_marker = root.join("cpu.marker");
+        let expected = receipt(0x46a6);
+        let gpu_log = format!(
+            "ggml_vulkan: 0 = Intel Graphics | uma: 1\nwhisper_backend_init_gpu: using Vulkan0 backend\n{}",
+            receipt_line(&expected)
+        );
+        let gpu = script(
+            &root,
+            "gpu",
+            &gpu_marker,
+            &json("GPU"),
+            &gpu_log,
+            false,
+            true,
+        );
+        let cpu = script(
+            &root,
+            "cpu",
+            &cpu_marker,
+            &json("CPU"),
+            "whisper_model_load: CPU total size = 1 MB",
+            false,
+            true,
+        );
+        let mut primary = plan(
+            gpu,
+            WhisperRuntimeSource::System,
+            WhisperRuntimeBackend::Vulkan,
+            &model,
+            false,
+        );
+        primary.model.name = "base-q5_1".to_string();
+        let mut fallback = plan(
+            cpu,
+            WhisperRuntimeSource::Managed,
+            WhisperRuntimeBackend::Cpu,
+            &model,
+            true,
+        );
+        fallback.model.name = "base-q5_1".to_string();
+        let identity_key = key();
+        let decision =
+            WhisperPlanDecision::qualified(identity_key.clone(), primary, fallback, expected)
+                .unwrap();
+        let store = QuarantineStore::at(root.join("quarantine.json"));
+        let engine = RecoveringWhisperEngine::with_clock(decision, store, now);
+        let transcript = engine
+            .transcribe(&Pcm16kMono::from_samples(vec![0; 160]), &options())
+            .unwrap();
+        assert_eq!(transcript.raw, "GPU");
+        assert!(!cpu_marker.exists());
+        assert!(matches!(
+            transcript.engine,
+            EngineId::Whisper { model } if model == "base"
+        ));
+        let recovery = transcript.detail.whisper.unwrap().recovery.unwrap();
+        assert!(recovery.accelerated_attempted);
+        assert_eq!(recovery.fallback_reason, None);
+        assert!(!engine.quarantine_is_active(NOW).unwrap());
+        assert!(!engine.process_quarantined(&identity_key, NOW).unwrap());
     }
 
     #[test]

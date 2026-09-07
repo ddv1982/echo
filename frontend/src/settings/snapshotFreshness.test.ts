@@ -12,6 +12,11 @@ describe('newestSnapshot', () => {
 
     expect(newestSnapshot(current, { revision: 3, value: 'old' })).toBe(current)
     expect(newestSnapshot(current, missingRevision)).toBe(current)
+    expect(newestSnapshot(null, { revision: 0, value: 'first' })).toEqual({
+      revision: 0,
+      value: 'first',
+    })
+    expect(newestSnapshot(current, { revision: 4, value: 'same' })).toBe(current)
     expect(newestSnapshot(current, { revision: 5, value: 'new' })).toEqual({
       revision: 5,
       value: 'new',

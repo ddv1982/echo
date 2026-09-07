@@ -95,6 +95,12 @@ fn file_sha256(path: &Path) -> std::io::Result<[u8; 32]> {
     Ok(hasher.finalize().into())
 }
 
+fn hashed_system_path(digests: &mut BTreeMap<PathBuf, [u8; 32]>, path: PathBuf) -> Option<PathBuf> {
+    let digest = file_sha256(&path).ok()?;
+    digests.insert(path.clone(), digest);
+    Some(path)
+}
+
 pub struct ManagedSelection {
     pub paths: Vec<PathBuf>,
     pub leases: Vec<ManagedPath>,
@@ -117,6 +123,7 @@ pub struct SpeechRuntimeInventory {
     store: ManagedStore,
     managed_roots: BTreeMap<ComponentId, PathBuf>,
     provenance: BTreeMap<PathBuf, ComponentId>,
+    system_digests: BTreeMap<PathBuf, [u8; 32]>,
 }
 
 impl SpeechRuntimeInventory {
@@ -124,12 +131,17 @@ impl SpeechRuntimeInventory {
     pub fn from_cache(cache: &ModelCache) -> Self {
         let store = ManagedStore::new(cache.dir());
         let external_models = cache.inventory();
+        let mut system_digests = BTreeMap::new();
         let system_whisper = ["whisper-cli", "whisper-cpp", "whisper"]
             .into_iter()
-            .find_map(path_of);
+            .find_map(|name| {
+                path_of(name).and_then(|path| hashed_system_path(&mut system_digests, path))
+            });
         let system_sherpa = ["sherpa-onnx-offline", "sherpa-onnx"]
             .into_iter()
-            .find_map(path_of);
+            .find_map(|name| {
+                path_of(name).and_then(|path| hashed_system_path(&mut system_digests, path))
+            });
         let managed = crate::install::catalog::COMPONENTS
             .iter()
             .map(|spec| (spec.id, store.status(spec.id, false)))
@@ -183,7 +195,8 @@ impl SpeechRuntimeInventory {
             let sibling = cli.parent().map(|parent| parent.join("whisper-server"));
             let server = sibling
                 .filter(|path| path.is_file())
-                .or_else(|| path_of("whisper-server"));
+                .or_else(|| path_of("whisper-server"))
+                .and_then(|path| hashed_system_path(&mut system_digests, path));
             if whisper_runtimes
                 .iter()
                 .all(|candidate| candidate.cli != cli)
@@ -268,6 +281,7 @@ impl SpeechRuntimeInventory {
             store,
             managed_roots,
             provenance,
+            system_digests,
         }
     }
 
@@ -294,6 +308,11 @@ impl SpeechRuntimeInventory {
             .iter()
             .map(|path| {
                 let Some(component) = self.provenance.get(path) else {
+                    if let Some(expected) = self.system_digests.get(path) {
+                        if file_sha256(path).ok().as_ref() != Some(expected) {
+                            return Err("system runtime changed during resolution".to_string());
+                        }
+                    }
                     return Ok(path.clone());
                 };
                 let old_root = self
@@ -539,5 +558,53 @@ mod tests {
         let selected = runtime.lock_selected(std::slice::from_ref(&model)).unwrap();
         assert_eq!(selected.paths, vec![model]);
         assert_eq!(selected.leases.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lock_selected_rejects_a_replaced_system_runtime() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let bin = tempfile::tempdir().unwrap();
+        let cli = bin.path().join("whisper-cli");
+        std::fs::write(&cli, b"whisper-cli-v1").unwrap();
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let cache = tempfile::tempdir().unwrap();
+        let loose = cache.path().join("ggml-tiny.bin");
+        std::fs::write(&loose, []).unwrap();
+
+        let original_path = std::env::var_os("PATH");
+        let mut entries = vec![bin.path().to_path_buf()];
+        if let Some(rest) = original_path.as_ref() {
+            entries.extend(std::env::split_paths(rest));
+        }
+        std::env::set_var("PATH", std::env::join_paths(entries).unwrap());
+        let inventory = SpeechRuntimeInventory::from_cache(&ModelCache::at(cache.path()));
+        match original_path {
+            Some(path) => std::env::set_var("PATH", path),
+            None => std::env::remove_var("PATH"),
+        }
+
+        assert_eq!(inventory.system_whisper.as_deref(), Some(cli.as_path()));
+        let locked = inventory
+            .lock_selected(&[cli.clone(), loose.clone()])
+            .unwrap();
+        assert_eq!(locked.paths, vec![cli.clone(), loose.clone()]);
+        assert!(locked.leases.is_empty());
+
+        std::fs::write(&cli, b"whisper-cli-v2").unwrap();
+        let error = match inventory.lock_selected(std::slice::from_ref(&cli)) {
+            Ok(_) => panic!("replaced system runtime should not lock"),
+            Err(error) => error,
+        };
+        assert!(error.contains("system runtime changed during resolution"));
+        assert_eq!(
+            inventory
+                .lock_selected(std::slice::from_ref(&loose))
+                .unwrap()
+                .paths,
+            vec![loose]
+        );
     }
 }

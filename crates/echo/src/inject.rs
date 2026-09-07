@@ -1,10 +1,13 @@
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use echo_core::{FailReason, FocusTarget, InjectBackend, InjectReport, Injector};
 
 use crate::hotkey::DesktopSession;
 use crate::which::on_path;
+
+const CLIPBOARD_RESTORE_DELAY: Duration = Duration::from_millis(50);
 
 pub trait Pasteboard {
     fn get(&self) -> Result<String, String> {
@@ -307,14 +310,18 @@ impl<C: Pasteboard> LinuxInjector<C> {
             return InjectReport::ClipboardOnly;
         };
         if !transferred {
-            return InjectReport::ClipboardOnly;
+            std::thread::sleep(CLIPBOARD_RESTORE_DELAY);
         }
         if let Some(previous) = previous {
             if let Err(error) = self.clipboard.restore_if_unchanged(text, &previous) {
                 eprintln!("clipboard restore failed: {error}");
             }
         }
-        InjectReport::Pasted { backend }
+        if transferred {
+            InjectReport::Pasted { backend }
+        } else {
+            InjectReport::ClipboardOnly
+        }
     }
 }
 
@@ -869,7 +876,7 @@ mod tests {
     }
 
     #[test]
-    fn submitted_but_unconfirmed_untargeted_paste_leaves_transcript() {
+    fn submitted_but_unconfirmed_untargeted_paste_restores_previous_clipboard() {
         let runner = RecordingRunner::new([true]);
         let board = RecordingPasteboard::new("old");
         let injector = injector(board.clone(), &runner, DesktopSession::X11);
@@ -878,10 +885,15 @@ mod tests {
             injector.paste_text("transcript", None),
             InjectReport::ClipboardOnly
         );
-        assert_eq!(board.text(), "transcript");
+        assert_eq!(board.text(), "old");
         assert_eq!(
             board.ops(),
-            vec![ClipboardOp::Get, ClipboardOp::Set("transcript".to_string())]
+            vec![
+                ClipboardOp::Get,
+                ClipboardOp::Set("transcript".to_string()),
+                ClipboardOp::Get,
+                ClipboardOp::Set("old".to_string()),
+            ]
         );
         assert_eq!(
             runner.calls(),
@@ -924,10 +936,15 @@ mod tests {
                 ),
             ]
         );
-        assert_eq!(board.text(), "nonce");
+        assert_eq!(board.text(), "old");
         assert_eq!(
             board.ops(),
-            vec![ClipboardOp::Get, ClipboardOp::Set("nonce".to_string())]
+            vec![
+                ClipboardOp::Get,
+                ClipboardOp::Set("nonce".to_string()),
+                ClipboardOp::Get,
+                ClipboardOp::Set("old".to_string()),
+            ]
         );
     }
 

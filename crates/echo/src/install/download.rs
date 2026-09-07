@@ -1,11 +1,13 @@
 use std::collections::BTreeMap;
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+
+use echo_core::PrivateDir;
 
 use super::catalog::{ComponentId, ComponentSpec};
 use super::sha256_file_cancellable;
@@ -240,9 +242,13 @@ pub fn download_verified(
         return Err(InstallError::Cancelled);
     }
     let (part, metadata_path) = part_paths(root, spec);
-    if let Some(parent) = part.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    let downloads_dir = PrivateDir::open(&root.join("managed").join("downloads"))?;
+    let part_name = part.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "download part has no file name",
+        )
+    })?;
     let expected_metadata = |etag, last_modified| PartialMetadata {
         component: spec.component,
         url: spec.url.clone(),
@@ -328,12 +334,7 @@ pub fn download_verified(
             .or(metadata.last_modified);
         save_metadata(&metadata_path, &metadata)?;
         if response.status != 416 {
-            let mut file = OpenOptions::new()
-                .create(true)
-                .write(true)
-                .append(append)
-                .truncate(!append)
-                .open(&part)?;
+            let mut file = downloads_dir.open_write(part_name, append)?;
             let resumed_from = partial_bytes;
             let accepted_bytes = spec.size.saturating_sub(partial_bytes).saturating_add(1);
             stream_body(
@@ -1010,5 +1011,35 @@ mod tests {
             ),
             Err(InstallError::Range(_))
         ));
+    }
+
+    #[test]
+    fn part_file_symlink_is_not_written_through() {
+        let body = b"verified artifact";
+        let spec = spec(body);
+        let root = scratch("part-symlink");
+        let (part, _) = part_paths(&root, &spec);
+        fs::create_dir_all(part.parent().unwrap()).unwrap();
+        let victim = root.join("victim");
+        fs::write(&victim, b"do not overwrite").unwrap();
+        std::os::unix::fs::symlink(&victim, &part).unwrap();
+
+        let transport = FakeTransport::new(vec![(200, BTreeMap::new(), body.to_vec())]);
+        let error = download_verified(
+            &root,
+            &spec,
+            &transport,
+            &FakeDisk(None),
+            &OperationId::fixture("1"),
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, InstallError::Io(_)),
+            "planted part symlink must fail the download, got {error:?}"
+        );
+        assert_eq!(fs::read(&victim).unwrap(), b"do not overwrite");
+        let _ = fs::remove_dir_all(&root);
     }
 }

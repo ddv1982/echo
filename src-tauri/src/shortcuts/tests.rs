@@ -130,6 +130,35 @@ fn native_retry_runs_after_delay_unless_cancelled() {
 }
 
 #[test]
+fn portal_setup_await_is_abortable_via_cancel_token() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("portal cancel test runtime");
+    runtime.block_on(async {
+        let cancel = echo::audio::CancellationToken::new();
+        cancel.cancel();
+        assert!(race_native_cancel(&cancel, std::future::pending::<()>())
+            .await
+            .is_none());
+
+        let cancel = echo::audio::CancellationToken::new();
+        assert_eq!(race_native_cancel(&cancel, async { 7 }).await, Some(7));
+
+        let cancel = echo::audio::CancellationToken::new();
+        let started = Instant::now();
+        let waiter = race_native_cancel(&cancel, std::future::pending::<()>());
+        let trigger = async {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            cancel.cancel();
+        };
+        let (result, ()) = tokio::join!(waiter, trigger);
+        assert!(result.is_none());
+        assert!(started.elapsed() < Duration::from_secs(1));
+    });
+}
+
+#[test]
 fn stale_native_retry_cannot_act_after_listener_replacement() {
     let _serial = NATIVE_RETRY_TEST_LOCK.lock().unwrap();
     shutdown();

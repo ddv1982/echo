@@ -643,4 +643,60 @@ describe('useSettingsController', () => {
 
     await waitFor(() => expect(onError).toHaveBeenCalledWith('status refresh failed'))
   })
+
+  it('keeps local setup progress when an equal-revision snapshot arrives', async () => {
+    let setupEvent: ((event: SetupEvent) => void) | null = null
+    vi.mocked(onSetupEvent).mockImplementation((handler) => {
+      setupEvent = handler
+      return Promise.resolve(vi.fn())
+    })
+    const actual = await vi.importActual<typeof import('../tauri')>('../tauri')
+    vi.mocked(getSettings).mockImplementation(async () => ({
+      ...(await actual.getSettings()),
+      revision: 10,
+    }))
+    const onStatusChange = vi.fn().mockResolvedValue(undefined)
+    const onError = vi.fn()
+    const { result } = renderHook(() => useSettingsController({
+      onStatusChange,
+      onError,
+    }))
+    await waitFor(() => {
+      expect(result.current.settings).not.toBeNull()
+      expect(setupEvent).not.toBeNull()
+    })
+
+    act(() => setupEvent?.({
+      kind: 'progress',
+      progress: {
+        operationId: 'install-1',
+        component: 'whisper-runtime',
+        phase: 'downloading',
+        receivedBytes: 25,
+        totalBytes: 100,
+        resumedFromBytes: 0,
+      },
+    }))
+    expect(result.current.readiness?.activeOperation).toBe('install-1')
+
+    const idle = await actual.getSettings()
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      ...idle,
+      revision: 11,
+      readiness: {
+        ...idle.readiness,
+        activeOperation: null,
+        activeCancellable: false,
+        components: idle.readiness.components.map((component) => ({
+          ...component,
+          activity: null,
+        })),
+      },
+    })
+    act(() => result.current.refreshReadiness())
+    await act(async () => Promise.resolve())
+
+    expect(result.current.readiness?.activeOperation).toBe('install-1')
+    expect(onError).not.toHaveBeenCalled()
+  })
 })
