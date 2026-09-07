@@ -2,6 +2,8 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use echo_core::PrivateDir;
+
 #[derive(Debug, Clone)]
 pub struct ModelCache {
     dir: PathBuf,
@@ -14,12 +16,13 @@ impl ModelCache {
     }
 
     pub fn try_from_env() -> Result<Self, String> {
-        Self::resolve_dir(
+        let dir = Self::resolve_dir(
             env::var_os("ECHO_MODEL_DIR").map(PathBuf::from),
             env::var_os("XDG_CACHE_HOME").map(PathBuf::from),
             env::var_os("HOME").map(PathBuf::from),
-        )
-        .map(Self::at)
+        )?;
+        PrivateDir::open(&dir).map_err(|e| e.to_string())?;
+        Ok(Self::at(dir))
     }
 
     fn resolve_dir(
@@ -376,6 +379,41 @@ mod tests {
                 assert!(!error.contains("/tmp/"), "{error}");
             }
         }
+    }
+
+    #[test]
+    fn model_directory_symlink_is_rejected() {
+        const CHILD: &str = "ECHO_MODEL_DIR_SYMLINK_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            use std::os::unix::fs::PermissionsExt;
+
+            let dir = scratch_dir("symlink-env");
+            let target = dir.join("target");
+            fs::create_dir_all(&target).unwrap();
+            let link = dir.join("link");
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "stt::cache::tests::model_directory_symlink_is_rejected",
+                ])
+                .env(CHILD, "1")
+                .env("ECHO_MODEL_DIR", &link)
+                .status()
+                .unwrap();
+            assert!(status.success(), "child should reject a symlink model root");
+            assert_ne!(
+                fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+            let _ = fs::remove_dir_all(&dir);
+            return;
+        }
+        let error = ModelCache::try_from_env().unwrap_err();
+        assert!(
+            !error.contains("absolute path"),
+            "symlink model root should fail the private-dir walk, got {error}"
+        );
     }
 
     #[test]

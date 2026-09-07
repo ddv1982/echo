@@ -232,4 +232,56 @@ describe('preview desktop adapter contract', () => {
       vi.useRealTimers()
     }
   })
+
+  it('acknowledges stop while remaining in Recording', async () => {
+    vi.useFakeTimers()
+    try {
+      const preview = createPreviewDesktopApi()
+      const started = await preview.startCapture()
+      const sessionId = requireFixture(started.sessionId, 'started session')
+      const ack = await preview.stopCapture(sessionId)
+
+      expect(ack.phase).toBe('Recording')
+      expect(ack.captureStopRequested).toBe(true)
+      expect(ack.sessionId).toBe(sessionId)
+      const stopping = await preview.getAppStatus()
+      expect(stopping.phase).toBe('Recording')
+      expect(stopping.captureStopRequested).toBe(true)
+
+      await vi.advanceTimersByTimeAsync(1)
+      const transcribing = await preview.getAppStatus()
+      expect(transcribing.phase).toBe('Transcribing')
+      expect(transcribing.captureStopRequested).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('acknowledges cancel while remaining in Transcribing', async () => {
+    vi.useFakeTimers()
+    try {
+      const preview = createPreviewDesktopApi()
+      const started = await preview.startCapture()
+      const sessionId = requireFixture(started.sessionId, 'started session')
+      await preview.stopCapture(sessionId)
+      await vi.advanceTimersByTimeAsync(1)
+      expect((await preview.getAppStatus()).phase).toBe('Transcribing')
+
+      const ack = await preview.cancelTranscription(sessionId)
+      expect(ack.phase).toBe('Transcribing')
+      expect(ack.captureStopRequested).toBe(false)
+      expect(ack.sessionId).toBe(sessionId)
+      const cancelling = await preview.getAppStatus()
+      expect(cancelling.phase).toBe('Transcribing')
+      expect(cancelling.captureStopRequested).toBe(false)
+      expect(cancelling.lastError).toBeNull()
+
+      await vi.advanceTimersByTimeAsync(1)
+      const failed = await preview.getAppStatus()
+      expect(failed.phase).toBe('Failed')
+      expect(failed.lastError).toBe('Transcription cancelled.')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

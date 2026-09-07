@@ -510,4 +510,20 @@ describe('Echo desktop shell', () => {
     )
     rows.forEach((text) => expect(within(recent).getByText(text)).toBeInTheDocument())
   })
+
+  it('filters History search hits and misses', async () => {
+    render(<App />)
+    await screen.findByRole('button', { name: 'Start recording' })
+    fireEvent.click(screen.getByRole('button', { name: 'History' }))
+
+    const search = await screen.findByPlaceholderText('Search transcripts…')
+    fireEvent.change(search, { target: { value: 'Claude' } })
+    expect(screen.getByText('Claude Code.')).toBeInTheDocument()
+    expect(screen.queryByText('This is a test. This is a test.')).not.toBeInTheDocument()
+    expect(screen.queryByText('No matching transcripts')).not.toBeInTheDocument()
+
+    fireEvent.change(search, { target: { value: 'local' } })
+    expect(await screen.findByText('No matching transcripts')).toBeInTheDocument()
+    expect(screen.queryByText('Claude Code.')).not.toBeInTheDocument()
+  })
 })

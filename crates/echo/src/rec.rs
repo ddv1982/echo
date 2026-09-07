@@ -276,10 +276,13 @@ pub fn run_rec_toggle() -> i32 {
                     // Preserve the CLI/hotkey toggle convention after capture:
                     // its stop gesture means cancel while transcription is live.
                     // Explicit desktop capture-stop never takes this path.
-                    if cancel_transcription {
-                        apply_toggle_stop_intent(&owner);
+                    match finish_toggle_stop(owner, cancel_transcription) {
+                        Ok(_) => 0,
+                        Err(err) => {
+                            eprintln!("toggle: {err}");
+                            1
+                        }
                     }
-                    0
                 }
             }
         }
@@ -305,10 +308,7 @@ pub fn toggle_managed_recording() -> Result<Option<String>, String> {
                 .map_err(|err| err.to_string())
         }
         (ToggleAction::Stop(owner), cancel_transcription) => {
-            if cancel_transcription {
-                apply_toggle_stop_intent(&owner);
-            }
-            Ok(owner.token)
+            finish_toggle_stop(owner, cancel_transcription)
         }
     }
 }
@@ -317,15 +317,17 @@ pub fn toggle_managed_recording() -> Result<Option<String>, String> {
 /// token check prevents an observation of an earlier owner from authorizing a
 /// cancellation for a replacement owner.
 fn start_or_stop_with_intent() -> Result<(ToggleAction, bool), String> {
-    decide_toggle_intent(status::read, ToggleSession::start_or_stop)
+    decide_toggle_intent(status::read, |observed| {
+        ToggleSession::start_or_stop_in(&echo_core::data_dir(), observed)
+    })
 }
 
 fn decide_toggle_intent(
     read_status: impl FnOnce() -> status::Status,
-    start_or_stop: impl FnOnce() -> Result<ToggleAction, String>,
+    start_or_stop: impl FnOnce(Option<&str>) -> Result<ToggleAction, String>,
 ) -> Result<(ToggleAction, bool), String> {
     let observed = read_status();
-    let action = start_or_stop()?;
+    let action = start_or_stop(observed.session_id.as_deref())?;
     let cancel_transcription =
         matches!(&action, ToggleAction::Stop(owner) if should_cancel_toggle(&observed, owner));
     Ok((action, cancel_transcription))
@@ -335,14 +337,64 @@ fn should_cancel_toggle(observed: &status::Status, owner: &LockOwner) -> bool {
     observed.state == "Transcribing" && observed.session_id.as_deref() == owner.token.as_deref()
 }
 
-fn apply_toggle_stop_intent(owner: &LockOwner) {
-    if let Some(token) = owner.token.as_deref() {
-        let _ = ToggleSession::request_intent_for_token_in(
-            &echo_core::data_dir(),
+/// Idle/stale status (no session) can still stop a live lock; a different
+/// observed session must not stop a replacement owner.
+fn observation_allows_toggle_stop(observed_session: Option<&str>, owner: &LockOwner) -> bool {
+    observed_session.is_none() || owner.token.as_deref() == observed_session
+}
+
+fn finish_toggle_stop(
+    owner: LockOwner,
+    cancel_transcription: bool,
+) -> Result<Option<String>, String> {
+    finish_toggle_stop_with(owner, cancel_transcription, apply_toggle_stop_intent)
+}
+
+fn finish_toggle_stop_with(
+    owner: LockOwner,
+    cancel_transcription: bool,
+    apply: impl FnOnce(&LockOwner) -> Result<(), String>,
+) -> Result<Option<String>, String> {
+    if cancel_transcription {
+        apply(&owner)?;
+    }
+    Ok(owner.token)
+}
+
+fn apply_toggle_stop_intent(owner: &LockOwner) -> Result<(), String> {
+    apply_toggle_stop_intent_in(&echo_core::data_dir(), owner)
+}
+
+fn apply_toggle_stop_intent_in(dir: &Path, owner: &LockOwner) -> Result<(), String> {
+    apply_toggle_stop_intent_with(owner, |token| {
+        ToggleSession::request_intent_for_token_in(
+            dir,
             token,
             ControlIntent::TranscriptionCancel,
-        );
+        )
+    })
+}
+
+fn apply_toggle_stop_intent_with(
+    owner: &LockOwner,
+    write_cancel: impl FnOnce(&str) -> Result<bool, String>,
+) -> Result<(), String> {
+    let Some(token) = owner.token.as_deref() else {
+        return Err(session_changed_before_cancel());
+    };
+    match write_cancel(token) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(session_changed_before_cancel()),
+        Err(err) => Err(err),
     }
+}
+
+fn session_changed_before_stop() -> String {
+    "recording session changed before stop was accepted".to_string()
+}
+
+fn session_changed_before_cancel() -> String {
+    "recording session changed before cancellation was accepted".to_string()
 }
 
 /// The identity and revision acknowledged by the owner when capture starts.
@@ -432,16 +484,36 @@ fn request_control_ack(
     session_id: &str,
     intent: ControlIntent,
 ) -> Result<Option<RecordingControlAck>, String> {
-    let current = status::read();
-    if current.state != intent.phase() || current.session_id.as_deref() != Some(session_id) {
+    request_control_ack_with(session_id, intent, status::read, |session_id, intent| {
+        ToggleSession::request_intent_for_token_in(&echo_core::data_dir(), session_id, intent)
+    })
+}
+
+fn request_control_ack_with(
+    session_id: &str,
+    intent: ControlIntent,
+    read_status: impl Fn() -> status::Status,
+    write_intent: impl FnOnce(&str, ControlIntent) -> Result<bool, String>,
+) -> Result<Option<RecordingControlAck>, String> {
+    let current = read_status();
+    if !control_applies_to(&current, session_id, intent) {
         return Ok(None);
     }
-    let accepted =
-        ToggleSession::request_intent_for_token_in(&echo_core::data_dir(), session_id, intent)?;
-    Ok(accepted.then(|| RecordingControlAck {
+    if !write_intent(session_id, intent)? {
+        return Ok(None);
+    }
+    let latest = read_status();
+    if !control_applies_to(&latest, session_id, intent) {
+        return Ok(None);
+    }
+    Ok(Some(RecordingControlAck {
         session_id: session_id.to_string(),
-        revision: RecordingControlAck::after_revision(current.revision),
+        revision: RecordingControlAck::after_revision(latest.revision),
     }))
+}
+
+fn control_applies_to(status: &status::Status, session_id: &str, intent: ControlIntent) -> bool {
+    status.state == intent.phase() && status.session_id.as_deref() == Some(session_id)
 }
 
 pub fn stop_shortcut_recording(activation: &str) -> Result<bool, String> {
@@ -890,14 +962,13 @@ struct LockOwner {
 }
 
 impl ToggleSession {
-    fn start_or_stop() -> Result<ToggleAction, String> {
-        Self::start_or_stop_in(&echo_core::data_dir())
-    }
-
-    fn start_or_stop_in(dir: &Path) -> Result<ToggleAction, String> {
+    fn start_or_stop_in(dir: &Path, observed_session: Option<&str>) -> Result<ToggleAction, String> {
         match Self::acquire_in(dir)? {
             LockAcquisition::Started(session) => Ok(ToggleAction::Start(session)),
             LockAcquisition::Busy(owner) => {
+                if !observation_allows_toggle_stop(observed_session, &owner) {
+                    return Err(session_changed_before_stop());
+                }
                 write_stop_request(&intent_path(dir, "stop", &owner), &owner)?;
                 Ok(ToggleAction::Stop(owner))
             }
@@ -1285,7 +1356,14 @@ pub fn recording_limit_from_process() -> ResolvedRecordingLimit {
 }
 
 fn fixture_path() -> Option<PathBuf> {
-    std::env::var_os("ECHO_AUDIO_FIXTURE").map(PathBuf::from)
+    audio_fixture_path(cfg!(debug_assertions), std::env::var_os("ECHO_AUDIO_FIXTURE"))
+}
+
+fn audio_fixture_path(
+    debug_build: bool,
+    value: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    debug_build.then(|| value.map(PathBuf::from)).flatten()
 }
 
 fn log_state(session: &Session) {
@@ -1796,7 +1874,7 @@ mod tests {
         let owner = live_lock_owner(&dir.join("recording.lock")).expect("live legacy owner");
         assert_eq!(owner.token, None);
         assert!(matches!(
-            ToggleSession::start_or_stop_in(&dir).unwrap(),
+            ToggleSession::start_or_stop_in(&dir, None).unwrap(),
             ToggleAction::Stop(LockOwner { token: None, .. })
         ));
         let request = fs::read_to_string(dir.join("recording.stop")).unwrap();
@@ -1940,7 +2018,7 @@ mod tests {
                 read_happened.set(true);
                 recording.clone()
             },
-            || {
+            |_| {
                 assert!(
                     read_happened.get(),
                     "status must be observed before stop writes its signal"
@@ -1957,7 +2035,7 @@ mod tests {
             ..recording.clone()
         };
         let (_, cancel) =
-            decide_toggle_intent(|| transcribing, || Ok(ToggleAction::Stop(owner.clone())))
+            decide_toggle_intent(|| transcribing, |_| Ok(ToggleAction::Stop(owner.clone())))
                 .unwrap();
         assert!(cancel);
         let transcribing_replacement = status::Status {
@@ -1967,10 +2045,127 @@ mod tests {
         };
         let (_, cancel) = decide_toggle_intent(
             || transcribing_replacement,
-            || Ok(ToggleAction::Stop(owner)),
+            |_| Ok(ToggleAction::Stop(owner)),
         )
         .unwrap();
         assert!(!cancel);
+    }
+
+    #[test]
+    fn stale_observation_does_not_stop_a_replacement_session() {
+        let dir = std::env::temp_dir().join(format!(
+            "echo-stale-obs-stop-{}-{}",
+            std::process::id(),
+            new_session_token()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        let session = ToggleSession::try_start_in(&dir).unwrap().unwrap();
+        let observed = status::Status {
+            state: "Recording".to_string(),
+            last: None,
+            last_history_id: None,
+            error: None,
+            recording_limit: None,
+            session_id: Some("observed-a".to_string()),
+            revision: 2,
+        };
+
+        let result = decide_toggle_intent(
+            || observed,
+            |observed| ToggleSession::start_or_stop_in(&dir, observed),
+        );
+        let Err(err) = result else {
+            panic!("stale observation must not stop a replacement session");
+        };
+
+        assert!(err.contains("session changed"));
+        assert!(!session.stop_requested());
+        assert!(!session.cancel_requested());
+
+        drop(session);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn toggle_does_not_succeed_unless_required_cancel_was_written() {
+        let dir = std::env::temp_dir().join(format!(
+            "echo-toggle-cancel-fail-{}-{}",
+            std::process::id(),
+            new_session_token()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        let session = ToggleSession::try_start_in(&dir).unwrap().unwrap();
+        let live = lock_owner(&dir.join("recording.lock")).unwrap();
+
+        let stale = LockOwner {
+            token: Some("observed-a".to_string()),
+            ..live.clone()
+        };
+        let changed = finish_toggle_stop_with(stale, true, |owner| {
+            apply_toggle_stop_intent_in(&dir, owner)
+        });
+        assert!(changed.unwrap_err().contains("session changed"));
+        assert!(!session.cancel_requested());
+
+        let io_fail = finish_toggle_stop_with(live.clone(), true, |_| Err("disk full".into()));
+        assert_eq!(io_fail.unwrap_err(), "disk full");
+        assert!(!session.cancel_requested());
+
+        let pid_only = LockOwner {
+            token: None,
+            ..live
+        };
+        let missing = finish_toggle_stop_with(pid_only, true, |owner| {
+            apply_toggle_stop_intent_in(&dir, owner)
+        });
+        assert!(missing.is_err());
+        assert!(!session.cancel_requested());
+
+        drop(session);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn matching_observation_still_stops_and_cancels() {
+        let dir = std::env::temp_dir().join(format!(
+            "echo-matching-obs-stop-{}-{}",
+            std::process::id(),
+            new_session_token()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        let session = ToggleSession::try_start_in(&dir).unwrap().unwrap();
+        let token = session.token.clone();
+        let owner = lock_owner(&dir.join("recording.lock")).unwrap();
+        let observed = status::Status {
+            state: "Transcribing".to_string(),
+            last: None,
+            last_history_id: None,
+            error: None,
+            recording_limit: None,
+            session_id: Some(token.clone()),
+            revision: 2,
+        };
+
+        let (action, cancel) = decide_toggle_intent(
+            || observed,
+            |observed| ToggleSession::start_or_stop_in(&dir, observed),
+        )
+        .unwrap();
+        assert!(cancel);
+        let ToggleAction::Stop(stopped) = &action else {
+            panic!("matching observation should stop");
+        };
+        assert_eq!(stopped.token.as_deref(), Some(token.as_str()));
+        assert!(session.stop_requested());
+
+        let result = finish_toggle_stop_with(owner, true, |owner| {
+            apply_toggle_stop_intent_in(&dir, owner)
+        });
+        assert_eq!(result.unwrap().as_deref(), Some(token.as_str()));
+        assert!(session.cancel_requested());
+
+        drop(session);
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -2091,14 +2286,14 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("echo-toggle-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
 
-        let first = match ToggleSession::start_or_stop_in(&dir).unwrap() {
+        let first = match ToggleSession::start_or_stop_in(&dir, None).unwrap() {
             ToggleAction::Start(session) => session,
             ToggleAction::Stop(_) => panic!("first toggle should start"),
         };
         let stop = dir.join(scoped_intent_name("stop", &first.token));
         assert!(dir.join("recording.lock").is_file());
         assert!(matches!(
-            ToggleSession::start_or_stop_in(&dir).unwrap(),
+            ToggleSession::start_or_stop_in(&dir, None).unwrap(),
             ToggleAction::Stop(_)
         ));
         assert!(stop.is_file());
@@ -2107,7 +2302,7 @@ mod tests {
         assert!(!dir.join("recording.lock").exists());
         assert!(!stop.exists());
         assert!(matches!(
-            ToggleSession::start_or_stop_in(&dir).unwrap(),
+            ToggleSession::start_or_stop_in(&dir, None).unwrap(),
             ToggleAction::Start(_)
         ));
     }
@@ -2127,5 +2322,81 @@ mod tests {
 
         drop(session);
         assert!(ToggleSession::try_start_in(&dir).unwrap().is_some());
+    }
+
+    #[test]
+    fn cancel_ack_is_withheld_after_injecting_is_published() {
+        let session_id = "session-a";
+        let transcribing = status::Status {
+            state: "Transcribing".to_string(),
+            last: None,
+            last_history_id: None,
+            error: None,
+            recording_limit: None,
+            session_id: Some(session_id.to_string()),
+            revision: 4,
+        };
+        let injecting = status::Status {
+            state: "Injecting".to_string(),
+            revision: 5,
+            ..transcribing.clone()
+        };
+        let reads = Cell::new(0);
+        let wrote = Cell::new(false);
+        let ack = request_control_ack_with(
+            session_id,
+            ControlIntent::TranscriptionCancel,
+            || {
+                let n = reads.get();
+                reads.set(n + 1);
+                if n == 0 {
+                    transcribing.clone()
+                } else {
+                    injecting.clone()
+                }
+            },
+            |_, _| {
+                wrote.set(true);
+                Ok(true)
+            },
+        )
+        .unwrap();
+        assert!(wrote.get());
+        assert!(ack.is_none());
+    }
+
+    #[test]
+    fn matching_cancel_ack_survives_a_stable_transcribing_phase() {
+        let session_id = "session-a";
+        let transcribing = status::Status {
+            state: "Transcribing".to_string(),
+            last: None,
+            last_history_id: None,
+            error: None,
+            recording_limit: None,
+            session_id: Some(session_id.to_string()),
+            revision: 4,
+        };
+        let ack = request_control_ack_with(
+            session_id,
+            ControlIntent::TranscriptionCancel,
+            || transcribing.clone(),
+            |_, _| Ok(true),
+        )
+        .unwrap()
+        .expect("stable transcribing cancel must ack");
+        assert_eq!(ack.session_id, session_id);
+        assert_eq!(ack.revision, 5);
+    }
+
+    #[test]
+    fn release_builds_ignore_audio_fixture_env() {
+        let path = std::ffi::OsString::from("/tmp/echo-fixture.wav");
+        assert_eq!(
+            audio_fixture_path(true, Some(path.clone())),
+            Some(PathBuf::from("/tmp/echo-fixture.wav"))
+        );
+        assert_eq!(audio_fixture_path(false, Some(path)), None);
+        assert_eq!(audio_fixture_path(true, None), None);
     }
 }

@@ -400,6 +400,33 @@ describe('Echo desktop shell', () => {
     expect(screen.queryByText(/0:00 \/ /)).not.toBeInTheDocument()
   })
 
+  it('does not flash a zero recording cap before the first status poll after start', async () => {
+    const pending = deferred<AppStatus>()
+    vi.mocked(getAppStatus).mockImplementation(() => pending.promise)
+    vi.mocked(startCapture).mockResolvedValueOnce({
+      sessionId: 'started',
+      phase: 'Recording',
+      revision: 2,
+      captureStopRequested: false,
+    })
+    try {
+      render(<App />)
+      fireEvent.click(await screen.findByRole('button', { name: 'Start recording' }))
+      expect(await screen.findByRole('button', { name: 'Stop and transcribe' })).toBeInTheDocument()
+      expect(screen.getByText('0:00')).toBeInTheDocument()
+      expect(screen.queryByText(/0:00 \/ /)).not.toBeInTheDocument()
+    } finally {
+      pending.resolve({
+        ...richPreviewStatus(),
+        phase: 'Recording',
+        recordingSessionId: 'started',
+        recordingRevision: 2,
+      })
+      await act(async () => pending.promise)
+    }
+  })
+
+
   it('shows microphone then speech as guided Home steps', async () => {
     const readiness = await getReadiness()
     seedPreviewReadiness({
@@ -437,6 +464,7 @@ describe('Echo desktop shell', () => {
     const { rerender } = render(<App />)
     const parked = await screen.findByText('Listening…')
     expect(parked).toBeInTheDocument()
+    expect(parked).toHaveAttribute('aria-live', 'polite')
     const bars = document.querySelector('.level-bars')
     expect(bars).toHaveAttribute('data-live', 'false')
 

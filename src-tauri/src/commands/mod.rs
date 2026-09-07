@@ -95,5 +95,6 @@ mod tests {
             _,
             _,
         >(start_dictionary_training_sample);
+        assert_async_fn1::<String, Result<(), String>, _, _>(copy_text);
     }
 }

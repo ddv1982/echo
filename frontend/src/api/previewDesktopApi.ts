@@ -298,8 +298,21 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
     if (previewStatus.recordingSessionId !== sessionId || previewStatus.phase !== 'Recording') {
       return Promise.reject(new Error('Recording session changed before stop was accepted.'))
     }
-    stopPreviewRecording()
-    return Promise.resolve(recordingSnapshot())
+    if (previewRecordingDeadline != null) {
+      clearPreviewTimer(previewRecordingDeadline)
+      previewRecordingDeadline = null
+    }
+    previewStatus = {
+      ...previewStatus,
+      captureStopRequested: true,
+      recordingRevision: previewStatus.recordingRevision + 1,
+    }
+    const ack = recordingSnapshot()
+    schedulePreview(() => {
+      if (previewStatus.recordingSessionId !== sessionId || previewStatus.phase !== 'Recording') return
+      stopPreviewRecording()
+    }, 0)
+    return Promise.resolve(ack)
   }
 
   function cancelTranscription(sessionId: string): Promise<RecordingSnapshot> {
@@ -308,11 +321,20 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
     }
     previewStatus = {
       ...previewStatus,
-      phase: 'Failed',
-      recordingRevision: previewStatus.recordingRevision + 2,
-      lastError: 'Transcription cancelled.',
+      captureStopRequested: false,
+      recordingRevision: previewStatus.recordingRevision + 1,
     }
-    return Promise.resolve(recordingSnapshot())
+    const ack = recordingSnapshot()
+    schedulePreview(() => {
+      if (previewStatus.recordingSessionId !== sessionId || previewStatus.phase !== 'Transcribing') return
+      previewStatus = {
+        ...previewStatus,
+        phase: 'Failed',
+        recordingRevision: previewStatus.recordingRevision + 2,
+        lastError: 'Transcription cancelled.',
+      }
+    }, 0)
+    return Promise.resolve(ack)
   }
 
   function stopRecording(activation: string): Promise<boolean> {

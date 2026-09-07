@@ -324,6 +324,15 @@ impl PrivateDir {
         self.open_file(name, OFlags::RDWR | OFlags::CREATE)
     }
 
+    pub fn open_write(&self, name: &std::ffi::OsStr, append: bool) -> io::Result<fs::File> {
+        let flags = if append {
+            OFlags::WRONLY | OFlags::CREATE | OFlags::APPEND
+        } else {
+            OFlags::WRONLY | OFlags::CREATE | OFlags::TRUNC
+        };
+        self.open_file(name, flags)
+    }
+
     pub fn read_to_string(&self, name: &std::ffi::OsStr) -> io::Result<String> {
         let bytes = self.read(name)?;
         String::from_utf8(bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))

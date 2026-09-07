@@ -41,18 +41,23 @@ export function SetupChecklist({
   const mountedRef = useRef(true)
   const micTestVersion = useRef(0)
   const micTestRun = useRef(0)
+  const readinessVersion = useRef(0)
   const reportSetupError = useCallback((reason: unknown) => {
     if (mountedRef.current) setSetupError(messageFrom(reason))
   }, [])
   const applyMicrophoneSnapshot = useCallback((next: MicrophoneSnapshot) => {
     if (mountedRef.current) setMicrophones((current) => newestSnapshot(current, next))
   }, [])
+  const applyFetchedReadiness = useCallback((next: Readiness, version: number) => {
+    if (mountedRef.current && readinessVersion.current === version) setReadiness(next)
+  }, [])
 
   useEffect(() => {
     let current = true
     mountedRef.current = true
+    const version = ++readinessVersion.current
     void getReadiness().then((next) => {
-      if (current && mountedRef.current) setReadiness(next)
+      if (current) applyFetchedReadiness(next, version)
     }).catch((reason: unknown) => {
       if (current && mountedRef.current) reportSetupError(reason)
     })
@@ -65,13 +70,15 @@ export function SetupChecklist({
       current = false
       mountedRef.current = false
       micTestVersion.current += 1
+      readinessVersion.current += 1
     }
-  }, [applyMicrophoneSnapshot, reportSetupError])
+  }, [applyFetchedReadiness, applyMicrophoneSnapshot, reportSetupError])
 
   const handleSetupEvent = useCallback((event: SetupEvent) => {
     if (!mountedRef.current) return
     const classified = classifySetupEvent(event)
     if (classified.kind === 'incremental') {
+      readinessVersion.current += 1
       setReadiness((current) => current && applySetupProgress(current, classified.event))
     }
     if (classified.kind === 'terminal' && classified.error != null) {
@@ -82,11 +89,12 @@ export function SetupChecklist({
     if (classifySetupEvent(event).kind === 'incremental') return null
     return () => {
       if (!mountedRef.current) return Promise.resolve(() => undefined)
+      const version = ++readinessVersion.current
       return getReadiness().then((next) => () => {
-        if (mountedRef.current) setReadiness(next)
+        applyFetchedReadiness(next, version)
       })
     }
-  }, [])
+  }, [applyFetchedReadiness])
   useAsyncSubscription({
     subscribe: onSetupEvent,
     onEvent: handleSetupEvent,
@@ -121,17 +129,19 @@ export function SetupChecklist({
             testing={testingMic}
             onRefresh={() => {
               if (!mountedRef.current) return
+              const version = ++readinessVersion.current
               void Promise.all([getMicrophones(), getReadiness()])
                 .then(([nextMicrophones, nextReadiness]) => {
                   if (!mountedRef.current) return
                   applyMicrophoneSnapshot(nextMicrophones)
-                  setReadiness(nextReadiness)
+                  applyFetchedReadiness(nextReadiness, version)
                 })
                 .catch(reportSetupError)
             }}
             onSelect={(id) => {
               if (!mountedRef.current) return
               micTestVersion.current += 1
+              const version = ++readinessVersion.current
               setMicTest(null)
               void setMicrophone(id)
                 .then((nextMicrophones) => {
@@ -140,13 +150,14 @@ export function SetupChecklist({
                   return getReadiness()
                 })
                 .then((next) => {
-                  if (next && mountedRef.current) setReadiness(next)
+                  if (next) applyFetchedReadiness(next, version)
                 })
                 .catch(reportSetupError)
             }}
             onTest={(id, fallback) => {
               if (!mountedRef.current) return
               const version = ++micTestVersion.current
+              const readinessFetch = ++readinessVersion.current
               micTestRun.current = version
               setTestingMic(true)
               const refreshAfterTest = async (refreshInputs: boolean) => {
@@ -156,7 +167,7 @@ export function SetupChecklist({
                 ])
                 if (!mountedRef.current || micTestVersion.current !== version) return
                 if (nextMicrophones) applyMicrophoneSnapshot(nextMicrophones)
-                setReadiness(nextReadiness)
+                applyFetchedReadiness(nextReadiness, readinessFetch)
               }
               const run = fallback ? testMicrophoneFallback() : testInputDevice(id)
               void run
@@ -190,8 +201,9 @@ export function SetupChecklist({
             guided
             onRefresh={() => {
               if (!mountedRef.current) return
+              const version = ++readinessVersion.current
               void getReadiness().then((next) => {
-                if (mountedRef.current) setReadiness(next)
+                applyFetchedReadiness(next, version)
               }).catch(reportSetupError)
             }}
             onError={reportSetupError}

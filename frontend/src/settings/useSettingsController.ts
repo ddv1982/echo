@@ -125,6 +125,7 @@ export function useSettingsController({
     if (classified.kind === 'incremental') {
       setSnapshot((current) => current && {
         ...current,
+        revision: current.revision + 1,
         readiness: applySetupProgress(current.readiness, classified.event),
       })
     }

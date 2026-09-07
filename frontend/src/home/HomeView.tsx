@@ -71,7 +71,7 @@ export function HomeView({
                 </span>
               ) : null}
             </div>
-            <h2>{title}</h2>
+            <h2 aria-live="polite" aria-atomic="true">{title}</h2>
             <p>{description}</p>
             {recording ? <LevelBars live={status.recordingInProcess} /> : null}
             <div className="record-actions">

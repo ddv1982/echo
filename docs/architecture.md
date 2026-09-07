@@ -44,6 +44,11 @@ mutation, but an active same-account writer is outside the boundary.
 6. The desktop projects status. A persisted History row ID prompts the
    frontend to refresh History, including after insertion failure.
 
+Clipboard paste is a fallback when typing cannot land at the cursor. Echo
+restores the previous text clipboard when it still matches the transcript.
+Other applications may already have read that transcript, and restore cannot
+preserve non-text clipboard formats.
+
 One cross-process lease covers capture, transcription, injection, and history
 persistence. Normal CLI recording, toggle recording, voice training, and
 upgrade takeover all use that lease. A fixed gate file supplies kernel-backed

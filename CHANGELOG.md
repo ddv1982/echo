@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.14.21
+
+- Whisper GPU runs of quantized catalog models are no longer treated as identity failures. A hung GPU attempt is quarantined so the next utterance can fall back to CPU instead of stalling another 15 minutes.
+- Dictionary updates no longer lose rows when a recording-end refresh overlaps an add or delete. Navigating away while a voice-training take is transcribing keeps that take.
+- Home no longer flashes `0:00 / 0:00` at the start of a recording, and recording phase changes are announced to assistive technology. Tray and CLI toggles cannot stop a replacement session, and a failed transcription-cancel write is no longer reported as success.
+- Clipboard paste fallback restores the previous text clipboard when it still holds the transcript. Other applications may already have read it.
+- Home stop and cancel no longer report success after transcription has already moved on to insertion. Setup download progress is no longer replaced by a stale same-revision snapshot.
+- System PATH speech runtimes are hashed at discovery and refused if they change before use. The model cache directory is owner-only and download partials no longer follow symlinks. Release builds ignore `ECHO_AUDIO_FIXTURE`.
+
 ## v0.14.20
 
 - Microphone choices now exclude unavailable headset routes, speakers, and playback monitors while retaining usable physical and virtual inputs.

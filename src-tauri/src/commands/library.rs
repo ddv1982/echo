@@ -146,8 +146,8 @@ pub(crate) async fn remove_dictionary_entry(
 }
 
 #[tauri::command]
-pub(crate) fn copy_text(text: String) -> Result<(), String> {
-    SysClipboard.set(&text)
+pub(crate) async fn copy_text(text: String) -> Result<(), String> {
+    crate::blocking::run_blocking("clipboard copy", move || SysClipboard.set(&text)).await?
 }
 
 #[cfg(test)]

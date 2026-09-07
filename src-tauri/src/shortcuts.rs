@@ -1,4 +1,5 @@
 use std::env;
+use std::future::Future;
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -584,7 +585,16 @@ async fn run_portal_shortcuts_async(
     let app_id = APP_ID
         .parse::<ashpd::AppID>()
         .map_err(|err| format!("invalid portal application id: {err}"))?;
-    if let Err(err) = ashpd::register_host_app_with_connection(connection.clone(), app_id).await {
+    let registry = match race_native_cancel(
+        cancel,
+        ashpd::register_host_app_with_connection(connection.clone(), app_id),
+    )
+    .await
+    {
+        Some(result) => result,
+        None => return Ok(()),
+    };
+    if let Err(err) = registry {
         if is_legacy_registry_absence(&err) {
             eprintln!("native shortcuts: host portal Registry is unavailable; probing legacy GlobalShortcuts support");
         } else {
@@ -595,9 +605,11 @@ async fn run_portal_shortcuts_async(
     // The Registry attempt above intentionally precedes every portal proxy,
     // session and bind operation. New stacks attribute permissions to APP_ID;
     // legacy stacks without Registry can still expose GlobalShortcuts.
-    let portal = match GlobalShortcuts::with_connection(connection).await {
-        Ok(portal) => portal,
-        Err(err) => {
+    let portal = match race_native_cancel(cancel, GlobalShortcuts::with_connection(connection))
+        .await
+    {
+        Some(Ok(portal)) => portal,
+        Some(Err(err)) => {
             let detail = format!("Wayland GlobalShortcuts interface is unavailable: {err}");
             if is_global_shortcuts_absence(&err) {
                 set_native_shortcut_state(NativeShortcutState::PortalAbsent { detail });
@@ -605,6 +617,7 @@ async fn run_portal_shortcuts_async(
             }
             return Err(detail);
         }
+        None => return Ok(()),
     };
     let decision = echo::hotkey::select_native_backend(
         echo::hotkey::DesktopSession::Wayland,
@@ -618,10 +631,17 @@ async fn run_portal_shortcuts_async(
         });
         return Ok(());
     }
-    let session = portal
-        .create_session(CreateSessionOptions::default())
-        .await
-        .map_err(|err| format!("cannot create GlobalShortcuts session: {err}"))?;
+    let session = match race_native_cancel(
+        cancel,
+        portal.create_session(CreateSessionOptions::default()),
+    )
+    .await
+    {
+        Some(result) => {
+            result.map_err(|err| format!("cannot create GlobalShortcuts session: {err}"))?
+        }
+        None => return Ok(()),
+    };
     let session_path = serde_json::to_value(&session)
         .ok()
         .and_then(|value| value.as_str().map(str::to_string))
@@ -630,69 +650,78 @@ async fn run_portal_shortcuts_async(
         Ok(path) => path,
         Err(err) => return Err(close_portal_after_failure(&session, err.to_string()).await),
     };
-    let mut activated = Box::pin(match portal.receive_activated().await {
-        Ok(stream) => stream,
-        Err(err) => {
+    let mut activated = Box::pin(match race_native_cancel(cancel, portal.receive_activated()).await {
+        Some(Ok(stream)) => stream,
+        Some(Err(err)) => {
             return Err(close_portal_after_failure(
                 &session,
                 format!("cannot listen for portal activations: {err}"),
             )
             .await)
         }
+        None => return close_cancelled_portal_session(&session).await,
     });
-    let mut deactivated = Box::pin(match portal.receive_deactivated().await {
-        Ok(stream) => stream,
-        Err(err) => {
-            return Err(close_portal_after_failure(
-                &session,
-                format!("cannot listen for portal deactivations: {err}"),
-            )
-            .await)
-        }
-    });
-    let mut changed = Box::pin(match portal.receive_shortcuts_changed().await {
-        Ok(stream) => stream,
-        Err(err) => {
-            return Err(close_portal_after_failure(
-                &session,
-                format!("cannot listen for portal shortcut changes: {err}"),
-            )
-            .await)
-        }
-    });
-    let mut closed = Box::pin(match session.receive_closed().await {
-        Ok(stream) => stream,
-        Err(err) => {
+    let mut deactivated =
+        Box::pin(match race_native_cancel(cancel, portal.receive_deactivated()).await {
+            Some(Ok(stream)) => stream,
+            Some(Err(err)) => {
+                return Err(close_portal_after_failure(
+                    &session,
+                    format!("cannot listen for portal deactivations: {err}"),
+                )
+                .await)
+            }
+            None => return close_cancelled_portal_session(&session).await,
+        });
+    let mut changed = Box::pin(
+        match race_native_cancel(cancel, portal.receive_shortcuts_changed()).await {
+            Some(Ok(stream)) => stream,
+            Some(Err(err)) => {
+                return Err(close_portal_after_failure(
+                    &session,
+                    format!("cannot listen for portal shortcut changes: {err}"),
+                )
+                .await)
+            }
+            None => return close_cancelled_portal_session(&session).await,
+        },
+    );
+    let mut closed = Box::pin(match race_native_cancel(cancel, session.receive_closed()).await {
+        Some(Ok(stream)) => stream,
+        Some(Err(err)) => {
             return Err(close_portal_after_failure(
                 &session,
                 format!("cannot listen for portal session closure: {err}"),
             )
             .await)
         }
+        None => return close_cancelled_portal_session(&session).await,
     });
 
     let shortcuts = [
         NewShortcut::new(FixedShortcut::ID, "Start or stop recording")
             .preferred_trigger(FixedShortcut::PORTAL_TRIGGER),
     ];
-    let request = tokio::select! {
-        result = portal.bind_shortcuts(
+    let request = match race_native_cancel(
+        cancel,
+        portal.bind_shortcuts(
             &session,
             &shortcuts,
             None,
             BindShortcutsOptions::default(),
-        ) => match result {
-            Ok(request) => request,
-            Err(err) => return Err(close_portal_after_failure(
+        ),
+    )
+    .await
+    {
+        Some(Ok(request)) => request,
+        Some(Err(err)) => {
+            return Err(close_portal_after_failure(
                 &session,
                 format!("cannot bind portal shortcuts: {err}"),
-            ).await),
-        },
-        () = wait_for_native_cancel(cancel) => {
-            session.close().await
-                .map_err(|err| format!("cannot close cancelled portal shortcut session: {err}"))?;
-            return Ok(());
+            )
+            .await)
         }
+        None => return close_cancelled_portal_session(&session).await,
     };
     let response = match request.response() {
         Ok(response) => response,
@@ -781,6 +810,16 @@ async fn wait_for_native_cancel(cancel: &echo::audio::CancellationToken) {
     }
 }
 
+async fn race_native_cancel<T>(
+    cancel: &echo::audio::CancellationToken,
+    fut: impl Future<Output = T>,
+) -> Option<T> {
+    tokio::select! {
+        result = fut => Some(result),
+        () = wait_for_native_cancel(cancel) => None,
+    }
+}
+
 async fn close_portal_after_failure<T>(
     session: &ashpd::desktop::Session<T>,
     primary: String,
@@ -793,6 +832,18 @@ where
         Ok(Err(err)) => format!("{primary}; portal session cleanup failed: {err}"),
         Err(_) => format!("{primary}; portal session cleanup timed out"),
     }
+}
+
+async fn close_cancelled_portal_session<T>(
+    session: &ashpd::desktop::Session<T>,
+) -> Result<(), String>
+where
+    T: ashpd::desktop::SessionPortal,
+{
+    session
+        .close()
+        .await
+        .map_err(|err| format!("cannot close cancelled portal shortcut session: {err}"))
 }
 
 fn effective_portal_shortcut(shortcuts: &[Shortcut]) -> Result<String, String> {
