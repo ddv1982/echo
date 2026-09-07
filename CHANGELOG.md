@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.14.24
+
+- Typed transcripts no longer wait 12 ms between keystrokes, so long dictation lands quickly instead of trickling in.
+
 ## v0.14.23
 
 - Dutch is now in the tray and Settings Common language lists, alongside English, German, Spanish, and French.
