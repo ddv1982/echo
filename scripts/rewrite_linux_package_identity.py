@@ -299,7 +299,7 @@ def rewrite_rpm_with_rpmbuild(package: Path) -> Path:
         tmp = Path(temporary)
         top = tmp / "rpmbuild"
         for name in ("BUILD", "RPMS", "SOURCES", "SPECS", "SRPMS"):
-            (top / name).mkdir()
+            (top / name).mkdir(parents=True)
         payload = top / "SOURCES" / "payload"
         payload.mkdir()
         extractor = subprocess.Popen([rpm2cpio, str(package)], stdout=subprocess.PIPE)
@@ -360,9 +360,7 @@ def rewrite_rpm_with_rpmbuild(package: Path) -> Path:
                 "--define",
                 f"_topdir {top}",
                 str(spec),
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
+            ]
         )
         built = list((top / "RPMS").rglob("*.rpm"))
         if len(built) != 1:
@@ -463,8 +461,6 @@ def build_synthetic_rpm(root: Path) -> Path:
     )
     run(
         [rpmbuild, "-bb", "--define", f"_topdir {top}", str(spec)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
     )
     built = list((top / "RPMS").rglob("*.rpm"))
     if len(built) != 1:
