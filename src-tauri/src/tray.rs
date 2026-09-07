@@ -32,8 +32,9 @@ pub(crate) fn build(app: &mut App) -> tauri::Result<TrayMenu> {
         false,
         None::<&str>,
     )?;
-    let common_languages = ["en", "de", "es", "fr"]
-        .into_iter()
+    let common_languages = echo_core::COMMON_LANGUAGES
+        .iter()
+        .copied()
         .filter_map(echo_core::Language::from_code)
         .map(|language| language_item(app, "language", language))
         .collect::<tauri::Result<Vec<_>>>()?;

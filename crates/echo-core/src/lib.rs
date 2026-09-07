@@ -24,7 +24,7 @@ pub use engine::{
 };
 pub use history::{History, HistoryRow};
 pub use inject::{FocusTarget, InjectBackend, InjectReport, Injector};
-pub use language::{Language, LanguageChoice, PARAKEET_LANGUAGES};
+pub use language::{Language, LanguageChoice, COMMON_LANGUAGES, PARAKEET_LANGUAGES};
 pub use nonspeech::strip_nonspeech;
 pub use paths::{
     config_dir, config_path, data_dir, dictionary_path, ensure_private_dir, history_path,

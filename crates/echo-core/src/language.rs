@@ -45,6 +45,11 @@ impl Language {
     pub fn all() -> impl Iterator<Item = Self> + 'static {
         LANGUAGE_TABLE.iter().map(|(code, _, _)| Self(code))
     }
+
+    #[must_use]
+    pub fn is_common(self) -> bool {
+        COMMON_LANGUAGES.contains(&self.0)
+    }
 }
 
 /// The language Echo transcribes in. Two explicit states: `Option<Language>`
@@ -96,6 +101,10 @@ impl<'de> Deserialize<'de> for LanguageChoice {
         Self::parse(&raw).ok_or_else(|| serde::de::Error::custom(format!("unknown language {raw}")))
     }
 }
+
+/// Languages shown first in the tray Language menu and Settings Common group.
+/// Display order matches Whisper table-id order among this set.
+pub const COMMON_LANGUAGES: &[&str] = &["en", "de", "es", "fr", "nl"];
 
 /// Parakeet-TDT 0.6B v3's fixed capability: 25 European languages with
 /// automatic identification and no readback, per the sherpa-onnx model card.
@@ -163,5 +172,20 @@ mod tests {
     fn parakeet_capability_is_25_languages() {
         assert_eq!(PARAKEET_LANGUAGES.len(), 25);
         assert!(PARAKEET_LANGUAGES.contains(&"en"));
+    }
+
+    #[test]
+    fn common_languages_are_known_codes_in_table_id_order() {
+        assert_eq!(COMMON_LANGUAGES, &["en", "de", "es", "fr", "nl"]);
+        let mut previous = None;
+        for code in COMMON_LANGUAGES {
+            let language = Language::from_code(code).expect(code);
+            assert!(language.is_common());
+            if let Some(previous_id) = previous {
+                assert!(language.id() > previous_id, "{code}");
+            }
+            previous = Some(language.id());
+        }
+        assert!(!Language::from_code("ja").unwrap().is_common());
     }
 }

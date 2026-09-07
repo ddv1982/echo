@@ -126,6 +126,7 @@ export function defaultPreviewLanguages(): LanguageOptions {
       { code: 'de', englishName: 'german', group: 'common' },
       { code: 'es', englishName: 'spanish', group: 'common' },
       { code: 'fr', englishName: 'french', group: 'common' },
+      { code: 'nl', englishName: 'dutch', group: 'common' },
       { code: 'ja', englishName: 'japanese', group: 'all' },
       { code: 'sv', englishName: 'swedish', group: 'all' },
     ],

@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.14.23
+
+- Dutch is now in the tray and Settings Common language lists, alongside English, German, Spanish, and French.
+
 ## v0.14.22
 
 - Cargo and frontend dependencies were refreshed, including uuid 1.26, tauri-plugin-single-instance 2.4.4, Vitest 5, jsdom 30, Lucide React, and TypeScript Node and DOM type packages.

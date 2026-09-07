@@ -375,8 +375,6 @@ function modelQualitySummary(model: WhisperModelInfo) {
   }
 }
 
-const COMMON_LANGUAGE_ORDER = ['en', 'de', 'es', 'fr']
-
 function LanguageRow({ languages, settings, lastUsed, onChange }: {
   languages: LanguageOptions
   settings: Settings
@@ -389,9 +387,9 @@ function LanguageRow({ languages, settings, lastUsed, onChange }: {
   if (languages.mode === 'english') return <SettingLine label="Language" value="English" />
   const detected = lastUsed?.language ?? null
   const common = [
-    ...COMMON_LANGUAGE_ORDER.flatMap((code) => languages.options.filter((option) => option.code === code)),
-    ...(detected && !COMMON_LANGUAGE_ORDER.includes(detected)
-      ? languages.options.filter((option) => option.code === detected)
+    ...languages.options.filter((option) => option.group === 'common'),
+    ...(detected
+      ? languages.options.filter((option) => option.code === detected && option.group !== 'common')
       : []),
   ]
   const all = [...languages.options].sort((a, b) => a.englishName.localeCompare(b.englishName))
