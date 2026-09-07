@@ -987,13 +987,14 @@ describe('Echo desktop shell', () => {
     const picker = await screen.findByLabelText('Language')
     const auto = screen.getByRole('option', { name: 'Auto · detect language' })
     expect(auto).toBeInTheDocument()
-    // The common group keeps its fixed order; the full list is alphabetical.
+    // Common follows backend group order; the full list is alphabetical.
     const common = within(screen.getByRole('group', { name: 'Common' }))
     expect(common.getAllByRole('option').map((o) => o.textContent)).toEqual([
       'English',
       'German',
       'Spanish',
       'French',
+      'Dutch',
     ])
     const all = within(screen.getByRole('group', { name: 'All languages' }))
     const names = all.getAllByRole('option').map((option, index) =>
@@ -1090,7 +1091,7 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    await screen.findByText('nl · p=0.31')
+    await screen.findByText('nl · Dutch · p=0.31')
     expect(screen.queryByRole('button', { name: /Pin .* for speed/ })).not.toBeInTheDocument()
   })
 
@@ -1116,7 +1117,7 @@ describe('Echo desktop shell', () => {
     render(<App />)
     await screen.findByRole('button', { name: 'Start recording' })
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
-    const chip = await screen.findByText('nl · p=0.31')
+    const chip = await screen.findByText('nl · Dutch · p=0.31')
     expect(chip.closest('.status-note')).toHaveAttribute('data-tone', 'attention')
   })
 

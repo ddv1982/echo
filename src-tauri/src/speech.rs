@@ -212,9 +212,7 @@ fn language_option(language: echo_core::Language, grouping: LanguageGrouping) ->
         code: language.code().to_string(),
         english_name: language.english_name().to_string(),
         group: match grouping {
-            LanguageGrouping::Common if ["en", "de", "es", "fr"].contains(&language.code()) => {
-                LanguageGroup::Common
-            }
+            LanguageGrouping::Common if language.is_common() => LanguageGroup::Common,
             LanguageGrouping::Common | LanguageGrouping::All => LanguageGroup::All,
         },
     }
@@ -293,7 +291,7 @@ mod tests {
 
     fn assert_common_grouping(options: &[LanguageOption]) {
         for option in options {
-            let expected = if ["en", "de", "es", "fr"].contains(&option.code.as_str()) {
+            let expected = if echo_core::COMMON_LANGUAGES.contains(&option.code.as_str()) {
                 LanguageGroup::Common
             } else {
                 LanguageGroup::All

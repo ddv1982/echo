@@ -170,7 +170,7 @@ mod tests {
         for (option, language) in multilingual.options.iter().zip(echo_core::Language::all()) {
             assert_eq!(option.code, language.code());
             assert_eq!(option.english_name, language.english_name());
-            let expected_group = if ["en", "de", "es", "fr"].contains(&language.code()) {
+            let expected_group = if echo_core::COMMON_LANGUAGES.contains(&language.code()) {
                 echo_desktop::ipc::LanguageGroup::Common
             } else {
                 echo_desktop::ipc::LanguageGroup::All
