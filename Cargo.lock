@@ -1166,7 +1166,7 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "echo"
-version = "0.14.21"
+version = "0.14.22"
 dependencies = [
  "bzip2",
  "cpal",
@@ -1192,7 +1192,7 @@ dependencies = [
 
 [[package]]
 name = "echo-core"
-version = "0.14.21"
+version = "0.14.22"
 dependencies = [
  "caseless",
  "fs2",
@@ -1206,7 +1206,7 @@ dependencies = [
 
 [[package]]
 name = "echo-desktop"
-version = "0.14.21"
+version = "0.14.22"
 dependencies = [
  "ashpd",
  "clap",
@@ -1225,7 +1225,7 @@ dependencies = [
 
 [[package]]
 name = "echo-ipc"
-version = "0.14.21"
+version = "0.14.22"
 dependencies = [
  "echo",
  "echo-core",
@@ -1236,7 +1236,7 @@ dependencies = [
 
 [[package]]
 name = "echo-ipc-gen"
-version = "0.14.21"
+version = "0.14.22"
 dependencies = [
  "echo-ipc",
 ]
@@ -5180,9 +5180,9 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "uuid"
-version = "1.24.1"
+version = "1.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2cefc03fd367c0c6d4305de1b312cf00248c4114f4a0418ce6a6af769e3b0bd9"
+checksum = "b5772d71c9be8a8a6ac2117d949c5b224c1b72241bb611d9a3012edcf8af7812"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",
@@ -6089,7 +6089,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "xtask"
-version = "0.14.21"
+version = "0.14.22"
 dependencies = [
  "png 0.18.1",
  "resvg",

@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.14.22
+
+- Cargo and frontend dependencies were refreshed, including uuid 1.26, tauri-plugin-single-instance 2.4.4, Vitest 5, jsdom 30, Lucide React, and TypeScript Node and DOM type packages.
+
 ## v0.14.21
 
 - Whisper GPU runs of quantized catalog models are no longer treated as identity failures. A hung GPU attempt is quarantined so the next utterance can fall back to CPU instead of stalling another 15 minutes.
