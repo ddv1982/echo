@@ -96,7 +96,10 @@ impl ModelCache {
     /// whole app: Whisper GGML files, Silero VAD weights, Parakeet ONNX sets.
     #[must_use]
     pub fn inventory(&self) -> ModelInventory {
-        let mut inventory = ModelInventory::default();
+        let mut inventory = ModelInventory {
+            parakeet: self.parakeet_root(),
+            ..ModelInventory::default()
+        };
         let entries = match fs::read_dir(&self.dir) {
             Ok(entries) => entries,
             Err(_) => return inventory,
@@ -569,5 +572,59 @@ mod tests {
         }
         assert_eq!(ModelCache::at(&dir).parakeet_root(), Some(nested));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn inventory_discovers_flat_parakeet_and_prefers_canonical_nested_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ModelCache::at(dir.path());
+        let files = ["tokens.txt", "encoder.onnx", "decoder.onnx", "joiner.onnx"];
+        for file in files {
+            fs::write(dir.path().join(file), []).unwrap();
+        }
+        assert_eq!(cache.inventory().parakeet, Some(dir.path().to_path_buf()));
+        assert_eq!(cache.inventory().parakeet, cache.parakeet_root());
+
+        let nested = dir.path().join("parakeet-tdt-0.6b-v3");
+        fs::create_dir(&nested).unwrap();
+        for file in files {
+            fs::write(nested.join(file), []).unwrap();
+        }
+        assert_eq!(cache.inventory().parakeet, Some(nested));
+        assert_eq!(cache.inventory().parakeet, cache.parakeet_root());
+    }
+
+    #[test]
+    fn inventory_rejects_incomplete_flat_parakeet_models() {
+        for missing in ["tokens.txt", "encoder.onnx", "decoder.onnx", "joiner.onnx"] {
+            let dir = tempfile::tempdir().unwrap();
+            for file in ["tokens.txt", "encoder.onnx", "decoder.onnx", "joiner.onnx"] {
+                if file != missing {
+                    fs::write(dir.path().join(file), []).unwrap();
+                }
+            }
+            let cache = ModelCache::at(dir.path());
+            assert_eq!(cache.inventory().parakeet, None, "missing {missing}");
+            assert_eq!(cache.parakeet_root(), None, "missing {missing}");
+        }
+    }
+
+    #[test]
+    fn inventory_preserves_noncanonical_parakeet_directory_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let custom = dir.path().join("custom-parakeet");
+        fs::create_dir(&custom).unwrap();
+        for file in [
+            "tokens.txt",
+            "encoder.int8.onnx",
+            "decoder.onnx",
+            "joiner.onnx",
+        ] {
+            fs::write(custom.join(file), []).unwrap();
+        }
+        assert_eq!(
+            ModelCache::at(dir.path()).inventory().parakeet,
+            Some(custom)
+        );
     }
 }

@@ -136,6 +136,136 @@ fn echo_command_ownership_requires_an_exact_safe_invocation() {
 }
 
 #[test]
+fn gsettings_strings_decode_gvariant_quotes_and_escapes() {
+    for (raw, expected) in [
+        ("''", ""),
+        (r#""Echo's shortcut""#, "Echo's shortcut"),
+        (r#"'Echo\'s "shortcut"'"#, "Echo's \"shortcut\""),
+        (
+            r#""Echo's \"shortcut\" in C:\\Echo\n\t\u00e9""#,
+            "Echo's \"shortcut\" in C:\\Echo\n\té",
+        ),
+        ("@s 'Echo'", "Echo"),
+    ] {
+        assert_eq!(gsettings_string(raw).unwrap(), expected, "{raw}");
+    }
+}
+
+#[test]
+fn gsettings_string_arrays_preserve_all_entries_and_types() {
+    assert_eq!(parse_gsettings_strings("[]").unwrap(), Vec::<String>::new());
+    assert_eq!(
+        parse_gsettings_strings("@as []").unwrap(),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        parse_gsettings_strings(r#"@as ['/first/', "/Echo's/", '/"quoted"/', '/back\\slash/']"#)
+            .unwrap(),
+        vec!["/first/", "/Echo's/", "/\"quoted\"/", "/back\\slash/"]
+    );
+}
+
+#[test]
+fn gsettings_parsing_rejects_malformed_wrong_typed_and_partial_values() {
+    for raw in [
+        "",
+        "'unterminated",
+        r#""mismatched'"#,
+        "'valid' garbage",
+        "'first' 'second'",
+        "['not a scalar']",
+        "@o '/not/a/string'",
+        "'valid'\0ignored",
+        r"'\uZZZZ'",
+    ] {
+        assert!(gsettings_string(raw).is_err(), "{raw:?}");
+    }
+    for raw in [
+        "",
+        "'not an array'",
+        "['unterminated'",
+        "['valid', 1]",
+        "garbage ['valid']",
+        "['valid'] garbage",
+        "@ai []",
+        "['valid']\0ignored",
+    ] {
+        assert!(parse_gsettings_strings(raw).is_err(), "{raw:?}");
+    }
+}
+
+#[test]
+fn native_gvariant_commands_roundtrip_through_safe_repair() {
+    use glib::variant::ToVariant;
+
+    let executable = r#"/opt/Echo's "App" \ Build/echo-desktop"#;
+    let command = absolute_toggle_command(executable).unwrap();
+    let native_value = command.to_variant().print(true);
+    let decoded = gsettings_string(native_value.as_str()).unwrap();
+    assert_eq!(decoded, command);
+    assert_eq!(
+        safe_shell_words(&decoded).unwrap(),
+        vec![executable, "rec", "--toggle"]
+    );
+    let snapshot = GnomeShortcutSnapshot {
+        paths: vec![ECHO_CUSTOM_KEY_PATH.to_string()],
+        bindings: vec![custom_binding(
+            ECHO_CUSTOM_KEY_PATH,
+            ECHO_CUSTOM_KEY_NAME,
+            &decoded,
+            FixedShortcut::GNOME_ACCELERATOR,
+        )],
+    };
+    let ready = classify_gnome_shortcut(&snapshot, &command, FixedShortcut::GNOME_ACCELERATOR);
+    assert_eq!(ready.state, LegacyShortcutState::Ready);
+    assert!(gnome_repair_writes(&ready, &snapshot.paths)
+        .unwrap()
+        .is_empty());
+
+    let desired = absolute_toggle_command("/usr/bin/echo-desktop").unwrap();
+    let stale = classify_gnome_shortcut(&snapshot, &desired, FixedShortcut::GNOME_ACCELERATOR);
+    assert_eq!(stale.state, LegacyShortcutState::Stale);
+    let writes = gnome_repair_transaction(&snapshot, &snapshot, &stale).unwrap();
+    let repaired_command = &writes
+        .iter()
+        .find(|write| write.key == "command")
+        .unwrap()
+        .value;
+    assert_eq!(gsettings_string(repaired_command).unwrap(), desired);
+    assert_eq!(
+        gsettings_string(&gvariant_string(&command)).unwrap(),
+        command
+    );
+}
+
+#[test]
+fn decoded_gvariant_commands_do_not_expand_repair_ownership() {
+    use glib::variant::ToVariant;
+
+    let desired = "/usr/bin/echo-desktop rec --toggle";
+    for command in [
+        "'/opt/Someone Else/other-app' rec --toggle",
+        "'/opt/Echo App/echo-desktop' rec --toggle; other-command",
+        "\"/opt/Echo App/echo-desktop\" rec --toggle",
+        "'/opt/Echo App/echo-desktop rec --toggle",
+    ] {
+        let decoded = gsettings_string(command.to_variant().print(true).as_str()).unwrap();
+        let snapshot = GnomeShortcutSnapshot {
+            paths: vec![ECHO_CUSTOM_KEY_PATH.to_string()],
+            bindings: vec![custom_binding(
+                ECHO_CUSTOM_KEY_PATH,
+                ECHO_CUSTOM_KEY_NAME,
+                &decoded,
+                FixedShortcut::GNOME_ACCELERATOR,
+            )],
+        };
+        let setup = classify_gnome_shortcut(&snapshot, desired, FixedShortcut::GNOME_ACCELERATOR);
+        assert_eq!(setup.state, LegacyShortcutState::Conflicting, "{command}");
+        assert!(gnome_repair_writes(&setup, &snapshot.paths).is_err());
+    }
+}
+
+#[test]
 fn gnome_accelerator_comparison_is_semantic() {
     assert!(gnome_accelerators_match(
         "<Primary><Mod1>space",

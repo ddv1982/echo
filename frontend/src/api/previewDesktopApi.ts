@@ -60,6 +60,7 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
 
   let previewStatus: AppStatus = richPreviewStatus()
   let recordingSequence = 0
+  let setupSequence = 0
 
   let previewSettings: Settings = defaultPreviewSettings()
   let previewRevision = 0
@@ -590,7 +591,7 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
     if (previewReadiness.activeOperation != null) {
       return Promise.reject(new Error('setup operation already in progress'))
     }
-    const operationId = `preview-${plan}`
+    const operationId = `preview-${plan}-${++setupSequence}`
     previewReadiness = { ...previewReadiness, activeOperation: operationId, activeCancellable: true }
     const selected = previewReadiness.plans.find((candidate) => candidate.id === plan)
     const component = selected?.components[0] ?? 'whisper-runtime'

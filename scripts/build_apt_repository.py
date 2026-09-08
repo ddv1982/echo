@@ -30,6 +30,7 @@ from deb_common import (
     read_ar_entries,
     strip_ns,
 )
+from guard_apt_publication import validate_version
 
 
 DEFAULT_SUITE = "stable"
@@ -442,6 +443,7 @@ def normalized_pool_filename(fields: dict[str, str]) -> str:
     for key, value in values.items():
         if any(char in value for char in ("/", "\x00", "\n", "\r")) or value in {".", ".."}:
             raise ValueError(f"unsafe {key} value for pool filename: {value!r}")
+    validate_version(values["Version"])
     return f"{values['Package']}_{values['Version']}_{values['Architecture']}.deb"
 
 

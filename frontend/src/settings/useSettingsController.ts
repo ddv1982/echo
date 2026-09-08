@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { messageFrom } from '../app/formatting'
 import { useAsyncSubscription } from '../hooks/useAsyncSubscription'
@@ -33,11 +33,21 @@ interface UseSettingsControllerArgs {
   onError: (message: string) => void
 }
 
+interface SettingsControllerState {
+  snapshot: SettingsSnapshot | null
+  progress: Extract<SetupEvent, { kind: 'progress' }> | null
+  completedOperations: ReadonlySet<string>
+}
+
 export function useSettingsController({
   onStatusChange,
   onError,
 }: UseSettingsControllerArgs) {
-  const [snapshot, setSnapshot] = useState<SettingsSnapshot | null>(null)
+  const [{ snapshot, progress, completedOperations }, setState] = useState<SettingsControllerState>(() => ({
+    snapshot: null,
+    progress: null,
+    completedOperations: new Set(),
+  }))
   const pendingSettingsWrites = useRef(0)
   const active = useRef(true)
   const [microphones, setMicrophones] = useState<MicrophoneSnapshot | null>(null)
@@ -59,7 +69,20 @@ export function useSettingsController({
   }, [])
 
   const applySettingsSnapshot = useCallback((next: SettingsSnapshot | null) => {
-    if (next != null && active.current) setSnapshot((current) => newestSnapshot(current, next))
+    if (next == null || !active.current) return
+    setState((current) => {
+      if (newestSnapshot(current.snapshot, next) !== next) return current
+      const operation = next.readiness.activeOperation
+      const replacesProgress = operation != null
+        && !current.completedOperations.has(operation)
+        && current.progress != null
+        && operation !== current.progress.progress.operationId
+      return {
+        ...current,
+        snapshot: next,
+        progress: replacesProgress ? null : current.progress,
+      }
+    })
   }, [])
 
   useEffect(() => {
@@ -73,7 +96,21 @@ export function useSettingsController({
   const settings = snapshot?.preferences ?? null
   const inventory = snapshot?.transcription.models ?? null
   const languages = snapshot?.transcription.languages ?? null
-  const readiness = snapshot?.readiness ?? null
+  const readiness = useMemo(() => {
+    if (snapshot == null) return null
+    // Progress and terminal events have no settings revision. Keep them as an
+    // operation-scoped overlay instead of advancing the backend's revision.
+    let next = snapshot.readiness
+    if (next.activeOperation != null && completedOperations.has(next.activeOperation)) {
+      next = {
+        ...next,
+        activeOperation: null,
+        activeCancellable: false,
+        components: next.components.map((component) => ({ ...component, activity: null })),
+      }
+    }
+    return progress == null ? next : applySetupProgress(next, progress)
+  }, [snapshot, progress, completedOperations])
   const nextRun = snapshot?.transcription.nextRun ?? null
   const whisper = snapshot?.transcription.whisper ?? null
   const lastUsed = snapshot?.transcription.lastUsed ?? null
@@ -121,16 +158,23 @@ export function useSettingsController({
   }, [refreshMicrophones])
 
   const handleSettingsSetupEvent = useCallback((event: SetupEvent) => {
-    const classified = classifySetupEvent(event)
-    if (classified.kind === 'incremental') {
-      setSnapshot((current) => current && {
-        ...current,
-        revision: current.revision + 1,
-        readiness: applySetupProgress(current.readiness, classified.event),
+    if (!active.current) return
+    if (event.kind === 'progress') {
+      setState((current) => current.completedOperations.has(event.progress.operationId)
+        ? current
+        : { ...current, progress: event })
+    } else {
+      setState((current) => {
+        if (current.completedOperations.has(event.operationId)) return current
+        const completedOperations = new Set(current.completedOperations)
+        completedOperations.add(event.operationId)
+        return {
+          ...current,
+          completedOperations,
+          progress: current.progress?.progress.operationId === event.operationId ? null : current.progress,
+        }
       })
-    }
-    if (classified.kind === 'terminal' && classified.error != null) {
-      reportSettingsError(classified.error)
+      if (event.kind === 'failed') reportSettingsError(event.error)
     }
   }, [reportSettingsError])
   const getSettingsSetupRefresh = useCallback((event: SetupEvent) => {

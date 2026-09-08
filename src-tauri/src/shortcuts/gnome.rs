@@ -345,7 +345,7 @@ fn read_gnome_shortcuts() -> Result<GnomeShortcutSnapshot, String> {
     let paths = parse_gsettings_strings(&gsettings_get(
         GNOME_MEDIA_KEYS_SCHEMA,
         "custom-keybindings",
-    )?);
+    )?)?;
     let mut inspected = paths.clone();
     if !inspected.iter().any(|path| path == ECHO_CUSTOM_KEY_PATH) {
         inspected.push(ECHO_CUSTOM_KEY_PATH.to_string());
@@ -374,39 +374,37 @@ fn gsettings_get(schema: &str, key: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn parse_gsettings_strings(raw: &str) -> Vec<String> {
-    let mut values = Vec::new();
-    let mut current = String::new();
-    let mut quoted = false;
-    let mut escaped = false;
-    for character in raw.chars() {
-        if !quoted {
-            if character == '\'' {
-                quoted = true;
-                current.clear();
-            }
-            continue;
-        }
-        if escaped {
-            current.push(character);
-            escaped = false;
-        } else if character == '\\' {
-            escaped = true;
-        } else if character == '\'' {
-            quoted = false;
-            values.push(current.clone());
-        } else {
-            current.push(character);
-        }
+fn gsettings_variant(raw: &str, type_: &glib::VariantTy) -> Result<glib::Variant, String> {
+    // GLib accepts both quote styles, escapes, and type annotations. Reject NUL
+    // explicitly so the C parser cannot silently ignore a suffix after it.
+    if raw.contains('\0') {
+        return Err("invalid gsettings value: embedded NUL".to_string());
     }
-    values
+    // Infer explicit annotations before providing a default: GLib can coerce an
+    // annotated object path into a string when given the expected type directly.
+    // Untyped empty containers need the schema's type to resolve ambiguity.
+    let value = glib::Variant::parse(None, raw)
+        .or_else(|_| glib::Variant::parse(Some(type_), raw))
+        .map_err(|err| format!("invalid gsettings {type_}: {err}"))?;
+    if value.type_() != type_ {
+        return Err(format!(
+            "invalid gsettings type: expected {type_}, got {}",
+            value.type_()
+        ));
+    }
+    Ok(value)
+}
+
+fn parse_gsettings_strings(raw: &str) -> Result<Vec<String>, String> {
+    gsettings_variant(raw, glib::VariantTy::STRING_ARRAY)?
+        .get::<Vec<String>>()
+        .ok_or_else(|| "invalid gsettings string array".to_string())
 }
 
 fn gsettings_string(raw: &str) -> Result<String, String> {
-    parse_gsettings_strings(raw)
-        .into_iter()
-        .next()
-        .ok_or_else(|| format!("invalid gsettings string: {raw}"))
+    gsettings_variant(raw, glib::VariantTy::STRING)?
+        .get::<String>()
+        .ok_or_else(|| "invalid gsettings string".to_string())
 }
 
 fn gvariant_string(value: &str) -> String {
