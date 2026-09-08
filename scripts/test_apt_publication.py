@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import pathlib
 import shutil
 import subprocess
@@ -127,6 +128,53 @@ class PublicationTests(unittest.TestCase):
         with patch.object(state, "api", side_effect=urllib.error.URLError("unavailable")):
             with self.assertRaises(urllib.error.URLError):
                 publication.guard(identity(), state, lambda: None, allow_first_publication=True)
+
+    def test_installation_token_role_flags_do_not_block_publication(self):
+        state = publication.GitHubState("owner/repo", "fixture-token")
+        # GitHub installation tokens can report push=false despite contents:write.
+        stored = {}
+
+        def api(path, data=None, **_kwargs):
+            if path == "":
+                return {"full_name": "owner/repo", "default_branch": "main", "permissions": {"push": False}}
+            if path == "/git/ref/heads/main":
+                return {"object": {"type": "commit", "sha": "main-sha"}}
+            if path == "/git/trees":
+                stored["candidate"] = json.loads(data["tree"][0]["content"])
+                return {"sha": "tree-sha"}
+            if path == "/git/commits":
+                return {"sha": "state-sha"}
+            if path == "/git/refs":
+                stored["published"] = stored["candidate"]
+                return {"ref": data["ref"]}
+            return None
+
+        with patch.object(state, "api", side_effect=api):
+            publication.guard(identity("1.0.1"), state, lambda: identity(), allow_first_publication=False)
+        self.assertEqual(stored["published"], identity("1.0.1"))
+
+    def test_git_access_failure_is_not_missing_state(self):
+        for code in (403, 404):
+            state = publication.GitHubState("owner/repo", "fixture-token")
+            replies = [
+                {"full_name": "owner/repo", "default_branch": "main"},
+                urllib.error.HTTPError("https://api.github.com/git/ref", code, "denied", {}, None),
+            ]
+            with self.subTest(code=code), patch.object(state, "api", side_effect=replies):
+                with self.assertRaises(urllib.error.HTTPError):
+                    publication.guard(identity(), state, lambda: None, allow_first_publication=True)
+
+    def test_reservation_write_denial_blocks_publication(self):
+        state = publication.GitHubState("owner/repo", "fixture-token")
+        replies = [
+            {"full_name": "owner/repo", "default_branch": "main"},
+            {"object": {"type": "commit", "sha": "main-sha"}},
+            None,
+            urllib.error.HTTPError("https://api.github.com/git/trees", 403, "denied", {}, None),
+        ]
+        with patch.object(state, "api", side_effect=replies):
+            with self.assertRaises(urllib.error.HTTPError):
+                publication.guard(identity("1.0.1"), state, lambda: identity(), allow_first_publication=False)
 
 
 class SignedIdentityTests(unittest.TestCase):

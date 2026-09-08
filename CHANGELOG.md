@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.0.3 - 2026-09-08
+
+- APT publication now checks Git access and requires a successful state reservation instead of relying on repository role flags that reject GitHub Actions installation tokens.
+- Includes the settings, Parakeet discovery, GNOME shortcut, and bandlimited audio fixes from v1.0.2.
+
 ## v1.0.2 - 2026-09-08
 
 - Settings download progress no longer outruns backend snapshot revisions; completed operations release controls and ignore late progress events.
