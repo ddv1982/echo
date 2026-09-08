@@ -99,6 +99,6 @@ fn write_silence_wav(path: &Path) {
     buf.extend(&16u16.to_le_bytes());
     buf.extend(b"data");
     buf.extend(&data_len.to_le_bytes());
-    buf.extend(std::iter::repeat(0u8).take(data_len as usize));
+    buf.extend(std::iter::repeat_n(0u8, data_len as usize));
     std::fs::write(path, buf).unwrap();
 }
