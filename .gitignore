@@ -10,3 +10,6 @@ __pycache__/
 *.pyc
 .idea
 .vscode
+.flow/
+.audit/
+frontend/.flow/

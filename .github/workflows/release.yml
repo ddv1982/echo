@@ -43,6 +43,8 @@ jobs:
           python3 scripts/verify-tag-policy.py --self-test
           python3 scripts/generate-desktop-sbom.py --self-test
 
+      # Required on pull requests (with check / check). Owns packaging-tool
+      # tests so check.yml does not run the same Python twice.
       - name: Validate changelog parser
         run: python3 scripts/changelog-notes.py --self-test
 

@@ -133,17 +133,17 @@ See [RELEASING.md](RELEASING.md) for the operator contract.
 ## Offline tooling
 
 The desktop runs the Rust speech and installation code. The Python and shell
-tools below support verification, runtime publication, and research outside the
+tools below support verification and GPU runtime publication outside the
 desktop process.
 
 | Purpose | Entry points |
 | --- | --- |
 | CI regression and archive verification | `verify-stt-benchmark.sh`, `verify-stt-corpus.sh`, `verify-whisper-runtime-archive.sh` |
 | Managed GPU runtime publication | `build-whisper-vulkan-receipt.sh`, `generate-managed-inventory.py`, and the installer proof in [RELEASING.md](RELEASING.md) |
-| Offline admission and tuning research | `sweep-whisper-admission.py`, `promote-whisper-admission.py`, `compose-whisper-admission-set.py`, and their probe and identity modules |
+| Maintainer speech comparison | `benchmark-stt.py`, `fetch-stt-corpus.py`, and [benchmarks/stt/README.md](../benchmarks/stt/README.md) |
 
-The admission tools remain maintained research tools, as recorded in the
-[evidence history](history/evidence-2026-08-30.md#durable-acceleration-decisions).
-They are not application startup dependencies. Their lack of desktop callers
-does not make them obsolete. Retiring this workflow requires checking its
-research consumers and preserving the benchmark and archive checks used by CI.
+Host-qualified GPU admission (sweep, promote, compose, and their identity
+modules) is retired. Plan 17 replaced it with an explicit CPU default and an
+on-demand managed GPU runtime. Recover those scripts from git history if a
+later experiment needs them. CI still proves the pinned CPU and Vulkan
+catalog archives install, and still runs the fake-engine benchmark contract.

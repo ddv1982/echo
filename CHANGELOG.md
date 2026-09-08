@@ -1,6 +1,10 @@
 # Changelog
 
 
+## v1.0.1 - 2026-09-08
+
+- Empty dictation no longer inserts or appears in History.
+
 ## v1.0.0 - 2026-09-07
 
 - The Debian and RPM package is now `echo`. Existing `io.github.ddv1982.echo` installs upgrade in place. The desktop id and `echo-desktop` binary are unchanged.

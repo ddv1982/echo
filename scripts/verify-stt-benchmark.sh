@@ -8,7 +8,6 @@ trap 'rm -rf "$verify_root"' EXIT
 python3 "$repo_root/scripts/process_observation.py" --self-test
 python3 "$repo_root/scripts/test_process_observation.py"
 python3 "$repo_root/scripts/benchmark-stt.py" --self-test
-python3 "$repo_root/scripts/probe-whisper-resident.py" --self-test
 if [[ ${ECHO_STT_BENCHMARK_SKIP_BUILD:-0} == 1 ]]; then
   test -x "$repo_root/target/debug/echo-desktop"
 else

@@ -40,8 +40,7 @@ fail() {
 #
 # Build the exact variant each package should contain and compare against that,
 # rather than normalising the token away. Erasing it would accept a deb that
-# carried the rpm's marker. This mirrors the invariant
-# scripts/patch-tauri-bundle-type.py already models.
+# carried the rpm's marker.
 MARKER=__TAURI_BUNDLE_TYPE_VAR
 
 variant_digest() {
