@@ -17,6 +17,7 @@
     <category>Utility</category>
   </categories>
   <releases>
+    <release version="1.0.1" date="2026-09-08" />
     <release version="1.0.0" date="2026-09-07" />
   </releases>
 </component>

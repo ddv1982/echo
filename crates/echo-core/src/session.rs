@@ -98,6 +98,17 @@ impl Session {
         }
     }
 
+    /// Empty transcription returns to Idle without inserting.
+    pub fn skip_insertion(&mut self) -> Result<(), SessionError> {
+        match self.state {
+            SessionState::Transcribing => {
+                self.state = SessionState::Idle;
+                Ok(())
+            }
+            _ => Err(self.illegal("skip_insertion")),
+        }
+    }
+
     pub fn fail(&mut self, reason: FailReason) -> Result<(), SessionError> {
         match self.state {
             SessionState::Idle | SessionState::Failed { .. } => Err(self.illegal("fail")),
@@ -145,6 +156,7 @@ mod tests {
         StartRecording,
         FinishRecording,
         BeginInjecting,
+        SkipInsertion,
         CompleteInject,
         Fail,
         Ack,
@@ -177,6 +189,7 @@ mod tests {
             Event::StartRecording => session.start_recording(),
             Event::FinishRecording => session.finish_recording(),
             Event::BeginInjecting => session.begin_injecting(),
+            Event::SkipInsertion => session.skip_insertion(),
             Event::CompleteInject => session.complete_inject(),
             Event::Fail => session.fail(FailReason::EngineError),
             Event::Ack => session.ack(),
@@ -198,6 +211,7 @@ mod tests {
             (Kind::Idle, Event::StartRecording) => Some(Kind::Recording),
             (Kind::Recording, Event::FinishRecording) => Some(Kind::Transcribing),
             (Kind::Transcribing, Event::BeginInjecting) => Some(Kind::Injecting),
+            (Kind::Transcribing, Event::SkipInsertion) => Some(Kind::Idle),
             (Kind::Injecting, Event::CompleteInject) => Some(Kind::Idle),
             (Kind::Recording | Kind::Transcribing | Kind::Injecting, Event::Fail) => {
                 Some(Kind::Failed)
@@ -220,6 +234,7 @@ mod tests {
             Event::StartRecording,
             Event::FinishRecording,
             Event::BeginInjecting,
+            Event::SkipInsertion,
             Event::CompleteInject,
             Event::Fail,
             Event::Ack,

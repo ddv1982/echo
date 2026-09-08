@@ -28,23 +28,16 @@ python3 scripts/fetch-stt-corpus.py \
   --output-dir target/stt-fleurs-corpus
 ```
 
-The generated `fixtures.json` retains the corpus-level coverage and license record. Each utterance retains its class, source URL and digest, attribution, license, and a verbatim-copy derivation record. Benchmark bundles snapshot it byte-for-byte, and admission replay requires external coverage metadata to match that immutable snapshot. Editing a class, license, source, or coverage declaration after measurement therefore cannot improve a decision.
+The generated `fixtures.json` retains the corpus-level coverage and license record. Each utterance retains its class, source URL and digest, attribution, license, and a verbatim-copy derivation record.
 
-The generated `fixtures.json` can drive the normal benchmark. A CPU-only candidate uses the same runtime binary with upstream `--no-gpu`, so it is a valid negative control:
+The generated `fixtures.json` can drive the normal benchmark:
 
 ```sh
 python3 scripts/benchmark-stt.py \
   --binary target/release/echo-desktop \
   --manifest target/stt-fleurs-corpus/fixtures.json \
   --candidate 'whisper:base-q5_1@threads=4,beam=1,best-of=1,no-fallback' \
-  --candidate 'whisper:base-q5_1@threads=4,beam=1,best-of=1,no-fallback,cpu-only' \
-  --warmups 1 --repeats 10 --output-dir target/stt-host-matrix
+  --warmups 1 --repeats 10 --output-dir target/stt-fleurs
 ```
 
-Evaluate the paired rows with `scripts/analyze-stt-host-matrix.py`. This subset covers clean read speech only. It cannot pass the production corpus gate until project-owned dictation, technical identifiers, fast and quiet speech, noise, false starts, silence, and nonspeech are added.
-
-Keep fresh-cache first-use and populated-cache measurements in separate output directories. Record reset/reboot runs separately; a warmed run must never be presented as first-use evidence.
-
-Pass `--cache-state`, `--reset-cycle`, `--driver-identity`, and `--icd-identity` to every production-gate benchmark. Concatenate the JSONL rows from fresh and populated runs across at least two reset cycles before analysis. The analyzer fails closed when any of this evidence is absent or changes between rows.
-
-Admission sweeps additionally require `--expected-echo-commit` and `--expected-echo-binary-sha256`. The sweep and benchmark reject a dirty checkout, a different `HEAD`, or a different binary digest. Generic benchmarks may omit these flags, but their evidence cannot satisfy the admission identity gate.
+This subset covers clean read speech only. Keep fresh-cache first-use and populated-cache measurements in separate output directories. Record reset/reboot runs separately; a warmed run must never be presented as first-use evidence.

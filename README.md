@@ -99,7 +99,7 @@ Ubuntu build packages.
 - [Architecture](docs/architecture.md)
 - [Quality assurance](docs/qa/README.md)
 - [Release process](docs/RELEASING.md)
-- [Release history cleanup](docs/history/releases.md)
+- [Project history](docs/history/README.md)
 - [Third-party component notices](THIRD_PARTY.md)
 
 ## License

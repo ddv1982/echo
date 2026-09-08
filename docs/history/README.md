@@ -7,6 +7,13 @@ The [2026-08-30 evidence manifest](evidence-2026-08-30.md) records the first
 external archive. It covers plans 01 through 17, raw `.audit` data, frozen QA
 runs, and retired qualification commands.
 
+Plans 19–24 (status latency through APT) shipped and were removed from the
+working tree. Recover them from git history.
+
+The 2026-08-30 `qualification-*` GitHub draft releases are gone. A 2026-09-08
+authenticated audit of `ddv1982/echo` found zero draft releases and no
+`qualification-*` tags. The in-tree apply script was not restored.
+
 Build and verify that archive from the preserved source commit:
 
 ```sh

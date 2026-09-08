@@ -300,3 +300,275 @@ fn audio_setup_inference_and_output_failures_exit_one() {
     assert!(output.stdout.is_empty());
     assert!(!output.stderr.is_empty());
 }
+
+#[test]
+fn corrupt_config_is_left_in_place_without_side_effects() {
+    let root = scratch("corrupt-config");
+    let config_dir = root.join("config");
+    let data_dir = root.join("data");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let config = config_dir.join("config.json");
+    let dictionary = data_dir.join("dictionary.json");
+    let dictionary_json =
+        r#"{"entries":[{"spoken":"claude code","written":"Claude Code","created_at":1}]}"#;
+    std::fs::write(&config, "corrupt config sentinel").unwrap();
+    std::fs::write(&dictionary, dictionary_json).unwrap();
+
+    let _ = run(&root, &["transcribe", fixture().to_str().unwrap()]);
+
+    assert_eq!(std::fs::read(&config).unwrap(), b"corrupt config sentinel");
+    assert_eq!(std::fs::read(&dictionary).unwrap(), dictionary_json.as_bytes());
+    assert!(!config_dir.join("config.json.corrupt").exists());
+    for name in [
+        "history.json",
+        "status",
+        "recording.lock",
+        "recording.stop",
+        "dictionary.json.corrupt",
+    ] {
+        assert!(!data_dir.join(name).exists(), "unexpected {name}");
+    }
+}
+
+#[cfg(unix)]
+fn make_executable(path: &Path) {
+    let mut permissions = std::fs::metadata(path).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(path, permissions).unwrap();
+}
+
+#[cfg(unix)]
+fn count_lines(haystack: &str, needle: &str) -> usize {
+    haystack.lines().filter(|line| *line == needle).count()
+}
+
+#[cfg(unix)]
+#[test]
+fn whisper_stub_applies_written_hints_and_retries_without_vad() {
+    let root = scratch("whisper-stub");
+    let bin_dir = root.join("bin");
+    let config_dir = root.join("config");
+    let data_dir = root.join("data");
+    let model_dir = root.join("models");
+    for dir in [&bin_dir, &config_dir, &data_dir, &model_dir] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    std::fs::write(model_dir.join("ggml-small.bin"), []).unwrap();
+    std::fs::write(model_dir.join("ggml-silero-v6.2.0.bin"), []).unwrap();
+    std::fs::write(
+        data_dir.join("dictionary.json"),
+        r#"{"entries":[{"spoken":"clawed code","written":"Claude Code","created_at":1}]}"#,
+    )
+    .unwrap();
+    let runner = bin_dir.join("whisper-cli");
+    std::fs::write(
+        &runner,
+        r#"#!/bin/sh
+{
+  printf 'BEGIN\n'
+  for arg in "$@"; do printf '%s\n' "$arg"; done
+  printf 'END\n'
+} >> "$ECHO_ARGV_LOG"
+if [ ! -f "$ECHO_ATTEMPT_FILE" ]; then
+  : > "$ECHO_ATTEMPT_FILE"
+  printf 'failed to initialize VAD context\n' >&2
+  exit 1
+fi
+printf '%s\n' '{"model":{"type":"small","multilingual":true},"result":{"language":"de"},"transcription":[{"text":" claude code"}]}'
+printf '%s\n' 'whisper_full: auto-detected language: de (p = 0.958162)' >&2
+"#,
+    )
+    .unwrap();
+    make_executable(&runner);
+    let log = root.join("argv.log");
+    let attempt = root.join("attempt");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_echo-desktop"))
+        .args([
+            "transcribe",
+            fixture().to_str().unwrap(),
+            "--engine",
+            "whisper",
+            "--model",
+            "small",
+            "--language",
+            "de",
+            "--format",
+            "json",
+        ])
+        .env("PATH", &bin_dir)
+        .env("ECHO_ARGV_LOG", &log)
+        .env("ECHO_ATTEMPT_FILE", &attempt)
+        .env("ECHO_CONFIG_DIR", &config_dir)
+        .env("ECHO_DATA_DIR", &data_dir)
+        .env("ECHO_MODEL_DIR", &model_dir)
+        .env_remove("ECHO_ENGINE")
+        .env_remove("ECHO_LANGUAGE")
+        .env_remove("ECHO_WHISPER_MODEL")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let argv = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(count_lines(&argv, "BEGIN"), 2, "argv={argv}");
+    assert_eq!(count_lines(&argv, "--prompt"), 2, "argv={argv}");
+    assert_eq!(count_lines(&argv, "Claude Code"), 2, "argv={argv}");
+    assert_eq!(count_lines(&argv, "-l"), 2, "argv={argv}");
+    assert_eq!(count_lines(&argv, "de"), 2, "argv={argv}");
+    assert_eq!(count_lines(&argv, "--vad"), 1, "argv={argv}");
+    assert_eq!(
+        argv.lines()
+            .filter(|line| line.ends_with("ggml-small.bin"))
+            .count(),
+        2,
+        "argv={argv}"
+    );
+    assert_eq!(count_lines(&argv, "clawed code"), 0, "argv={argv}");
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["engine"]["id"], "whisper");
+    assert_eq!(value["engine"]["model"], "small");
+    assert_eq!(value["engine"]["vad"], false);
+    assert_eq!(value["language"]["requested"], "de");
+    assert_eq!(value["language"]["observed"], "de");
+    assert_eq!(value["language"]["probability"], 0.958_162);
+    assert_eq!(value["hintCount"], 1);
+}
+
+#[test]
+fn languages_json_lists_whisper_and_parakeet_catalogs() {
+    let root = scratch("languages");
+    let config = root.join("config");
+    let data = root.join("data");
+    let models = root.join("models");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::create_dir_all(&data).unwrap();
+    std::fs::create_dir_all(&models).unwrap();
+
+    let whisper = Command::new(env!("CARGO_BIN_EXE_echo-desktop"))
+        .args(["languages", "--engine", "whisper", "--format", "json"])
+        .env("ECHO_CONFIG_DIR", &config)
+        .env("ECHO_DATA_DIR", &data)
+        .env("ECHO_MODEL_DIR", &models)
+        .env_remove("ECHO_ENGINE")
+        .env_remove("ECHO_LANGUAGE")
+        .env_remove("ECHO_WHISPER_MODEL")
+        .output()
+        .unwrap();
+    assert!(
+        whisper.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&whisper.stderr)
+    );
+    let whisper_json: serde_json::Value = serde_json::from_slice(&whisper.stdout).unwrap();
+    assert_eq!(whisper_json["schemaVersion"], 1);
+    assert_eq!(whisper_json["engine"], "whisper");
+    assert_eq!(whisper_json["languages"].as_array().unwrap().len(), 100);
+
+    let parakeet = Command::new(env!("CARGO_BIN_EXE_echo-desktop"))
+        .args(["languages", "--engine", "parakeet", "--format", "json"])
+        .env("ECHO_CONFIG_DIR", &config)
+        .env("ECHO_DATA_DIR", &data)
+        .env("ECHO_MODEL_DIR", &models)
+        .env_remove("ECHO_ENGINE")
+        .env_remove("ECHO_LANGUAGE")
+        .env_remove("ECHO_WHISPER_MODEL")
+        .output()
+        .unwrap();
+    assert!(
+        parakeet.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&parakeet.stderr)
+    );
+    let parakeet_json: serde_json::Value = serde_json::from_slice(&parakeet.stdout).unwrap();
+    assert_eq!(parakeet_json["selection"], "automatic-only");
+    assert_eq!(parakeet_json["languages"].as_array().unwrap().len(), 25);
+}
+
+#[cfg(unix)]
+#[test]
+fn parakeet_stub_uses_nemo_transducer_and_reports_model_path() {
+    let root = scratch("parakeet-stub");
+    let bin_dir = root.join("bin");
+    let config_dir = root.join("config");
+    let data_dir = root.join("data");
+    let model_dir = root.join("models");
+    let parakeet_model = model_dir.join("parakeet-tdt-0.6b-v3");
+    for dir in [&bin_dir, &config_dir, &data_dir, &parakeet_model] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    for name in [
+        "encoder.int8.onnx",
+        "decoder.int8.onnx",
+        "joiner.int8.onnx",
+        "tokens.txt",
+    ] {
+        std::fs::write(parakeet_model.join(name), "fixture").unwrap();
+    }
+    let runner = bin_dir.join("sherpa-onnx-offline");
+    std::fs::write(
+        &runner,
+        r#"#!/bin/sh
+for arg in "$@"; do printf '%s\n' "$arg"; done > "$ECHO_PARAKEET_ARGV_LOG"
+printf '%s\n' '{"lang":"","emotion":"","event":"","text":" parakeet transcript","timestamps":[],"tokens":[],"words":[]}'
+"#,
+    )
+    .unwrap();
+    make_executable(&runner);
+    let log = root.join("parakeet-argv.log");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_echo-desktop"))
+        .args([
+            "transcribe",
+            fixture().to_str().unwrap(),
+            "--engine",
+            "parakeet",
+            "--language",
+            "auto",
+            "--format",
+            "json",
+        ])
+        .env("PATH", &bin_dir)
+        .env("ECHO_PARAKEET_ARGV_LOG", &log)
+        .env("ECHO_CONFIG_DIR", &config_dir)
+        .env("ECHO_DATA_DIR", &data_dir)
+        .env("ECHO_MODEL_DIR", &model_dir)
+        .env_remove("ECHO_ENGINE")
+        .env_remove("ECHO_LANGUAGE")
+        .env_remove("ECHO_WHISPER_MODEL")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let argv = std::fs::read_to_string(&log).unwrap();
+    assert!(
+        argv.lines().any(|line| line == "--model-type=nemo_transducer"),
+        "argv={argv}"
+    );
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["raw"], "parakeet transcript");
+    assert_eq!(value["text"], "parakeet transcript");
+    assert_eq!(value["engine"]["id"], "parakeet");
+    assert_eq!(
+        value["engine"]["modelPath"],
+        parakeet_model.display().to_string()
+    );
+    assert!(
+        !value["raw"].as_str().unwrap().contains('{'),
+        "raw={}",
+        value["raw"]
+    );
+}
+
