@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, SampleFormat, SizedSample, I24, U24};
 use echo_core::{MicrophoneSelection, Pcm16kMono, SAMPLE_RATE_HZ};
+use rubato::{FftFixedInOut, Resampler};
 
 use crate::microphone::{
     is_system_default_proxy, resolve_selection, selectable_inputs, selection_from_sources,
@@ -503,6 +504,7 @@ fn validate_capture_config(
             "microphone has no valid capture channels or sample rate".to_owned(),
         ));
     }
+    validate_sample_rate(sample_rate)?;
     match format {
         SampleFormat::I8
         | SampleFormat::I16
@@ -868,7 +870,7 @@ impl AudioCapture {
             ));
         }
         Ok(CaptureResult::from_pcm_with_dropped_samples(
-            resample_to_16k_mono(&samples, src_hz, channels),
+            resample_to_16k_mono(&samples, src_hz, channels)?,
             dropped_samples,
         ))
     }
@@ -978,8 +980,24 @@ where
     }
 }
 
-#[must_use]
-pub fn resample_to_16k_mono(interleaved: &[f32], src_hz: u32, channels: u16) -> Pcm16kMono {
+// Bound FFT scratch even for coprime rates declared by untrusted WAV headers.
+// 384 kHz includes high-rate PCM interfaces while limiting alignment to 768k frames.
+// 8 kHz supports telephony and caps upsampling at 2x on the output side.
+fn validate_sample_rate(sample_rate: u32) -> Result<(), AudioError> {
+    if !(8_000..=384_000).contains(&sample_rate) {
+        return Err(AudioError::Unsupported(format!(
+            "sample rate {sample_rate} Hz is outside the supported range 8000..=384000 Hz"
+        )));
+    }
+    Ok(())
+}
+
+pub fn resample_to_16k_mono(
+    interleaved: &[f32],
+    src_hz: u32,
+    channels: u16,
+) -> Result<Pcm16kMono, AudioError> {
+    validate_sample_rate(src_hz)?;
     let ch = usize::from(channels.max(1));
     let frames = interleaved.len() / ch;
     let average_frame = |frame: usize| {
@@ -989,31 +1007,56 @@ pub fn resample_to_16k_mono(interleaved: &[f32], src_hz: u32, channels: u16) -> 
         }
         sum / ch as f32
     };
-    let src_hz = src_hz.max(1);
     if src_hz == SAMPLE_RATE_HZ {
-        return Pcm16kMono::from_samples(
+        return Ok(Pcm16kMono::from_samples(
             (0..frames)
                 .map(|frame| f32_to_i16(average_frame(frame)))
                 .collect(),
-        );
+        ));
     }
     let out_len = (frames as u64)
         .saturating_mul(u64::from(SAMPLE_RATE_HZ))
         .saturating_div(u64::from(src_hz)) as usize;
-    if frames == 0 {
-        return Pcm16kMono::from_samples(Vec::new());
+    if out_len == 0 {
+        return Ok(Pcm16kMono::from_samples(Vec::new()));
     }
+
+    // Conversion runs after capture (and for WAV imports), never in the callback.
+    // Reuse bounded scratch buffers instead of materializing the whole mono track.
+    // Even input/output block lengths make the filter's midpoint and reported
+    // output delay exact, including the fractional 44.1 kHz conversion ratio.
+    let (mut gcd, mut remainder) = (src_hz, SAMPLE_RATE_HZ);
+    while remainder != 0 {
+        (gcd, remainder) = (remainder, gcd % remainder);
+    }
+    let alignment = 2 * (src_hz / gcd) as usize;
+    let chunk_size = 1024_usize.div_ceil(alignment) * alignment;
+    let mut resampler =
+        FftFixedInOut::<f32>::new(src_hz as usize, SAMPLE_RATE_HZ as usize, chunk_size, 1)
+            .expect("normalized sample rates are nonzero");
+    let mut input = vec![0.0; resampler.input_frames_next()];
+    let mut output = vec![0.0; resampler.output_frames_max()];
+    let mut delay = resampler.output_delay();
+    let mut frame = 0;
     let mut out = Vec::with_capacity(out_len);
-    let last = frames - 1;
-    for i in 0..out_len {
-        let src_pos = i as f64 * f64::from(src_hz) / f64::from(SAMPLE_RATE_HZ);
-        let idx = src_pos.floor() as usize;
-        let frac = src_pos.fract() as f32;
-        let a = average_frame(idx.min(last));
-        let b = average_frame((idx + 1).min(last));
-        out.push(f32_to_i16(a + (b - a) * frac));
+    while out.len() < out_len {
+        let available = input.len().min(frames - frame);
+        for (offset, sample) in input[..available].iter_mut().enumerate() {
+            *sample = average_frame(frame + offset);
+        }
+        frame += available;
+        // Pad the final block and continue with silence to flush the filter tail.
+        // Unlike process_partial_into_buffer, this reuses the input allocation.
+        input[available..].fill(0.0);
+        let (_, written) = resampler
+            .process_into_buffer(&[input.as_slice()], &mut [output.as_mut_slice()], None)
+            .expect("mono buffers match the resampler's fixed frame counts");
+        let skip = delay.min(written);
+        delay -= skip;
+        let take = (written - skip).min(out_len - out.len());
+        out.extend(output[skip..skip + take].iter().copied().map(f32_to_i16));
     }
-    Pcm16kMono::from_samples(out)
+    Ok(Pcm16kMono::from_samples(out))
 }
 
 fn f32_to_i16(sample: f32) -> i16 {
@@ -1024,8 +1067,9 @@ pub fn load_wav(path: &Path) -> Result<CaptureResult, AudioError> {
     let mut reader =
         hound::WavReader::open(path).map_err(|err| AudioError::Wav(err.to_string()))?;
     let spec = reader.spec();
+    validate_sample_rate(spec.sample_rate)?;
     let samples = decode_wav_samples(&mut reader)?;
-    let pcm = resample_to_16k_mono(&samples, spec.sample_rate, spec.channels);
+    let pcm = resample_to_16k_mono(&samples, spec.sample_rate, spec.channels)?;
     Ok(CaptureResult::from_pcm(pcm))
 }
 
@@ -1113,44 +1157,6 @@ mod tests {
             finish_capture_stream((), &state),
             Err(AudioError::Stream(message)) if message.contains("poisoned")
         ));
-    }
-
-    fn previous_resample_to_16k_mono(
-        interleaved: &[f32],
-        src_hz: u32,
-        channels: u16,
-    ) -> Pcm16kMono {
-        let ch = usize::from(channels.max(1));
-        let frames = interleaved.len() / ch;
-        let mut mono = Vec::with_capacity(frames);
-        for frame in 0..frames {
-            let mut sum = 0.0f32;
-            for channel in 0..ch {
-                sum += interleaved[frame * ch + channel];
-            }
-            mono.push(sum / ch as f32);
-        }
-        let src_hz = src_hz.max(1);
-        if src_hz == SAMPLE_RATE_HZ {
-            return Pcm16kMono::from_samples(mono.into_iter().map(f32_to_i16).collect());
-        }
-        let out_len = (frames as u64)
-            .saturating_mul(u64::from(SAMPLE_RATE_HZ))
-            .saturating_div(u64::from(src_hz)) as usize;
-        if frames == 0 {
-            return Pcm16kMono::from_samples(Vec::new());
-        }
-        let mut out = Vec::with_capacity(out_len);
-        let last = frames - 1;
-        for i in 0..out_len {
-            let src_pos = i as f64 * f64::from(src_hz) / f64::from(SAMPLE_RATE_HZ);
-            let idx = src_pos.floor() as usize;
-            let frac = src_pos.fract() as f32;
-            let a = mono[idx.min(last)];
-            let b = mono[(idx + 1).min(last)];
-            out.push(f32_to_i16(a + (b - a) * frac));
-        }
-        Pcm16kMono::from_samples(out)
     }
 
     fn fixture() -> PathBuf {
@@ -1434,61 +1440,167 @@ mod tests {
         assert_eq!(capture.dropped_samples, 0);
     }
 
-    #[test]
-    fn resamples_48k_stereo_to_16k_mono() {
-        let src_hz = 48_000u32;
-        let frames = src_hz as usize / 10;
-        let mut interleaved = Vec::with_capacity(frames * 2);
-        for i in 0..frames {
-            let s = (i as f32 / frames as f32) * 0.5;
-            interleaved.push(s);
-            interleaved.push(s);
-        }
-        let pcm = resample_to_16k_mono(&interleaved, src_hz, 2);
-        assert!((pcm.len() as i32 - (SAMPLE_RATE_HZ as i32 / 10)).abs() <= 1);
-        assert!(pcm.peak_rms() > 0.0);
-        assert!(pcm.samples().iter().all(|s| s.abs() < i16::MAX));
+    fn tone(src_hz: u32, frequency: f32, frames: usize) -> Vec<f32> {
+        (0..frames)
+            .map(|i| 0.5 * (std::f32::consts::TAU * frequency * i as f32 / src_hz as f32).sin())
+            .collect()
+    }
+
+    fn normalized_rms(samples: &[i16]) -> f32 {
+        (samples
+            .iter()
+            .map(|&sample| (f32::from(sample) / f32::from(i16::MAX)).powi(2))
+            .sum::<f32>()
+            / samples.len() as f32)
+            .sqrt()
     }
 
     #[test]
-    fn direct_conversion_matches_previous_short_recordings_exactly() {
-        for (interleaved, src_hz, channels) in [
-            (Vec::new(), 48_000, 2),
-            (vec![-1.0, -0.5, 0.0, 0.25, 0.5, 1.0], 16_000, 1),
-            (
-                vec![-1.0, 1.0, -0.5, 0.25, 0.0, 0.75, 0.5, -0.25],
-                48_000,
-                2,
-            ),
-            (
-                vec![
-                    -1.0, -0.5, 0.0, 0.5, -0.75, -0.25, 0.25, 0.75, -0.5, 0.0, 0.5, 1.0,
-                ],
-                44_100,
-                4,
-            ),
-        ] {
-            let expected = previous_resample_to_16k_mono(&interleaved, src_hz, channels);
-            let actual = resample_to_16k_mono(&interleaved, src_hz, channels);
-            assert_eq!(actual.samples(), expected.samples());
+    fn resampling_rejects_stopband_and_retains_speech_band() {
+        for src_hz in [44_100, 48_000] {
+            for frequency in [1_000.0, 6_000.0, 12_000.0] {
+                let pcm =
+                    resample_to_16k_mono(&tone(src_hz, frequency, src_hz as usize), src_hz, 1)
+                        .unwrap();
+                assert_eq!(pcm.len(), SAMPLE_RATE_HZ as usize);
+                // Ignore only edge transients, not block boundaries within the recording.
+                let rms = normalized_rms(&pcm.samples()[160..pcm.len() - 160]);
+                if frequency < 8_000.0 {
+                    let expected = 0.5 / std::f32::consts::SQRT_2;
+                    assert!(
+                        (rms - expected).abs() < 0.01,
+                        "{src_hz} Hz, {frequency} Hz: {rms}"
+                    );
+                } else {
+                    // At least 50 dB rejection versus the input tone's RMS.
+                    assert!(rms < 0.001, "{src_hz} Hz, {frequency} Hz: {rms}");
+                }
+            }
         }
     }
 
     #[test]
-    fn ten_minute_stereo_capture_budget_is_249_6_mb() {
-        let seconds = 600usize;
-        let native_bytes = seconds
-            .checked_mul(48_000)
-            .and_then(|samples| samples.checked_mul(2))
-            .and_then(|samples| samples.checked_mul(size_of::<f32>()))
-            .unwrap();
-        let output_bytes = seconds
-            .checked_mul(SAMPLE_RATE_HZ as usize)
-            .and_then(|samples| samples.checked_mul(size_of::<i16>()))
-            .unwrap();
+    fn resampling_preserves_stereo_mix_duration_and_tail_alignment() {
+        for src_hz in [44_100, 48_000] {
+            let frames = src_hz as usize / 10 + 7;
+            let mono = tone(src_hz, 1_000.0, frames);
+            let mut stereo = Vec::with_capacity(frames * 2 + 1);
+            for sample in mono {
+                // The average is a half-amplitude tone; channel bias must cancel.
+                stereo.extend([sample + 0.25, -0.25]);
+            }
+            stereo.push(1.0); // An incomplete final frame must not change duration.
+            let pcm = resample_to_16k_mono(&stereo, src_hz, 2).unwrap();
+            let expected_len = frames * SAMPLE_RATE_HZ as usize / src_hz as usize;
+            assert_eq!(pcm.len(), expected_len);
+            assert_eq!(
+                pcm.duration_ms(),
+                expected_len as u64 * 1000 / u64::from(SAMPLE_RATE_HZ)
+            );
+            // Check phase all the way into the final partial block: an untrimmed
+            // filter delay or an unflushed tail shifts or erases the signal.
+            for (i, &sample) in pcm
+                .samples()
+                .iter()
+                .enumerate()
+                .take(expected_len - 32)
+                .skip(32)
+            {
+                let expected = 0.25
+                    * (std::f32::consts::TAU * 1_000.0 * i as f32 / SAMPLE_RATE_HZ as f32).sin();
+                let actual = f32::from(sample) / f32::from(i16::MAX);
+                assert!(
+                    (actual - expected).abs() < 0.01,
+                    "{src_hz} Hz, frame {i}: {actual} != {expected}"
+                );
+            }
+        }
+    }
 
-        assert_eq!(native_bytes, 230_400_000);
-        assert_eq!(output_bytes, 19_200_000);
-        assert_eq!(native_bytes + output_bytes, 249_600_000);
+    #[test]
+    fn resampling_short_inputs_flushes_without_adding_duration() {
+        for src_hz in [8_000, 44_100, 48_000] {
+            for frames in [0, 1, 2, 3, 17] {
+                let pcm = resample_to_16k_mono(&vec![0.5; frames], src_hz, 1).unwrap();
+                assert_eq!(
+                    pcm.len(),
+                    frames * SAMPLE_RATE_HZ as usize / src_hz as usize
+                );
+                if !pcm.is_empty() {
+                    assert!(pcm.samples().iter().any(|&sample| sample > 1_000));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn same_rate_downmix_preserves_pcm_and_clips_after_averaging() {
+        let pcm = resample_to_16k_mono(
+            &[-2.0, -2.0, -0.5, 0.0, 0.5, 0.5, 2.0, 2.0, 2.0, -1.0, 1.0],
+            SAMPLE_RATE_HZ,
+            2,
+        )
+        .unwrap();
+        assert_eq!(pcm.samples(), &[-32_767, -8_191, 16_383, 32_767, 16_383]);
+    }
+
+    #[test]
+    fn unsupported_wav_rates_fail_before_resampling() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("extreme-rate.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 50_000_003,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&path, spec).unwrap();
+        // Enough frames for one output sample: the old code would allocate
+        // a 100-million-frame FFT despite this file being only a few kilobytes.
+        for _ in 0..3126 {
+            writer.write_sample(1000_i16).unwrap();
+        }
+        writer.finalize().unwrap();
+        assert!(matches!(load_wav(&path), Err(AudioError::Unsupported(_))));
+        assert!(matches!(
+            resample_to_16k_mono(&[0.0], 384_001, 1),
+            Err(AudioError::Unsupported(_))
+        ));
+        assert!(matches!(
+            validate_capture_config(1, 50_000_003, SampleFormat::F32),
+            Err(AudioError::Unsupported(_))
+        ));
+        let pcm = resample_to_16k_mono(&[0.5; 48], 384_000, 1).unwrap();
+        assert_eq!(pcm.len(), 2);
+        assert!(pcm.samples().iter().any(|&sample| sample > 1000));
+    }
+
+    #[test]
+    fn low_wav_rates_fail_before_upsampling() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("low-rate.wav");
+        for sample_rate in [1, 7_999] {
+            let spec = hound::WavSpec {
+                channels: 1,
+                sample_rate,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            };
+            let mut writer = hound::WavWriter::create(&path, spec).unwrap();
+            writer.write_sample(1000_i16).unwrap();
+            writer.finalize().unwrap();
+            assert!(matches!(load_wav(&path), Err(AudioError::Unsupported(_))));
+            assert!(matches!(
+                resample_to_16k_mono(&[0.5], sample_rate, 1),
+                Err(AudioError::Unsupported(_))
+            ));
+            assert!(matches!(
+                validate_capture_config(1, sample_rate, SampleFormat::F32),
+                Err(AudioError::Unsupported(_))
+            ));
+        }
+        let pcm = resample_to_16k_mono(&[0.5], 8_000, 1).unwrap();
+        assert_eq!(pcm.len(), 2);
+        assert!(pcm.samples().iter().any(|&sample| sample > 1000));
     }
 }

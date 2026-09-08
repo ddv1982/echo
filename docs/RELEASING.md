@@ -230,6 +230,12 @@ nightlies or `workflow_dispatch`.
 3. Configure repository variable `DEB_SIGNING_PUBLIC_KEY`.
 4. Set Pages source to GitHub Actions (Settings → Pages).
 5. Create the `github-pages` environment.
+6. Allow the workflow token to create and fast-forward the
+   `apt-publication-state` branch. The deployment job needs `contents: write`
+   for this state and `actions: read` to verify its Pages artifact.
+7. For a genuinely new site only, set repository variable
+   `APT_ALLOW_FIRST_PUBLICATION=true`. Remove it after the first successful
+   publication. Existing signed sites initialize publication state automatically.
 
 Users enable the repository with:
 
@@ -242,6 +248,34 @@ sudo apt install echo
 The bootstrap authenticates the setup package with the archive keyring.
 Rotate the key by bumping `echo-repository-setup` beyond `1.0` so clients
 replace `/usr/share/keyrings/echo-archive-keyring.pgp`.
+
+### Publication ordering and recovery
+
+Package builds run independently, but `publish-apt` holds one shared concurrency
+lock through verification, reservation, and Pages deployment completion. It
+authenticates the existing site's `InRelease` and package index with the configured
+signing key and verifies the candidate artifact's package bytes. Debian version
+ordering, not tag-string ordering, determines whether publication can proceed.
+
+Before deployment, the workflow reserves the candidate version and package
+identities in `apt-publication-state:publication.json`. This is a durable
+high-water mark, not a record of deployment success; do not delete, reset, or
+force-push it. It prevents a stale CDN response or a failed deployment from
+allowing an older release to replace the site.
+
+A failed deployment can retry the identical package artifact. Different bytes
+under the same Debian version are rejected: reuse the original artifact or
+release a higher version. HTTP, signature, checksum, and state errors block
+publication rather than being interpreted as an empty repository. Only an
+`InRelease` HTTP 404 with the explicit first-publication opt-in permits bootstrap
+or an identical retry of that first reservation.
+
+Repository rules must permit the state branch updates. Before the first guarded
+deployment, drain or cancel historical tag workflows that lack this guard.
+Manual Pages deployments and forced state edits bypass this ordering contract.
+If a runner is manually cancelled during deployment, reconcile the remote Pages
+deployment before starting another; runner cancellation is not proof that the
+remote deployment stopped.
 
 ## If a tag run fails
 

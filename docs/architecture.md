@@ -31,6 +31,11 @@ relative path, file type, full mode, size, device, inode, ctime, mtime, and
 symlink target. Explicit Verify also forces a full hash. This detects persistent
 mutation, but an active same-account writer is outside the boundary.
 
+External Parakeet discovery prefers a complete `parakeet-tdt-0.6b-v3` directory,
+then a complete ONNX set directly in the model-cache root. Inventory retains
+the fallback scan of other child directories when neither preferred layout is
+complete. All layouts require tokens, encoder, decoder, and joiner files.
+
 ## Dictation flow
 
 1. A tray, UI, CLI, portal, GNOME, or X11 action requests a recording toggle.
@@ -43,6 +48,16 @@ mutation, but an active same-account writer is outside the boundary.
 5. The injector types or pastes the result into the active application.
 6. The desktop projects status. A persisted History row ID prompts the
    frontend to refresh History, including after insertion failure.
+
+After capture, audio is downmixed and converted to 16 kHz PCM with Rubato's
+bandlimited FFT resampler. Scratch buffers are reused per block; filtering never
+runs in the capture callback. Conversion trims filter delay, flushes the tail,
+and preserves the duration rounded down to whole output samples. Already-16 kHz
+input takes the direct downmix/PCM path.
+Source rates must be between 8,000 and 384,000 Hz. WAV imports reject unsupported
+header rates before decoding, and microphone configuration rejects them before
+capture allocation. The conversion API returns an error rather than allocating
+FFT scratch proportional to an unbounded, potentially untrusted rate.
 
 Clipboard paste is a fallback when typing cannot land at the cursor. Echo
 restores the previous text clipboard when it still matches the transcript.
@@ -74,6 +89,10 @@ changes use the same owner. Capture and transcription run independently.
 Every settings and microphone response carries a monotonic revision for that
 desktop process. Views retain the newest snapshot, so a delayed response cannot
 replace a newer selection. Successful saves invalidate the status cache.
+Only the backend advances these revisions. Settings keeps setup progress in an
+operation-scoped overlay; terminal events clear matching progress and retain
+completed-operation identities for the mounted controller's lifetime so late
+events or snapshots cannot reactivate a finished operation.
 Status owns health caching and the `AppStatus` projection. Focused command
 modules own devices, library data, recording, settings, shortcuts, status, and
 system operations.
@@ -86,6 +105,9 @@ explicit Whisper GPU transition, then returns a new snapshot.
 Shortcut policy is one subsystem behind a small facade. It owns portal and X11
 listeners, the older-GNOME fallback, retry state, and shutdown cleanup. Desktop
 startup reconciles one listener; shutdown cancels and joins it.
+GNOME settings values are parsed as GLib strings and string arrays, independently
+of the conservative shell-command parser that decides whether a binding belongs
+to Echo.
 
 Active status records include the writer PID and Linux process start time.
 Readers reject zombies and reused PIDs. A successful History append publishes

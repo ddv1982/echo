@@ -59,6 +59,20 @@ function deferred<T>() {
   }
 }
 
+function setupProgress(operationId: string, receivedBytes: number): Extract<SetupEvent, { kind: 'progress' }> {
+  return {
+    kind: 'progress',
+    progress: {
+      operationId,
+      component: 'whisper-runtime',
+      phase: 'downloading',
+      receivedBytes,
+      totalBytes: 100,
+      resumedFromBytes: 0,
+    },
+  }
+}
+
 describe('useSettingsController', () => {
   beforeEach(async () => {
     configureDesktopApi(previewDesktopApi)
@@ -644,59 +658,180 @@ describe('useSettingsController', () => {
     await waitFor(() => expect(onError).toHaveBeenCalledWith('status refresh failed'))
   })
 
-  it('keeps local setup progress when an equal-revision snapshot arrives', async () => {
+  it('accepts completion and a subsequent preference write after many progress events', async () => {
     let setupEvent: ((event: SetupEvent) => void) | null = null
     vi.mocked(onSetupEvent).mockImplementation((handler) => {
       setupEvent = handler
       return Promise.resolve(vi.fn())
     })
-    const actual = await vi.importActual<typeof import('../tauri')>('../tauri')
-    vi.mocked(getSettings).mockImplementation(async () => ({
-      ...(await actual.getSettings()),
-      revision: 10,
-    }))
+    const initial = await previewDesktopApi.getSettings()
+    const completed = {
+      ...initial,
+      revision: initial.revision + 1,
+      readiness: { ...initial.readiness, speechReady: true },
+    }
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      ...initial,
+      readiness: { ...initial.readiness, speechReady: false },
+    }).mockResolvedValueOnce(completed)
     const onStatusChange = vi.fn().mockResolvedValue(undefined)
     const onError = vi.fn()
-    const { result } = renderHook(() => useSettingsController({
-      onStatusChange,
-      onError,
-    }))
-    await waitFor(() => {
-      expect(result.current.settings).not.toBeNull()
-      expect(setupEvent).not.toBeNull()
+    const { result } = renderHook(() => useSettingsController({ onStatusChange, onError }))
+    await waitFor(() => expect(result.current.readiness?.speechReady).toBe(false))
+    const emit = requireFixture<(event: SetupEvent) => void>(setupEvent, 'setup listener')
+
+    act(() => {
+      for (let received = 1; received <= 100; received += 1) {
+        emit(setupProgress('install-1', received))
+      }
     })
-
-    act(() => setupEvent?.({
-      kind: 'progress',
-      progress: {
-        operationId: 'install-1',
-        component: 'whisper-runtime',
-        phase: 'downloading',
-        receivedBytes: 25,
-        totalBytes: 100,
-        resumedFromBytes: 0,
-      },
-    }))
     expect(result.current.readiness?.activeOperation).toBe('install-1')
+    act(() => emit({ kind: 'finished', operationId: 'install-1' }))
 
-    const idle = await actual.getSettings()
-    vi.mocked(getSettings).mockResolvedValueOnce({
-      ...idle,
-      revision: 11,
+    await waitFor(() => expect(result.current.readiness?.speechReady).toBe(true))
+    expect(result.current.readiness?.activeOperation).toBeNull()
+    expect(result.current.readiness?.activeCancellable).toBe(false)
+    expect(result.current.readiness?.components.every((component) => component.activity == null)).toBe(true)
+
+    vi.mocked(setSettings).mockResolvedValueOnce({
+      ...completed,
+      revision: completed.revision + 1,
+      preferences: {
+        ...completed.preferences,
+        hud: { value: false, effective: false, source: 'file' },
+      },
+    })
+    await act(async () => result.current.updateHud(false))
+    expect(result.current.settings?.hud.effective).toBe(false)
+    expect(result.current.settingsWritePending).toBe(false)
+    expect(onError).not.toHaveBeenCalled()
+  })
+
+  it('keeps the newest progress while applying a delayed settings snapshot', async () => {
+    let setupEvent: ((event: SetupEvent) => void) | null = null
+    vi.mocked(onSetupEvent).mockImplementation((handler) => {
+      setupEvent = handler
+      return Promise.resolve(vi.fn())
+    })
+    const initial = await previewDesktopApi.getSettings()
+    const delayed = deferred<SettingsSnapshot>()
+    vi.mocked(getSettings).mockResolvedValueOnce(initial).mockReturnValueOnce(delayed.promise)
+    const onStatusChange = vi.fn().mockResolvedValue(undefined)
+    const onError = vi.fn()
+    const { result } = renderHook(() => useSettingsController({ onStatusChange, onError }))
+    await waitFor(() => expect(result.current.settings).not.toBeNull())
+    const emit = requireFixture<(event: SetupEvent) => void>(setupEvent, 'setup listener')
+    act(() => {
+      emit(setupProgress('install-1', 10))
+      result.current.refreshReadiness()
+      emit(setupProgress('install-1', 75))
+    })
+    await act(async () => delayed.resolve({
+      ...initial,
+      revision: initial.revision + 1,
+      preferences: {
+        ...initial.preferences,
+        language: { value: 'de', effective: 'de', source: 'file' },
+      },
       readiness: {
-        ...idle.readiness,
-        activeOperation: null,
-        activeCancellable: false,
-        components: idle.readiness.components.map((component) => ({
+        ...initial.readiness,
+        activeOperation: 'install-1',
+        activeCancellable: true,
+        components: initial.readiness.components.map((component) => ({
           ...component,
-          activity: null,
+          activity: component.id === 'whisper-runtime' ? setupProgress('install-1', 10).progress : null,
         })),
       },
-    })
-    act(() => result.current.refreshReadiness())
-    await act(async () => Promise.resolve())
+    }))
 
+    expect(result.current.settings?.language.effective).toBe('de')
     expect(result.current.readiness?.activeOperation).toBe('install-1')
+    expect(result.current.readiness?.components.find((component) => component.id === 'whisper-runtime')
+      ?.activity?.receivedBytes).toBe(75)
+  })
+
+  it.each(['finished', 'cancelled', 'failed'] as const)(
+    'does not resurrect an operation from a late event or snapshot after it %s',
+    async (kind) => {
+      let setupEvent: ((event: SetupEvent) => void) | null = null
+      vi.mocked(onSetupEvent).mockImplementation((handler) => {
+        setupEvent = handler
+        return Promise.resolve(vi.fn())
+      })
+      const initial = await previewDesktopApi.getSettings()
+      const delayed = deferred<SettingsSnapshot>()
+      const terminalRefresh = deferred<SettingsSnapshot>()
+      vi.mocked(getSettings)
+        .mockResolvedValueOnce(initial)
+        .mockReturnValueOnce(delayed.promise)
+        .mockReturnValueOnce(terminalRefresh.promise)
+      const onStatusChange = vi.fn().mockResolvedValue(undefined)
+      const onError = vi.fn()
+      const { result } = renderHook(() => useSettingsController({ onStatusChange, onError }))
+      await waitFor(() => expect(result.current.settings).not.toBeNull())
+      const emit = requireFixture<(event: SetupEvent) => void>(setupEvent, 'setup listener')
+      act(() => {
+        emit(setupProgress('install-1', 10))
+        result.current.refreshReadiness()
+        emit(kind === 'failed'
+          ? { kind, operationId: 'install-1', error: 'checksum mismatch' }
+          : { kind, operationId: 'install-1' })
+      })
+      expect(result.current.readiness?.activeOperation).toBeNull()
+      expect(result.current.readiness?.activeCancellable).toBe(false)
+      await waitFor(() => expect(getSettings).toHaveBeenCalledTimes(3))
+
+      await act(async () => delayed.resolve({
+        ...initial,
+        revision: initial.revision + 1,
+        readiness: {
+          ...initial.readiness,
+          activeOperation: 'install-1',
+          activeCancellable: true,
+          components: initial.readiness.components.map((component) => ({
+            ...component,
+            activity: component.id === 'whisper-runtime' ? setupProgress('install-1', 10).progress : null,
+          })),
+        },
+      }))
+      act(() => emit(setupProgress('install-1', 90)))
+      expect(result.current.readiness?.activeOperation).toBeNull()
+      expect(result.current.readiness?.activeCancellable).toBe(false)
+      expect(result.current.readiness?.components.every((component) => component.activity == null)).toBe(true)
+      await act(async () => terminalRefresh.resolve({ ...initial, revision: initial.revision + 2 }))
+      act(() => emit(setupProgress('install-1', 100)))
+      expect(result.current.readiness?.activeOperation).toBeNull()
+      if (kind === 'failed') expect(onError).toHaveBeenCalledWith('checksum mismatch')
+      else expect(onError).not.toHaveBeenCalled()
+    },
+  )
+
+  it('keeps the next operation active when an earlier terminal refresh settles', async () => {
+    let setupEvent: ((event: SetupEvent) => void) | null = null
+    vi.mocked(onSetupEvent).mockImplementation((handler) => {
+      setupEvent = handler
+      return Promise.resolve(vi.fn())
+    })
+    const initial = await previewDesktopApi.getSettings()
+    const terminalRefresh = deferred<SettingsSnapshot>()
+    vi.mocked(getSettings).mockResolvedValueOnce(initial).mockReturnValueOnce(terminalRefresh.promise)
+    const onStatusChange = vi.fn().mockResolvedValue(undefined)
+    const onError = vi.fn()
+    const { result } = renderHook(() => useSettingsController({ onStatusChange, onError }))
+    await waitFor(() => expect(result.current.settings).not.toBeNull())
+    const emit = requireFixture<(event: SetupEvent) => void>(setupEvent, 'setup listener')
+    act(() => {
+      emit(setupProgress('install-1', 100))
+      emit({ kind: 'finished', operationId: 'install-1' })
+    })
+    await waitFor(() => expect(getSettings).toHaveBeenCalledTimes(2))
+    act(() => emit(setupProgress('install-2', 40)))
+    await act(async () => terminalRefresh.resolve({ ...initial, revision: initial.revision + 1 }))
+    act(() => emit(setupProgress('install-1', 100)))
+
+    expect(result.current.readiness?.activeOperation).toBe('install-2')
+    expect(result.current.readiness?.components.find((component) => component.id === 'whisper-runtime')
+      ?.activity?.receivedBytes).toBe(40)
     expect(onError).not.toHaveBeenCalled()
   })
 })

@@ -20,6 +20,7 @@ from build_apt_repository import (
     build_repository,
     write_deb_archive,
 )
+from guard_apt_publication import repository_identity
 
 FIXTURE_VERSION = "1.0.0"
 FIXTURE_ARCH = "amd64"
@@ -254,6 +255,11 @@ def check_repository(deb_path: pathlib.Path | None) -> None:
         build_repository(args)
         assert_repository_layout(output_dir, public_key, setup_package)
         verify_signatures(verification_home, public_key, output_dir)
+        identity = repository_identity(
+            lambda path: (output_dir / path).read_bytes(), public_key, verify_packages=True,
+        )
+        if identity["version"] != FIXTURE_VERSION or set(identity["packages"]) != {FIXTURE_ARCH}:
+            raise RuntimeError("signed publication identity does not match the fixture package")
     finally:
         kill_agent(gnupg_home)
         kill_agent(verification_home)

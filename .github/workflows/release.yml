@@ -61,6 +61,7 @@ jobs:
         run: |
           python3 scripts/check_apt_installer.py
           python3 scripts/test_apt_repository.py
+          python3 scripts/test_apt_publication.py
           python3 scripts/check_apt_repository.py
 
       - name: Validate release artefact verifier
@@ -624,14 +625,55 @@ jobs:
     if: github.ref_type == 'tag'
     needs: apt-repository
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # The action waits up to ten minutes; leave time for verification and cleanup.
+    timeout-minutes: 20
+    concurrency:
+      # Shared Pages site, not a per-tag resource. Builds remain independent.
+      group: echo-apt-pages-publication
+      cancel-in-progress: false
     permissions:
+      contents: write
+      actions: read
       pages: write
       id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+    env:
+      APT_REPOSITORY_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/apt/
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: github-pages
+          path: candidate-pages-artifact
+
+      - name: Reserve monotonic APT publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEB_SIGNING_PUBLIC_KEY: ${{ vars.DEB_SIGNING_PUBLIC_KEY }}
+          DEB_SIGNING_KEY_FINGERPRINT: ${{ secrets.DEB_SIGNING_KEY_FINGERPRINT }}
+          APT_ALLOW_FIRST_PUBLICATION: ${{ vars.APT_ALLOW_FIRST_PUBLICATION }}
+        run: |
+          set -euo pipefail
+          mkdir candidate-pages
+          tar -xf candidate-pages-artifact/artifact.tar -C candidate-pages
+          printf '%s' "$DEB_SIGNING_PUBLIC_KEY" | base64 --decode > "$RUNNER_TEMP/apt-public-key.asc"
+          gpg --batch --yes --dearmor --output "$RUNNER_TEMP/apt-public-key.gpg" "$RUNNER_TEMP/apt-public-key.asc"
+          expected="$(printf '%s' "$DEB_SIGNING_KEY_FINGERPRINT" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')"
+          actual="$(gpg --batch --show-keys --with-colons "$RUNNER_TEMP/apt-public-key.gpg" | awk -F: '$1 == "fpr" { print toupper($10); exit }')"
+          test -n "$expected" && test "$actual" = "$expected"
+          bootstrap=()
+          if [ "$APT_ALLOW_FIRST_PUBLICATION" = true ]; then
+            bootstrap+=(--allow-first-publication)
+          fi
+          python3 scripts/guard_apt_publication.py \
+            --candidate candidate-pages/apt \
+            --repository-url "$APT_REPOSITORY_URL" \
+            --keyring "$RUNNER_TEMP/apt-public-key.gpg" \
+            "${bootstrap[@]}"
+
       - name: Deploy APT repository to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0

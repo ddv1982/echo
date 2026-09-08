@@ -42,7 +42,7 @@ RELEASE_PERMISSIONS = {
     },
     "github-release": {"contents": "write"},
     "apt-repository": {"contents": "write"},
-    "publish-apt": {"pages": "write", "id-token": "write"},
+    "publish-apt": {"contents": "write", "actions": "read", "pages": "write", "id-token": "write"},
 }
 CHECK_SHARDS = {"policy", "frontend", "rust", "assets"}
 
@@ -837,6 +837,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
+      contents: write
+      actions: read
       pages: write
       id-token: write
     steps:
