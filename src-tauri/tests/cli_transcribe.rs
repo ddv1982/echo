@@ -318,7 +318,10 @@ fn corrupt_config_is_left_in_place_without_side_effects() {
     let _ = run(&root, &["transcribe", fixture().to_str().unwrap()]);
 
     assert_eq!(std::fs::read(&config).unwrap(), b"corrupt config sentinel");
-    assert_eq!(std::fs::read(&dictionary).unwrap(), dictionary_json.as_bytes());
+    assert_eq!(
+        std::fs::read(&dictionary).unwrap(),
+        dictionary_json.as_bytes()
+    );
     assert!(!config_dir.join("config.json.corrupt").exists());
     for name in [
         "history.json",
@@ -553,7 +556,8 @@ printf '%s\n' '{"lang":"","emotion":"","event":"","text":" parakeet transcript",
 
     let argv = std::fs::read_to_string(&log).unwrap();
     assert!(
-        argv.lines().any(|line| line == "--model-type=nemo_transducer"),
+        argv.lines()
+            .any(|line| line == "--model-type=nemo_transducer"),
         "argv={argv}"
     );
 
@@ -571,4 +575,3 @@ printf '%s\n' '{"lang":"","emotion":"","event":"","text":" parakeet transcript",
         value["raw"]
     );
 }
-
