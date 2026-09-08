@@ -504,6 +504,7 @@ fn validate_capture_config(
             "microphone has no valid capture channels or sample rate".to_owned(),
         ));
     }
+    validate_sample_rate(sample_rate)?;
     match format {
         SampleFormat::I8
         | SampleFormat::I16
@@ -869,7 +870,7 @@ impl AudioCapture {
             ));
         }
         Ok(CaptureResult::from_pcm_with_dropped_samples(
-            resample_to_16k_mono(&samples, src_hz, channels),
+            resample_to_16k_mono(&samples, src_hz, channels)?,
             dropped_samples,
         ))
     }
@@ -979,8 +980,23 @@ where
     }
 }
 
-#[must_use]
-pub fn resample_to_16k_mono(interleaved: &[f32], src_hz: u32, channels: u16) -> Pcm16kMono {
+// Bound FFT scratch even for coprime rates declared by untrusted WAV headers.
+// 384 kHz includes high-rate PCM interfaces while limiting alignment to 768k frames.
+fn validate_sample_rate(sample_rate: u32) -> Result<(), AudioError> {
+    if !(1..=384_000).contains(&sample_rate) {
+        return Err(AudioError::Unsupported(format!(
+            "sample rate {sample_rate} Hz is outside the supported range 1..=384000 Hz"
+        )));
+    }
+    Ok(())
+}
+
+pub fn resample_to_16k_mono(
+    interleaved: &[f32],
+    src_hz: u32,
+    channels: u16,
+) -> Result<Pcm16kMono, AudioError> {
+    validate_sample_rate(src_hz)?;
     let ch = usize::from(channels.max(1));
     let frames = interleaved.len() / ch;
     let average_frame = |frame: usize| {
@@ -990,19 +1006,18 @@ pub fn resample_to_16k_mono(interleaved: &[f32], src_hz: u32, channels: u16) -> 
         }
         sum / ch as f32
     };
-    let src_hz = src_hz.max(1);
     if src_hz == SAMPLE_RATE_HZ {
-        return Pcm16kMono::from_samples(
+        return Ok(Pcm16kMono::from_samples(
             (0..frames)
                 .map(|frame| f32_to_i16(average_frame(frame)))
                 .collect(),
-        );
+        ));
     }
     let out_len = (frames as u64)
         .saturating_mul(u64::from(SAMPLE_RATE_HZ))
         .saturating_div(u64::from(src_hz)) as usize;
     if out_len == 0 {
-        return Pcm16kMono::from_samples(Vec::new());
+        return Ok(Pcm16kMono::from_samples(Vec::new()));
     }
 
     // Conversion runs after capture (and for WAV imports), never in the callback.
@@ -1040,7 +1055,7 @@ pub fn resample_to_16k_mono(interleaved: &[f32], src_hz: u32, channels: u16) -> 
         let take = (written - skip).min(out_len - out.len());
         out.extend(output[skip..skip + take].iter().copied().map(f32_to_i16));
     }
-    Pcm16kMono::from_samples(out)
+    Ok(Pcm16kMono::from_samples(out))
 }
 
 fn f32_to_i16(sample: f32) -> i16 {
@@ -1051,8 +1066,9 @@ pub fn load_wav(path: &Path) -> Result<CaptureResult, AudioError> {
     let mut reader =
         hound::WavReader::open(path).map_err(|err| AudioError::Wav(err.to_string()))?;
     let spec = reader.spec();
+    validate_sample_rate(spec.sample_rate)?;
     let samples = decode_wav_samples(&mut reader)?;
-    let pcm = resample_to_16k_mono(&samples, spec.sample_rate, spec.channels);
+    let pcm = resample_to_16k_mono(&samples, spec.sample_rate, spec.channels)?;
     Ok(CaptureResult::from_pcm(pcm))
 }
 
@@ -1443,7 +1459,8 @@ mod tests {
         for src_hz in [44_100, 48_000] {
             for frequency in [1_000.0, 6_000.0, 12_000.0] {
                 let pcm =
-                    resample_to_16k_mono(&tone(src_hz, frequency, src_hz as usize), src_hz, 1);
+                    resample_to_16k_mono(&tone(src_hz, frequency, src_hz as usize), src_hz, 1)
+                        .unwrap();
                 assert_eq!(pcm.len(), SAMPLE_RATE_HZ as usize);
                 // Ignore only edge transients, not block boundaries within the recording.
                 let rms = normalized_rms(&pcm.samples()[160..pcm.len() - 160]);
@@ -1472,7 +1489,7 @@ mod tests {
                 stereo.extend([sample + 0.25, -0.25]);
             }
             stereo.push(1.0); // An incomplete final frame must not change duration.
-            let pcm = resample_to_16k_mono(&stereo, src_hz, 2);
+            let pcm = resample_to_16k_mono(&stereo, src_hz, 2).unwrap();
             let expected_len = frames * SAMPLE_RATE_HZ as usize / src_hz as usize;
             assert_eq!(pcm.len(), expected_len);
             assert_eq!(
@@ -1503,7 +1520,7 @@ mod tests {
     fn resampling_short_inputs_flushes_without_adding_duration() {
         for src_hz in [8_000, 44_100, 48_000] {
             for frames in [0, 1, 2, 3, 17] {
-                let pcm = resample_to_16k_mono(&vec![0.5; frames], src_hz, 1);
+                let pcm = resample_to_16k_mono(&vec![0.5; frames], src_hz, 1).unwrap();
                 assert_eq!(
                     pcm.len(),
                     frames * SAMPLE_RATE_HZ as usize / src_hz as usize
@@ -1521,7 +1538,39 @@ mod tests {
             &[-2.0, -2.0, -0.5, 0.0, 0.5, 0.5, 2.0, 2.0, 2.0, -1.0, 1.0],
             SAMPLE_RATE_HZ,
             2,
-        );
+        )
+        .unwrap();
         assert_eq!(pcm.samples(), &[-32_767, -8_191, 16_383, 32_767, 16_383]);
+    }
+
+    #[test]
+    fn unsupported_wav_rates_fail_before_resampling() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("extreme-rate.wav");
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 50_000_003,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&path, spec).unwrap();
+        // Enough frames for one output sample: the old code would allocate
+        // a 100-million-frame FFT despite this file being only a few kilobytes.
+        for _ in 0..3126 {
+            writer.write_sample(1000_i16).unwrap();
+        }
+        writer.finalize().unwrap();
+        assert!(matches!(load_wav(&path), Err(AudioError::Unsupported(_))));
+        assert!(matches!(
+            resample_to_16k_mono(&[0.0], 384_001, 1),
+            Err(AudioError::Unsupported(_))
+        ));
+        assert!(matches!(
+            validate_capture_config(1, 50_000_003, SampleFormat::F32),
+            Err(AudioError::Unsupported(_))
+        ));
+        let pcm = resample_to_16k_mono(&[0.5; 48], 384_000, 1).unwrap();
+        assert_eq!(pcm.len(), 2);
+        assert!(pcm.samples().iter().any(|&sample| sample > 1000));
     }
 }

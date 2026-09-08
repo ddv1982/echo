@@ -6,7 +6,7 @@
 - Parakeet discovery now recognizes complete flat model directories and prefers the canonical nested model when both are present.
 - GNOME shortcut inspection correctly handles GVariant quoting, including apostrophes in shortcut names and spaces in executable paths.
 - APT publication serializes shared-site deployments and rejects older versions or changed package bytes under the same version.
-- Audio conversion uses bandlimited resampling to suppress above-band noise instead of folding it into the speech signal.
+- Audio conversion uses bandlimited resampling to suppress above-band noise instead of folding it into the speech signal. Unsupported source rates above 384 kHz are rejected before allocation.
 
 
 ## v1.0.1 - 2026-09-08
