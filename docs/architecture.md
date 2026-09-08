@@ -54,7 +54,7 @@ bandlimited FFT resampler. Scratch buffers are reused per block; filtering never
 runs in the capture callback. Conversion trims filter delay, flushes the tail,
 and preserves the duration rounded down to whole output samples. Already-16 kHz
 input takes the direct downmix/PCM path.
-Source rates must be between 1 and 384,000 Hz. WAV imports reject unsupported
+Source rates must be between 8,000 and 384,000 Hz. WAV imports reject unsupported
 header rates before decoding, and microphone configuration rejects them before
 capture allocation. The conversion API returns an error rather than allocating
 FFT scratch proportional to an unbounded, potentially untrusted rate.

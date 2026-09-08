@@ -982,10 +982,11 @@ where
 
 // Bound FFT scratch even for coprime rates declared by untrusted WAV headers.
 // 384 kHz includes high-rate PCM interfaces while limiting alignment to 768k frames.
+// 8 kHz supports telephony and caps upsampling at 2x on the output side.
 fn validate_sample_rate(sample_rate: u32) -> Result<(), AudioError> {
-    if !(1..=384_000).contains(&sample_rate) {
+    if !(8_000..=384_000).contains(&sample_rate) {
         return Err(AudioError::Unsupported(format!(
-            "sample rate {sample_rate} Hz is outside the supported range 1..=384000 Hz"
+            "sample rate {sample_rate} Hz is outside the supported range 8000..=384000 Hz"
         )));
     }
     Ok(())
@@ -1570,6 +1571,35 @@ mod tests {
             Err(AudioError::Unsupported(_))
         ));
         let pcm = resample_to_16k_mono(&[0.5; 48], 384_000, 1).unwrap();
+        assert_eq!(pcm.len(), 2);
+        assert!(pcm.samples().iter().any(|&sample| sample > 1000));
+    }
+
+    #[test]
+    fn low_wav_rates_fail_before_upsampling() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("low-rate.wav");
+        for sample_rate in [1, 7_999] {
+            let spec = hound::WavSpec {
+                channels: 1,
+                sample_rate,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            };
+            let mut writer = hound::WavWriter::create(&path, spec).unwrap();
+            writer.write_sample(1000_i16).unwrap();
+            writer.finalize().unwrap();
+            assert!(matches!(load_wav(&path), Err(AudioError::Unsupported(_))));
+            assert!(matches!(
+                resample_to_16k_mono(&[0.5], sample_rate, 1),
+                Err(AudioError::Unsupported(_))
+            ));
+            assert!(matches!(
+                validate_capture_config(1, sample_rate, SampleFormat::F32),
+                Err(AudioError::Unsupported(_))
+            ));
+        }
+        let pcm = resample_to_16k_mono(&[0.5], 8_000, 1).unwrap();
         assert_eq!(pcm.len(), 2);
         assert!(pcm.samples().iter().any(|&sample| sample > 1000));
     }
