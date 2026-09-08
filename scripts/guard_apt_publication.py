@@ -195,10 +195,15 @@ class GitHubState:
             raise
 
     def read(self) -> dict | None:
-        # A ref 404 is meaningful only after verifying access to the repository.
+        # Repository role booleans do not describe an installation token's
+        # contents permission. Probe Git access before treating a ref 404 as
+        # absent; the mandatory reservation write enforces write permission.
+        # No deployment is permitted when that write fails.
         repository = self.api("")
-        if repository["full_name"].lower() != self.repository.lower() or not repository["permissions"]["push"]:
-            raise ValueError("cannot authenticate publication state repository write access")
+        if repository["full_name"].lower() != self.repository.lower():
+            raise ValueError("publication state repository identity mismatch")
+        branch = urllib.parse.quote(repository["default_branch"], safe="")
+        self.api(f"/git/ref/heads/{branch}")
         ref = self.api(f"/git/ref/heads/{STATE_BRANCH}", missing_ok=True)
         if ref is None:
             return None
