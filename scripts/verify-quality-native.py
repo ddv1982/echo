@@ -39,6 +39,22 @@ async function until(predicate) {
   }
   throw new Error('native observation deadline exceeded')
 }
+async function restartCapture() {
+  const deadline = performance.now() + 5000
+  let retries = 0
+  while (performance.now() < deadline) {
+    try {
+      const receipt = await api.startCapture()
+      check(JSON.stringify({ restartBusyRetries: retries }), true)
+      return receipt
+    } catch (reason) {
+      if (String(reason) !== 'Another recording is already active.') throw reason
+      retries++
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+  }
+  throw new Error('recording lease did not become available after cancellation')
+}
 async function verify() {
   const scenario = 'SCENARIO'
   if (scenario === 'status') {
@@ -70,8 +86,9 @@ async function verify() {
     check('cancellation acknowledgement names the requested session', receipt.sessionId === started.sessionId)
     const terminal = await until(status => status.phase === 'Failed')
     check('acknowledged cancellation reaches canceled terminal detail', /cancel/i.test(terminal.lastError ?? ''))
+    check(JSON.stringify({ phase: terminal.phase, error: terminal.lastError }), true)
     check('canceled run adds no History row', (await api.getHistory()).length === 0)
-    const replacement = await api.startCapture()
+    const replacement = await restartCapture()
     check('another recording starts with a new identity', replacement.phase === 'Recording' && replacement.sessionId !== started.sessionId)
     let rejected = false
     try { await api.cancelTranscription(started.sessionId) } catch { rejected = true }
@@ -104,6 +121,12 @@ def source_fingerprint(root):
     return fingerprint.hexdigest()
 
 
+def replace_once(source, marker, replacement):
+    if source.count(marker) != 1:
+        raise RuntimeError(f'native probe rewrite marker must occur once: {marker!r}')
+    return source.replace(marker, replacement, 1)
+
+
 def build(root, output, scenario, target, ui=False):
     version = tomllib.loads((root / 'Cargo.toml').read_text())['workspace']['package']['version']
     fingerprint = source_fingerprint(root)
@@ -112,19 +135,69 @@ def build(root, output, scenario, target, ui=False):
         probe = Path(temporary)
         (probe / 'index.html').write_text('<div id="root"></div><script type="module" src="/main.ts"></script>')
         source = PROBE.replace('API_PATH', str(root / 'frontend/src/api/tauriDesktopApi.ts')).replace('PERF_PATH', str(root / 'frontend/src/perf/statusPerf.ts')).replace('SCENARIO', scenario)
+        if scenario == 'disconnect':
+            source = replace_once(source, "const failed = await until(status => status.phase === 'Failed')", "let heard = false\n    for (let attempt = 0; attempt < 20 && !heard; attempt++) {\n      heard = (await api.getRecordingLevel()) > 0\n      if (!heard) await new Promise(resolve => setTimeout(resolve, 10))\n    }\n    check('controlled source delivers audio before disconnection', heard)\n    const failed = await until(status => status.phase === 'Failed')")
+        if scenario == 'recovery':
+            source = replace_once(source, "scenario === 'missing-device'", "scenario === 'missing-device' || scenario === 'recovery'")
+            source = replace_once(source, "check(JSON.stringify({ phase: failed.phase, error: failed.lastError }), true)", """check(JSON.stringify({ phase: failed.phase, error: failed.lastError }), true)
+    let input
+    const deadline = performance.now() + 10000
+    while (!input && performance.now() < deadline) {
+      input = (await api.getMicrophones()).devices.find(device => device.label.includes('EchoProbe'))
+      if (!input) await new Promise(resolve => setTimeout(resolve, 100))
+    }
+    check('newly connected controlled source is enumerated', input !== undefined)
+    await api.setMicrophone(input.id)
+    const retry = [...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Try recording again')
+    check('native Home offers retry after missing device', retry !== undefined)
+    retry.click()
+    const recording = await until(status => status.phase === 'Recording')
+    await new Promise(resolve => setTimeout(resolve, 1000))
+    await api.stopCapture(recording.recordingSessionId)
+    const recovered = await until(status => status.phase === 'Idle' || status.phase === 'Failed')
+    check('native retry reaches Idle ' + JSON.stringify({ error: recovered.lastError }), recovered.phase === 'Idle')
+    let copyButton
+    const copyDeadline = performance.now() + 5000
+    while (!copyButton && performance.now() < copyDeadline) {
+      copyButton = document.querySelector('button[aria-label="Copy transcript"]')
+      if (!copyButton) await new Promise(resolve => setTimeout(resolve, 20))
+    }
+    check('native Home offers the recovered transcript for copying', copyButton !== null && copyButton !== undefined && recovered.lastTranscript !== null)
+    copyButton.scrollIntoView({ block: 'center' })
+    copyButton.click()
+    while (!document.querySelector('button[aria-label="Copied transcript"]') && performance.now() < copyDeadline) {
+      await new Promise(resolve => setTimeout(resolve, 20))
+    }
+    check('native Home confirms transcript copied', document.querySelector('button[aria-label="Copied transcript"]') !== null)
+    await new Promise(resolve => setTimeout(resolve, 3500))
+
+""")
         if ui:
             source = ("import { createElement } from 'react'\nimport { createRoot } from 'react-dom/client'\n"
                 + f"import App from {json.dumps(str(root / 'frontend/src/App.tsx'))}\n"
                 + f"import {{ configureDesktopApi }} from {json.dumps(str(root / 'frontend/src/tauri.ts'))}\n"
                 + f"import {json.dumps(str(root / 'frontend/src/styles/index.css'))}\n"
-                + source.replace("const checks = []", "configureDesktopApi(api)\nconst appRoot = createRoot(document.getElementById('root'))\nappRoot.render(createElement(App))\nconst checks = []")
+                + replace_once(source, "const checks = []", "configureDesktopApi(api)\nconst appRoot = createRoot(document.getElementById('root'))\nappRoot.render(createElement(App))\nconst checks = []")
             )
-            source = source.replace("  startStatusPerf({ checks, timingsMs, settingsRevisions: [] })", "  await new Promise(resolve => setTimeout(resolve, 1500))\n  check('native window shows terminal outcome', document.body.innerText.includes('Recording did not finish') || document.body.innerText.includes('Transcription canceled'))\n  appRoot.unmount()\n  await new Promise(resolve => setTimeout(resolve, 100))\n  startStatusPerf({ checks, timingsMs, settingsRevisions: [] })")
+            source = replace_once(source, "  startStatusPerf({ checks, timingsMs, settingsRevisions: [] })", "  await new Promise(resolve => setTimeout(resolve, 1500))\n  check('native window shows terminal outcome', document.body.innerText.includes('Recording did not finish') || document.body.innerText.includes('Transcription canceled'))\n  appRoot.unmount()\n  await new Promise(resolve => setTimeout(resolve, 100))\n  startStatusPerf({ checks, timingsMs, settingsRevisions: [] })")
+            if scenario == 'recovery':
+                source = replace_once(source, "document.body.innerText.includes('Recording did not finish') || document.body.innerText.includes('Transcription canceled')", "document.body.innerText.includes('Ready when you are')")
             if scenario == 'cancel':
-                source = source.replace("document.body.innerText.includes('Recording did not finish') || document.body.innerText.includes('Transcription canceled')", "document.body.innerText.includes('Transcription canceled')")
-                source = source.replace("const receipt = await api.cancelTranscription(started.sessionId)", "let button\n    const deadline = performance.now() + 5000\n    while (!button && performance.now() < deadline) {\n      button = [...document.querySelectorAll('button')].find(node => node.textContent.trim() === 'Cancel transcription')\n      if (!button) await new Promise(resolve => setTimeout(resolve, 20))\n    }\n    check('native Home exposes cancellation', button !== undefined)\n    await new Promise(resolve => setTimeout(resolve, 1200))\n    button.click()\n    await until(status => status.phase === 'Failed')\n    const receipt = { sessionId: (await api.getAppStatus()).recordingSessionId }")
-                source = source.replace("'cancellation acknowledgement names the requested session'", "'Home cancellation targets the active session'")
-                source = source.replace('timingsMs.cancelAcknowledgement', 'timingsMs.homeCancelTerminalObservation')
+                source = replace_once(source, "document.body.innerText.includes('Recording did not finish') || document.body.innerText.includes('Transcription canceled')", "document.body.innerText.includes('Transcription canceled')")
+                source = replace_once(source, 'const cancelAt = performance.now()', 'let cancelAt = 0')
+                source = replace_once(source, "const receipt = await api.cancelTranscription(started.sessionId)", "let button\n    const deadline = performance.now() + 5000\n    while (!button && performance.now() < deadline) {\n      button = [...document.querySelectorAll('button')].find(node => node.textContent.trim() === 'Cancel transcription')\n      if (!button) await new Promise(resolve => setTimeout(resolve, 20))\n    }\n    check('native Home exposes cancellation', button !== undefined)\n    await new Promise(resolve => setTimeout(resolve, 1200))\n    cancelAt = performance.now()\n    button.click()\n    await until(status => status.phase === 'Failed')\n    const receipt = { sessionId: (await api.getAppStatus()).recordingSessionId }")
+                source = replace_once(source, "'cancellation acknowledgement names the requested session'", "'Home cancellation targets the active session'")
+                source = replace_once(source, 'timingsMs.cancelAcknowledgement', 'timingsMs.homeCancelTerminalObservation')
+                source = replace_once(source, 'const replacement = await restartCapture()', """let retry
+    const retryDeadline = performance.now() + 5000
+    while (!retry && performance.now() < retryDeadline) {
+      retry = [...document.querySelectorAll('button')].find(node => node.textContent.trim() === 'Try recording again' && !node.disabled)
+      if (!retry) await new Promise(resolve => setTimeout(resolve, 20))
+    }
+    check('native Home offers retry after cancellation', retry !== undefined)
+    retry.click()
+    const nextRecording = await until(status => status.phase === 'Recording')
+    const replacement = { phase: nextRecording.phase, sessionId: nextRecording.recordingSessionId }""")
         (probe / 'main.ts').write_text(source)
         (probe / 'node_modules').symlink_to(root / 'frontend/node_modules', target_is_directory=True)
         (probe / 'vite.config.mjs').write_text('export default ' + json.dumps({'root': str(probe), 'define': {'__APP_VERSION__': json.dumps(version)}, 'build': {'outDir': str(probe / 'dist')}}))
@@ -177,8 +250,14 @@ def run_binary(binary, artifact, scenario, status=None, lease=None, expected_err
         bus_config = runtime / 'dbus.conf'
         bus_config.write_text('<busconfig><type>session</type><listen>unix:tmpdir=/tmp</listen><policy context="default"><allow send_destination="*"/><allow eavesdrop="true"/><allow own="*"/></policy></busconfig>')
         audio_servers = []
-        if scenario in ('disconnect', 'missing-device'):
+        if scenario in ('disconnect', 'missing-device', 'recovery'):
             environment.pop('ECHO_AUDIO_FIXTURE', None)
+            if scenario == 'recovery':
+                environment['ECHO_ENGINE'] = 'fake'
+            if scenario in ('recovery', 'disconnect'):
+                spa_config = runtime / 'xdg-config/pipewire/pipewire.conf.d'
+                spa_config.mkdir(parents=True)
+                (spa_config / 'quality.conf').write_text('context.spa-libs = { audiotestsrc = audiotestsrc/libspa-audiotestsrc }\n')
             environment.update({'XDG_RUNTIME_DIR': str(runtime), 'PIPEWIRE_RUNTIME_DIR': str(runtime), 'PULSE_SERVER': 'unix:' + str(runtime / 'pulse/native')})
             for server in ('pipewire', 'pipewire-pulse'):
                 log = cleanup.enter_context((artifact / f'{server}.log').open('w'))
@@ -190,8 +269,25 @@ def run_binary(binary, artifact, scenario, status=None, lease=None, expected_err
                 if subprocess.run(['pactl', 'info'], env=environment, capture_output=True).returncode == 0:
                     break
                 time.sleep(.05)
+            if scenario in ('recovery', 'disconnect'):
+                log = cleanup.enter_context((artifact / 'wireplumber.log').open('w'))
+                policy = subprocess.Popen(['wireplumber', '-c', 'policy.conf'], env={**environment, 'DBUS_SESSION_BUS_ADDRESS': 'unix:path=' + str(runtime / 'no-session-bus')}, stdout=log, stderr=log)
+                cleanup.callback(stop_process, policy)
             if scenario == 'disconnect':
-                subprocess.run(['pw-cli', 'create-node', 'adapter', '{ factory.name=support.null-audio-sink node.name=echo_probe node.description=EchoProbe media.class=Audio/Source audio.position=[MONO] object.linger=true }'], env=environment, check=True, capture_output=True)
+                subprocess.run(['pw-cli', 'create-node', 'adapter', '{ factory.name=audiotestsrc node.name=echo_probe node.description=EchoProbe media.class=Audio/Source audio.position=[MONO] audio.rate=48000 node.driver=true object.linger=true adapter.auto-port-config={ mode=dsp position=preserve } }'], env=environment, check=True, capture_output=True)
+            def recover():
+                status_path = runtime / 'data/status'
+                deadline = time.monotonic() + 30
+                while time.monotonic() < deadline:
+                    if status_path.exists() and 'state=Failed' in status_path.read_text():
+                        shutil.copy2(status_path, artifact / 'initial-status')
+                        time.sleep(1)
+                        completed = subprocess.run(['pw-cli', 'create-node', 'adapter', '{ factory.name=audiotestsrc node.name=echo_probe node.description=EchoProbe media.class=Audio/Source audio.position=[MONO] audio.rate=48000 node.driver=true object.linger=true adapter.auto-port-config={ mode=dsp position=preserve } }'], env=environment, capture_output=True, text=True)
+                        (artifact / 'source-added.json').write_text(json.dumps({'exitCode': completed.returncode, 'stderr': completed.stderr}))
+                        return
+                    time.sleep(.01)
+            if scenario == 'recovery':
+                threading.Thread(target=recover, daemon=True).start()
             def disconnect():
                 deadline = time.monotonic() + 30
                 status_path = runtime / 'data/status'
@@ -229,9 +325,13 @@ def run_binary(binary, artifact, scenario, status=None, lease=None, expected_err
         if expected_error is not None:
             snapshot = next((json.loads(check['name']) for check in result['report']['verification']['checks'] if check['name'].startswith('{"phase"')), {})
             observed_error = snapshot.get('error')
-            persisted_error = next((line.removeprefix('error=') for line in (artifact / 'status').read_text().splitlines() if line.startswith('error=')), None)
+            persisted_error = next((line.removeprefix('error=') for line in (artifact / ('initial-status' if scenario == 'recovery' else 'status')).read_text().splitlines() if line.startswith('error=')), None)
             if not observed_error or expected_error not in observed_error or persisted_error != observed_error:
                 raise RuntimeError(f'expected retained native error containing {expected_error!r}; observed {observed_error!r}, persisted {persisted_error!r}')
+        if scenario == 'recovery':
+            expected_clipboard = next(line.removeprefix('last=') for line in (artifact / 'status').read_text().splitlines() if line.startswith('last='))
+            if not (artifact / 'clipboard.txt').exists() or (artifact / 'clipboard.txt').read_text() != expected_clipboard:
+                raise RuntimeError('native clipboard does not match the recovered transcript')
         if scenario == 'disconnect' and not (artifact / 'disconnect.json').exists():
             raise RuntimeError('capture failed before the controlled server disconnect')
         result['report'].pop('userAgent', None)
@@ -240,9 +340,9 @@ def run_binary(binary, artifact, scenario, status=None, lease=None, expected_err
         metadata = json.loads(metadata_path.read_text()) if metadata_path.exists() else {}
         result['build'] = metadata
         result['limitations'] = [
-            'Home action is driven through DOM only when build.ui is true and scenario is cancel.',
-            'Virtual PipeWire device when scenario is disconnect; otherwise synthetic PCM or missing fixture.',
-            'Controlled whisper process; no speech model. Insertion disabled.',
+            'Home controls are driven through DOM for UI cancellation and recovery scenarios.',
+            'Audio is controlled. Disconnect and recovery use private PipeWire; missing-device uses a private empty server.',
+            'Synthetic PCM is used for cancellation. Engines are controlled stand-ins; insertion is disabled.',
         ]
         (artifact / 'receipt.json').write_text(json.dumps(result, indent=2) + '\n')
         return result
@@ -261,7 +361,7 @@ def main():
     parser.add_argument('--build', type=Path)
     parser.add_argument('--ui', action='store_true')
     parser.add_argument('--target', type=Path, default=ROOT / 'target/recording-native-probe')
-    parser.add_argument('--scenario', choices=['cancel', 'capture', 'status', 'disconnect', 'missing-device'], default='cancel')
+    parser.add_argument('--scenario', choices=['cancel', 'capture', 'status', 'disconnect', 'missing-device', 'recovery'], default='cancel')
     parser.add_argument('--baseline', type=Path)
     parser.add_argument('--head', type=Path)
     parser.add_argument('--output', type=Path, required=True)
@@ -270,6 +370,8 @@ def main():
     parser.add_argument('--status-file', type=Path)
     parser.add_argument('--status-dir', type=Path)
     args = parser.parse_args()
+    if args.scenario == 'recovery' and args.build and not args.ui:
+        parser.error('recovery requires --ui')
     if args.build:
         print(json.dumps(build(args.root.resolve(), args.build.resolve(), args.scenario, args.target.resolve(), args.ui)))
         return
@@ -350,6 +452,17 @@ def capture_child(binary, artifact):
                 time.sleep(.7)
                 subprocess.run(['import', '-window', 'root', str(Path(artifact) / f'{state}.png')], capture_output=True)
                 last = state
+            if state == 'Idle' and not (Path(artifact) / 'clipboard.txt').exists():
+                expected = next((line.removeprefix('last=') for line in status_path.read_text().splitlines() if line.startswith('last=')), None)
+                if expected:
+                    try:
+                        clipboard = subprocess.run(['xclip', '-selection', 'clipboard', '-o'], capture_output=True, text=True, timeout=1)
+                    except subprocess.TimeoutExpired:
+                        clipboard = None
+                    if clipboard and clipboard.returncode == 0 and clipboard.stdout == expected:
+                        (Path(artifact) / 'clipboard.txt').write_text(clipboard.stdout)
+                        time.sleep(.1)
+                        subprocess.run(['import', '-window', 'root', str(Path(artifact) / 'copied-transcript.png')], capture_output=True)
         time.sleep(.1)
     return process.returncode
 
