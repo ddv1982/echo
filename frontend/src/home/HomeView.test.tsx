@@ -56,3 +56,48 @@ it('presents acknowledged cancellation separately from recording failure', async
   expect(screen.getByRole('status')).toHaveTextContent('before text was inserted')
   expect(screen.queryByRole('alert')).not.toBeInTheDocument()
 })
+
+it('copies the displayed transcript and reports clipboard failure', async () => {
+  const copy = vi.spyOn(api, 'copyText').mockResolvedValueOnce().mockRejectedValueOnce(new Error('Clipboard unavailable'))
+  const status = { ...api.richPreviewStatus(), lastTranscript: 'Copy this transcript.' }
+  await act(async () => render(<HomeView status={status} history={[]} recordingSeconds={0} recordingRequestPending={false} cancellationPending={false} onCancelTranscription={vi.fn()} onToggleRecording={vi.fn()} onOpenSettings={vi.fn()} />))
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Copy transcript' })))
+  expect(copy).toHaveBeenCalledWith('Copy this transcript.')
+  expect(screen.getByRole('button', { name: 'Copied transcript' })).toBeInTheDocument()
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Copied transcript' })))
+  expect(screen.getByRole('alert')).toHaveTextContent('Clipboard unavailable')
+  expect(screen.queryByRole('button', { name: 'Copied transcript' })).not.toBeInTheDocument()
+  copy.mockRestore()
+})
+
+it.each(['resolve', 'reject'] as const)('ignores a copy %s after a replacement transcript', async (outcome) => {
+  const { deferred } = await import('../test/desktopApiHarness')
+  const pending = deferred<void>()
+  const copy = vi.spyOn(api, 'copyText').mockReturnValueOnce(pending.promise)
+  const props = { history: [], recordingSeconds: 0, recordingRequestPending: false, cancellationPending: false, onCancelTranscription: vi.fn(), onToggleRecording: vi.fn(), onOpenSettings: vi.fn() }
+  const status = { ...api.richPreviewStatus(), lastTranscript: 'Earlier text', lastHistoryId: 'earlier' }
+  const view = await act(async () => render(<HomeView {...props} status={status} />))
+  fireEvent.click(screen.getByRole('button', { name: 'Copy transcript' }))
+  await act(async () => view.rerender(<HomeView {...props} status={{ ...status, lastTranscript: 'Newer text', lastHistoryId: 'newer' }} />))
+  await act(async () => {
+    if (outcome === 'resolve') pending.resolve()
+    else pending.reject(new Error('Old copy failure'))
+    await pending.promise.catch(() => undefined)
+  })
+  expect(screen.getByRole('button', { name: 'Copy transcript' })).toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: 'Copied transcript' })).not.toBeInTheDocument()
+  expect(screen.queryByText('Old copy failure')).not.toBeInTheDocument()
+  copy.mockRestore()
+})
+
+it('shows an outcome only for the exact last history identity', async () => {
+  const props = { recordingSeconds: 0, recordingRequestPending: false, cancellationPending: false, onCancelTranscription: vi.fn(), onToggleRecording: vi.fn(), onOpenSettings: vi.fn() }
+  const item = { id: 'history-a', text: 'Same transcript', raw: 'Same transcript', engine: 'whisper', startedAt: 1, inferMs: 100, injection: 'ClipboardOnly' }
+  const status = { ...api.richPreviewStatus(), lastTranscript: item.text, lastHistoryId: 'history-b' }
+  const view = await act(async () => render(<HomeView {...props} history={[item]} status={status} />))
+  expect(screen.queryByText('Clipboard fallback. Copy to paste.')).not.toBeInTheDocument()
+  await act(async () => view.rerender(<HomeView {...props} history={[item]} status={{ ...status, lastHistoryId: item.id }} />))
+  expect(screen.getByText('Clipboard fallback. Copy to paste.')).toBeInTheDocument()
+  await act(async () => view.rerender(<HomeView {...props} history={[item]} status={{ ...status, lastHistoryId: null }} />))
+  expect(screen.queryByText('Clipboard fallback. Copy to paste.')).not.toBeInTheDocument()
+})

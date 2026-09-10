@@ -3,6 +3,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { BarsMotif, SectionHeading } from '../app/chrome'
 import { formatDuration, formatTime, messageFrom } from '../app/formatting'
+import { CopyTranscriptButton } from '../history/CopyTranscriptButton'
+import { injectionLabel } from '../history/injectionLabel'
 import { useSerialPoll } from '../hooks/useSerialPoll'
 import { presentShortcut } from '../shortcut'
 import { deriveStats, millisecondsUntilNextLocalDay } from '../stats'
@@ -29,6 +31,7 @@ export function HomeView({
   onCancelTranscription: () => Promise<void>
   onOpenSettings: () => void
 }) {
+  const lastHistoryItem = history.find((item) => item.id === status.lastHistoryId)
   const shortcut = presentShortcut(status.shortcut)
   const recording = status.phase === 'Recording'
   const failed = status.phase === 'Failed'
@@ -86,7 +89,7 @@ export function HomeView({
             {recording ? <LevelBars live={status.recordingInProcess} /> : null}
             <div className="record-actions">
               {status.phase === 'Transcribing' && status.recordingSessionId != null ? (
-                <button type="button" className="compact-button" disabled={cancellationPending} onClick={() => void onCancelTranscription()}>
+                <button type="button" className="secondary-button compact-button" disabled={cancellationPending} onClick={() => void onCancelTranscription()}>
                   {cancellationPending ? 'Canceling transcription…' : 'Cancel transcription'}
                 </button>
               ) : null}
@@ -126,7 +129,14 @@ export function HomeView({
         <section className="panel last-transcript">
           <SectionHeading title="Last transcript" subtitle="Most recently transcribed text" />
           {status.lastTranscript ? (
-            <blockquote>{status.lastTranscript}</blockquote>
+            <>
+              <blockquote>{status.lastTranscript}</blockquote>
+              {lastHistoryItem ? <p>{injectionLabel(lastHistoryItem.injection)}</p> : null}
+              <CopyTranscriptButton
+                key={JSON.stringify([status.lastHistoryId, status.recordingSessionId, status.lastTranscript])}
+                text={status.lastTranscript}
+              />
+            </>
           ) : (
             <div className="empty-state compact">
               <BarsMotif />
