@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.0.4 - 2026-09-10
+
+- Accepted transcription cancellation now prevents text insertion, including requests at the insertion boundary.
+- Clipboard paste fallback keeps the transcript available when delivery is unconfirmed instead of restoring the previous text too early.
+- Microphone stream errors end recording promptly and preserve the original failure reason.
+- Home displays recording failures and offers a retry action.
+- Dictionary saves preserve new edits made while an earlier entry is being saved.
+- Managed speech component verification no longer writes stale repair markers during replacement or removal.
+
 ## v1.0.3 - 2026-09-08
 
 - APT publication now checks Git access and requires a successful state reservation instead of relying on repository role flags that reject GitHub Actions installation tokens.
