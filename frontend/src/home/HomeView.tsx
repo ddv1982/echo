@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { BarsMotif, SectionHeading } from '../app/chrome'
 import { formatDuration, formatTime, messageFrom } from '../app/formatting'
+import { isCanceledRecording } from '../app/recordingPresentation'
 import { CopyTranscriptButton } from '../history/CopyTranscriptButton'
 import { injectionLabel } from '../history/injectionLabel'
 import { useSerialPoll } from '../hooks/useSerialPoll'
@@ -35,7 +36,7 @@ export function HomeView({
   const shortcut = presentShortcut(status.shortcut)
   const recording = status.phase === 'Recording'
   const failed = status.phase === 'Failed'
-  const canceled = failed && status.lastError === 'Transcription canceled'
+  const canceled = isCanceledRecording(status)
   const processing = status.phase === 'Transcribing' || status.phase === 'Injecting'
   const stopPending = recording && status.captureStopRequested
   const busy = processing || stopPending || recordingRequestPending

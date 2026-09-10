@@ -1,4 +1,5 @@
 import type { AppStatus } from '../generated/ipc'
+import { isCanceledRecording } from './recordingPresentation'
 
 export function BrandMark() {
   return (
@@ -37,7 +38,9 @@ export function BarsMotif() {
 }
 
 export function StatusPill({ status }: { status: AppStatus }) {
-  const tone = status.phase === 'Recording'
+  const canceled = isCanceledRecording(status)
+  const label = canceled ? 'Canceled' : status.phase
+  const tone = canceled ? 'ready' : status.phase === 'Recording'
     ? 'recording'
     : status.phase === 'Failed'
       ? 'error'
@@ -45,9 +48,9 @@ export function StatusPill({ status }: { status: AppStatus }) {
         ? 'ready'
         : 'busy'
   return (
-    <div className="status-pill" data-tone={tone} aria-label={`Echo status: ${status.phase}`}>
+    <div className="status-pill" data-tone={tone} aria-label={`Echo status: ${label}`}>
       <span className="status-dot" aria-hidden="true" />
-      {status.phase}
+      {label}
     </div>
   )
 }
