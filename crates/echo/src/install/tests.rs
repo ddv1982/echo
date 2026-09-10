@@ -936,3 +936,119 @@ fn a_receipt_can_never_aim_deletion_outside_its_payload() {
         fs::remove_file(store.active_path(id)).unwrap();
     }
 }
+
+fn status_mutation_interleaving(replace: bool) {
+    use fs2::FileExt;
+    use std::sync::mpsc;
+
+    let (store, spec, release) = installed_direct_fixture(if replace {
+        "status-replacement-race"
+    } else {
+        "status-removal-race"
+    });
+    let expected = expected_files_for(&spec);
+    let stage = store.root().join("replacement-stage");
+    if replace {
+        fs::create_dir_all(stage.join("payload")).unwrap();
+        fs::copy(
+            release.join("payload/tiny.bin"),
+            stage.join("payload/tiny.bin"),
+        )
+        .unwrap();
+    }
+    let (paused_tx, paused_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    std::thread::scope(|scope| {
+        let status = scope.spawn(|| {
+            super::store::BEFORE_STATUS_VERIFY.with(|hook| {
+                *hook.borrow_mut() = Some(Box::new(move || {
+                    paused_tx.send(()).unwrap();
+                    resume_rx.recv().unwrap();
+                }));
+            });
+            store.status_with(&spec, &expected, false)
+        });
+        paused_rx.recv().unwrap();
+        let mutation = || {
+            if replace {
+                store
+                    .activate_with(&spec, expected.clone(), &stage, &OperationId::fixture("2"))
+                    .unwrap();
+            } else {
+                store.remove(spec.id).unwrap();
+            }
+        };
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(
+                store
+                    .managed()
+                    .join("locks")
+                    .join(format!("{}.lock", spec.id.as_str())),
+            )
+            .unwrap();
+        let protected = match FileExt::try_lock_exclusive(&lock) {
+            Ok(()) => {
+                FileExt::unlock(&lock).unwrap();
+                false
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => true,
+            Err(error) => panic!("component lock: {error}"),
+        };
+        if !protected {
+            mutation();
+        }
+        resume_tx.send(()).unwrap();
+        let observed = status.join().unwrap();
+        if protected {
+            assert!(matches!(observed, ManagedComponentState::Ready { .. }));
+            mutation();
+        }
+        let final_state = store.status_with(&spec, &expected, false);
+        if replace {
+            assert!(
+                matches!(final_state, ManagedComponentState::Ready { .. }),
+                "{final_state:?}"
+            );
+        } else {
+            assert!(
+                matches!(final_state, ManagedComponentState::Absent { .. }),
+                "{final_state:?}"
+            );
+        }
+    });
+    fs::remove_dir_all(store.root()).unwrap();
+}
+
+#[test]
+fn status_does_not_publish_stale_repair_after_removal() {
+    status_mutation_interleaving(false);
+}
+
+#[test]
+fn status_does_not_publish_stale_repair_after_activation() {
+    status_mutation_interleaving(true);
+}
+
+#[test]
+fn status_lock_failure_does_not_persist_a_repair_marker() {
+    let (store, spec, _) = installed_direct_fixture("status-lock-failure");
+    let expected = expected_files_for(&spec);
+    let lock = store
+        .managed()
+        .join("locks")
+        .join(format!("{}.lock", spec.id.as_str()));
+    fs::remove_file(&lock).unwrap();
+    fs::create_dir(&lock).unwrap();
+    assert!(matches!(
+        store.status_with(&spec, &expected, false),
+        ManagedComponentState::NeedsRepair { .. }
+    ));
+    fs::remove_dir(&lock).unwrap();
+    assert!(matches!(
+        store.status_with(&spec, &expected, false),
+        ManagedComponentState::Ready { .. }
+    ));
+    fs::remove_dir_all(store.root()).unwrap();
+}
