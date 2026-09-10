@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.0.5 - 2026-09-10
+
+- Home can cancel an active transcription and shows cancellation consistently without replacing newer sessions.
+- Home and History explain insertion outcomes and offer transcript copying with feedback tied to the displayed text.
+- Microphone capture diagnostics now reach the window and shortcut or CLI notifications.
+- Home and Settings share microphone selection and test handling while preserving protection against delayed responses.
+- Persisted recording status uses typed internal phases while retaining compatibility with older status files and processes.
+
 ## v1.0.4 - 2026-09-10
 
 - Accepted transcription cancellation now prevents text insertion, including requests at the insertion boundary.
