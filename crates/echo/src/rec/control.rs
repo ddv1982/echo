@@ -29,7 +29,8 @@ pub(super) fn decide_toggle_intent(
 }
 
 pub(super) fn should_cancel_toggle(observed: &status::Status, owner: &LockOwner) -> bool {
-    observed.state == "Transcribing" && observed.session_id.as_deref() == owner.token.as_deref()
+    observed.state == status::PersistedPhase::Transcribing
+        && observed.session_id.as_deref() == owner.token.as_deref()
 }
 
 pub(super) fn finish_toggle_stop(
@@ -109,10 +110,10 @@ pub(super) enum ControlIntent {
 }
 
 impl ControlIntent {
-    pub(super) fn phase(self) -> &'static str {
+    pub(super) fn phase(self) -> status::PersistedPhase {
         match self {
-            Self::CaptureStop => "Recording",
-            Self::TranscriptionCancel => "Transcribing",
+            Self::CaptureStop => status::PersistedPhase::Recording,
+            Self::TranscriptionCancel => status::PersistedPhase::Transcribing,
         }
     }
 

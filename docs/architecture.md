@@ -80,6 +80,15 @@ cannot overwrite a replacement session's control signal. CLI, tray, and shortcut
 toggles remain adapters over these intents. Legacy owners retain their existing
 flat control-file protocol.
 
+Home offers cancellation only during an identified transcription. The app
+controller retains the pending session identity until an authoritative status
+leaves transcription. Acknowledgements pass through the recording observation
+reducer, so an old acknowledgement cannot replace a newer session.
+Accepted cancellation publishes the existing `Transcription canceled` detail.
+Home distinguishes that outcome from failure and offers another recording.
+Capture failures retain their category and audio diagnostic through status and
+notification, including failures to load an audio fixture.
+
 ## Desktop boundary
 
 Tauri command functions are thin adapters. `ConfigMutationService` accepts
@@ -112,7 +121,12 @@ of the conservative shell-command parser that decides whether a binding belongs
 to Echo.
 
 Active status records include the writer PID and Linux process start time.
-Readers reject zombies and reused PIDs. A successful History append publishes
+Readers parse the persisted phase once into `PersistedPhase` before applying
+owner checks. Known failure categories are typed. Historical failure text and
+unknown phase strings retain their exact spelling. Unknown phases require a
+live owner and project to a failed desktop state. Failed phases remain visible
+without a live owner. The status file format stays compatible with older
+processes. Readers reject zombies and reused PIDs. A successful History append publishes
 the row ID through status, so the frontend refreshes History after both a
 successful insertion and a failed insertion with recoverable text.
 
@@ -131,11 +145,20 @@ browser development graph and cannot enter the production bundle.
 
 `App.tsx` composes navigation and feature surfaces. Shared status, theme,
 history, dictionary, and error state live in the app controller. Home and
-Settings own their subscriptions and device/setup lifetimes. Backend responses
-define settings order, and stale setup refreshes cannot replace a newer
-snapshot. Test suites share the typed desktop API harness in
+Settings own their subscriptions and setup lifetimes. Both use
+`useMicrophoneController` for microphone snapshots, selection, test identity,
+and disposal. Home captures its readiness version before an operation starts.
+Settings retains its serial microphone poll and setup progress overlay.
+Backend responses define settings order, and stale setup refreshes cannot
+replace a newer snapshot. Test suites share the typed desktop API harness in
 `frontend/src/test/desktopApiHarness.ts`, with scenario-specific overrides kept
 in each test.
+
+Home and History share `CopyTranscriptButton`. Its keyed lifetime binds copy
+feedback to the displayed transcript and suppresses completion after removal.
+History describes the persisted insertion outcome. Home shows that outcome
+only when `lastHistoryId` identifies a loaded row. Unknown outcome strings
+never imply successful insertion.
 
 Serial polling never overlaps requests and stops with component disposal.
 Subscriptions await their unlisten handle and dispose it even when unmount

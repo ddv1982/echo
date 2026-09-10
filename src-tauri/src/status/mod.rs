@@ -1,5 +1,6 @@
 use std::sync::Mutex;
 
+use echo::status::PersistedPhase;
 use echo_core::{History, RunDetail};
 use echo_desktop::ipc::{
     AccelerationSkipReason, AppPhase, AppStatus, LastRun, LastRunPerformance, RecordingPolicy,
@@ -29,20 +30,20 @@ fn recover_cache_lock<'a, T>(cache: &'a Mutex<T>, name: &str) -> std::sync::Mute
     }
 }
 
-fn app_phase(state: &str) -> AppPhase {
+fn app_phase(state: &PersistedPhase) -> AppPhase {
     match state {
-        "Idle" => AppPhase::Idle,
-        "Recording" => AppPhase::Recording,
-        "Transcribing" => AppPhase::Transcribing,
-        "Injecting" => AppPhase::Injecting,
-        _ => AppPhase::Failed,
+        PersistedPhase::Idle => AppPhase::Idle,
+        PersistedPhase::Recording => AppPhase::Recording,
+        PersistedPhase::Transcribing => AppPhase::Transcribing,
+        PersistedPhase::Injecting => AppPhase::Injecting,
+        PersistedPhase::Failed { .. } | PersistedPhase::Unknown(_) => AppPhase::Failed,
     }
 }
 
 pub(super) fn recording_snapshot(
     status: &echo::status::Status,
 ) -> echo_desktop::ipc::RecordingSnapshot {
-    let capture_stop_requested = status.state == "Recording"
+    let capture_stop_requested = status.state == PersistedPhase::Recording
         && echo::rec::capture_stop_requested_for(status.session_id.as_deref());
     echo_desktop::ipc::RecordingSnapshot {
         session_id: status.session_id.clone(),
@@ -219,7 +220,8 @@ pub(super) fn app_status() -> AppStatus {
     let last_run = last_run_for(status.last_history_id.as_deref());
     #[cfg(feature = "status-perf-probe")]
     timer.mark(crate::perf::StatusStage::History);
-    let recording_in_process = status.state == "Recording" && echo::rec::recording_in_process();
+    let recording_in_process =
+        status.state == PersistedPhase::Recording && echo::rec::recording_in_process();
     let hud_enabled = echo::ui::hud::enabled();
     let settings_path = echo_core::config_path().to_string_lossy().into_owned();
     #[cfg(feature = "status-perf-probe")]
@@ -263,7 +265,7 @@ fn project_recording_limit(
     status: &echo::status::Status,
     current: echo_core::RecordingLimit,
 ) -> Option<echo_core::RecordingLimit> {
-    if status.state == "Recording" {
+    if status.state == PersistedPhase::Recording {
         status.recording_limit
     } else {
         Some(current)
