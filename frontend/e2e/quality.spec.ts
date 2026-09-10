@@ -119,3 +119,15 @@ test('Recovery controls remain visible and keyboard accessible at narrow width',
   await page.screenshot({ path: testInfo.outputPath('narrow-cancel.png'), fullPage: true })
   await testInfo.attach('accessibility', { body: await page.locator('body').ariaSnapshot(), contentType: 'text/plain' })
 })
+
+test('History explains unconfirmed target insertion and offers copying', async ({ page }, testInfo) => {
+  await configurePreview(page, `
+    previewDesktopApi.seedPreviewStatus({ phase: 'Failed', lastTranscript: 'claude code', lastHistoryId: 'native-failure' });
+    desktopApi.getHistory = async () => [{ id: 'native-failure', text: 'claude code', raw: 'claude code', engine: 'fake', startedAt: 1787310400, inferMs: 0, injection: 'Failed { reason: InjectUnconfirmed }' }];
+  `)
+  await page.goto('/')
+  await page.getByRole('button', { name: 'History', exact: true }).click()
+  await expect(page.getByText('Insertion failed. Copy to paste.')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Copy transcript', exact: true })).toBeEnabled()
+  await page.screenshot({ path: testInfo.outputPath('unconfirmed-history.png'), fullPage: true })
+})
