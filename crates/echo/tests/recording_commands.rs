@@ -4,6 +4,31 @@ use std::time::{Duration, Instant};
 
 struct Owner(Child);
 
+impl Owner {
+    fn signal(&self, signal: &str) {
+        assert!(Command::new("/bin/kill")
+            .args([signal, &self.0.id().to_string()])
+            .status()
+            .unwrap()
+            .success());
+    }
+
+    fn pause(&self) {
+        self.signal("-STOP");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let status = std::fs::read_to_string(format!("/proc/{}/status", self.0.id())).unwrap();
+            if status.lines().any(|line| {
+                line.starts_with("State:") && line.split_whitespace().nth(1) == Some("T")
+            }) {
+                return;
+            }
+            assert!(Instant::now() < deadline, "recording owner did not stop");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+}
+
 impl Drop for Owner {
     fn drop(&mut self) {
         let _ = self.0.kill();
@@ -121,8 +146,10 @@ printf '%s\n' '{"model":{"type":"small","multilingual":true},"result":{"language
     assert!(!root.path().join("data/history.json").exists());
 
     if cancel {
+        owner.pause();
         control(root.path(), "cancel", "replaced-session", false);
         control(root.path(), "cancel", &session, true);
+        owner.signal("-CONT");
     } else {
         std::fs::write(root.path().join("release-engine"), []).unwrap();
     }
@@ -192,7 +219,9 @@ fn control_helper() {
     .unwrap();
     assert_eq!(
         ack.is_some(),
-        std::env::var("ECHO_CONTROL_TEST_ACCEPTED").unwrap() == "true"
+        std::env::var("ECHO_CONTROL_TEST_ACCEPTED").unwrap() == "true",
+        "action={action}, before={before:?}, after={:?}",
+        echo::status::read()
     );
     if let Some(ack) = ack {
         assert_eq!(ack.session_id, session);
