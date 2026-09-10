@@ -1,13 +1,10 @@
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use echo_core::{FailReason, FocusTarget, InjectBackend, InjectReport, Injector};
 
 use crate::hotkey::DesktopSession;
 use crate::which::on_path;
-
-const CLIPBOARD_RESTORE_DELAY: Duration = Duration::from_millis(50);
 
 pub trait Pasteboard {
     fn get(&self) -> Result<String, String> {
@@ -312,18 +309,14 @@ impl<C: Pasteboard> LinuxInjector<C> {
             return InjectReport::ClipboardOnly;
         };
         if !transferred {
-            std::thread::sleep(CLIPBOARD_RESTORE_DELAY);
+            return InjectReport::ClipboardOnly;
         }
         if let Some(previous) = previous {
             if let Err(error) = self.clipboard.restore_if_unchanged(text, &previous) {
                 eprintln!("clipboard restore failed: {error}");
             }
         }
-        if transferred {
-            InjectReport::Pasted { backend }
-        } else {
-            InjectReport::ClipboardOnly
-        }
+        InjectReport::Pasted { backend }
     }
 }
 
@@ -901,7 +894,26 @@ mod tests {
     }
 
     #[test]
-    fn submitted_but_unconfirmed_untargeted_paste_restores_previous_clipboard() {
+    #[ignore = "requires an isolated X11 display and xclip"]
+    fn unconfirmed_native_clipboard_survives_delayed_consumer() {
+        assert_eq!(DesktopSession::current(), DesktopSession::X11);
+        let clipboard = SysClipboard;
+        clipboard.set("previous disposable text").unwrap();
+        let injector = LinuxInjector {
+            clipboard,
+            runner: Arc::new(RecordingRunner::new([true])),
+            session: DesktopSession::X11,
+        };
+        assert_eq!(
+            injector.paste_text("delayed transcript", None),
+            InjectReport::ClipboardOnly
+        );
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        assert_eq!(SysClipboard.get().unwrap(), "delayed transcript");
+    }
+
+    #[test]
+    fn submitted_but_unconfirmed_untargeted_paste_preserves_transcript() {
         let runner = RecordingRunner::new([true]);
         let board = RecordingPasteboard::new("old");
         let injector = injector(board.clone(), &runner, DesktopSession::X11);
@@ -910,15 +922,10 @@ mod tests {
             injector.paste_text("transcript", None),
             InjectReport::ClipboardOnly
         );
-        assert_eq!(board.text(), "old");
+        assert_eq!(board.text(), "transcript");
         assert_eq!(
             board.ops(),
-            vec![
-                ClipboardOp::Get,
-                ClipboardOp::Set("transcript".to_string()),
-                ClipboardOp::Get,
-                ClipboardOp::Set("old".to_string()),
-            ]
+            vec![ClipboardOp::Get, ClipboardOp::Set("transcript".to_string()),]
         );
         assert_eq!(
             runner.calls(),
@@ -963,15 +970,10 @@ mod tests {
                 ),
             ]
         );
-        assert_eq!(board.text(), "old");
+        assert_eq!(board.text(), "nonce");
         assert_eq!(
             board.ops(),
-            vec![
-                ClipboardOp::Get,
-                ClipboardOp::Set("nonce".to_string()),
-                ClipboardOp::Get,
-                ClipboardOp::Set("old".to_string()),
-            ]
+            vec![ClipboardOp::Get, ClipboardOp::Set("nonce".to_string()),]
         );
     }
 

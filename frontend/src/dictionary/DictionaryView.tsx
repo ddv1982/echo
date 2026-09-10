@@ -23,19 +23,26 @@ export function DictionaryView({
   const [spoken, setSpoken] = useState('')
   const [written, setWritten] = useState('')
   const [saving, setSaving] = useState(false)
+  const savingRef = useRef(false)
+  const draftRevision = useRef(0)
   const [trainerOpen, setTrainerOpen] = useState(false)
   const trainerTriggerRef = useRef<HTMLButtonElement>(null)
   const submit = async (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (!spoken.trim() || !written.trim()) return
+    if (savingRef.current || !spoken.trim() || !written.trim()) return
+    savingRef.current = true
+    const submittedRevision = draftRevision.current
     setSaving(true)
     try {
       await onAdd(spoken, written)
-      setSpoken('')
-      setWritten('')
+      if (draftRevision.current === submittedRevision) {
+        setSpoken('')
+        setWritten('')
+      }
     } catch (reason) {
       onError(messageFrom(reason))
     } finally {
+      savingRef.current = false
       setSaving(false)
     }
   }
@@ -43,9 +50,15 @@ export function DictionaryView({
     <div className="view-stack">
       <ViewHeader title="Dictionary" subtitle="Teach Echo names, products, and phrases your transcription model often mishears." />
       <form className="panel dictionary-form" onSubmit={(event) => void submit(event)}>
-        <label><span>What Echo hears</span><input value={spoken} onChange={(event) => setSpoken(event.target.value)} placeholder="clawed code" /></label>
+        <label><span>What Echo hears</span><input value={spoken} onChange={(event) => {
+          draftRevision.current += 1
+          setSpoken(event.target.value)
+        }} placeholder="clawed code" /></label>
         <div className="mapping-arrow" aria-hidden="true">→</div>
-        <label><span>What Echo should write</span><input value={written} onChange={(event) => setWritten(event.target.value)} placeholder="Claude Code" /></label>
+        <label><span>What Echo should write</span><input value={written} onChange={(event) => {
+          draftRevision.current += 1
+          setWritten(event.target.value)
+        }} placeholder="Claude Code" /></label>
         <button className="primary-button compact-button" type="submit" disabled={saving || !spoken.trim() || !written.trim()}><Plus size={17} /> Add</button>
       </form>
       <div className="dictionary-training-prompt">

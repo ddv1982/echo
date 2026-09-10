@@ -76,13 +76,25 @@ impl PublishedSession {
     pub(super) fn begin_injecting_then<T>(
         &mut self,
         effect: impl FnOnce() -> T,
-    ) -> Result<T, String> {
+    ) -> Result<Option<T>, String> {
         self.session
             .begin_injecting()
             .map_err(|err| err.to_string())?;
         log_state(&self.session);
         self.publish_state(None, None, None)?;
-        Ok(effect())
+        // A cancel acknowledgment requires a Transcribing read after its intent
+        // write. Publishing Injecting first makes every acknowledged intent
+        // visible to this final check before the effect can run.
+        if self.cancel_requested() {
+            self.fail(
+                FailReason::EngineError,
+                None,
+                Some("Transcription canceled"),
+                None,
+            )?;
+            return Ok(None);
+        }
+        Ok(Some(effect()))
     }
 
     pub(super) fn complete_without_insertion(
@@ -333,7 +345,15 @@ pub(super) fn run_record_with_limit(
         Some((injector, Ok(target))) => injector.inject(&transcript.text, &target),
         Some((_, Err(reason))) => InjectReport::Failed { reason },
     }) {
-        Ok(inject) => inject,
+        Ok(Some(inject)) => inject,
+        Ok(None) => {
+            hud.set_state(crate::ui::hud::HudState::Failed);
+            crate::notify::notify_session_failure(
+                FailReason::EngineError,
+                Some("Transcription canceled"),
+            );
+            return 1;
+        }
         Err(err) => {
             report_publication_failure(&err);
             crate::notify::notify_session_failure(FailReason::EngineError, Some(&err));

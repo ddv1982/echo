@@ -60,7 +60,9 @@ capture allocation. The conversion API returns an error rather than allocating
 FFT scratch proportional to an unbounded, potentially untrusted rate.
 
 Clipboard paste is a fallback when typing cannot land at the cursor. Echo
-restores the previous text clipboard when it still matches the transcript.
+keeps the transcript on the clipboard when transfer is unconfirmed. It
+restores the previous text only after a confirmed transfer and only while the
+clipboard still matches the transcript.
 Other applications may already have read that transcript, and restore cannot
 preserve non-text clipboard formats.
 

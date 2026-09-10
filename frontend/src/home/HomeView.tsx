@@ -27,6 +27,7 @@ export function HomeView({
 }) {
   const shortcut = presentShortcut(status.shortcut)
   const recording = status.phase === 'Recording'
+  const failed = status.phase === 'Failed'
   const processing = status.phase === 'Transcribing' || status.phase === 'Injecting'
   const stopPending = recording && status.captureStopRequested
   const busy = processing || stopPending || recordingRequestPending
@@ -34,7 +35,7 @@ export function HomeView({
     ? 'recording'
     : busy
       ? 'transcribing'
-      : 'idle'
+      : failed ? 'failed' : 'idle'
   const [readout, title, description] = stopPending
     ? ['Stopping', 'Finishing recording…', 'Waiting for Echo to finish recording.']
     : recording
@@ -43,7 +44,9 @@ export function HomeView({
         ? ['Processing', 'Transcribing locally…', `${status.engineName} is turning your recording into text.`]
         : status.phase === 'Injecting'
           ? ['Processing', 'Inserting transcript…', `${status.injectionName} is sending your transcript to the active app.`]
-          : ['Ready', 'Ready when you are', 'Your audio stays on this machine.']
+          : failed
+            ? ['Recording failed', 'Recording did not finish', status.lastError || 'Echo could not finish this recording.']
+            : ['Ready', 'Ready when you are', 'Your audio stays on this machine.']
   return (
     <div className="view-stack">
       <section className="record-hero" data-state={heroState}>
@@ -72,9 +75,14 @@ export function HomeView({
               ) : null}
             </div>
             <h2 aria-live="polite" aria-atomic="true">{title}</h2>
-            <p>{description}</p>
+            <p role={failed ? 'alert' : undefined}>{description}</p>
             {recording ? <LevelBars live={status.recordingInProcess} /> : null}
             <div className="record-actions">
+              {failed ? (
+                <button type="button" className="primary-button compact-button" disabled={busy} onClick={() => void onToggleRecording()}>
+                  Try recording again
+                </button>
+              ) : null}
               <div className="shortcut-hint">
                 <kbd>{shortcut.display}</kbd>
                 <span>

@@ -262,7 +262,9 @@ impl Default for CaptureStreamState {
 impl CaptureStreamState {
     fn report_error(&mut self, error: AudioError) {
         if let Self::Capturing(slot) = self {
-            *slot = Some(error);
+            if slot.is_none() {
+                *slot = Some(error);
+            }
         }
     }
 
@@ -852,11 +854,7 @@ impl AudioCapture {
             }
         };
         stream.play().map_err(map_cpal_error)?;
-        let started = Instant::now();
-        while !self.cancel.is_cancelled() && started.elapsed() < max {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        finish_capture_stream(stream, &stream_state)?;
+        wait_for_capture_stream(stream, &stream_state, &self.cancel, max)?;
         let dropped_samples = collected.dropped_samples();
         let samples = std::mem::take(
             &mut *collected
@@ -886,6 +884,23 @@ fn capture_sample_capacity(max: Duration, sample_rate: u32, channels: u16) -> us
         .saturating_add(NANOS_PER_SECOND - 1)
         .saturating_div(NANOS_PER_SECOND);
     samples.min(usize::MAX as u128) as usize
+}
+
+fn wait_for_capture_stream<T>(
+    stream: T,
+    state: &Arc<Mutex<CaptureStreamState>>,
+    cancel: &CancellationToken,
+    max: Duration,
+) -> Result<(), AudioError> {
+    let started = Instant::now();
+    while !cancel.is_cancelled() && started.elapsed() < max {
+        match state.lock() {
+            Ok(state) if matches!(*state, CaptureStreamState::Capturing(None)) => {}
+            _ => break,
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    finish_capture_stream(stream, state)
 }
 
 fn finish_capture_stream<T>(
@@ -1156,6 +1171,77 @@ mod tests {
         assert!(matches!(
             finish_capture_stream((), &state),
             Err(AudioError::Stream(message)) if message.contains("poisoned")
+        ));
+    }
+
+    #[test]
+    fn repeated_stream_errors_preserve_the_original_failure() {
+        let state = Arc::new(Mutex::new(CaptureStreamState::default()));
+        {
+            let mut capture = state.lock().unwrap();
+            capture.report_error(AudioError::Disconnected("original".to_string()));
+            capture.report_error(AudioError::Stream("subsequent".to_string()));
+        }
+        assert!(matches!(
+            wait_for_capture_stream(ShutdownError(Arc::clone(&state)), &state,
+                &CancellationToken::new(), Duration::from_secs(30)),
+            Err(AudioError::Disconnected(message)) if message == "original"
+        ));
+    }
+
+    #[test]
+    fn capture_wait_honors_stop_and_deadline() {
+        for stop in [false, true] {
+            let state = Arc::new(Mutex::new(CaptureStreamState::default()));
+            let cancel = CancellationToken::new();
+            if stop {
+                cancel.cancel();
+            }
+            assert!(wait_for_capture_stream(
+                ShutdownError(Arc::clone(&state)),
+                &state,
+                &cancel,
+                if stop {
+                    Duration::from_secs(30)
+                } else {
+                    Duration::ZERO
+                },
+            )
+            .is_ok());
+            assert!(matches!(
+                *state.lock().unwrap(),
+                CaptureStreamState::Stopping
+            ));
+        }
+    }
+
+    #[test]
+    fn stream_error_terminates_capture_without_stop_or_deadline() {
+        let state = Arc::new(Mutex::new(CaptureStreamState::default()));
+        let cancel = CancellationToken::new();
+        let worker_state = Arc::clone(&state);
+        let worker_cancel = cancel.clone();
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = wait_for_capture_stream(
+                ShutdownError(Arc::clone(&worker_state)),
+                &worker_state,
+                &worker_cancel,
+                Duration::from_secs(30),
+            );
+            finished_tx.send(result).unwrap();
+        });
+        state.lock().unwrap().report_error(AudioError::Disconnected(
+            "capture device removed".to_string(),
+        ));
+        let result = finished_rx.recv_timeout(Duration::from_millis(250));
+        cancel.cancel();
+        worker.join().unwrap();
+        assert!(matches!(result, Ok(Err(AudioError::Disconnected(message)))
+            if message == "capture device removed"));
+        assert!(matches!(
+            *state.lock().unwrap(),
+            CaptureStreamState::Stopping
         ));
     }
 

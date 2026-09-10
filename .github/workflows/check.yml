@@ -130,6 +130,7 @@ jobs:
             libayatana-appindicator3-dev \
             pipewire-bin \
             strace \
+            xclip \
             xdotool \
             xvfb
 
@@ -158,6 +159,9 @@ jobs:
         run: |
           xvfb-run -a cargo test -p echo-desktop --bin echo-desktop x11_runtime_registers_and_releases_the_fixed_grab -- --ignored
           cargo test -p echo-desktop --bin echo-desktop portal_runtime_registers_binds_routes_and_closes -- --ignored
+
+      - name: Verify delayed clipboard recovery
+        run: XDG_SESSION_TYPE=x11 xvfb-run -a cargo test -p echo --lib inject::tests::unconfirmed_native_clipboard_survives_delayed_consumer -- --exact --ignored
 
       - name: Verify settings collection and projection contracts
         run: python3 scripts/verify-settings-collections.py --output "$RUNNER_TEMP/settings-collections.json"

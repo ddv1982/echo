@@ -1080,3 +1080,109 @@ fn release_builds_ignore_audio_fixture_env() {
     assert_eq!(audio_fixture_path(false, Some(path)), None);
     assert_eq!(audio_fixture_path(true, None), None);
 }
+
+#[test]
+fn acknowledged_cancel_prevents_injection() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = ToggleSession::try_start_in(dir.path()).unwrap().unwrap();
+    let token = session.token.clone();
+    let status_path = dir.path().join("status");
+    let mut published =
+        PublishedSession::new_in(StopWhen::ToggleFile(session), status_path.clone());
+    published.start_recording(RecordingLimit::DEFAULT).unwrap();
+    published.finish_capture().unwrap();
+    let (release_send, release_receive) = mpsc::sync_channel(0);
+    let worker = std::thread::spawn(move || {
+        release_receive.recv().unwrap();
+        assert!(published.cancel_requested());
+        let injected = Cell::new(false);
+        assert_eq!(
+            published
+                .begin_injecting_then(|| injected.set(true))
+                .unwrap(),
+            None
+        );
+        assert!(
+            !injected.get(),
+            "acknowledged cancellation must prevent injection"
+        );
+    });
+    let ack = request_control_ack_with(
+        &token,
+        ControlIntent::TranscriptionCancel,
+        || status::read_from(&status_path),
+        |token, intent| ToggleSession::request_intent_for_token_in(dir.path(), token, intent),
+    )
+    .unwrap()
+    .expect("cancellation must be acknowledged while transcribing");
+    assert_eq!(ack.revision, 5);
+    release_send.send(()).unwrap();
+    worker.join().unwrap();
+    let terminal = status::read_from(&status_path);
+    assert_eq!(terminal.state, "Failed speech engine failed");
+    assert_eq!(terminal.error.as_deref(), Some("Transcription canceled"));
+    assert!(terminal.revision > ack.revision);
+    assert!(ToggleSession::try_start_in(dir.path()).unwrap().is_some());
+}
+
+#[test]
+fn cancel_requested_after_injection_commit_is_not_acknowledged() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = ToggleSession::try_start_in(dir.path()).unwrap().unwrap();
+    let token = session.token.clone();
+    let status_path = dir.path().join("status");
+    let mut published =
+        PublishedSession::new_in(StopWhen::ToggleFile(session), status_path.clone());
+    published.start_recording(RecordingLimit::DEFAULT).unwrap();
+    published.finish_capture().unwrap();
+    let result = published
+        .begin_injecting_then(|| {
+            let ack = request_control_ack_with(
+                &token,
+                ControlIntent::TranscriptionCancel,
+                || status::read_from(&status_path),
+                |token, intent| {
+                    ToggleSession::request_intent_for_token_in(dir.path(), token, intent)
+                },
+            )
+            .unwrap();
+            assert!(ack.is_none());
+            "injected"
+        })
+        .unwrap();
+    assert_eq!(result, Some("injected"));
+    assert!(!published.cancel_requested());
+}
+
+#[test]
+fn cancel_write_overlapping_injection_commit_is_not_acknowledged() {
+    let dir = tempfile::tempdir().unwrap();
+    let session = ToggleSession::try_start_in(dir.path()).unwrap().unwrap();
+    let token = session.token.clone();
+    let status_path = dir.path().join("status");
+    let mut published =
+        PublishedSession::new_in(StopWhen::ToggleFile(session), status_path.clone());
+    published.start_recording(RecordingLimit::DEFAULT).unwrap();
+    published.finish_capture().unwrap();
+    let injected = Cell::new(false);
+    let ack = request_control_ack_with(
+        &token,
+        ControlIntent::TranscriptionCancel,
+        || status::read_from(&status_path),
+        |token, intent| {
+            assert_eq!(
+                published
+                    .begin_injecting_then(|| injected.set(true))
+                    .unwrap(),
+                Some(())
+            );
+            ToggleSession::request_intent_for_token_in(dir.path(), token, intent)
+        },
+    )
+    .unwrap();
+    assert!(ack.is_none());
+    assert!(injected.get());
+    assert!(published.cancel_requested());
+    published.complete_inject(None, None, None).unwrap();
+    assert_eq!(status::read_from(&status_path).state, "Idle");
+}

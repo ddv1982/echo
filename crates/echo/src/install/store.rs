@@ -18,6 +18,12 @@ use super::types::{
     ManagedPath, OperationId,
 };
 
+#[cfg(test)]
+thread_local! {
+    pub(super) static BEFORE_STATUS_VERIFY: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        std::cell::RefCell::new(None);
+}
+
 #[derive(Debug, Clone)]
 pub struct ManagedStore {
     root: PathBuf,
@@ -206,6 +212,15 @@ impl ManagedStore {
     ) -> ManagedComponentState {
         let id = spec.id;
         let resumable_bytes = resumable_bytes(&self.root, id);
+        let _lease = match self.lease_shared(id) {
+            Ok(lease) => lease,
+            Err(error) => {
+                return ManagedComponentState::NeedsRepair {
+                    reason: error.to_string(),
+                    resumable_bytes,
+                };
+            }
+        };
         if let Some(reason) = self.repair_reason(id) {
             return ManagedComponentState::NeedsRepair {
                 reason,
@@ -246,6 +261,12 @@ impl ManagedStore {
                 resumable_bytes,
             };
         }
+        #[cfg(test)]
+        BEFORE_STATUS_VERIFY.with(|hook| {
+            if let Some(hook) = hook.borrow_mut().take() {
+                hook();
+            }
+        });
         if let Err(error) =
             verify_payload_cached(&release.join("payload"), &record.files, full_verify)
         {
