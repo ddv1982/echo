@@ -5,23 +5,17 @@ import { SectionHeading } from '../app/chrome'
 import { messageFrom } from '../app/formatting'
 import { useAsyncSubscription } from '../hooks/useAsyncSubscription'
 import { MicrophoneChooser } from '../settings/MicrophoneChooser'
-import { newestSnapshot } from '../settings/snapshotFreshness'
+import { useMicrophoneController } from '../microphones/useMicrophoneController'
 import { SpeechSetupSection } from '../settings/SpeechSetupSection'
 import { applySetupProgress, classifySetupEvent } from '../setup'
 import { presentShortcut } from '../shortcut'
 import { useShortcutVerification } from '../shortcuts/useShortcutVerification'
 import {
-  getMicrophones,
   getReadiness,
   onSetupEvent,
-  setMicrophone,
-  testInputDevice,
-  testMicrophoneFallback,
 } from '../tauri'
 import type {
   AppStatus,
-  MicrophoneSnapshot,
-  MicrophoneTestResult,
   Readiness,
   SetupEvent,
 } from '../generated/ipc'
@@ -34,20 +28,13 @@ export function SetupChecklist({
   onOpenSettings: () => void
 }) {
   const [readiness, setReadiness] = useState<Readiness | null>(null)
-  const [microphones, setMicrophones] = useState<MicrophoneSnapshot | null>(null)
-  const [micTest, setMicTest] = useState<MicrophoneTestResult | null>(null)
-  const [testingMic, setTestingMic] = useState(false)
   const [setupError, setSetupError] = useState<string | null>(null)
   const mountedRef = useRef(true)
-  const micTestVersion = useRef(0)
-  const micTestRun = useRef(0)
   const readinessVersion = useRef(0)
   const reportSetupError = useCallback((reason: unknown) => {
     if (mountedRef.current) setSetupError(messageFrom(reason))
   }, [])
-  const applyMicrophoneSnapshot = useCallback((next: MicrophoneSnapshot) => {
-    if (mountedRef.current) setMicrophones((current) => newestSnapshot(current, next))
-  }, [])
+  const { microphones, micTest, testingMic, refresh: refreshMicrophones, selectMicrophone, testMicrophone } = useMicrophoneController(reportSetupError)
   const applyFetchedReadiness = useCallback((next: Readiness, version: number) => {
     if (mountedRef.current && readinessVersion.current === version) setReadiness(next)
   }, [])
@@ -61,18 +48,15 @@ export function SetupChecklist({
     }).catch((reason: unknown) => {
       if (current && mountedRef.current) reportSetupError(reason)
     })
-    void getMicrophones().then((next) => {
-      if (current && mountedRef.current) applyMicrophoneSnapshot(next)
-    }).catch((reason: unknown) => {
-      if (current && mountedRef.current) reportSetupError(reason)
+    void refreshMicrophones().catch((reason: unknown) => {
+      if (current) reportSetupError(reason)
     })
     return () => {
       current = false
       mountedRef.current = false
-      micTestVersion.current += 1
       readinessVersion.current += 1
     }
-  }, [applyFetchedReadiness, applyMicrophoneSnapshot, reportSetupError])
+  }, [applyFetchedReadiness, refreshMicrophones, reportSetupError])
 
   const handleSetupEvent = useCallback((event: SetupEvent) => {
     if (!mountedRef.current) return
@@ -130,65 +114,23 @@ export function SetupChecklist({
             onRefresh={() => {
               if (!mountedRef.current) return
               const version = ++readinessVersion.current
-              void Promise.all([getMicrophones(), getReadiness()])
-                .then(([nextMicrophones, nextReadiness]) => {
-                  if (!mountedRef.current) return
-                  applyMicrophoneSnapshot(nextMicrophones)
-                  applyFetchedReadiness(nextReadiness, version)
-                })
+              void Promise.all([refreshMicrophones(), getReadiness()])
+                .then(([, next]) => applyFetchedReadiness(next, version))
                 .catch(reportSetupError)
             }}
             onSelect={(id) => {
-              if (!mountedRef.current) return
-              micTestVersion.current += 1
               const version = ++readinessVersion.current
-              setMicTest(null)
-              void setMicrophone(id)
-                .then((nextMicrophones) => {
-                  if (!mountedRef.current) return null
-                  applyMicrophoneSnapshot(nextMicrophones)
-                  return getReadiness()
-                })
-                .then((next) => {
-                  if (next) applyFetchedReadiness(next, version)
-                })
-                .catch(reportSetupError)
+              selectMicrophone(id, () => getReadiness().then((next) => applyFetchedReadiness(next, version)))
             }}
             onTest={(id, fallback) => {
-              if (!mountedRef.current) return
-              const version = ++micTestVersion.current
-              const readinessFetch = ++readinessVersion.current
-              micTestRun.current = version
-              setTestingMic(true)
-              const refreshAfterTest = async (refreshInputs: boolean) => {
-                const [nextReadiness, nextMicrophones] = await Promise.all([
+              const version = ++readinessVersion.current
+              testMicrophone(id, fallback, async (failed) => {
+                const [, next] = await Promise.all([
+                  failed ? refreshMicrophones() : Promise.resolve(),
                   getReadiness(),
-                  refreshInputs ? getMicrophones() : Promise.resolve(null),
                 ])
-                if (!mountedRef.current || micTestVersion.current !== version) return
-                if (nextMicrophones) applyMicrophoneSnapshot(nextMicrophones)
-                applyFetchedReadiness(nextReadiness, readinessFetch)
-              }
-              const run = fallback ? testMicrophoneFallback() : testInputDevice(id)
-              void run
-                .then(
-                  (result) => {
-                    if (!mountedRef.current || micTestVersion.current !== version) return
-                    setMicTest(result)
-                    return refreshAfterTest(result.kind === 'failed')
-                  },
-                  (reason: unknown) => {
-                    if (!mountedRef.current || micTestVersion.current !== version) return
-                    reportSetupError(reason)
-                    return refreshAfterTest(true)
-                  },
-                )
-                .catch((reason: unknown) => {
-                  if (mountedRef.current && micTestVersion.current === version) reportSetupError(reason)
-                })
-                .finally(() => {
-                  if (mountedRef.current && micTestRun.current === version) setTestingMic(false)
-                })
+                applyFetchedReadiness(next, version)
+              })
             }}
           />
         </div>

@@ -3,7 +3,7 @@ import { beforeEach, expect, it, vi } from 'vitest'
 
 import { createPreviewDesktopApi } from '../api/previewDesktopApi'
 import type { SetupEvent } from '../generated/ipc'
-import { configureDesktopApi, getMicrophones, getReadiness, onSetupEvent, testInputDevice } from '../tauri'
+import { configureDesktopApi, getMicrophones, getReadiness, onSetupEvent, setMicrophone, testInputDevice } from '../tauri'
 import { deferred, resetDesktopApiMocks } from '../test/desktopApiHarness'
 import { SetupChecklist } from './SetupChecklist'
 
@@ -121,4 +121,22 @@ it('does not replace in-progress setup with a stale readiness fetch', async () =
   })
 
   expect(screen.getByText('Setting up speech')).toBeInTheDocument()
+})
+
+it('invalidates an older readiness refresh as soon as microphone selection starts', async () => {
+  const initial = await getMicrophones()
+  const readiness = await getReadiness()
+  const next = initial.devices.find((device) => !device.isDefault && device.tier === 'primary')
+  if (!next) throw new Error('Missing selectable microphone fixture')
+  const stale = deferred<typeof readiness>()
+  const selection = deferred<typeof initial>()
+  render(<SetupChecklist status={preview.richPreviewStatus()} onOpenSettings={vi.fn()} />)
+  await screen.findByRole('button', { name: 'Test selected' })
+  vi.mocked(getReadiness).mockReturnValueOnce(stale.promise)
+  vi.mocked(setMicrophone).mockReturnValueOnce(selection.promise)
+  fireEvent.click(screen.getByRole('button', { name: 'Refresh' }))
+  fireEvent.click(screen.getByRole('radio', { name: (name) => name.startsWith(next.label) }))
+  await act(async () => stale.resolve({ ...readiness, microphoneReady: true }))
+  expect(screen.getByRole('button', { name: 'Test selected' })).toBeInTheDocument()
+  await act(async () => selection.resolve({ ...initial, revision: initial.revision + 1, selection: { kind: 'selected', device: next } }))
 })
