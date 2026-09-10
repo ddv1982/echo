@@ -10,7 +10,7 @@ use super::lease::{
 use super::pipeline::{
     audio_fixture_path, capture_from, capture_with_started_at, dictionary_for_transcription,
     history_append_warning, new_history_id, play_fixture_capture, play_fixture_capture_with_player,
-    CaptureFailure, PublishedSession, StopWhen,
+    transcription_failure, CaptureFailure, PublishedSession, StopWhen,
 };
 use super::upgrade::{attempt_upgrade_takeover_in, reserve_upgrade_takeover_in};
 use super::*;
@@ -1236,4 +1236,27 @@ fn missing_capture_fixture_preserves_loading_diagnostic() {
     .unwrap_err();
     assert_eq!(failure.reason, FailReason::EngineError);
     assert_eq!(failure.detail.as_deref(), Some(expected.as_str()));
+}
+
+#[test]
+fn requested_cancellation_uses_one_detail_and_preserves_unrelated_engine_errors() {
+    let error = crate::transcribe::TranscriptionError::Engine(echo_core::EngineError::Missing);
+    assert_eq!(
+        transcription_failure(&error, true, &["History could not be loaded".to_string()]),
+        (
+            FailReason::EngineError,
+            "Transcription canceled".to_string()
+        )
+    );
+    assert_eq!(
+        transcription_failure(&error, false, &[]),
+        (FailReason::EngineMissing, error.to_string())
+    );
+    assert_eq!(
+        transcription_failure(&error, false, &["History warning".to_string()]),
+        (
+            FailReason::EngineMissing,
+            format!("History warning {error}")
+        )
+    );
 }

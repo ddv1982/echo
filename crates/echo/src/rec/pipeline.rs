@@ -312,16 +312,10 @@ pub(super) fn run_record_with_limit(
         Ok(transcript) => transcript,
         Err(err) => {
             hud.set_state(crate::ui::hud::HudState::Failed);
-            let (reason, detail) = match &err {
-                crate::transcribe::TranscriptionError::Engine(echo_core::EngineError::Missing) => {
-                    (FailReason::EngineMissing, None)
-                }
-                _ => (FailReason::EngineError, None),
-            };
-            let message = err.to_string();
-            let detail = detail.or(Some(message.as_str()));
-            let visible_detail = joined_details(&persistence_warnings, detail);
-            if let Err(err) = published.fail(reason, None, visible_detail.as_deref(), None) {
+            let (reason, message) =
+                transcription_failure(&err, published.cancel_requested(), &persistence_warnings);
+            let detail = Some(message.as_str());
+            if let Err(err) = published.fail(reason, None, detail, None) {
                 report_publication_failure(&err);
             }
             crate::notify::notify_session_failure(reason, detail);
@@ -416,6 +410,28 @@ pub(super) fn run_record_with_limit(
         return 1;
     }
     0
+}
+
+pub(super) fn transcription_failure(
+    error: &crate::transcribe::TranscriptionError,
+    canceled: bool,
+    warnings: &[String],
+) -> (FailReason, String) {
+    if canceled {
+        return (
+            FailReason::EngineError,
+            "Transcription canceled".to_string(),
+        );
+    }
+    let reason = match error {
+        crate::transcribe::TranscriptionError::Engine(echo_core::EngineError::Missing) => {
+            FailReason::EngineMissing
+        }
+        _ => FailReason::EngineError,
+    };
+    let mut details = warnings.to_vec();
+    details.push(error.to_string());
+    (reason, details.join(" "))
 }
 
 pub(super) fn capture_with_started_at<T, E>(
