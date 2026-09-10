@@ -332,7 +332,7 @@ export function createPreviewDesktopApi(): PreviewDesktopApi {
         ...previewStatus,
         phase: 'Failed',
         recordingRevision: previewStatus.recordingRevision + 2,
-        lastError: 'Transcription cancelled.',
+        lastError: 'Transcription canceled',
       }
     }, 0)
     return Promise.resolve(ack)

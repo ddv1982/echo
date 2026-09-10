@@ -245,6 +245,8 @@ describe('Echo desktop shell', () => {
           status={richPreviewStatus()}
           history={history}
           recordingSeconds={0}
+          cancellationPending={false}
+          onCancelTranscription={vi.fn()}
           recordingRequestPending={false}
           onToggleRecording={async () => undefined}
           onOpenSettings={vi.fn()}
