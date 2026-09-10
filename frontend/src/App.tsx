@@ -39,6 +39,8 @@ function App() {
     recordingRequestPending,
     refreshStatus,
     toggleRecording,
+    cancellationPending,
+    cancelTranscription,
     quitApp,
     addDictionaryEntry,
     addDictionaryEntriesBatch,
@@ -117,6 +119,8 @@ function App() {
               recordingSeconds={recordingSeconds}
               recordingRequestPending={recordingRequestPending}
               onToggleRecording={toggleRecording}
+              cancellationPending={cancellationPending}
+              onCancelTranscription={cancelTranscription}
               onOpenSettings={() => setView('settings')}
             />
           ) : null}

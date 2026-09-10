@@ -10,10 +10,11 @@ use super::lease::{
 use super::pipeline::{
     audio_fixture_path, capture_from, capture_with_started_at, dictionary_for_transcription,
     history_append_warning, new_history_id, play_fixture_capture, play_fixture_capture_with_player,
-    PublishedSession, StopWhen,
+    transcription_failure, CaptureFailure, PublishedSession, StopWhen,
 };
 use super::upgrade::{attempt_upgrade_takeover_in, reserve_upgrade_takeover_in};
 use super::*;
+use echo_core::FailReason;
 use std::cell::Cell;
 use std::fs;
 use std::io::ErrorKind;
@@ -85,7 +86,7 @@ fn injecting_is_published_before_the_injection_effect_runs() {
 
     entered_receive.recv().unwrap();
     let status = status::read_from(&status_path);
-    assert_eq!(status.state, "Injecting");
+    assert_eq!(status.state, status::PersistedPhase::Injecting);
     assert_eq!(status.session_id.as_deref(), Some(session_id.as_str()));
     assert_eq!(status.revision, 6);
     assert_eq!(status.revision % 2, 0);
@@ -128,13 +129,19 @@ fn injecting_publication_failure_prevents_the_injection_effect_and_releases_the_
     );
     fs::remove_dir(&status_path).unwrap();
     fs::rename(&status_backup, &status_path).unwrap();
-    assert_eq!(status::read_from(&status_path).state, "Transcribing");
+    assert_eq!(
+        status::read_from(&status_path).state,
+        status::PersistedPhase::Transcribing
+    );
     assert!(dir.join("recording.lock").exists());
 
     drop(published);
     assert!(!dir.join("recording.lock").exists());
     assert!(!session_matches_at(&dir, &session_id));
-    assert_eq!(status::read_from(&status_path).state, "Idle");
+    assert_eq!(
+        status::read_from(&status_path).state,
+        status::PersistedPhase::Idle
+    );
     let replacement = ToggleSession::try_start_in(&dir).unwrap().unwrap();
     let replacement_id = replacement.token.clone();
     let mut replacement =
@@ -143,7 +150,7 @@ fn injecting_publication_failure_prevents_the_injection_effect_and_releases_the_
         .start_recording(RecordingLimit::DEFAULT)
         .unwrap();
     let status = status::read_from(&status_path);
-    assert_eq!(status.state, "Recording");
+    assert_eq!(status.state, status::PersistedPhase::Recording);
     assert_eq!(status.session_id.as_deref(), Some(replacement_id.as_str()));
     assert_ne!(replacement_id, session_id);
     let _ = fs::remove_dir_all(dir);
@@ -236,7 +243,7 @@ fn empty_transcription_returns_to_idle_without_injecting() {
         .unwrap();
 
     let status = status::read_from(&status_path);
-    assert_eq!(status.state, "Idle");
+    assert_eq!(status.state, status::PersistedPhase::Idle);
     assert_eq!(status.last.as_deref(), None);
     let raw = fs::read_to_string(&status_path).unwrap();
     assert!(!raw.contains("state=Injecting"), "{raw}");
@@ -687,7 +694,7 @@ fn capture_toggle_observed_before_transition_never_becomes_cancel() {
         scoped_intents: true,
     };
     let recording = status::Status {
-        state: "Recording".to_string(),
+        state: status::PersistedPhase::Recording,
         last: None,
         last_history_id: None,
         error: None,
@@ -714,14 +721,14 @@ fn capture_toggle_observed_before_transition_never_becomes_cancel() {
     .unwrap();
     assert!(!cancel);
     let transcribing = status::Status {
-        state: "Transcribing".to_string(),
+        state: status::PersistedPhase::Transcribing,
         ..recording.clone()
     };
     let (_, cancel) =
         decide_toggle_intent(|| transcribing, |_| Ok(ToggleAction::Stop(owner.clone()))).unwrap();
     assert!(cancel);
     let transcribing_replacement = status::Status {
-        state: "Transcribing".to_string(),
+        state: status::PersistedPhase::Transcribing,
         session_id: Some("capture-b".to_string()),
         ..recording
     };
@@ -743,7 +750,7 @@ fn stale_observation_does_not_stop_a_replacement_session() {
     let _ = fs::remove_dir_all(&dir);
     let session = ToggleSession::try_start_in(&dir).unwrap().unwrap();
     let observed = status::Status {
-        state: "Recording".to_string(),
+        state: status::PersistedPhase::Recording,
         last: None,
         last_history_id: None,
         error: None,
@@ -819,7 +826,7 @@ fn matching_observation_still_stops_and_cancels() {
     let token = session.token.clone();
     let owner = lock_owner(&dir.join("recording.lock")).unwrap();
     let observed = status::Status {
-        state: "Transcribing".to_string(),
+        state: status::PersistedPhase::Transcribing,
         last: None,
         last_history_id: None,
         error: None,
@@ -1009,7 +1016,7 @@ fn recording_session_serializes_with_toggle_recording() {
 fn cancel_ack_is_withheld_after_injecting_is_published() {
     let session_id = "session-a";
     let transcribing = status::Status {
-        state: "Transcribing".to_string(),
+        state: status::PersistedPhase::Transcribing,
         last: None,
         last_history_id: None,
         error: None,
@@ -1018,7 +1025,7 @@ fn cancel_ack_is_withheld_after_injecting_is_published() {
         revision: 4,
     };
     let injecting = status::Status {
-        state: "Injecting".to_string(),
+        state: status::PersistedPhase::Injecting,
         revision: 5,
         ..transcribing.clone()
     };
@@ -1050,7 +1057,7 @@ fn cancel_ack_is_withheld_after_injecting_is_published() {
 fn matching_cancel_ack_survives_a_stable_transcribing_phase() {
     let session_id = "session-a";
     let transcribing = status::Status {
-        state: "Transcribing".to_string(),
+        state: status::PersistedPhase::Transcribing,
         last: None,
         last_history_id: None,
         error: None,
@@ -1119,7 +1126,7 @@ fn acknowledged_cancel_prevents_injection() {
     release_send.send(()).unwrap();
     worker.join().unwrap();
     let terminal = status::read_from(&status_path);
-    assert_eq!(terminal.state, "Failed speech engine failed");
+    assert_eq!(terminal.state.to_string(), "Failed speech engine failed");
     assert_eq!(terminal.error.as_deref(), Some("Transcription canceled"));
     assert!(terminal.revision > ack.revision);
     assert!(ToggleSession::try_start_in(dir.path()).unwrap().is_some());
@@ -1184,5 +1191,81 @@ fn cancel_write_overlapping_injection_commit_is_not_acknowledged() {
     assert!(injected.get());
     assert!(published.cancel_requested());
     published.complete_inject(None, None, None).unwrap();
-    assert_eq!(status::read_from(&status_path).state, "Idle");
+    assert_eq!(
+        status::read_from(&status_path).state,
+        status::PersistedPhase::Idle
+    );
+}
+
+#[test]
+fn capture_failure_preserves_category_and_audio_detail() {
+    for (error, reason, detail) in [
+        (
+            audio::AudioError::NoDevice,
+            FailReason::NoInputDevice,
+            "no input device",
+        ),
+        (
+            audio::AudioError::Stream("selected microphone disconnected".into()),
+            FailReason::CaptureFailed,
+            "selected microphone disconnected",
+        ),
+        (
+            audio::AudioError::Permission("Microphone access denied".into()),
+            FailReason::CaptureFailed,
+            "Microphone access denied",
+        ),
+    ] {
+        let failure = CaptureFailure::from_audio(error);
+        assert_eq!(failure.reason, reason);
+        assert_eq!(failure.detail.as_deref(), Some(detail));
+        let body = crate::status::render(
+            SessionState::Failed {
+                reason: failure.reason,
+            },
+            None,
+            failure.detail.as_deref(),
+            None,
+        );
+        assert!(body.contains(&format!("error={detail}\n")));
+    }
+}
+
+#[test]
+fn missing_capture_fixture_preserves_loading_diagnostic() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("missing.wav");
+    let expected = audio::load_wav(&path).unwrap_err().to_string();
+    let failure = capture_from(
+        Some(path),
+        &StopWhen::Timer(None),
+        RecordingLimit::DEFAULT,
+        &audio::LevelMeter::new(),
+    )
+    .unwrap_err();
+    assert_eq!(failure.reason, FailReason::EngineError);
+    assert_eq!(failure.detail.as_deref(), Some(expected.as_str()));
+}
+
+#[test]
+fn requested_cancellation_uses_one_detail_and_preserves_unrelated_engine_errors() {
+    let error = crate::transcribe::TranscriptionError::Engine(echo_core::EngineError::Missing);
+    assert_eq!(
+        transcription_failure(&error, true, &["History could not be loaded".to_string()]),
+        (
+            FailReason::EngineError,
+            "Transcription canceled".to_string()
+        )
+    );
+    assert_eq!(
+        transcription_failure(&error, false, &[]),
+        (FailReason::EngineMissing, error.to_string())
+    );
+    assert_eq!(
+        transcription_failure(&error, false, &["History warning".to_string()]),
+        (
+            FailReason::EngineMissing,
+            format!("History warning {error}")
+        )
+    );
 }

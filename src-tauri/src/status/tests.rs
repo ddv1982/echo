@@ -624,7 +624,7 @@ fn recording_policy_projects_defaults_presets_and_compatibility_values() {
 #[test]
 fn active_recording_limit_snapshot_wins_over_current_settings() {
     let active = echo::status::Status {
-        state: "Recording".to_string(),
+        state: PersistedPhase::Recording,
         last: None,
         last_history_id: None,
         error: None,
@@ -648,7 +648,7 @@ fn active_recording_limit_snapshot_wins_over_current_settings() {
     );
 
     let idle = echo::status::Status {
-        state: "Idle".to_string(),
+        state: PersistedPhase::Idle,
         ..active
     };
     assert_eq!(
@@ -826,4 +826,20 @@ fn an_accelerated_run_that_kept_the_gpu_reports_no_skip() {
         fallback_reason: None,
     });
     assert_eq!(project_acceleration_skip(&whisper), None);
+}
+
+#[test]
+fn persisted_phase_projection_preserves_unknown_and_legacy_failure_behavior() {
+    for (raw, expected) in [
+        ("Idle", AppPhase::Idle),
+        ("Recording", AppPhase::Recording),
+        ("Transcribing", AppPhase::Transcribing),
+        ("Injecting", AppPhase::Injecting),
+        ("Failed speech engine failed", AppPhase::Failed),
+        ("Failed legacy detail", AppPhase::Failed),
+        ("FuturePhase", AppPhase::Failed),
+        ("", AppPhase::Failed),
+    ] {
+        assert_eq!(app_phase(&PersistedPhase::parse(raw)), expected);
+    }
 }

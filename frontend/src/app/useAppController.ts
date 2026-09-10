@@ -4,7 +4,7 @@ import { useDictionary } from '../dictionary/useDictionary'
 import type { AppStatus, RecordingSnapshot } from '../generated/ipc'
 import { useHistory } from '../history/useHistory'
 import { useSerialPoll } from '../hooks/useSerialPoll'
-import { getAppStatus, quitApp, startCapture, stopCapture } from '../tauri'
+import { cancelTranscription, getAppStatus, quitApp, startCapture, stopCapture } from '../tauri'
 import type { ThemeMode, View } from '../types'
 import { messageFrom } from './formatting'
 import {
@@ -59,6 +59,8 @@ export function useAppController() {
   const recordingObservation = useRef(createRecordingObservationState(initialStatus))
   const previousHistoryId = useRef<string | null>(null)
   const toggleInFlight = useRef(false)
+  const cancelInFlight = useRef<string | null>(null)
+  const [cancelSessionId, setCancelSessionId] = useState<string | null>(null)
   const [recordingRequestPending, setRecordingRequestPending] = useState(false)
   const recordingSeconds = useElapsedSeconds(recordingStartedAt)
   const reportError = useCallback((reason: unknown) => setError(messageFrom(reason)), [])
@@ -83,6 +85,10 @@ export function useAppController() {
     recordingObservation.current = accepted
     const next = accepted.snapshot
     setStatus(next)
+    if (next.phase !== 'Transcribing' || next.recordingSessionId !== cancelInFlight.current) {
+      cancelInFlight.current = null
+      setCancelSessionId(null)
+    }
     const observedAt = Date.now()
     setRecordingStartedAt((current) =>
       next.phase === 'Recording'
@@ -158,6 +164,26 @@ export function useAppController() {
     }
   }, [recordingRequestPending, refreshStatus, reportError, setObservedStatus])
 
+  const cancel = useCallback(async () => {
+    const { phase, recordingSessionId } = recordingObservation.current.snapshot
+    if (phase !== 'Transcribing' || recordingSessionId == null || cancelInFlight.current === recordingSessionId) return
+    cancelInFlight.current = recordingSessionId
+    setCancelSessionId(recordingSessionId)
+    recordingObservation.current = advanceRecordingObservationEpoch(recordingObservation.current)
+    try {
+      const snapshot = await cancelTranscription(recordingSessionId)
+      recordingObservation.current = advanceRecordingObservationEpoch(recordingObservation.current)
+      setObservedStatus({ kind: 'acknowledgement', snapshot, requestedFrom: recordingSessionId })
+      await refreshStatus()
+    } catch (reason) {
+      if (recordingObservation.current.snapshot.recordingSessionId === recordingSessionId) reportError(reason)
+      if (cancelInFlight.current === recordingSessionId) {
+        cancelInFlight.current = null
+        setCancelSessionId(null)
+      }
+    }
+  }, [refreshStatus, reportError, setObservedStatus])
+
   const quit = useCallback(async () => {
     try {
       await quitApp()
@@ -182,6 +208,8 @@ export function useAppController() {
     recordingRequestPending,
     refreshStatus,
     toggleRecording: toggle,
+    cancelTranscription: cancel,
+    cancellationPending: cancelSessionId != null && cancelSessionId === status.recordingSessionId,
     quitApp: quit,
     addDictionaryEntry,
     addDictionaryEntriesBatch,

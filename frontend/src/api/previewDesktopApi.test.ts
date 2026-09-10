@@ -279,7 +279,7 @@ describe('preview desktop adapter contract', () => {
       await vi.advanceTimersByTimeAsync(1)
       const failed = await preview.getAppStatus()
       expect(failed.phase).toBe('Failed')
-      expect(failed.lastError).toBe('Transcription cancelled.')
+      expect(failed.lastError).toBe('Transcription canceled')
     } finally {
       vi.useRealTimers()
     }

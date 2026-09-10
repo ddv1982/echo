@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { messageFrom } from '../app/formatting'
 import { useAsyncSubscription } from '../hooks/useAsyncSubscription'
 import { useSerialPoll } from '../hooks/useSerialPoll'
+import { useMicrophoneController } from '../microphones/useMicrophoneController'
 import { newestSnapshot } from './snapshotFreshness'
 import { applySetupProgress, classifySetupEvent } from '../setup'
 import {
@@ -14,15 +15,10 @@ import {
   repairLegacyShortcut,
   repairManaged,
   retryShortcut,
-  setMicrophone,
   setSettings,
-  testInputDevice,
-  testMicrophoneFallback,
 } from '../tauri'
 import type {
   GpuDevice,
-  MicrophoneSnapshot,
-  MicrophoneTestResult,
   SettingsChange,
   SettingsSnapshot,
   SetupEvent,
@@ -50,18 +46,18 @@ export function useSettingsController({
   }))
   const pendingSettingsWrites = useRef(0)
   const active = useRef(true)
-  const [microphones, setMicrophones] = useState<MicrophoneSnapshot | null>(null)
-  const [micTest, setMicTest] = useState<MicrophoneTestResult | null>(null)
-  const [testingMic, setTestingMic] = useState(false)
   const [repairingLegacyShortcut, setRepairingLegacyShortcut] = useState(false)
   const [settingsWritePending, setSettingsWritePending] = useState(false)
   const [gpuDevices, setGpuDevices] = useState<GpuDevice[]>([])
-  const micTestVersion = useRef(0)
-  const micTestRun = useRef(0)
 
   const reportSettingsError = useCallback((reason: unknown) => {
     if (active.current) onError(messageFrom(reason))
   }, [onError])
+
+  const {
+    microphones, micTest, testingMic, applySnapshot: applyMicrophoneSnapshot,
+    selectMicrophone: selectInput, testMicrophone: testInput,
+  } = useMicrophoneController(reportSettingsError)
 
   const loadSettingsSnapshot = useCallback(async (): Promise<SettingsSnapshot | null> => {
     const next = await getSettings()
@@ -89,7 +85,6 @@ export function useSettingsController({
     active.current = true
     return () => {
       active.current = false
-      micTestVersion.current += 1
     }
   }, [])
 
@@ -137,10 +132,6 @@ export function useSettingsController({
       active = false
     }
   }, [wantsGpu, gpuRuntimeReady, reportSettingsError])
-
-  const applyMicrophoneSnapshot = useCallback((next: MicrophoneSnapshot) => {
-    if (active.current) setMicrophones((current) => newestSnapshot(current, next))
-  }, [])
 
   const refreshMicrophones = useSerialPoll({
     request: getMicrophones,
@@ -284,37 +275,12 @@ export function useSettingsController({
   }, [reportSettingsError])
 
   const selectMicrophone = useCallback((id: string | null) => {
-    micTestVersion.current += 1
-    setMicTest(null)
-    void setMicrophone(id)
-      .then((next) => {
-        if (!active.current) return null
-        applyMicrophoneSnapshot(next)
-        return onStatusChange()
-      })
-      .catch(reportSettingsError)
-  }, [applyMicrophoneSnapshot, onStatusChange, reportSettingsError])
+    selectInput(id, onStatusChange)
+  }, [selectInput, onStatusChange])
 
   const testMicrophone = useCallback((id: string | null, fallback: boolean) => {
-    const version = ++micTestVersion.current
-    micTestRun.current = version
-    setTestingMic(true)
-    const run = fallback ? testMicrophoneFallback() : testInputDevice(id)
-    void run
-      .then((result) => {
-        if (micTestVersion.current !== version) return
-        setMicTest(result)
-        return result.kind === 'failed' ? refreshMicrophones() : undefined
-      })
-      .catch((reason: unknown) => {
-        if (micTestVersion.current !== version) return
-        reportSettingsError(reason)
-        return refreshMicrophones()
-      })
-      .finally(() => {
-        if (active.current && micTestRun.current === version) setTestingMic(false)
-      })
-  }, [refreshMicrophones, reportSettingsError])
+    testInput(id, fallback, (failed) => failed ? refreshMicrophones() : Promise.resolve())
+  }, [refreshMicrophones, testInput])
 
   const parakeetRuns = nextRun?.kind === 'ready' && nextRun.engine.kind === 'parakeet'
 

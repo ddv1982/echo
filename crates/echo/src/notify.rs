@@ -24,9 +24,13 @@ pub fn failure_message(reason: FailReason, detail: Option<&str>) -> String {
         FailReason::NoInputDevice => "Echo couldn't record: no microphone input device. \
              Open Echo → Settings to pick one."
             .to_string(),
-        FailReason::CaptureFailed => "Echo couldn't record: microphone capture failed. \
-             Open Echo → Settings and test the microphone."
-            .to_string(),
+        FailReason::CaptureFailed => {
+            let detail = detail
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .unwrap_or("microphone capture failed");
+            format!("Echo couldn't record: {detail}. Open Echo → Settings and test the microphone.")
+        }
         FailReason::EngineMissing => {
             "Echo couldn't transcribe: no speech engine or model installed. \
              Open Echo → Settings to download one."
@@ -133,6 +137,32 @@ mod tests {
         }
         let detailed = failure_message(FailReason::EngineError, Some("ggml_init failed"));
         assert!(detailed.contains("ggml_init failed"));
+    }
+
+    #[test]
+    fn capture_failures_keep_diagnostics_and_the_microphone_test_action() {
+        for detail in [
+            "Microphone access denied",
+            "The selected microphone is busy",
+            "The selected microphone disconnected",
+        ] {
+            assert_eq!(
+                failure_message(FailReason::CaptureFailed, Some(&format!("  {detail}  "))),
+                format!(
+                    "Echo couldn't record: {detail}. Open Echo → Settings and test the microphone."
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn capture_failures_without_details_keep_the_existing_fallback() {
+        for detail in [None, Some(""), Some(" \n\t ")] {
+            assert_eq!(
+                failure_message(FailReason::CaptureFailed, detail),
+                "Echo couldn't record: microphone capture failed. Open Echo → Settings and test the microphone."
+            );
+        }
     }
 
     #[test]

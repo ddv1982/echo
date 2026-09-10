@@ -2,14 +2,81 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use echo_core::{status_path, write_atomic_private, PrivateDir, RecordingLimit, SessionState};
+use echo_core::{
+    status_path, write_atomic_private, FailReason, PrivateDir, RecordingLimit, SessionState,
+};
 
 use crate::process_identity::{self, ProcessIdentity};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PersistedPhase {
+    Idle,
+    Recording,
+    Transcribing,
+    Injecting,
+    Failed {
+        reason: Option<FailReason>,
+        raw: String,
+    },
+    Unknown(String),
+}
+
+impl PersistedPhase {
+    #[must_use]
+    pub fn parse(raw: &str) -> Self {
+        match raw {
+            "Idle" => Self::Idle,
+            "Recording" => Self::Recording,
+            "Transcribing" => Self::Transcribing,
+            "Injecting" => Self::Injecting,
+            raw if raw.starts_with("Failed") => {
+                let reason = raw.strip_prefix("Failed ").and_then(|detail| {
+                    [
+                        FailReason::NoInputDevice,
+                        FailReason::CaptureFailed,
+                        FailReason::InjectPermission,
+                        FailReason::EngineMissing,
+                        FailReason::NoFocus,
+                        FailReason::EngineError,
+                        FailReason::InjectUnconfirmed,
+                    ]
+                    .into_iter()
+                    .find(|reason| reason.as_str() == detail)
+                });
+                Self::Failed {
+                    reason,
+                    raw: raw.to_string(),
+                }
+            }
+            raw => Self::Unknown(raw.to_string()),
+        }
+    }
+
+    #[must_use]
+    pub fn requires_live_writer(&self) -> bool {
+        match self {
+            Self::Idle | Self::Failed { .. } => false,
+            Self::Recording | Self::Transcribing | Self::Injecting | Self::Unknown(_) => true,
+        }
+    }
+}
+
+impl std::fmt::Display for PersistedPhase {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Idle => "Idle",
+            Self::Recording => "Recording",
+            Self::Transcribing => "Transcribing",
+            Self::Injecting => "Injecting",
+            Self::Failed { raw, .. } | Self::Unknown(raw) => raw,
+        })
+    }
+}
 
 /// Status file contents after staleness handling.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Status {
-    pub state: String,
+    pub state: PersistedPhase,
     pub last: Option<String>,
     pub last_history_id: Option<String>,
     /// Actionable failure detail from the session, including engine and local
@@ -24,7 +91,7 @@ impl Status {
     #[must_use]
     pub fn idle() -> Self {
         Self {
-            state: "Idle".to_string(),
+            state: PersistedPhase::Idle,
             last: None,
             last_history_id: None,
             error: None,
@@ -193,15 +260,14 @@ pub(crate) fn read_from(path: &Path) -> Status {
         .and_then(|directory| directory.read_to_string(path.file_name().unwrap_or_default()))
         .map(|raw| parse(&raw, process_identity::alive))
         .unwrap_or_else(|_| Status::idle());
-    if status.state != "Idle"
-        && !status.state.starts_with("Failed")
+    if status.state.requires_live_writer()
         && status
             .session_id
             .as_deref()
             .is_some_and(|id| !crate::rec::session_matches_at(parent, id))
     {
         return Status {
-            state: "Idle".to_string(),
+            state: PersistedPhase::Idle,
             session_id: None,
             revision: 0,
             recording_limit: None,
@@ -270,7 +336,7 @@ pub fn shortcut_recording_token(activation: &str) -> Option<&str> {
 
 fn parse(raw: &str, alive: impl Fn(ProcessIdentity) -> bool) -> Status {
     let field = |key: &str| raw.lines().find_map(|line| line.strip_prefix(key));
-    let state = field("state=").unwrap_or("Idle").to_string();
+    let state = PersistedPhase::parse(field("state=").unwrap_or("Idle"));
     let last = field("last=")
         .filter(|text| !text.trim().is_empty())
         .map(str::to_string);
@@ -280,7 +346,7 @@ fn parse(raw: &str, alive: impl Fn(ProcessIdentity) -> bool) -> Status {
     let last_history_id = field("last_history_id=")
         .filter(|id| !id.trim().is_empty())
         .map(str::to_string);
-    let recording_limit = (state == "Recording")
+    let recording_limit = (state == PersistedPhase::Recording)
         .then(|| {
             field("recording_limit_seconds=")
                 .and_then(|value| value.parse::<u32>().ok())
@@ -294,7 +360,7 @@ fn parse(raw: &str, alive: impl Fn(ProcessIdentity) -> bool) -> Status {
     let revision = field("session_revision=")
         .and_then(|value| value.parse().ok())
         .unwrap_or(0);
-    let active = state != "Idle" && !state.starts_with("Failed");
+    let active = state.requires_live_writer();
     let writer = field("pid=")
         .and_then(|pid| pid.parse().ok())
         .zip(field("pid_start_ticks=").and_then(|ticks| ticks.parse().ok()))
@@ -304,7 +370,7 @@ fn parse(raw: &str, alive: impl Fn(ProcessIdentity) -> bool) -> Status {
         });
     if active && !writer.is_some_and(&alive) {
         return Status {
-            state: "Idle".to_string(),
+            state: PersistedPhase::Idle,
             last,
             last_history_id,
             error,
@@ -330,6 +396,92 @@ mod tests {
     use std::fs;
 
     #[test]
+    fn persisted_phases_keep_legacy_and_unknown_bytes_with_the_existing_owner_policy() {
+        for raw in [
+            "Idle",
+            "Recording",
+            "Transcribing",
+            "Injecting",
+            "Failed",
+            "Failed custom legacy detail",
+            "Failedness",
+            "Failed  speech engine failed",
+            "FuturePhase",
+            " recording ",
+            "",
+            "Recording ",
+        ] {
+            let phase = PersistedPhase::parse(raw);
+            assert_eq!(phase.to_string(), raw);
+            let requires_owner = raw != "Idle" && !raw.starts_with("Failed");
+            assert_eq!(phase.requires_live_writer(), requires_owner);
+            let body = format!("state={raw}\npid=42\npid_start_ticks=7\nlast=kept transcript\nerror=kept diagnostic\n");
+            assert_eq!(parse(&body, |_| true).state, phase);
+            let dead = parse(&body, |_| false);
+            assert_eq!(
+                dead.state,
+                if requires_owner {
+                    PersistedPhase::Idle
+                } else {
+                    phase
+                }
+            );
+            assert_eq!(dead.last.as_deref(), Some("kept transcript"));
+            assert_eq!(dead.error.as_deref(), Some("kept diagnostic"));
+        }
+        assert_eq!(parse("pid=42\n", |_| true).state, PersistedPhase::Idle);
+    }
+
+    #[test]
+    fn persisted_failure_categories_are_typed_without_losing_historical_text() {
+        for reason in [
+            FailReason::NoInputDevice,
+            FailReason::CaptureFailed,
+            FailReason::InjectPermission,
+            FailReason::EngineMissing,
+            FailReason::NoFocus,
+            FailReason::EngineError,
+            FailReason::InjectUnconfirmed,
+        ] {
+            let raw = format!("Failed {}", reason.as_str());
+            assert_eq!(
+                PersistedPhase::parse(&raw),
+                PersistedPhase::Failed {
+                    reason: Some(reason),
+                    raw
+                }
+            );
+        }
+        for raw in [
+            "Failed",
+            "Failed custom legacy detail",
+            "Failedness",
+            "Failed  speech engine failed",
+        ] {
+            assert_eq!(
+                PersistedPhase::parse(raw),
+                PersistedPhase::Failed {
+                    reason: None,
+                    raw: raw.to_string()
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_scoped_status_still_requires_a_matching_lease() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("status");
+        let mut body = render_writer("FuturePhase");
+        body.push_str("session_id=missing-owner\nsession_revision=8\n");
+        fs::write(&path, body).unwrap();
+        let observed = read_from(&path);
+        assert_eq!(observed.state, PersistedPhase::Idle);
+        assert_eq!(observed.session_id, None);
+        assert_eq!(observed.revision, 0);
+    }
+
+    #[test]
     fn scoped_active_status_requires_the_same_live_lease() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("status");
@@ -347,17 +499,17 @@ mod tests {
         };
         write_recording_for_session_at(&path, "session-a", 2, RecordingLimit::DEFAULT).unwrap();
         owner("session-a", process.pid);
-        assert_eq!(read_from(&path).state, "Recording");
+        assert_eq!(read_from(&path).state, PersistedPhase::Recording);
 
         owner("session-b", process.pid);
         let replaced = read_from(&path);
-        assert_eq!(replaced.state, "Idle");
+        assert_eq!(replaced.state, PersistedPhase::Idle);
         assert_eq!(replaced.session_id, None);
 
         owner("session-a", u32::MAX);
-        assert_eq!(read_from(&path).state, "Idle");
+        assert_eq!(read_from(&path).state, PersistedPhase::Idle);
         fs::remove_file(lock).unwrap();
-        assert_eq!(read_from(&path).state, "Idle");
+        assert_eq!(read_from(&path).state, PersistedPhase::Idle);
 
         write_status_for_session_at(
             &path,
@@ -371,7 +523,7 @@ mod tests {
         )
         .unwrap();
         let failed = read_from(&path);
-        assert!(failed.state.starts_with("Failed"));
+        assert!(matches!(failed.state, PersistedPhase::Failed { .. }));
         assert_eq!(failed.last.as_deref(), Some("saved text"));
     }
 
@@ -381,14 +533,14 @@ mod tests {
         let path = dir.path().join("status");
         fs::write(&path, render_recording(RecordingLimit::DEFAULT)).unwrap();
         let observed = read_from(&path);
-        assert_eq!(observed.state, "Recording");
+        assert_eq!(observed.state, PersistedPhase::Recording);
         assert_eq!(observed.session_id, None);
     }
 
     #[test]
     fn live_recording_is_reported() {
         let status = parse("state=Recording\npid=42\npid_start_ticks=7\n", |_| true);
-        assert_eq!(status.state, "Recording");
+        assert_eq!(status.state, PersistedPhase::Recording);
     }
 
     #[test]
@@ -396,7 +548,7 @@ mod tests {
         let limit = echo_core::RecordingLimit::MAX;
         let body = render_recording(limit);
         let status = parse(&body, |_| true);
-        assert_eq!(status.state, "Recording");
+        assert_eq!(status.state, PersistedPhase::Recording);
         assert_eq!(status.recording_limit, Some(limit));
         assert!(body.contains("recording_limit_seconds=600\n"));
     }
@@ -405,7 +557,7 @@ mod tests {
     fn owner_status_keeps_the_session_identity_with_its_phase() {
         let body = render_for_session("session-a", 7, SessionState::Transcribing, None, None, None);
         let status = parse(&body, |_| true);
-        assert_eq!(status.state, "Transcribing");
+        assert_eq!(status.state, PersistedPhase::Transcribing);
         assert_eq!(status.session_id.as_deref(), Some("session-a"));
         assert_eq!(status.revision, 7);
     }
@@ -413,7 +565,7 @@ mod tests {
     #[test]
     fn old_and_malformed_recording_limits_are_ignored() {
         let old = parse("state=Recording\npid=42\n", |_| true);
-        assert_eq!(old.state, "Idle");
+        assert_eq!(old.state, PersistedPhase::Idle);
         assert_eq!(old.recording_limit, None);
 
         for raw in ["0", "601", "invalid", "4294967295"] {
@@ -433,26 +585,26 @@ mod tests {
             "state=Recording\npid=42\nrecording_limit_seconds=600\n",
             |_| false,
         );
-        assert_eq!(status.state, "Idle");
+        assert_eq!(status.state, PersistedPhase::Idle);
         assert_eq!(status.recording_limit, None);
     }
 
     #[test]
     fn active_state_without_pid_reads_idle() {
         let status = parse("state=Transcribing\n", |_| true);
-        assert_eq!(status.state, "Idle");
+        assert_eq!(status.state, PersistedPhase::Idle);
     }
 
     #[test]
     fn failed_state_persists_without_a_live_writer() {
         let status = parse("state=Failed insert was not confirmed\npid=42\n", |_| false);
-        assert_eq!(status.state, "Failed insert was not confirmed");
+        assert_eq!(status.state.to_string(), "Failed insert was not confirmed");
     }
 
     #[test]
     fn idle_with_last_transcript() {
         let status = parse("state=Idle\npid=42\nlast=hello there\n", |_| false);
-        assert_eq!(status.state, "Idle");
+        assert_eq!(status.state, PersistedPhase::Idle);
         assert_eq!(status.last.as_deref(), Some("hello there"));
     }
 
@@ -465,7 +617,7 @@ mod tests {
             None,
         );
         let status = parse(&body, |_| false);
-        assert_eq!(status.state, "Idle");
+        assert_eq!(status.state, PersistedPhase::Idle);
         assert_eq!(status.last.as_deref(), Some("first line.  second line."));
         // No unparsed stray lines besides state, pid, and last.
         assert_eq!(body.lines().count(), 4);
@@ -482,7 +634,7 @@ mod tests {
             None,
         );
         let status = parse(&body, |_| false);
-        assert_eq!(status.state, "Failed speech engine failed");
+        assert_eq!(status.state.to_string(), "Failed speech engine failed");
         assert_eq!(
             status.error.as_deref(),
             Some("whisper-cli: failed to load model ggml_init failed")
@@ -498,7 +650,7 @@ mod tests {
             Some("history-42"),
         );
         let status = parse(&body, |_| false);
-        assert_eq!(status.state, "Idle");
+        assert_eq!(status.state, PersistedPhase::Idle);
         assert_eq!(status.last.as_deref(), Some("recoverable transcript"));
         assert_eq!(status.last_history_id.as_deref(), Some("history-42"));
         assert_eq!(
@@ -511,7 +663,7 @@ mod tests {
     fn reused_pid_does_not_keep_an_active_status_alive() {
         let raw = "state=Transcribing\npid=42\npid_start_ticks=7\n";
         let status = parse(raw, |writer| writer.start_time_ticks == 8);
-        assert_eq!(status.state, "Idle");
+        assert_eq!(status.state, PersistedPhase::Idle);
     }
 
     #[test]

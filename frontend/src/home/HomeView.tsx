@@ -3,6 +3,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { BarsMotif, SectionHeading } from '../app/chrome'
 import { formatDuration, formatTime, messageFrom } from '../app/formatting'
+import { isCanceledRecording } from '../app/recordingPresentation'
+import { CopyTranscriptButton } from '../history/CopyTranscriptButton'
+import { injectionLabel } from '../history/injectionLabel'
 import { useSerialPoll } from '../hooks/useSerialPoll'
 import { presentShortcut } from '../shortcut'
 import { deriveStats, millisecondsUntilNextLocalDay } from '../stats'
@@ -16,6 +19,8 @@ export function HomeView({
   recordingSeconds,
   recordingRequestPending,
   onToggleRecording,
+  cancellationPending,
+  onCancelTranscription,
   onOpenSettings,
 }: {
   status: AppStatus
@@ -23,11 +28,15 @@ export function HomeView({
   recordingSeconds: number
   recordingRequestPending: boolean
   onToggleRecording: () => Promise<void>
+  cancellationPending: boolean
+  onCancelTranscription: () => Promise<void>
   onOpenSettings: () => void
 }) {
+  const lastHistoryItem = history.find((item) => item.id === status.lastHistoryId)
   const shortcut = presentShortcut(status.shortcut)
   const recording = status.phase === 'Recording'
   const failed = status.phase === 'Failed'
+  const canceled = isCanceledRecording(status)
   const processing = status.phase === 'Transcribing' || status.phase === 'Injecting'
   const stopPending = recording && status.captureStopRequested
   const busy = processing || stopPending || recordingRequestPending
@@ -44,6 +53,8 @@ export function HomeView({
         ? ['Processing', 'Transcribing locally…', `${status.engineName} is turning your recording into text.`]
         : status.phase === 'Injecting'
           ? ['Processing', 'Inserting transcript…', `${status.injectionName} is sending your transcript to the active app.`]
+          : canceled
+            ? ['Canceled', 'Transcription canceled', 'Your recording was canceled before text was inserted.']
           : failed
             ? ['Recording failed', 'Recording did not finish', status.lastError || 'Echo could not finish this recording.']
             : ['Ready', 'Ready when you are', 'Your audio stays on this machine.']
@@ -75,9 +86,14 @@ export function HomeView({
               ) : null}
             </div>
             <h2 aria-live="polite" aria-atomic="true">{title}</h2>
-            <p role={failed ? 'alert' : undefined}>{description}</p>
+            <p role={canceled ? 'status' : failed ? 'alert' : undefined}>{description}</p>
             {recording ? <LevelBars live={status.recordingInProcess} /> : null}
             <div className="record-actions">
+              {status.phase === 'Transcribing' && status.recordingSessionId != null ? (
+                <button type="button" className="secondary-button compact-button" disabled={cancellationPending} onClick={() => void onCancelTranscription()}>
+                  {cancellationPending ? 'Canceling transcription…' : 'Cancel transcription'}
+                </button>
+              ) : null}
               {failed ? (
                 <button type="button" className="primary-button compact-button" disabled={busy} onClick={() => void onToggleRecording()}>
                   Try recording again
@@ -114,7 +130,14 @@ export function HomeView({
         <section className="panel last-transcript">
           <SectionHeading title="Last transcript" subtitle="Most recently transcribed text" />
           {status.lastTranscript ? (
-            <blockquote>{status.lastTranscript}</blockquote>
+            <>
+              <blockquote>{status.lastTranscript}</blockquote>
+              {lastHistoryItem ? <p>{injectionLabel(lastHistoryItem.injection)}</p> : null}
+              <CopyTranscriptButton
+                key={JSON.stringify([status.lastHistoryId, status.recordingSessionId, status.lastTranscript])}
+                text={status.lastTranscript}
+              />
+            </>
           ) : (
             <div className="empty-state compact">
               <BarsMotif />

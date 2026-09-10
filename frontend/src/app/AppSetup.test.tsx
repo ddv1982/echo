@@ -137,6 +137,7 @@ describe('Echo desktop shell', () => {
       hasSuccessfulDictation: false,
       firstRunComplete: false,
     })
+    vi.mocked(getReadiness).mockResolvedValue(await actual.getReadiness())
     const initial = await actual.getMicrophones()
     const selectedDevice = requireFixture(initial.devices.find((device) => !device.isDefault), 'selectable microphone')
     const staleRefresh = deferred<MicrophoneSnapshot>()

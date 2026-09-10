@@ -1,10 +1,11 @@
-import { Check, Clock3, Copy, Search, Trash2 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Clock3, Search, Trash2 } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { BarsMotif, ViewHeader } from '../app/chrome'
-import { formatDateTime, messageFrom } from '../app/formatting'
+import { formatDateTime } from '../app/formatting'
 import { groupByDay, millisecondsUntilNextLocalDay } from '../stats'
-import { copyText } from '../tauri'
+import { CopyTranscriptButton } from './CopyTranscriptButton'
+import { injectionLabel } from './injectionLabel'
 import type { HistoryItem } from '../generated/ipc'
 
 export function HistoryView({
@@ -115,43 +116,6 @@ function TranscriptRow({
   onDelete: (item: HistoryItem) => Promise<void>
   onError: (message: string) => void
 }) {
-  const [copied, setCopied] = useState(false)
-  const mountedRef = useRef(true)
-  const copyVersionRef = useRef(0)
-  const feedbackTimeoutRef = useRef<number | null>(null)
-
-  useEffect(() => {
-    mountedRef.current = true
-    return () => {
-      mountedRef.current = false
-      copyVersionRef.current += 1
-      if (feedbackTimeoutRef.current !== null) {
-        window.clearTimeout(feedbackTimeoutRef.current)
-        feedbackTimeoutRef.current = null
-      }
-    }
-  }, [])
-
-  const copy = async () => {
-    if (!mountedRef.current) return
-    const version = ++copyVersionRef.current
-    if (feedbackTimeoutRef.current !== null) {
-      window.clearTimeout(feedbackTimeoutRef.current)
-      feedbackTimeoutRef.current = null
-    }
-    setCopied(false)
-    try {
-      await copyText(item.text)
-      if (!mountedRef.current || copyVersionRef.current !== version) return
-      setCopied(true)
-      feedbackTimeoutRef.current = window.setTimeout(() => {
-        feedbackTimeoutRef.current = null
-        if (mountedRef.current && copyVersionRef.current === version) setCopied(false)
-      }, 1200)
-    } catch (reason) {
-      if (mountedRef.current && copyVersionRef.current === version) onError(messageFrom(reason))
-    }
-  }
   return (
     <article className="transcript-row">
       <div className="transcript-main">
@@ -160,12 +124,11 @@ function TranscriptRow({
           <span><Clock3 size={13} /> {formatDateTime(item.startedAt)}</span>
           <span>{item.engine}</span>
           <span>{item.inferMs} ms</span>
+          <span>{injectionLabel(item.injection)}</span>
         </div>
       </div>
       <div className="transcript-actions">
-        <button className="icon-button" type="button" onClick={() => void copy()} aria-label={copied ? 'Copied transcript' : 'Copy transcript'}>
-          {copied ? <Check size={17} aria-hidden="true" /> : <Copy size={17} aria-hidden="true" />}
-        </button>
+        <CopyTranscriptButton key={item.text} text={item.text} onError={onError} iconOnly />
         <button
           className="icon-button danger-button"
           type="button"
