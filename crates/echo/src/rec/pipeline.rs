@@ -246,12 +246,13 @@ pub(super) fn run_record_with_limit(
         capture_pcm(&published.stop, limit, &meter)
     }) {
         Ok(capture) => capture,
-        Err(reason) => {
+        Err(failure) => {
             hud.set_state(crate::ui::hud::HudState::Failed);
-            if let Err(err) = published.fail(reason, None, None, None) {
+            if let Err(err) = published.fail(failure.reason, None, failure.detail.as_deref(), None)
+            {
                 report_publication_failure(&err);
             }
-            crate::notify::notify_session_failure(reason, None);
+            crate::notify::notify_session_failure(failure.reason, failure.detail.as_deref());
             return 1;
         }
     };
@@ -493,11 +494,30 @@ pub(super) fn is_silence(text: &str) -> bool {
     text.trim().is_empty()
 }
 
+#[derive(Debug)]
+pub(super) struct CaptureFailure {
+    pub(super) reason: FailReason,
+    pub(super) detail: Option<String>,
+}
+
+impl CaptureFailure {
+    pub(super) fn from_audio(error: audio::AudioError) -> Self {
+        let reason = match &error {
+            audio::AudioError::NoDevice => FailReason::NoInputDevice,
+            _ => FailReason::CaptureFailed,
+        };
+        Self {
+            reason,
+            detail: Some(error.to_string()),
+        }
+    }
+}
+
 pub(super) fn capture_pcm(
     stop: &StopWhen,
     limit: RecordingLimit,
     meter: &audio::LevelMeter,
-) -> Result<audio::CaptureResult, FailReason> {
+) -> Result<audio::CaptureResult, CaptureFailure> {
     capture_from(fixture_path(), stop, limit, meter)
 }
 
@@ -506,16 +526,21 @@ pub(super) fn capture_from(
     stop: &StopWhen,
     limit: RecordingLimit,
     meter: &audio::LevelMeter,
-) -> Result<audio::CaptureResult, FailReason> {
+) -> Result<audio::CaptureResult, CaptureFailure> {
     if let Some(path) = fixture {
-        let capture = audio::load_wav(&path).map_err(|_| FailReason::EngineError)?;
-        return play_fixture_capture(capture, stop, limit, meter);
+        let capture = audio::load_wav(&path).map_err(|error| CaptureFailure {
+            reason: FailReason::EngineError,
+            detail: Some(error.to_string()),
+        })?;
+        return play_fixture_capture(capture, stop, limit, meter).map_err(|reason| {
+            CaptureFailure {
+                reason,
+                detail: None,
+            }
+        });
     }
-    let capture = AudioCapture::open_default().map_err(|err| match err {
-        audio::AudioError::NoDevice => FailReason::NoInputDevice,
-        _ => FailReason::CaptureFailed,
-    })?;
-    record_device(&capture, stop, limit, meter).map_err(|_| FailReason::CaptureFailed)
+    let capture = AudioCapture::open_default().map_err(CaptureFailure::from_audio)?;
+    record_device(&capture, stop, limit, meter).map_err(CaptureFailure::from_audio)
 }
 
 pub(super) fn play_fixture_capture(

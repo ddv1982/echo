@@ -10,10 +10,11 @@ use super::lease::{
 use super::pipeline::{
     audio_fixture_path, capture_from, capture_with_started_at, dictionary_for_transcription,
     history_append_warning, new_history_id, play_fixture_capture, play_fixture_capture_with_player,
-    PublishedSession, StopWhen,
+    CaptureFailure, PublishedSession, StopWhen,
 };
 use super::upgrade::{attempt_upgrade_takeover_in, reserve_upgrade_takeover_in};
 use super::*;
+use echo_core::FailReason;
 use std::cell::Cell;
 use std::fs;
 use std::io::ErrorKind;
@@ -1185,4 +1186,54 @@ fn cancel_write_overlapping_injection_commit_is_not_acknowledged() {
     assert!(published.cancel_requested());
     published.complete_inject(None, None, None).unwrap();
     assert_eq!(status::read_from(&status_path).state, "Idle");
+}
+
+#[test]
+fn capture_failure_preserves_category_and_audio_detail() {
+    for (error, reason, detail) in [
+        (
+            audio::AudioError::NoDevice,
+            FailReason::NoInputDevice,
+            "no input device",
+        ),
+        (
+            audio::AudioError::Stream("selected microphone disconnected".into()),
+            FailReason::CaptureFailed,
+            "selected microphone disconnected",
+        ),
+        (
+            audio::AudioError::Permission("Microphone access denied".into()),
+            FailReason::CaptureFailed,
+            "Microphone access denied",
+        ),
+    ] {
+        let failure = CaptureFailure::from_audio(error);
+        assert_eq!(failure.reason, reason);
+        assert_eq!(failure.detail.as_deref(), Some(detail));
+        let body = crate::status::render(
+            SessionState::Failed {
+                reason: failure.reason,
+            },
+            None,
+            failure.detail.as_deref(),
+            None,
+        );
+        assert!(body.contains(&format!("error={detail}\n")));
+    }
+}
+
+#[test]
+fn missing_capture_fixture_preserves_loading_diagnostic() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("missing.wav");
+    let expected = audio::load_wav(&path).unwrap_err().to_string();
+    let failure = capture_from(
+        Some(path),
+        &StopWhen::Timer(None),
+        RecordingLimit::DEFAULT,
+        &audio::LevelMeter::new(),
+    )
+    .unwrap_err();
+    assert_eq!(failure.reason, FailReason::EngineError);
+    assert_eq!(failure.detail.as_deref(), Some(expected.as_str()));
 }
