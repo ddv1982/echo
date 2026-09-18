@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.0.7 - 2026-09-18
+
+- Cargo, frontend, and GitHub Actions dependencies were refreshed, including ureq 3.4.2, uuid 1.26.1, rubato 5, React 19.3, Lucide React 1.44, Playwright 1.63, oxlint 1.82, and Pages actions 6.0.0 / 5.0.1.
+
 ## v1.0.6 - 2026-09-18
 
 - History quarantines corrupt files on save and mutation instead of leaving them in place while blocking updates.

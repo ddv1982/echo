@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Sample, SampleFormat, SizedSample, I24, U24};
 use echo_core::{MicrophoneSelection, Pcm16kMono, SAMPLE_RATE_HZ};
-use rubato::{FftFixedInOut, Resampler};
+use rubato::audioadapter_buffers::direct::InterleavedSlice;
+use rubato::{Fft, FixedSync, Resampler};
 
 use crate::microphone::{
     is_system_default_proxy, resolve_selection, selectable_inputs, selection_from_sources,
@@ -1046,26 +1047,43 @@ pub fn resample_to_16k_mono(
     }
     let alignment = 2 * (src_hz / gcd) as usize;
     let chunk_size = 1024_usize.div_ceil(alignment) * alignment;
-    let mut resampler =
-        FftFixedInOut::<f32>::new(src_hz as usize, SAMPLE_RATE_HZ as usize, chunk_size, 1)
-            .expect("normalized sample rates are nonzero");
+    let mut resampler = Fft::<f32>::new(
+        src_hz as usize,
+        SAMPLE_RATE_HZ as usize,
+        chunk_size,
+        1,
+        FixedSync::Both,
+    )
+    .expect("normalized sample rates are nonzero");
     let mut input = vec![0.0; resampler.input_frames_next()];
     let mut output = vec![0.0; resampler.output_frames_max()];
     let mut delay = resampler.output_delay();
     let mut frame = 0;
     let mut out = Vec::with_capacity(out_len);
     while out.len() < out_len {
-        let available = input.len().min(frames - frame);
+        let needed = resampler.input_frames_next();
+        if input.len() != needed {
+            input.resize(needed, 0.0);
+        }
+        let available = input.len().min(frames.saturating_sub(frame));
         for (offset, sample) in input[..available].iter_mut().enumerate() {
             *sample = average_frame(frame + offset);
         }
         frame += available;
         // Pad the final block and continue with silence to flush the filter tail.
-        // Unlike process_partial_into_buffer, this reuses the input allocation.
         input[available..].fill(0.0);
-        let (_, written) = resampler
-            .process_into_buffer(&[input.as_slice()], &mut [output.as_mut_slice()], None)
-            .expect("mono buffers match the resampler's fixed frame counts");
+        let written = {
+            let input_frames = input.len();
+            let output_frames = output.len();
+            let input_adapter = InterleavedSlice::new(&input, 1, input_frames)
+                .expect("mono input matches the resampler frame count");
+            let mut output_adapter = InterleavedSlice::new_mut(&mut output, 1, output_frames)
+                .expect("mono output matches the resampler capacity");
+            resampler
+                .process_into_buffer(&input_adapter, &mut output_adapter, None)
+                .expect("mono buffers match the resampler's fixed frame counts")
+                .1
+        };
         let skip = delay.min(written);
         delay -= skip;
         let take = (written - skip).min(out_len - out.len());
