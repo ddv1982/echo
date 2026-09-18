@@ -176,9 +176,10 @@ impl History {
     pub fn save(&self) -> Result<(), String> {
         let _process_guard = history_process_guard()?;
         let _file_guard = lock_history_file(&self.path)?;
-        let rows = match Self::read_rows_read_only(&self.path)? {
-            Some(rows) => rows,
-            None => self.rows.clone(),
+        let rows = if read_private(&self.path)?.is_none() {
+            self.rows.clone()
+        } else {
+            Self::load_from(&self.path)?.rows
         };
         Self::save_rows_at(&self.path, &rows)
     }
@@ -198,26 +199,12 @@ impl History {
         let _process_guard = history_process_guard()?;
         let path = path.as_ref();
         let _file_guard = lock_history_file(path)?;
-        let mut rows = Self::read_rows_read_only(path)?.unwrap_or_default();
+        let mut rows = Self::load_from(path)?.rows;
         let (result, changed) = update(&mut rows);
         if changed {
             Self::save_rows_at(path, &rows)?;
         }
         Ok((result, rows))
-    }
-
-    fn read_rows_read_only(path: &Path) -> Result<Option<Vec<HistoryRow>>, String> {
-        let Some(raw) = read_private(path)? else {
-            return Ok(None);
-        };
-        serde_json::from_slice::<HistoryFile>(&raw)
-            .map(|file| Some(file.rows))
-            .map_err(|error| {
-                format!(
-                    "History file {} contains invalid JSON and was not loaded: {error}",
-                    path.display()
-                )
-            })
     }
 
     fn append_loaded(rows: &mut Vec<HistoryRow>, row: HistoryRow) {
@@ -494,6 +481,7 @@ mod tests {
         let read_error = History::load_from_read_only(&path).unwrap_err();
         assert!(read_error.contains("invalid JSON"), "{read_error}");
         assert_eq!(fs::read(&path).unwrap(), original);
+        assert!(!dir.join("history.json.corrupt").exists());
 
         let mut history = History {
             rows: vec![row("fresh", "must not replace existing history")],
@@ -504,8 +492,11 @@ mod tests {
             .unwrap_err();
 
         assert!(append_error.contains("invalid JSON"), "{append_error}");
-        assert_eq!(fs::read(&path).unwrap(), original);
-        assert!(!dir.join("history.json.corrupt").exists());
+        assert!(!path.exists(), "corrupt file should be moved aside");
+        assert_eq!(
+            fs::read_to_string(dir.join("history.json.corrupt")).unwrap(),
+            String::from_utf8(original.to_vec()).unwrap()
+        );
         assert_eq!(
             history.rows(),
             &[row("fresh", "must not replace existing history")]
@@ -513,7 +504,7 @@ mod tests {
     }
 
     #[test]
-    fn locked_append_does_not_replace_malformed_history() {
+    fn locked_append_quarantines_malformed_history_and_does_not_rewrite() {
         let dir =
             std::env::temp_dir().join(format!("echo-hist-corrupt-append-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
@@ -531,13 +522,43 @@ mod tests {
             .unwrap_err();
 
         assert!(error.contains("invalid JSON"), "{error}");
-        assert_eq!(fs::read_to_string(&path).unwrap(), original);
-        assert!(!dir.join("history.json.corrupt").exists());
+        assert!(!path.exists(), "corrupt file should be moved aside");
+        assert_eq!(
+            fs::read_to_string(dir.join("history.json.corrupt")).unwrap(),
+            original
+        );
         assert!(history.rows().is_empty());
     }
 
     #[test]
-    fn locked_clear_does_not_silently_reset_malformed_history() {
+    fn locked_append_after_quarantine_starts_from_missing_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "echo-hist-append-after-quarantine-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.json");
+        fs::write(&path, "{\"rows\": [{\"id\": \"existing").unwrap();
+
+        let mut history = History {
+            rows: Vec::new(),
+            path: path.clone(),
+        };
+        history
+            .append(row("fresh", "must not replace existing history"))
+            .unwrap_err();
+        history
+            .append(row("fresh", "recovered history"))
+            .unwrap();
+
+        assert_eq!(history.rows(), &[row("fresh", "recovered history")]);
+        assert!(path.exists());
+        assert!(dir.join("history.json.corrupt").exists());
+    }
+
+    #[test]
+    fn locked_clear_quarantines_malformed_history_and_does_not_rewrite() {
         let dir =
             std::env::temp_dir().join(format!("echo-hist-corrupt-clear-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
@@ -553,9 +574,59 @@ mod tests {
         let error = history.clear().unwrap_err();
 
         assert!(error.contains("invalid JSON"), "{error}");
-        assert_eq!(fs::read_to_string(&path).unwrap(), original);
-        assert!(!dir.join("history.json.corrupt").exists());
+        assert!(!path.exists(), "corrupt file should be moved aside");
+        assert_eq!(
+            fs::read_to_string(dir.join("history.json.corrupt")).unwrap(),
+            original
+        );
         assert_eq!(history.rows(), &[row("stale", "stale")]);
+    }
+
+    #[test]
+    fn save_quarantines_malformed_history_and_does_not_rewrite() {
+        let dir =
+            std::env::temp_dir().join(format!("echo-hist-corrupt-save-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.json");
+        let original = "{\"rows\": [{\"id\": \"existing";
+        fs::write(&path, original).unwrap();
+
+        let history = History {
+            rows: vec![row("stale", "stale")],
+            path: path.clone(),
+        };
+        let error = history.save().unwrap_err();
+
+        assert!(error.contains("invalid JSON"), "{error}");
+        assert!(!path.exists(), "corrupt file should be moved aside");
+        assert_eq!(
+            fs::read_to_string(dir.join("history.json.corrupt")).unwrap(),
+            original
+        );
+        assert_eq!(history.rows(), &[row("stale", "stale")]);
+    }
+
+    #[test]
+    fn save_creates_history_from_in_memory_rows_when_file_is_missing() {
+        let dir = std::env::temp_dir().join(format!(
+            "echo-hist-save-missing-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.json");
+        let history = History {
+            rows: vec![row("fresh", "from memory")],
+            path: path.clone(),
+        };
+
+        history.save().unwrap();
+
+        assert_eq!(
+            History::load_from(&path).unwrap().rows(),
+            &[row("fresh", "from memory")]
+        );
     }
 
     #[test]
