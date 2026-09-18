@@ -548,9 +548,7 @@ mod tests {
         history
             .append(row("fresh", "must not replace existing history"))
             .unwrap_err();
-        history
-            .append(row("fresh", "recovered history"))
-            .unwrap();
+        history.append(row("fresh", "recovered history")).unwrap();
 
         assert_eq!(history.rows(), &[row("fresh", "recovered history")]);
         assert!(path.exists());
@@ -609,10 +607,8 @@ mod tests {
 
     #[test]
     fn save_creates_history_from_in_memory_rows_when_file_is_missing() {
-        let dir = std::env::temp_dir().join(format!(
-            "echo-hist-save-missing-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("echo-hist-save-missing-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("history.json");

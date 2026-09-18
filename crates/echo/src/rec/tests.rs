@@ -586,7 +586,10 @@ fn capture_stop_requested_for_mismatch_session_is_false() {
         ControlIntent::CaptureStop
     )
     .unwrap());
-    assert!(!capture_stop_requested_for_in(&dir, Some("another-session")));
+    assert!(!capture_stop_requested_for_in(
+        &dir,
+        Some("another-session")
+    ));
 }
 
 #[test]
