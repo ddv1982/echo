@@ -228,31 +228,21 @@ impl ToggleSession {
     }
 
     pub(super) fn stop_requested(&self) -> bool {
-        let scoped = self
-            .directory
-            .read_to_string(self.intent_name("stop").as_ref())
-            .ok()
-            .is_some_and(|request| stop_request_matches(Some(&self.token), &request));
-        scoped
-            || self
-                .directory
-                .read_to_string("recording.stop".as_ref())
-                .ok()
-                .is_some_and(|request| stop_request_matches(Some(&self.token), &request))
+        intent_requested(
+            &self.directory,
+            Some(&self.token),
+            &self.intent_name("stop"),
+            "recording.stop",
+        )
     }
 
     pub(super) fn cancel_requested(&self) -> bool {
-        let scoped = self
-            .directory
-            .read_to_string(self.intent_name("cancel").as_ref())
-            .ok()
-            .is_some_and(|request| stop_request_matches(Some(&self.token), &request));
-        scoped
-            || self
-                .directory
-                .read_to_string("recording.cancel".as_ref())
-                .ok()
-                .is_some_and(|request| stop_request_matches(Some(&self.token), &request))
+        intent_requested(
+            &self.directory,
+            Some(&self.token),
+            &self.intent_name("cancel"),
+            "recording.cancel",
+        )
     }
 
     pub(super) fn next_revision(&self) -> u64 {
@@ -392,6 +382,22 @@ pub(super) fn stop_request_matches(token: Option<&str>, request: &str) -> bool {
         Some(token) => request.trim() == token,
         None => request.trim() == "stop",
     }
+}
+
+pub(super) fn intent_requested(
+    directory: &PrivateDir,
+    token: Option<&str>,
+    scoped_name: &str,
+    legacy_name: &str,
+) -> bool {
+    directory
+        .read_to_string(scoped_name.as_ref())
+        .ok()
+        .is_some_and(|request| stop_request_matches(token, &request))
+        || directory
+            .read_to_string(legacy_name.as_ref())
+            .ok()
+            .is_some_and(|request| stop_request_matches(token, &request))
 }
 
 pub(super) fn live_lock_owner_from_at(

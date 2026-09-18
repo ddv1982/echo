@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.0.6 - 2026-09-18
+
+- History quarantines corrupt files on save and mutation instead of leaving them in place while blocking updates.
+- Recording stop and cancel intent reads share one helper, with tests for session match and restart contention.
+- History UI tests share the desktop API harness, and shortcut verification tests use production activation tokens.
+
 ## v1.0.5 - 2026-09-10
 
 - Home can cancel an active transcription and shows cancellation consistently without replacing newer sessions.

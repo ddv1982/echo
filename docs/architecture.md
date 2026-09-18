@@ -10,7 +10,7 @@ and local operating-system capabilities.
 | --- | --- |
 | `crates/echo-core` | Domain types, config, history, dictionary, recording state, and paths. |
 | `crates/echo` | Audio, transcription engines, managed installation, injection, HUD, and recording orchestration. |
-| `crates/echo-ipc` | Rust command, event, and payload contract exported to TypeScript. |
+| `crates/echo-ipc` | Payload schemas and generated TypeScript types. Command and event registrations live in `src-tauri`. |
 | `crates/ipc-gen` | Deterministic generator and drift check for the frontend IPC contract. |
 | `src-tauri` | Desktop composition, command adapters, setup, status projection, shortcuts, tray, and CLI. |
 | `frontend` | React views, feature controllers, desktop API adapters, and generated IPC types. |

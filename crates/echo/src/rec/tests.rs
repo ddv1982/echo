@@ -1,6 +1,6 @@
 use super::control::{
-    apply_toggle_stop_intent_in, decide_toggle_intent, finish_toggle_stop_with,
-    request_control_ack_with, ControlIntent,
+    apply_toggle_stop_intent_in, capture_stop_requested_for_in, decide_toggle_intent,
+    finish_toggle_stop_with, request_control_ack_with, ControlIntent,
 };
 use super::lease::{
     intent_path, live_lock_owner, live_lock_owner_from_at, new_session_token, parse_lock_owner,
@@ -535,6 +535,64 @@ fn token_scoped_stop_ignores_an_unrelated_session() {
 }
 
 #[test]
+fn capture_stop_requested_for_missing_session_is_false() {
+    let dir = std::env::temp_dir().join(format!(
+        "echo-capture-stop-missing-{}-{}",
+        std::process::id(),
+        new_session_token()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    let _session = ToggleSession::try_start_in(&dir).unwrap().unwrap();
+    assert!(!capture_stop_requested_for_in(&dir, None));
+}
+
+#[test]
+fn capture_stop_requested_for_matching_session_sees_scoped_stop() {
+    let dir = std::env::temp_dir().join(format!(
+        "echo-capture-stop-match-{}-{}",
+        std::process::id(),
+        new_session_token()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    let session = ToggleSession::try_start_in(&dir).unwrap().unwrap();
+    assert!(!capture_stop_requested_for_in(
+        &dir,
+        Some(session.token.as_str())
+    ));
+    assert!(ToggleSession::request_intent_for_token_in(
+        &dir,
+        &session.token,
+        ControlIntent::CaptureStop
+    )
+    .unwrap());
+    assert!(capture_stop_requested_for_in(
+        &dir,
+        Some(session.token.as_str())
+    ));
+}
+
+#[test]
+fn capture_stop_requested_for_mismatch_session_is_false() {
+    let dir = std::env::temp_dir().join(format!(
+        "echo-capture-stop-mismatch-{}-{}",
+        std::process::id(),
+        new_session_token()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    let session = ToggleSession::try_start_in(&dir).unwrap().unwrap();
+    assert!(ToggleSession::request_intent_for_token_in(
+        &dir,
+        &session.token,
+        ControlIntent::CaptureStop
+    )
+    .unwrap());
+    assert!(!capture_stop_requested_for_in(
+        &dir,
+        Some("another-session")
+    ));
+}
+
+#[test]
 fn clearing_a_matching_legacy_stop_removes_the_flat_signal() {
     let dir = std::env::temp_dir().join(format!("echo-clear-flat-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
@@ -971,7 +1029,11 @@ fn fixture_obeys_an_already_present_token_scoped_toggle_stop() {
 
 #[test]
 fn toggle_starts_stops_and_can_restart() {
-    let dir = std::env::temp_dir().join(format!("echo-toggle-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "echo-toggle-{}-{}",
+        std::process::id(),
+        new_session_token()
+    ));
     let _ = fs::remove_dir_all(&dir);
 
     let first = match ToggleSession::start_or_stop_in(&dir, None).unwrap() {
@@ -989,10 +1051,28 @@ fn toggle_starts_stops_and_can_restart() {
     drop(first);
     assert!(!dir.join("recording.lock").exists());
     assert!(!stop.exists());
-    assert!(matches!(
-        ToggleSession::start_or_stop_in(&dir, None).unwrap(),
-        ToggleAction::Start(_)
-    ));
+    let restarted = match ToggleSession::start_or_stop_in(&dir, None) {
+        Ok(ToggleAction::Start(session)) => session,
+        other => {
+            let outcome = match &other {
+                Ok(ToggleAction::Stop(_)) => "Stop".to_string(),
+                Err(error) => error.clone(),
+                Ok(ToggleAction::Start(_)) => unreachable!(),
+            };
+            panic!(
+                "restart should start a new session, got {outcome}; lock={} gate={} entries={:?}",
+                dir.join("recording.lock").exists(),
+                dir.join("recording.gate").exists(),
+                fs::read_dir(&dir).map(|entries| {
+                    entries
+                        .filter_map(|entry| entry.ok().map(|entry| entry.file_name()))
+                        .collect::<Vec<_>>()
+                })
+            );
+        }
+    };
+    drop(restarted);
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]

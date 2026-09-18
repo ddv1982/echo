@@ -5,7 +5,7 @@ use echo_core::PrivateDir;
 use crate::status;
 
 use super::lease::{
-    intent_path, live_lock_owner, stop_request_matches, LockOwner, ToggleAction, ToggleSession,
+    intent_file_name, intent_requested, live_lock_owner, LockOwner, ToggleAction, ToggleSession,
 };
 
 /// Decide the meaning of a toggle before writing a capture-stop signal. The
@@ -175,25 +175,25 @@ pub(super) fn control_applies_to(
 
 #[must_use]
 pub fn capture_stop_requested_for(session_id: Option<&str>) -> bool {
+    capture_stop_requested_for_in(&echo_core::data_dir(), session_id)
+}
+
+#[must_use]
+pub(super) fn capture_stop_requested_for_in(dir: &Path, session_id: Option<&str>) -> bool {
     let Some(session_id) = session_id else {
         return false;
     };
-    let dir = echo_core::data_dir();
     let owner = live_lock_owner(&dir.join("recording.lock"));
     let Some(owner) = owner.filter(|owner| owner.token.as_deref() == Some(session_id)) else {
         return false;
     };
-    let scoped = PrivateDir::open(&dir)
-        .ok()
-        .and_then(|directory| {
-            directory
-                .read_to_string(intent_path(&dir, "stop", &owner).file_name()?.as_ref())
-                .ok()
-        })
-        .is_some_and(|request| stop_request_matches(Some(session_id), &request));
-    scoped
-        || PrivateDir::open(&dir)
-            .ok()
-            .and_then(|directory| directory.read_to_string("recording.stop".as_ref()).ok())
-            .is_some_and(|request| stop_request_matches(Some(session_id), &request))
+    let Ok(directory) = PrivateDir::open(dir) else {
+        return false;
+    };
+    intent_requested(
+        &directory,
+        Some(session_id),
+        &intent_file_name("stop", &owner),
+        "recording.stop",
+    )
 }
