@@ -257,7 +257,7 @@ jobs:
             --source-timestamp "$(git show -s --format=%cI "$GITHUB_SHA")" \
             --output target/release/echo-desktop.cdx.json
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ env.ARTIFACT_STEM }}
           path: |
@@ -265,7 +265,7 @@ jobs:
             target/release/bundle/rpm/*.rpm
           if-no-files-found: error
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ env.ARTIFACT_STEM }}-bin
           path: |
@@ -348,7 +348,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ env.ARTIFACT_STEM }}-appimage
           path: |
@@ -419,7 +419,7 @@ jobs:
       - name: Verify staged release checksums
         run: scripts/generate-release-checksums.sh --verify release-assets/publish
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ env.ARTIFACT_STEM }}-publish
           path: release-assets/publish/*
