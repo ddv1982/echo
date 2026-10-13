@@ -261,7 +261,7 @@
   font-size: var(--text-xs);
   font-weight: var(--weight-medium);
   letter-spacing: var(--label-tracking);
-  text-transform: uppercase;
+  text-transform: none;
   white-space: normal;
   overflow-wrap: anywhere;
 }
@@ -305,8 +305,10 @@
 }
 
 .segmented-control button[data-active='true'] {
-  background: hsl(var(--surface-hover));
+  background: hsl(var(--surface-card));
   color: hsl(var(--foreground));
+  box-shadow: 0 1px 3px hsl(0 0% 0% / 0.15);
+  font-weight: var(--weight-semibold);
 }
 
 .settings-path {

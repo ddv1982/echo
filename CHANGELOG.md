@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.0.8 - 2026-10-13
+
+- Refined Home, History, Dictionary, and Settings with clearer typography, consistent controls, improved light/dark contrast, and visible navigation labels in compact windows.
+- Home uses a more compact recording layout; Dictionary fields remain balanced at desktop and narrow widths. Keyboard focus and reduced-motion behavior are verified by browser checks.
+- Refreshed Cargo, frontend, and pinned GitHub Actions dependencies, including GLib 0.22.10, Tauri 2.11.6, single-instance 2.4.5, clap 4.6.7, rustix 1.1.5, Vite 8.3.4, Vitest 5.0.3, jsdom 30.1.2, and oxlint 1.83.0.
+- Source builds now use pinned Rust 1.92.0 and Node.js 24.21.0 LTS toolchains, with matching CI and documented build requirements.
+
 ## v1.0.7 - 2026-09-18
 
 - Cargo, frontend, and GitHub Actions dependencies were refreshed, including ureq 3.4.2, uuid 1.26.1, rubato 5, React 19.3, Lucide React 1.44, Playwright 1.63, oxlint 1.82, and Pages actions 6.0.0 / 5.0.1.

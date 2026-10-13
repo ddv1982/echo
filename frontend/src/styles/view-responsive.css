@@ -12,19 +12,24 @@
     padding: var(--space-2) var(--space-3);
   }
   .nav-list { grid-template-columns: repeat(4, 1fr); }
-  .nav-item { justify-content: center; padding: 0.6rem; }
-  .nav-item span { display: none; }
+  .nav-item { justify-content: center; gap: var(--space-2); padding: 0.6rem; }
+  .nav-item[data-active='true']::before { inset: auto var(--space-3) 0; width: auto; height: 3px; }
   .shortcut-card { display: none; }
   .main-content { padding: var(--space-4); }
   .record-hero { padding: var(--space-6); }
-  .hero-main { flex-direction: column; align-items: flex-start; }
-  .home-grid { grid-template-columns: 1fr; }
-  .dictionary-form { grid-template-columns: 1fr; }
+  .home-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dictionary-form { grid-template-columns: repeat(2, minmax(0, 1fr)) auto; }
   .dictionary-training-prompt { align-items: stretch; flex-direction: column; }
   .mapping-arrow { display: none; }
 }
 
 @media (max-width: 520px) {
+  .nav-item { flex-direction: column; gap: var(--space-1); padding: var(--space-2) var(--space-1); font-size: var(--text-xs); }
+  .hero-main { align-items: flex-start; gap: var(--space-4); }
+  .record-orb { width: 3rem; height: 3rem; }
+  .record-hero { padding: var(--space-4); }
+  .home-grid { grid-template-columns: 1fr; }
+  .dictionary-form { grid-template-columns: 1fr; }
   .status-pill { display: none; }
   .record-actions { align-items: flex-start; flex-direction: column; }
   .history-toolbar { align-items: stretch; flex-direction: column; }
