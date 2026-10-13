@@ -79,8 +79,13 @@ catalogs, and one-run engine overrides.
 
 ## Build from source
 
-You need Rust 1.89 or newer, Node.js 22 or newer, and the native desktop
-dependencies for your distribution. On a prepared system:
+You need Rust 1.92 or newer, Node.js 24 LTS (24.21.0 or newer in the 24.x line),
+and the native desktop dependencies for your distribution.
+
+The repository pins Rust in `rust-toolchain.toml` and Node in `.nvmrc`.
+With nvm installed, run `nvm install && nvm use` from the repository root.
+
+On a prepared system:
 
 ```sh
 npm ci --prefix frontend

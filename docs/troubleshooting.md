@@ -82,7 +82,9 @@ the next session begins.
 
 ## Build dependencies
 
-Echo requires Rust 1.89 or newer and Node.js 22 or newer. On Ubuntu, Debian,
+Echo requires Rust 1.92 or newer and Node.js 24 LTS (24.21.0 or newer in the 24.x
+line). The repository pins the development versions in `rust-toolchain.toml`
+and `.nvmrc`. On Ubuntu, Debian,
 Zorin OS, and derivatives:
 
 ```sh
