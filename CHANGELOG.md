@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.0.9 - 2026-10-13
+
+- Updated Oxlint to 1.87.0 and its type-aware companion oxlint-tsgolint to 7.0.2003, satisfying the linter's declared peer requirement while retaining the existing lint rules and build toolchains.
+
 ## v1.0.8 - 2026-10-13
 
 - Refined Home, History, Dictionary, and Settings with clearer typography, consistent controls, improved light/dark contrast, and visible navigation labels in compact windows.
