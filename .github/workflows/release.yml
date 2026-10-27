@@ -334,12 +334,16 @@ jobs:
       - name: Generate release checksums
         run: scripts/generate-release-checksums.sh release-assets/publish
 
+      # The AppImage takes libEGL, libpipewire, and libwayland-client from the
+      # host (linuxdeploy excludes them), so the verifier needs them too.
       - name: Install RPM and AppImage verification dependencies
         run: |
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
             cpio \
             libegl1 \
+            libpipewire-0.3-0t64 \
+            libwayland-client0 \
             p7zip-full \
             rpm
 
