@@ -27,7 +27,8 @@ You can also download the latest Linux x86-64 installer from
 
 - `.deb` for Debian and Ubuntu (`sudo apt install ./echo_VERSION_amd64.deb`)
 - `.rpm` for Fedora, RHEL, and compatible distributions
-- `.AppImage` for a portable application
+- `.AppImage` for a portable application (uses the system PipeWire client
+  library, `libpipewire-0.3`)
 
 GitHub Release files include `SHA256SUMS` and GitHub attestations.
 

@@ -18,7 +18,7 @@ concurrency:
   cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 env:
-  TAURI_CLI_VERSION: "2.11.4"
+  TAURI_CLI_VERSION: "2.12.4"
   # Tag builds publish echo-vX.Y.Z-linux*; every other run builds nightly artifacts.
   ARTIFACT_STEM: ${{ github.ref_type == 'tag' && format('echo-{0}-linux', github.ref_name) || format('echo-nightly-{0}-linux', github.sha) }}
 
@@ -334,12 +334,16 @@ jobs:
       - name: Generate release checksums
         run: scripts/generate-release-checksums.sh release-assets/publish
 
+      # The AppImage takes libEGL, libpipewire, and libwayland-client from the
+      # host (linuxdeploy excludes them), so the verifier needs them too.
       - name: Install RPM and AppImage verification dependencies
         run: |
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
             cpio \
             libegl1 \
+            libpipewire-0.3-0t64 \
+            libwayland-client0 \
             p7zip-full \
             rpm
 
