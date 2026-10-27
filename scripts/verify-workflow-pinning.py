@@ -665,11 +665,16 @@ def workflow_policy_findings(path):
     return findings
 
 
-def workflow_paths(arguments):
+def workflow_paths(arguments, root=ROOT):
     if arguments:
         return [Path(argument) for argument in arguments]
-    directory = ROOT / ".github" / "workflows"
-    return sorted((*directory.glob("*.yml"), *directory.glob("*.yaml")))
+    github = root / ".github"
+    return sorted(
+        (
+            *github.glob("workflows/*.y*ml"),
+            *github.glob("actions/*/action.y*ml"),
+        )
+    )
 
 
 def verify(paths):
@@ -1200,12 +1205,20 @@ jobs:
             "assets desktop validation is missing",
         )
 
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        action = root / ".github" / "actions" / "setup" / "action.yml"
+        action.parent.mkdir(parents=True)
+        action.write_text("runs:\n  steps:\n    - uses: actions/checkout@v7\n")
+        if action not in workflow_paths([], root):
+            raise RuntimeError("composite action metadata is not scanned for pins")
+
     print("verify-workflow-pinning: self-test passed")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Reject GitHub Actions references that can move without review."
+        description="Reject GitHub Actions references in workflows and local actions that can move without review."
     )
     parser.add_argument("workflows", nargs="*")
     parser.add_argument("--self-test", action="store_true")

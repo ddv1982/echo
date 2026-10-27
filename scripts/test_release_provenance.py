@@ -849,7 +849,7 @@ class AttestationPermissionsTests(unittest.TestCase):
             "\n  github-release:\n", maxsplit=1
         )[0]
         permissions = job.split("\n    permissions:\n", maxsplit=1)[1].split(
-            "\n    env:\n", maxsplit=1
+            "\n    steps:\n", maxsplit=1
         )[0]
         actual = {
             key.strip(): value.strip()
