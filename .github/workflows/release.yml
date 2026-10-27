@@ -18,7 +18,7 @@ concurrency:
   cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 env:
-  TAURI_CLI_VERSION: "2.11.4"
+  TAURI_CLI_VERSION: "2.12.4"
   # Tag builds publish echo-vX.Y.Z-linux*; every other run builds nightly artifacts.
   ARTIFACT_STEM: ${{ github.ref_type == 'tag' && format('echo-{0}-linux', github.ref_name) || format('echo-nightly-{0}-linux', github.sha) }}
 
