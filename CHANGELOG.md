@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.0.10 - 2026-10-28
+
+- Upgraded Tauri to 2.12.5 (tauri-build 2.7.4, Tauri CLI 2.12.4) together with @tauri-apps/api 2.12.
+- Reopening the window from the tray on Wayland no longer leaves the titlebar maximize and close buttons unresponsive; the fix now comes from Tauri 2.12, so Echo's resizability workaround is removed.
+- The AppImage uses the system PipeWire client library (`libpipewire-0.3`) instead of bundling it.
+- CI jobs share one build setup action, and the dependency audits are green again.
+
 ## v1.0.9 - 2026-10-13
 
 - Updated Oxlint to 1.87.0 and its type-aware companion oxlint-tsgolint to 7.0.2003, satisfying the linter's declared peer requirement while retaining the existing lint rules and build toolchains.
