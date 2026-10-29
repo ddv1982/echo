@@ -1,14 +1,15 @@
 .app-shell {
-  min-height: 100vh;
+  display: flex;
+  height: 100vh;
+  flex-direction: column;
+  overflow: hidden;
   background: hsl(var(--surface-app));
 }
 
 .topbar {
-  position: sticky;
-  z-index: 20;
-  top: 0;
   display: flex;
   min-height: 4rem;
+  flex: none;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-4);
@@ -104,17 +105,15 @@
 
 .workspace {
   display: grid;
-  min-height: calc(100vh - 4rem);
+  min-height: 0;
+  flex: 1;
   grid-template-columns: 12rem minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
 }
 
 .sidebar {
-  position: sticky;
-  top: 4rem;
   display: flex;
-  height: calc(100vh - 4rem);
   min-width: 0;
-  align-self: start;
   flex-direction: column;
   justify-content: space-between;
   border-right: 1px solid hsl(var(--border-subtle));
@@ -195,7 +194,12 @@
 
 .main-content {
   min-width: 0;
+  overflow-y: auto;
   padding: var(--space-6);
+}
+
+.main-content:focus {
+  outline: none;
 }
 
 .error-banner {

@@ -133,10 +133,6 @@ export function useAppController() {
     return () => media.removeEventListener('change', apply)
   }, [theme])
 
-  useEffect(() => {
-    window.scrollTo({ top: 0, left: 0, behavior: 'auto' })
-  }, [view])
-
   const toggle = useCallback(async () => {
     const { phase, recordingSessionId } = recordingObservation.current.snapshot
     const processing = phase === 'Transcribing' || phase === 'Injecting'

@@ -185,6 +185,30 @@ describe('Echo desktop shell', () => {
     expect(screen.getByPlaceholderText('Search transcripts…')).toBeInTheDocument()
   })
 
+  it('opens each view at the top of the scrolling content area', async () => {
+    render(<App />)
+    const main = screen.getByRole('main')
+    main.scrollTop = 240
+
+    fireEvent.click(screen.getByRole('button', { name: 'History' }))
+
+    expect(await screen.findByRole('heading', { name: 'History' })).toBeInTheDocument()
+    expect(main.scrollTop).toBe(0)
+  })
+
+  it('focuses the scrolling content area so the keyboard scrolls it', async () => {
+    render(<App />)
+    const main = screen.getByRole('main')
+    expect(main).toHaveFocus()
+
+    const history = screen.getByRole('button', { name: 'History' })
+    history.focus()
+    fireEvent.click(history)
+
+    expect(await screen.findByRole('heading', { name: 'History' })).toBeInTheDocument()
+    expect(main).toHaveFocus()
+  })
+
   it.each([
     ['Transcribing', 'Transcribing locally…', 'Whisper · small · VAD on is turning your recording into text.'],
     ['Injecting', 'Inserting transcript…', 'ydotool · Wayland is sending your transcript to the active app.'],

@@ -20,9 +20,11 @@ async function capture(page: Page, info: TestInfo, name: string) {
 }
 
 async function expectFits(page: Page) {
-  expect(await page.evaluate(() =>
-    document.documentElement.scrollWidth <= document.documentElement.clientWidth,
-  )).toBe(true)
+  expect(await page.evaluate(() => {
+    const fits = (node: Element) => node.scrollWidth <= node.clientWidth
+    const main = document.querySelector('main.main-content')
+    return fits(document.documentElement) && main !== null && fits(main)
+  })).toBe(true)
 }
 
 for (const theme of ['light', 'dark']) {
