@@ -6,6 +6,7 @@ import {
   Power,
   Settings,
 } from 'lucide-react'
+import { useEffect, useRef } from 'react'
 import { BrandMark, StatusPill } from './app/chrome'
 import { useAppController } from './app/useAppController'
 import { DictionaryView } from './dictionary/DictionaryView'
@@ -47,6 +48,11 @@ function App() {
     removeDictionaryEntry,
   } = useAppController()
   const shortcut = presentShortcut(status.shortcut)
+  const mainRef = useRef<HTMLElement>(null)
+
+  useEffect(() => {
+    if (mainRef.current) mainRef.current.scrollTop = 0
+  }, [view])
 
   return (
     <div className="app-shell">
@@ -103,7 +109,7 @@ function App() {
           </div>
         </nav>
 
-        <main className="main-content">
+        <main ref={mainRef} className="main-content">
           {error ? (
             <div className="error-banner" role="alert">
               <CircleAlert size={17} aria-hidden="true" />
