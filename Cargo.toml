@@ -7,7 +7,7 @@ edition = "2021"
 license = "MIT"
 repository = "https://github.com/ddv1982/echo"
 rust-version = "1.92"
-version = "1.0.10"
+version = "1.0.11"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

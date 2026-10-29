@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.0.11 - 2026-10-29
+
+- Release tags no longer rerun the full check workflow; the commit a tag points at has already passed it on `main`. The application is unchanged from v1.0.10.
+
 ## v1.0.10 - 2026-10-28
 
 - Upgraded Tauri to 2.12.5 (tauri-build 2.7.4, Tauri CLI 2.12.4) together with @tauri-apps/api 2.12.
