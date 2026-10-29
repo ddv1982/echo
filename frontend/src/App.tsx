@@ -50,8 +50,11 @@ function App() {
   const shortcut = presentShortcut(status.shortcut)
   const mainRef = useRef<HTMLElement>(null)
 
+  // main is the only scroller, so it needs focus for keyboard scrolling.
   useEffect(() => {
-    if (mainRef.current) mainRef.current.scrollTop = 0
+    if (!mainRef.current) return
+    mainRef.current.scrollTop = 0
+    mainRef.current.focus({ preventScroll: true })
   }, [view])
 
   return (
@@ -109,7 +112,7 @@ function App() {
           </div>
         </nav>
 
-        <main ref={mainRef} className="main-content">
+        <main ref={mainRef} className="main-content" tabIndex={-1}>
           {error ? (
             <div className="error-banner" role="alert">
               <CircleAlert size={17} aria-hidden="true" />

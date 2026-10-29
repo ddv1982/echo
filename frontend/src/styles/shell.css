@@ -198,6 +198,10 @@
   padding: var(--space-6);
 }
 
+.main-content:focus {
+  outline: none;
+}
+
 .error-banner {
   display: flex;
   align-items: center;
