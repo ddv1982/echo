@@ -24,3 +24,6 @@ with the mouse wheel).
 - `content-visibility: visible` on transcript rows: 11 and 20 of 420, so not the cause.
 - Only `main` scrolling (bars not sticky): 0 of 420 in three runs, at 920 and 1280.
 - The user confirmed on their machine: the glitch shows in the old build and not in the fixed one.
+- Screen recordings of the user's own mouse scrolling on Home (GNOME screencast,
+  bar region checked frame by frame): old build 21 of 1558 frames with the top
+  bar displaced 15 to 30px; fixed build 0 of 1515.
